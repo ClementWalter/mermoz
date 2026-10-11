@@ -1227,3 +1227,18 @@ fn statuses_can_be_reordered(synced: World) {
         .collect();
     assert_eq!(after, keys);
 }
+
+#[rstest]
+fn reversed_order_is_the_list_backwards(synced: World) {
+    let ids = |reverse: bool| -> Vec<Value> {
+        synced.ok("threads.list", json!({ "reverse": reverse }))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].clone())
+            .collect()
+    };
+    let mut backwards = ids(false);
+    backwards.reverse();
+    assert_eq!(ids(true), backwards);
+}

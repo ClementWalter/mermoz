@@ -160,6 +160,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 label_id: opt_s(p, "label_id"),
                 participants: str_list(p, "participant")?,
                 order: opt_s(p, "order"),
+                reverse: p.get("reverse").and_then(|v| v.as_bool()).unwrap_or(false),
                 priority,
                 limit: p
                     .get("limit")

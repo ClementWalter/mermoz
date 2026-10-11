@@ -104,11 +104,11 @@ public final class DaemonClient: Sendable {
     public func counts() async throws -> Counts { try await call("counts") }
 
     public func threads(status: [String]? = nil, project: String? = nil, accountId: String? = nil,
-                        labelId: String? = nil, priority: [Int]? = nil, order: String? = nil,
+                        labelId: String? = nil, priority: [Int]? = nil, order: String? = nil, reverse: Bool = false,
                         limit: Int = 300, offset: Int = 0) async throws -> ThreadPage {
         try await call("threads.list", Params()
             .with("status", status).with("project", project).with("account_id", accountId).with("label_id", labelId).with("order", order)
-            .with("priority", priority).with("limit", limit).with("offset", offset))
+            .with("priority", priority).with("reverse", reverse).with("limit", limit).with("offset", offset))
     }
 
     public func thread(_ id: String) async throws -> ThreadDetail { try await call("threads.get", Params().with("id", id)) }

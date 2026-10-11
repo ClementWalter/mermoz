@@ -286,11 +286,15 @@ struct DisplayMenu: View {
             Picker("Ordering", selection: binding(\.ordering)) {
                 ForEach(Ordering.allCases, id: \.self) { Text($0.label).tag($0) }
             }
+            Picker("Direction", selection: binding(\.reversed)) {
+                Text(model.display.ordering.directions.0).tag(false)
+                Text(model.display.ordering.directions.1).tag(true)
+            }
         } label: {
             Label("Display", systemImage: "slider.horizontal.3").font(.system(size: 12))
         }
         .menuStyle(.button).fixedSize()
-        .help("Grouping, sub-grouping and ordering")
+        .help("Grouping, sub-grouping, ordering and direction")
     }
 
     private func binding<T>(_ kp: WritableKeyPath<DisplayOptions, T>) -> Binding<T> {

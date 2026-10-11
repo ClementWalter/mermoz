@@ -1,4 +1,5 @@
 /// Grouping keeps Linear's order and nests sub-groups.
+import Foundation
 import Testing
 @testable import MermozKit
 
@@ -51,4 +52,9 @@ private let order: @Sendable (Grouping) -> [String] = { f in
 func projectNesting(_ name: String, _ names: Set<String>, _ depth: Int, _ label: String) {
     let p = ProjectTree.place(name, among: names)
     #expect(p.depth == depth && p.label == label)
+}
+
+@Test func displayOptionsSavedBeforeDirectionStillLoad() throws {
+    let old = #"{"grouping":"status","subGrouping":"none","ordering":"priority"}"#
+    #expect(try JSONDecoder().decode(DisplayOptions.self, from: Data(old.utf8)).reversed == false)
 }

@@ -87,7 +87,15 @@ const MIGRATIONS: &[&str] = &[
     PROVIDER_AUTH,
     PERSON_OVERRIDES,
     WORKFLOW_V2,
+    FIRST_DATE,
 ];
+
+/// When a conversation started, for the "Created" ordering.
+const FIRST_DATE: &str = r#"
+ALTER TABLE threads ADD COLUMN first_date INTEGER NOT NULL DEFAULT 0;
+UPDATE threads SET first_date = COALESCE((SELECT MIN(m.date) FROM messages m WHERE m.thread_id = threads.id), 0);
+CREATE INDEX IF NOT EXISTS threads_first_date ON threads(first_date DESC);
+"#;
 
 /// Workflow v2: Unread is the entry status, Done/Canceled collapse into Archive (the old
 /// Done carried no Gmail label, so it cannot be told apart from archived mail), Gmail
@@ -267,6 +275,8 @@ pub struct ThreadFilter {
     pub participants: Option<Vec<String>>,
     /// "last_date" (default), "priority", "due" or "created".
     pub order: Option<String>,
+    /// Oldest / least urgent / latest first instead.
+    pub reverse: bool,
     pub limit: i64,
     pub offset: i64,
 }
@@ -421,13 +431,22 @@ pub fn safe_filename(name: &str) -> String {
 }
 
 /// ORDER BY for a thread list; unknown values fall back to most recent activity.
-pub fn order_clause(order: Option<&str>) -> &'static str {
+/// SQL ORDER BY for an ordering, newest / most urgent / soonest first unless `reverse`.
+/// Threads without a priority or follow-up date stay last either way, and the thread
+/// number breaks ties so equal rows never swap between refreshes.
+pub fn order_clause(order: Option<&str>, reverse: bool) -> String {
+    let (desc, asc) = if reverse {
+        ("ASC", "DESC")
+    } else {
+        ("DESC", "ASC")
+    };
     match order {
-        // No priority sorts after Low, like Linear.
-        Some("priority") => "CASE t.priority WHEN 0 THEN 9 ELSE t.priority END, t.last_date DESC",
-        Some("due") => "t.due IS NULL, t.due, t.last_date DESC",
-        Some("created") => "t.number DESC",
-        _ => "t.last_date DESC",
+        Some("priority") => {
+            format!("t.priority = 0, t.priority {asc}, t.last_date DESC, t.number DESC")
+        }
+        Some("due") => format!("t.due IS NULL, t.due {asc}, t.last_date DESC, t.number DESC"),
+        Some("created") => format!("t.first_date {desc}, t.number {desc}"),
+        _ => format!("t.last_date {desc}, t.number {desc}"),
     }
 }
 
@@ -1205,7 +1224,7 @@ impl Store {
         };
         tx.execute(
             "UPDATE threads SET subject = ?2, snippet = ?3, participants = ?4, last_from = ?5, last_date = ?6,
-               unread = ?7, message_count = ?8, has_attachments = ?9 WHERE id = ?1",
+               unread = ?7, message_count = ?8, has_attachments = ?9, first_date = ?10 WHERE id = ?1",
             params![
                 thread_id,
                 subject,
@@ -1216,6 +1235,7 @@ impl Store {
                 rows.iter().any(|r| r.3) as i64,
                 rows.len() as i64,
                 rows.iter().any(|r| r.7 > 0) as i64,
+                rows[0].4,
             ],
         )?;
         Ok(())
@@ -1458,7 +1478,7 @@ impl Store {
         let limit = if f.limit <= 0 { 200 } else { f.limit };
         let sql = format!(
             "SELECT {THREAD_COLS} FROM threads t {wh} ORDER BY {} LIMIT {limit} OFFSET {}",
-            order_clause(f.order.as_deref()),
+            order_clause(f.order.as_deref(), f.reverse),
             f.offset.max(0)
         );
         let mut st = r.prepare_cached(&sql)?;
@@ -4039,12 +4059,88 @@ mod tests {
         assert!(s.people(None, 50).unwrap().is_empty());
     }
 
+    /// Three threads: "old" started first but had the latest reply.
+    fn ordered_threads(env: &Env) {
+        let s = &env.store;
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "old", "a@x.com", &["INBOX"], 1_000 * DAY, "a"),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m2", "mid", "b@x.com", &["INBOX"], 1_001 * DAY, "b"),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m3", "new", "c@x.com", &["INBOX"], 1_002 * DAY, "c"),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m4", "old", "a@x.com", &["INBOX"], 1_003 * DAY, "reply"),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+    }
+
+    fn order_of(env: &Env, order: &str, reverse: bool) -> Vec<String> {
+        let f = ThreadFilter {
+            order: Some(order.into()),
+            reverse,
+            ..Default::default()
+        };
+        env.store
+            .threads(&f)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|t| t.snippet)
+            .collect()
+    }
+
     #[rstest]
-    #[case::default(None, "t.last_date DESC")]
-    #[case::unknown(Some("weird"), "t.last_date DESC")]
-    #[case::created(Some("created"), "t.number DESC")]
-    fn order_clauses(#[case] order: Option<&str>, #[case] want: &str) {
-        assert_eq!(order_clause(order), want);
+    #[case::last_activity_newest_first("last_date", false, vec!["reply", "c", "b"])]
+    #[case::last_activity_oldest_first("last_date", true, vec!["b", "c", "reply"])]
+    #[case::created_newest_first("created", false, vec!["c", "b", "reply"])]
+    #[case::created_oldest_first("created", true, vec!["reply", "b", "c"])]
+    fn orderings(env: Env, #[case] order: &str, #[case] reverse: bool, #[case] want: Vec<&str>) {
+        ordered_threads(&env);
+        assert_eq!(order_of(&env, order, reverse), want);
+    }
+
+    #[rstest]
+    #[case::urgent_first(false, vec!["urgent", "low", "none"])]
+    #[case::low_first_none_still_last(true, vec!["low", "urgent", "none"])]
+    fn priority_ordering(env: Env, #[case] reverse: bool, #[case] want: Vec<&str>) {
+        let s = &env.store;
+        for (pid, tid, prio) in [("m1", "none", 0), ("m2", "urgent", 1), ("m3", "low", 4)] {
+            let id = s
+                .ingest(
+                    &env.acc,
+                    "me@example.com",
+                    &incoming(pid, tid, "a@x.com", &["INBOX"], now_ms(), tid),
+                    SyncMode::Incremental,
+                )
+                .unwrap();
+            s.update_threads(
+                &[id],
+                &ThreadPatch {
+                    priority: Some(prio),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(order_of(&env, "priority", reverse), want);
     }
 
     #[rstest]

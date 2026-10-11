@@ -234,6 +234,7 @@ final class AppModel {
         }
         let d = effectiveDisplay
         let order = d.ordering.rawValue
+        let reverse = d.reversed
         let open = openStatuses.map(\.key)
         var project: String?
         var accountId: String?
@@ -254,8 +255,9 @@ final class AppModel {
                 // One page per column, so every status shows its own newest threads and real size.
                 try await withThrowingTaskGroup(of: (Int, ThreadPage).self) { group in
                     for (i, k) in sts.enumerated() {
-                        group.addTask { [client, project, accountId, order] in
-                            (i, try await client.threads(status: [k], project: project, accountId: accountId, order: order, limit: 150))
+                        group.addTask { [client, project, accountId, order, reverse] in
+                            (i, try await client.threads(status: [k], project: project, accountId: accountId, order: order,
+                                                         reverse: reverse, limit: 150))
                         }
                     }
                     var pages: [(Int, ThreadPage)] = []
@@ -267,7 +269,7 @@ final class AppModel {
                 }
             } else {
                 let page = try await client.threads(status: statuses, project: project, accountId: accountId, labelId: labelId,
-                                                    order: order, limit: layout == .board ? 600 : 300)
+                                                    order: order, reverse: reverse, limit: layout == .board ? 600 : 300)
                 fetched = page.threads
                 total = page.total
             }
@@ -343,7 +345,7 @@ final class AppModel {
         default: false
         }
         if mailbox, layout == .list, listDisplay.grouping == .priority {
-            return DisplayOptions(grouping: .none, ordering: listDisplay.ordering)
+            return DisplayOptions(grouping: .none, ordering: listDisplay.ordering, reversed: listDisplay.reversed)
         }
         return display
     }

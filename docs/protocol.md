@@ -100,7 +100,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | `projects.update`    | `{"id", "name"?, "color"?}` — renames the Gmail label (and its sub-labels) on every account | `Project`                             |
 | `projects.delete`    | `{"id"}` — deletes the Gmail label on every account; the mail stays                       | `{"threads": n}`                         |
 | `counts`             | `{}`                                                                                     | `{"status": {key: n}, "project": {name: n}, "account": {id: n}}` (open threads only: `done`/`archive`/`deleted` are omitted) |
-| `threads.list`       | `{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "limit"?: 200, "offset"?: 0}` | `{"threads": [ThreadSummary], "total": n}` ordered by `last_date` desc |
+| `threads.list`       | `{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "order"?: "last_date"\|"priority"\|"due"\|"created", "reverse"?: false, "limit"?: 200, "offset"?: 0}` | `{"threads": [ThreadSummary], "total": n}`; newest / most urgent / soonest first unless `reverse` (no priority / no due date stay last) |
 | `threads.get`        | `{"id"}`                                                                                 | `{"thread": ThreadSummary, "messages": [Message]}` |
 | `threads.update`     | `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
 | `threads.accept_suggestions` | `{"ids": [id]}` — applies each pending suggestion and marks the thread read     | `{"accepted": n}`                        |

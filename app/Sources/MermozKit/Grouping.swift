@@ -26,15 +26,35 @@ public enum Ordering: String, CaseIterable, Codable, Sendable {
         case .created: "Created"
         }
     }
+
+    /// The two directions, named for this ordering: (default, reversed).
+    public var directions: (String, String) {
+        switch self {
+        case .lastActivity, .created: ("Newest first", "Oldest first")
+        case .priority: ("Urgent first", "Low first")
+        case .due: ("Soonest first", "Latest first")
+        }
+    }
 }
 
 public struct DisplayOptions: Codable, Equatable, Sendable {
     public var grouping: Grouping
     public var subGrouping: Grouping
     public var ordering: Ordering
+    /// The ordering's second direction (oldest / low / latest first).
+    public var reversed: Bool
 
-    public init(grouping: Grouping, subGrouping: Grouping = .none, ordering: Ordering = .lastActivity) {
-        self.grouping = grouping; self.subGrouping = subGrouping; self.ordering = ordering
+    public init(grouping: Grouping, subGrouping: Grouping = .none, ordering: Ordering = .lastActivity, reversed: Bool = false) {
+        self.grouping = grouping; self.subGrouping = subGrouping; self.ordering = ordering; self.reversed = reversed
+    }
+
+    /// Options saved before `reversed` existed still load.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        grouping = try c.decode(Grouping.self, forKey: .grouping)
+        subGrouping = try c.decode(Grouping.self, forKey: .subGrouping)
+        ordering = try c.decode(Ordering.self, forKey: .ordering)
+        reversed = try c.decodeIfPresent(Bool.self, forKey: .reversed) ?? false
     }
 }
 
