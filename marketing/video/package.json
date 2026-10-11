@@ -1,0 +1,20 @@
+{
+  "name": "mermoz-launch-video",
+  "private": true,
+  "description": "Animated launch video for Mermoz (Remotion).",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts Launch out/mermoz-launch.mp4",
+    "render:vertical": "remotion render src/index.ts LaunchVertical out/mermoz-launch-vertical.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.534",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.534"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}
