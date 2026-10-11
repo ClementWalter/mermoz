@@ -5,6 +5,7 @@ import SwiftUI
 struct ThreadDetailView: View {
     @Environment(AppModel.self) private var model
     let detail: ThreadDetail
+    /// Messages shown in full; the latest starts open and every one folds on header click.
     @State private var expanded: Set<String> = []
 
     var body: some View {
@@ -26,9 +27,8 @@ struct ThreadDetailView: View {
                         .textSelection(.enabled)
                     if let s = detail.thread.summary, !s.isEmpty { SummaryBox(summary: s, next: detail.thread.nextAction) }
                     ForEach(Array(detail.messages.enumerated()), id: \.element.id) { i, m in
-                        let isLast = i == detail.messages.count - 1
-                        if isLast || expanded.contains(m.id) {
-                            MessageCard(message: m)
+                        if expanded.contains(m.id) {
+                            MessageCard(message: m) { expanded.remove(m.id) }
                         } else {
                             CollapsedMessage(message: m).onTapGesture { expanded.insert(m.id) }
                         }
@@ -40,7 +40,8 @@ struct ThreadDetailView: View {
             ReplyBar()
         }
         .foregroundStyle(Theme.text)
-        .onChange(of: detail.thread.id) { expanded = [] }
+        .onAppear { expanded = Set(detail.messages.suffix(1).map(\.id)) }
+        .onChange(of: detail.thread.id) { expanded = Set(detail.messages.suffix(1).map(\.id)) }
     }
 }
 
@@ -171,7 +172,7 @@ struct CollapsedMessage: View {
         HStack(spacing: 10) {
             Avatar(name: message.from.display, me: message.isFromMe)
             Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.text)
-            Text(message.bodyText.replacingOccurrences(of: "\n", with: " ")).lineLimit(1).foregroundStyle(Theme.text2)
+            Text(message.displayBody.replacingOccurrences(of: "\n", with: " ")).lineLimit(1).foregroundStyle(Theme.text2)
             Spacer(minLength: 6)
             Text(Format.short(message.date)).foregroundStyle(Theme.text3)
         }
@@ -185,7 +186,10 @@ struct CollapsedMessage: View {
 struct MessageCard: View {
     @Environment(AppModel.self) private var model
     let message: Message
-    @State private var formatted = false
+    var onFold: () -> Void = {}
+    /// Formatted by default; plain text is the fallback toggle.
+    @State private var formatted = true
+    @State private var showQuoted = false
     @State private var html: String?
     @State private var height: CGFloat = 200
 
@@ -199,18 +203,34 @@ struct MessageCard: View {
                 }
                 Spacer()
                 if message.hasHtml {
-                    Toggle("Show formatted", isOn: $formatted).toggleStyle(.button).controlSize(.small)
+                    Toggle("Plain text", isOn: Binding(get: { !formatted }, set: { formatted = !$0 }))
+                        .toggleStyle(.button).controlSize(.small)
                 }
                 Text(Format.long(message.date)).font(.system(size: 12)).foregroundStyle(Theme.text3)
             }
-            if formatted, let html {
+            .contentShape(Rectangle())
+            .onTapGesture { onFold() }
+            if formatted, message.hasHtml, let html {
                 HTMLMessageView(html: html, height: $height).frame(height: height)
             } else {
-                Text(message.bodyText.isEmpty ? "(empty message)" : message.bodyText)
+                let body = showQuoted ? message.bodyText : message.displayBody
+                Text(body.isEmpty ? "(empty message)" : body)
                     .font(.system(size: 13.5)).lineSpacing(3)
                     .foregroundStyle(Theme.text.opacity(0.9))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if message.hasQuoted == true {
+                // Quoted history stays one click away, like Gmail's "…".
+                Button { showQuoted.toggle() } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.text3)
+                        .frame(width: 30, height: 16)
+                        .background(Theme.accentSoft.opacity(0.7), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(showQuoted ? "Hide earlier messages" : "Show earlier messages")
+                .accessibilityLabel(showQuoted ? "Hide quoted text" : "Show quoted text")
             }
             if !message.attachments.isEmpty {
                 FlowRow(spacing: 8) {
@@ -223,8 +243,8 @@ struct MessageCard: View {
         .padding(.horizontal, 16).padding(.vertical, 14)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: "#E3EDF6")))
-        .task(id: formatted) {
-            if formatted, html == nil { html = await model.html(for: message.id) }
+        .task(id: "\(formatted)-\(showQuoted)") {
+            if formatted, message.hasHtml { html = await model.html(for: message.id, full: showQuoted) }
         }
     }
 

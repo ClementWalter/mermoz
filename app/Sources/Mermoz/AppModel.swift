@@ -67,6 +67,7 @@ final class AppModel {
     var selectedDraftId: String?
 
     var paletteMode: PaletteMode?
+    var showShortcuts = false
     var toast: String?
 
     /// Addresses seen in opened threads; feeds the compose recipient check.
@@ -143,8 +144,10 @@ final class AppModel {
     func refreshCounts() async {
         guard let client else { return }
         do {
-            counts = try await client.counts()
-            reviewDrafts = try await client.drafts(state: "review")
+            let c = try await client.counts()
+            if c != counts { counts = c }
+            let r = try await client.drafts(state: "review")
+            if r != reviewDrafts { reviewDrafts = r }
         } catch { report(error) }
     }
 
@@ -181,8 +184,9 @@ final class AppModel {
             case let (.account(id), _):
                 page = try await client.threads(status: open, accountId: id)
             }
-            threads = page.threads
-            totalThreads = page.total
+            // Unchanged pages must not re-render the list (sync streams change events).
+            if threads != page.threads { threads = page.threads }
+            if totalThreads != page.total { totalThreads = page.total }
             if let sel = selectedThreadId, !threads.contains(where: { $0.id == sel }) {
                 selectedThreadId = nil
                 detail = nil
@@ -217,6 +221,19 @@ final class AppModel {
                     setLocal(id) { $0.unread = false }
                 }
             } catch { report(error) }
+        }
+    }
+
+    /// Esc peels one layer: palette first, then the open thread or draft.
+    func escape() {
+        if showShortcuts {
+            showShortcuts = false
+        } else if paletteMode != nil {
+            paletteMode = nil
+        } else if selectedThreadId != nil {
+            open(nil)
+        } else if isReview, selectedDraftId != nil {
+            selectedDraftId = nil
         }
     }
 
@@ -299,8 +316,8 @@ final class AppModel {
         }
     }
 
-    func html(for messageId: String) async -> String? {
-        try? await client?.html(messageId: messageId)
+    func html(for messageId: String, full: Bool = false) async -> String? {
+        try? await client?.html(messageId: messageId, full: full)
     }
 
     // MARK: compose
@@ -460,7 +477,7 @@ final class AppModel {
             scheduleRefresh()
             if let sel = selectedThreadId, ids.contains(sel), compose == nil {
                 Task {
-                    if let d = try? await client?.thread(sel), selectedThreadId == sel { detail = d }
+                    if let d = try? await client?.thread(sel), selectedThreadId == sel, d != detail { detail = d }
                 }
             }
         case .accountsChanged:
@@ -478,7 +495,8 @@ final class AppModel {
     private func scheduleRefresh() {
         refreshTask?.cancel()
         refreshTask = Task {
-            try? await Task.sleep(for: .milliseconds(250))
+            // Initial sync emits a burst every few seconds; refresh at most once a second.
+            try? await Task.sleep(for: .milliseconds(1000))
             guard !Task.isCancelled else { return }
             await refreshCounts()
             await loadList()
@@ -505,6 +523,7 @@ final class AppModel {
             return "Synced · available offline"
         }
         let s = syncing.reduce(0) { $0 + $1.0 }, t = syncing.reduce(0) { $0 + $1.1 }
-        return "Syncing \(s.formatted()) of \(t.formatted())"
+        // The import mirrors the whole mailbox (archive included), not just the inbox.
+        return "Downloading your mail · \(s.formatted()) of \(t.formatted())"
     }
 }

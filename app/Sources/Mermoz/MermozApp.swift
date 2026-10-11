@@ -30,6 +30,8 @@ struct MermozApp: App {
                 Button("Reply") { model.startReply() }.keyboardShortcut("r", modifiers: [.command])
                 Button("Mark Done") { model.markDoneSelected() }.keyboardShortcut("e", modifiers: [.command])
                 Divider()
+                Button("Keyboard Shortcuts") { model.showShortcuts.toggle() }.keyboardShortcut("/")
+                Divider()
                 Picker("Layout", selection: $model.layout) {
                     ForEach(LayoutMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }

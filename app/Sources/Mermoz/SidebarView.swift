@@ -9,7 +9,6 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Color.clear.frame(height: 18) // room for the window's traffic lights
             Button { model.paletteMode = .search } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))

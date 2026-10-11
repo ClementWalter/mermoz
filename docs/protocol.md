@@ -51,7 +51,8 @@ app, the CLI and the MCP server are clients of this protocol.
 // Message
 {"id": "msg_…", "from": {"name": "Marc Petit", "email": "marc@…"},
  "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
- "subject": "…", "body_text": "…", "has_html": true, "is_from_me": false,
+ "subject": "…", "body_text": "… full text …", "body_new": "… without quoted history, signature or boilerplate …",
+ "has_quoted": true, "has_html": true, "is_from_me": false,
  "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000}]}
 
 // Status
@@ -83,7 +84,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | `threads.get`        | `{"id"}`                                                                                 | `{"thread": ThreadSummary, "messages": [Message]}` |
 | `threads.update`     | `{"ids": [id], "status"?, "priority"?, "project_id"? (null clears), "due"? (null clears)}` | `{"updated": n}`                         |
 | `threads.mark_read`  | `{"id", "read"?: true}`                                                                  | `{}`                                     |
-| `messages.html`      | `{"id"}`                                                                                 | `{"html": "…"}` sanitized, remote content stripped |
+| `messages.html`      | `{"id", "full"?: false}` — quoted history removed unless `full`                         | `{"html": "…", "has_quoted": bool}` sanitized, remote content stripped |
 | `search`             | `{"query", "limit"?: 50}`                                                                | `{"threads": [ThreadSummary]}` full-text, most recent first |
 | `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |
 | `drafts.list`        | `{"state"?: "review"}`                                                                   | `[Draft]`                                |

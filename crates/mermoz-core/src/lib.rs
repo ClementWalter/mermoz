@@ -10,6 +10,7 @@ pub mod mime;
 pub mod model;
 pub mod oauth;
 pub mod paths;
+pub mod quote;
 pub mod sanitize;
 pub mod store;
 pub mod sync;

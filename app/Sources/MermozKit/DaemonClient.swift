@@ -120,8 +120,8 @@ public final class DaemonClient: Sendable {
         try await callVoid("threads.mark_read", Params().with("id", id).with("read", read))
     }
 
-    public func html(messageId: String) async throws -> String {
-        try await call("messages.html", Params().with("id", messageId), as: HTMLBody.self).html
+    public func html(messageId: String, full: Bool = false) async throws -> String {
+        try await call("messages.html", Params().with("id", messageId).with("full", full), as: HTMLBody.self).html
     }
 
     public func search(_ query: String, limit: Int = 50) async throws -> [ThreadSummary] {

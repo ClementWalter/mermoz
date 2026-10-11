@@ -24,9 +24,23 @@ struct RootView: View {
             if model.paletteMode != nil {
                 CommandPalette().transition(.opacity)
             }
+            if model.showShortcuts {
+                ShortcutsOverlay().transition(.opacity)
+            }
         }
         .overlay(alignment: .bottom) { ToastView() }
+        .background {
+            // Window-level Esc: closes the palette, then the open message. Compose owns Esc
+            // (discard) while it is open, so this one steps aside to avoid a shortcut clash.
+            if model.compose == nil {
+                Button("Close") { model.escape() }
+                    .keyboardShortcut(.cancelAction)
+                    .opacity(0).frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
+        }
         .animation(.easeOut(duration: 0.12), value: model.paletteMode)
+        .animation(.easeOut(duration: 0.12), value: model.showShortcuts)
     }
 }
 
@@ -53,7 +67,8 @@ struct MainLayout: View {
                 DetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .padding(10)
+        // The traffic lights get their own strip so they never collide with a panel corner.
+        .padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 36)
         .ignoresSafeArea(edges: .top)
     }
 }

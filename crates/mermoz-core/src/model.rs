@@ -62,6 +62,9 @@ pub struct Message {
     pub date: i64,
     pub subject: String,
     pub body_text: String,
+    /// `body_text` without the quoted history of earlier messages.
+    pub body_new: String,
+    pub has_quoted: bool,
     pub has_html: bool,
     pub is_from_me: bool,
     pub attachments: Vec<AttachmentInfo>,

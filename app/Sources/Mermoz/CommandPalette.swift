@@ -73,7 +73,12 @@ struct CommandPalette: View {
             .shadow(color: Theme.accent.opacity(0.22), radius: 35, y: 15)
             .padding(.top, 96)
         }
-        .onAppear { focused = true }
+        // Focus once the palette is in the window; setting it during appear loses to the list.
+        .defaultFocus($focused, true)
+        .task {
+            try? await Task.sleep(for: .milliseconds(20))
+            focused = true
+        }
         .task(id: query) {
             guard model.paletteMode == .search else { return }
             // Debounce keystrokes so the daemon only sees settled queries.

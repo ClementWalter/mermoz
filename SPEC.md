@@ -164,6 +164,11 @@ improvements.
   optional draft), on demand (draft/summarize/ask on current thread), follow-up
   sweeps (Waiting past due → draft a nudge), chat over mailbox (⌘K).
 - Agent drafts follow the same send gate.
+- **Clean view**: "Show formatted" can ask the account's allowed provider to
+  rewrite a message for reading — drop client cruft, useless signatures and
+  disclaimers, fix broken formatting — never changing meaning. Cached per
+  message; the original is one click away. Deterministic trimming (quoted
+  history, `-- ` signatures, mobile footers, disclaimers) already ships.
 - **No hand-written rules.** Newsletters, notifications and other noise are
   handled by the built-in agent's on-arrival triage, not by a rules engine.
 

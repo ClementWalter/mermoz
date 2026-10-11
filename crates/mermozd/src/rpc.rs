@@ -188,7 +188,13 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         }
         "messages.html" => {
             let html = st.message_html(&s(p, "id")?)?.unwrap_or_default();
-            Ok(json!({ "html": sanitize_html(&html) }))
+            let full = p.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let (html, has_quoted) = if full {
+                (html, false)
+            } else {
+                mermoz_core::quote::split_html(&html)
+            };
+            Ok(json!({ "html": sanitize_html(&html), "has_quoted": has_quoted }))
         }
         "search" => {
             let limit = p

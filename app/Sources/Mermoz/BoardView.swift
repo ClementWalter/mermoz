@@ -38,7 +38,7 @@ struct BoardView: View {
         .focused($focused)
         .focusEffectDisabled()
         .onAppear { focused = true }
-        .onKeyPress(characters: .init(charactersIn: "jkesprc"), phases: .down) { press in
+        .onKeyPress(characters: .init(charactersIn: "jkesprc?/"), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
     }
@@ -103,10 +103,17 @@ struct BoardCard: View {
                     Text(Format.short(thread.lastDate)).font(.system(size: 11)).foregroundStyle(Theme.text3)
                 }
             }
-            Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
-                .font(.system(size: 12.5, weight: .semibold)).lineLimit(2)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if thread.unread { Circle().fill(Theme.accent).frame(width: 7, height: 7).accessibilityLabel("Unread") }
+                Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
+                    .font(.system(size: 12.5, weight: thread.unread ? .semibold : .regular)).lineLimit(2)
+            }
             HStack(spacing: 6) {
-                Circle().fill(Theme.accountColor(thread.accountId, among: model.accounts)).frame(width: 6, height: 6)
+                if model.accounts.count > 1 {
+                    // Hollow ring = which account; kept distinct from the filled unread dot.
+                    Circle().strokeBorder(Theme.accountColor(thread.accountId, among: model.accounts), lineWidth: 1.5)
+                        .frame(width: 7, height: 7).help(model.accounts.first { $0.id == thread.accountId }?.email ?? "")
+                }
                 Text(thread.lastFrom).lineLimit(1)
                 if let p = model.project(thread.projectId) {
                     Chip(small: true) {
@@ -125,7 +132,6 @@ struct BoardCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(selected ? Theme.accent : Color.white, lineWidth: selected ? 2 : 1))
-        .shadow(color: Theme.accent.opacity(0.06), radius: 8, y: 3)
         .contentShape(Rectangle())
         .draggable(thread.id)
     }

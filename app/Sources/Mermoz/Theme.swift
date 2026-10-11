@@ -142,16 +142,25 @@ struct PaperPanel: ViewModifier {
     var radius: CGFloat = 14
 
     func body(content: Content) -> some View {
+        // The shadow belongs to the background shape only: a shadow on the content would
+        // re-render the whole scrolling subtree offscreen on every frame.
         content
-            .background(Theme.paper, in: RoundedRectangle(cornerRadius: radius))
+            .background {
+                RoundedRectangle(cornerRadius: radius).fill(Theme.paper)
+                    .shadow(color: Theme.accent.opacity(0.07), radius: 15, y: 8)
+            }
             .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(Color.white))
-            .shadow(color: Theme.accent.opacity(0.07), radius: 15, y: 8)
     }
 }
 
 extension View {
     func glassPanel(radius: CGFloat = 14) -> some View { modifier(GlassPanel(radius: radius)) }
     func paperPanel(radius: CGFloat = 14) -> some View { modifier(PaperPanel(radius: radius)) }
+    /// Scrolling content sits on a flat, light surface; live glass is reserved for static chrome.
+    func listPanel(radius: CGFloat = 14) -> some View {
+        background(Color(hex: "#F6FAFE").opacity(0.92), in: RoundedRectangle(cornerRadius: radius))
+            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(Color.white))
+    }
 }
 
 enum Format {

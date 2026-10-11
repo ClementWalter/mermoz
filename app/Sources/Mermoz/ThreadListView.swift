@@ -44,12 +44,12 @@ struct ThreadListView: View {
                 }
             }
         }
-        .glassPanel()
+        .listPanel()
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
         .onAppear { focused = true }
-        .onKeyPress(characters: .init(charactersIn: "jkesprc"), phases: .down) { press in
+        .onKeyPress(characters: .init(charactersIn: "jkesprc?/"), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
         .onKeyPress(.downArrow) { model.moveSelection(1); return .handled }
@@ -73,6 +73,9 @@ enum ThreadKeys {
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
         case "r": model.startReply()
         case "c": model.startNew()
+        // Matched by typed character, so it works on AZERTY (Shift+,) as on QWERTY.
+        case "?": model.showShortcuts.toggle()
+        case "/": model.paletteMode = .search
         default: return false
         }
         return true
@@ -148,9 +151,16 @@ struct ThreadRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
+                // Unread is carried by a dot plus weight; read rows stay quiet so unread ones stand out.
+                Circle().fill(thread.unread ? Theme.accent : .clear).frame(width: 7, height: 7)
+                    .accessibilityLabel(thread.unread ? "Unread" : "")
                 Text(thread.number).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.text3)
-                Text(thread.lastFrom).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Circle().fill(Theme.accountColor(thread.accountId, among: model.accounts)).frame(width: 6, height: 6)
+                Text(thread.lastFrom).font(.system(size: 13, weight: thread.unread ? .semibold : .regular)).lineLimit(1)
+                if model.accounts.count > 1 {
+                    // Hollow ring = which account; kept distinct from the filled unread dot.
+                    Circle().strokeBorder(Theme.accountColor(thread.accountId, among: model.accounts), lineWidth: 1.5)
+                        .frame(width: 7, height: 7).help(model.accounts.first { $0.id == thread.accountId }?.email ?? "")
+                }
                 if thread.hasAttachments {
                     Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(Theme.text3)
                 }
@@ -160,6 +170,7 @@ struct ThreadRow: View {
             }
             Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
                 .font(.system(size: 13, weight: thread.unread ? .semibold : .regular))
+                .foregroundStyle(thread.unread ? Theme.text : Theme.text2)
                 .lineLimit(1)
             if let next = thread.nextAction, !next.isEmpty {
                 Label(next, systemImage: "sparkle").font(.system(size: 12)).foregroundStyle(Theme.text2).lineLimit(1)

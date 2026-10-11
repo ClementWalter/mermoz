@@ -86,9 +86,18 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var date: Int64
     public var subject: String
     public var bodyText: String
+    /// Body without quoted history; optional so older daemons still decode.
+    public var bodyNew: String?
+    public var hasQuoted: Bool?
     public var hasHtml: Bool
     public var isFromMe: Bool
     public var attachments: [Attachment]
+
+    /// What a reader should see first: only what this message adds to the thread.
+    public var displayBody: String {
+        if let n = bodyNew, !n.isEmpty { return n }
+        return bodyText
+    }
 }
 
 public struct ThreadDetail: Codable, Sendable, Equatable {

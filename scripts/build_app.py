@@ -84,6 +84,7 @@ def info_plist() -> dict:
         "NSHighResolutionCapable": True,
         "LSApplicationCategoryType": "public.app-category.productivity",
         "NSPrincipalClass": "NSApplication",
+        "CFBundleIconFile": "AppIcon",
     }
 
 
@@ -97,6 +98,11 @@ def assemble(app_exe: Path, extras: list[Path]) -> None:
     shutil.copy2(app_exe, macos / "Mermoz")
     for p in extras:
         shutil.copy2(p, res / p.name)
+    icon = APP_PKG / "Resources" / "AppIcon.icns"
+    if icon.exists():
+        shutil.copy2(icon, res / "AppIcon.icns")
+    else:
+        log.warning("no app icon; run scripts/make_icon.py")
     with open(OUT / "Contents" / "Info.plist", "wb") as f:
         plistlib.dump(info_plist(), f)
     log.info("assembled %s", OUT.relative_to(REPO))

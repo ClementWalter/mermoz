@@ -996,6 +996,8 @@ impl Store {
                     cc: serde_json::from_str(&cc).unwrap_or_default(),
                     date: r.get(5)?,
                     subject: r.get(6)?,
+                    body_new: String::new(),
+                    has_quoted: false,
                     body_text: r.get(7)?,
                     has_html: r.get::<_, i64>(8)? != 0,
                     is_from_me: r.get::<_, i64>(9)? != 0,
@@ -1007,6 +1009,7 @@ impl Store {
             "SELECT id, filename, mime, size FROM attachments WHERE message_id = ?1",
         )?;
         for m in &mut msgs {
+            (m.body_new, m.has_quoted) = crate::quote::readable(&m.body_text);
             m.attachments = st
                 .query_map([&m.id], |r| {
                     Ok(AttachmentInfo {

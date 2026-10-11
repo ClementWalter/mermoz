@@ -37,7 +37,7 @@ struct ReviewListView: View {
                 }
             }
         }
-        .glassPanel()
+        .listPanel()
     }
 }
 
