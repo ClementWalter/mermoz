@@ -183,13 +183,18 @@ const HTML_MARKERS: &[&str] = &[
 
 /// Cuts an HTML body at the first quote marker; the sanitizer repairs the open tags.
 pub fn split_html(html: &str) -> (String, bool) {
-    let lower = html.to_lowercase();
+    // ASCII-only lowercasing keeps byte offsets identical to `html` (the markers are ASCII).
+    let lower = html.to_ascii_lowercase();
     let Some(pos) = HTML_MARKERS.iter().filter_map(|m| lower.find(m)).min() else {
         return (html.to_string(), false);
     };
     let start = lower[..pos].rfind('<').unwrap_or(pos);
     // Gmail wraps forwards in the same container as quotes; a forward is content.
-    let head = &lower[start..(start + 800).min(lower.len())];
+    let mut end = (start + 800).min(lower.len());
+    while !lower.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &lower[start..end];
     if FORWARD.iter().any(|f| head.contains(f)) || lower[..start].trim().is_empty() {
         return (html.to_string(), false);
     }
@@ -252,6 +257,17 @@ mod tests {
         let html =
             r#"<p>Merci</p><div id="appendonsend"></div><hr><div id="divRplyFwdMsg">From: x</div>"#;
         assert_eq!(split_html(html).0, "<p>Merci</p>");
+    }
+
+    #[rstest]
+    fn accent_at_the_lookahead_edge_does_not_panic() {
+        // The 800-byte forward lookahead ends inside "à".
+        let tail = format!(
+            "{}à and more",
+            "x".repeat(799 - r#"<div class="gmail_quote">"#.len())
+        );
+        let html = format!(r#"<p>Hi</p><div class="gmail_quote">{tail}</div>"#);
+        assert_eq!(split_html(&html).0, "<p>Hi</p>");
     }
 
     #[rstest]

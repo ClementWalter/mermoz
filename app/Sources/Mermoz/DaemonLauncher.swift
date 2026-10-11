@@ -7,15 +7,15 @@ private let log = Logger(subsystem: "ai.mermoz.app", category: "launcher")
 
 enum DaemonLauncher {
     /// Connects, spawning the bundled daemon if nothing listens yet; retries for ~3 s while it boots.
-    static func connect() async throws -> Connection {
-        if let c = try? Connection(path: DaemonPaths.socket) { return c }
+    static func connect(onClose: (@Sendable () -> Void)? = nil) async throws -> Connection {
+        if let c = try? Connection(path: DaemonPaths.socket, onClose: onClose) { return c }
         try spawn()
         var delay: UInt64 = 50
         var waited: UInt64 = 0
         while waited < 3000 {
             try await Task.sleep(nanoseconds: delay * 1_000_000)
             waited += delay
-            if let c = try? Connection(path: DaemonPaths.socket) { return c }
+            if let c = try? Connection(path: DaemonPaths.socket, onClose: onClose) { return c }
             delay = min(delay * 2, 400)
         }
         throw RPCError(code: RPCError.transport, message: "Mermoz couldn't start its background service.")

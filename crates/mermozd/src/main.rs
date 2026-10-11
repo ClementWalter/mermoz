@@ -98,7 +98,21 @@ async fn handle(svc: Arc<Service>, stream: UnixStream) {
             let _ = tx.send(json!({ "jsonrpc": "2.0", "id": id, "result": {} }).to_string());
             continue;
         }
-        let resp = match rpc::dispatch(&svc, caller, &method, &params).await {
+        // Each request runs in its own task: a bug that panics answers that request with
+        // an error instead of closing the connection the app depends on.
+        let task = {
+            let (svc, method, params) = (svc.clone(), method.clone(), params);
+            tokio::spawn(async move { rpc::dispatch(&svc, caller, &method, &params).await })
+        };
+        let outcome = task.await.unwrap_or_else(|e| {
+            tracing::error!(%method, "request panicked: {e}");
+            Err(rpc::RpcError {
+                code: -32603,
+                message: "Something went wrong on this item. It has been logged.".into(),
+                data: None,
+            })
+        });
+        let resp = match outcome {
             Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
             Err(e) => {
                 let mut err = json!({ "code": e.code, "message": e.message });

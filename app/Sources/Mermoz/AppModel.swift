@@ -115,8 +115,7 @@ final class AppModel {
     func start() async {
         connection = .connecting
         do {
-            let c = try await DaemonLauncher.connect()
-            client = DaemonClient(connection: c)
+            client = DaemonClient(connection: try await connectRequests())
             try await openEventStream()
             connection = .connected
             await refreshAll()
@@ -134,6 +133,25 @@ final class AppModel {
         })
         events = conn
         try await DaemonClient(connection: conn).subscribe()
+    }
+
+    /// The connection requests go through; if it drops, a fresh one replaces it.
+    private func connectRequests() async throws -> Connection {
+        try await DaemonLauncher.connect(onClose: { [weak self] in
+            Task { @MainActor in self?.requestsConnectionLost() }
+        })
+    }
+
+    /// Without this, every later request would fail with "connection closed" while the
+    /// event stream (a separate connection) kept the app looking alive.
+    private func requestsConnectionLost() {
+        guard connection == .connected else { return }
+        Task {
+            guard let c = try? await connectRequests() else { return daemonWentAway() }
+            client = DaemonClient(connection: c)
+            await refreshAll()
+            if let id = selectedThreadId { open(id, record: false) }
+        }
     }
 
     private func daemonWentAway() {

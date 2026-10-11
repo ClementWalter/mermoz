@@ -1177,3 +1177,32 @@ print(s.makefile().readline())
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["error"]["code"], -32011);
 }
+
+/// An HTML mail whose quote lookahead ends inside "à" (as in a real 2012 thread).
+fn raw_html_accent_at_edge() -> String {
+    let marker = r#"<div class="gmail_quote">"#;
+    let tail = format!("{}à la suite", "x".repeat(799 - marker.len()));
+    format!(
+        "From: Romain <romain@example.com>\r\nTo: me@example.com\r\nSubject: Accent edge\r\nMessage-ID: <acc@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Bonjour</p>{marker}{tail}</div>\r\n"
+    )
+}
+
+#[rstest]
+fn html_with_accent_at_the_quote_edge_opens(synced: World) {
+    synced.mailbox.lock().unwrap().add_message(
+        "m7",
+        "t7",
+        &["INBOX"],
+        &raw_html_accent_at_edge(),
+        NOW + 7000,
+    );
+    synced.wait_until("sync", |w| {
+        w.ok("search", json!({ "query": "Accent edge" }))["threads"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    let t = synced.thread_by_subject("Accent edge");
+    let full = synced.ok("threads.get", json!({ "id": t["id"] }));
+    let html = synced.ok("messages.html", json!({ "id": full["messages"][0]["id"] }));
+    assert!(html["html"].as_str().unwrap().contains("Bonjour"));
+}
