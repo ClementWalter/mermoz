@@ -13,8 +13,11 @@ pub fn home() -> PathBuf {
     base.join("Library/Application Support/Mermoz")
 }
 
+/// `MERMOZ_SOCKET` overrides it, since macOS caps socket paths at 104 bytes.
 pub fn socket_path() -> PathBuf {
-    home().join("mermozd.sock")
+    std::env::var_os("MERMOZ_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join("mermozd.sock"))
 }
 
 pub fn db_path() -> PathBuf {

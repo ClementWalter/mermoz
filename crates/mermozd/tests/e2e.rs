@@ -271,6 +271,15 @@ fn import_brings_every_thread(synced: World) {
 }
 
 #[rstest]
+fn transient_fetch_failure_loses_no_mail(world: World) {
+    world.mailbox.lock().unwrap().fail_once.insert("m2".into());
+    sign_in(&world);
+    world.wait_until("import with retry", |w| {
+        w.ok("threads.list", json!({}))["total"] == 3
+    });
+}
+
+#[rstest]
 fn inbox_mail_lands_in_triage(synced: World) {
     assert_eq!(
         synced.thread_by_subject("Audit report v2")["status"],

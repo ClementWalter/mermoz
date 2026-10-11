@@ -6,7 +6,8 @@ app, the CLI and the MCP server are clients of this protocol.
 ## Transport
 
 - Unix domain socket at `$MERMOZ_HOME/mermozd.sock`.
-  `MERMOZ_HOME` defaults to `~/Library/Application Support/Mermoz`.
+  `MERMOZ_HOME` defaults to `~/Library/Application Support/Mermoz`;
+  `MERMOZ_SOCKET` overrides the socket path (macOS limits it to 104 bytes).
 - JSON-RPC 2.0, one JSON object per line (`\n` terminated), UTF-8.
 - Requests are answered in order per connection. A connection that called
   `subscribe` additionally receives notifications (no `id`) at any time.
@@ -83,7 +84,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | `threads.update`     | `{"ids": [id], "status"?, "priority"?, "project_id"? (null clears), "due"? (null clears)}` | `{"updated": n}`                         |
 | `threads.mark_read`  | `{"id", "read"?: true}`                                                                  | `{}`                                     |
 | `messages.html`      | `{"id"}`                                                                                 | `{"html": "…"}` sanitized, remote content stripped |
-| `search`             | `{"query", "limit"?: 50}`                                                                | `{"threads": [ThreadSummary]}` full-text, best match first |
+| `search`             | `{"query", "limit"?: 50}`                                                                | `{"threads": [ThreadSummary]}` full-text, most recent first |
 | `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |
 | `drafts.list`        | `{"state"?: "review"}`                                                                   | `[Draft]`                                |
 | `drafts.get`         | `{"id"}`                                                                                 | `Draft`                                  |

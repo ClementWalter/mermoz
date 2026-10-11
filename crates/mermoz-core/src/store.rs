@@ -10,10 +10,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+const PRAGMAS: &str =
+    "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";
+
 const SCHEMA: &str = r#"
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, provider TEXT NOT NULL,
@@ -40,6 +40,9 @@ CREATE INDEX IF NOT EXISTS threads_status ON threads(status, last_date DESC);
 CREATE INDEX IF NOT EXISTS threads_project ON threads(project_id, last_date DESC);
 CREATE INDEX IF NOT EXISTS threads_account ON threads(account_id, last_date DESC);
 CREATE INDEX IF NOT EXISTS threads_date ON threads(last_date DESC);
+-- Covering indexes so sidebar counts only touch open threads' index entries.
+CREATE INDEX IF NOT EXISTS threads_status_account ON threads(status, account_id);
+CREATE INDEX IF NOT EXISTS threads_status_project ON threads(status, project_id);
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   provider_id TEXT NOT NULL, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -47,6 +50,8 @@ CREATE TABLE IF NOT EXISTS messages (
   date INTEGER NOT NULL, subject TEXT NOT NULL, body_text TEXT NOT NULL, body_html TEXT,
   labels_json TEXT NOT NULL, is_from_me INTEGER NOT NULL, unread INTEGER NOT NULL,
   message_id_header TEXT, references_json TEXT NOT NULL DEFAULT '[]',
+  -- FTS rowid encodes the date, so FTS5 can return newest matches without sorting.
+  fts_rowid INTEGER UNIQUE,
   UNIQUE (account_id, provider_id));
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id, date);
 CREATE TABLE IF NOT EXISTS attachments (
@@ -54,7 +59,7 @@ CREATE TABLE IF NOT EXISTS attachments (
   filename TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-  subject, sender, recipients, body, tokenize = 'unicode61 remove_diacritics 2');
+  subject, sender, recipients, body, tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3 4');
 CREATE TABLE IF NOT EXISTS drafts (
   id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
@@ -71,6 +76,21 @@ CREATE TABLE IF NOT EXISTS ops (
 
 /// (from_name, from_email, is_from_me, unread, date, subject, body_text, attachment count)
 type MsgAgg = (String, String, bool, bool, i64, String, String, i64);
+
+/// Ordered schema migrations; `PRAGMA user_version` records how many ran.
+/// Append new steps, never edit shipped ones.
+const MIGRATIONS: &[&str] = &[SCHEMA];
+
+fn migrate(conn: &Connection) -> Result<()> {
+    let done: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for (i, step) in MIGRATIONS.iter().enumerate().skip(done as usize) {
+        conn.execute_batch(&format!(
+            "BEGIN; {step}; PRAGMA user_version = {}; COMMIT;",
+            i + 1
+        ))?;
+    }
+    Ok(())
+}
 
 /// Prefix of every Gmail label Mermoz manages; anything else is left untouched.
 pub const LABEL_PREFIX: &str = "Mermoz/";
@@ -175,6 +195,11 @@ pub fn desired_labels(
         s.insert(format!("{LABEL_PREFIX}Project/{p}"));
     }
     s
+}
+
+/// Date in the high bits, a slice of the message rowid in the low 20 bits for uniqueness.
+pub fn fts_rowid(date_ms: i64, rowid: i64) -> i64 {
+    (date_ms.max(0) << 20) | (rowid & 0xF_FFFF)
 }
 
 /// Turns free text into a safe FTS5 query: every word is a quoted prefix term,
@@ -283,7 +308,8 @@ impl Store {
         }
         std::fs::create_dir_all(blobs)?;
         let w = Connection::open(path)?;
-        w.execute_batch(SCHEMA)?;
+        w.execute_batch(PRAGMAS)?;
+        migrate(&w)?;
         w.busy_timeout(std::time::Duration::from_secs(5))?;
         let r = Connection::open(path)?;
         r.execute_batch("PRAGMA foreign_keys = ON;")?;
@@ -366,7 +392,7 @@ impl Store {
         let acc = self.account(id)?;
         let w = self.w.lock().unwrap();
         w.execute(
-            "DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM messages WHERE account_id = ?1)",
+            "DELETE FROM messages_fts WHERE rowid IN (SELECT fts_rowid FROM messages WHERE account_id = ?1)",
             [&acc.id],
         )?;
         w.execute("DELETE FROM accounts WHERE id = ?1", [&acc.id])?;
@@ -627,11 +653,15 @@ impl Store {
                 serde_json::to_string(&p.references)?,
             ],
         )?;
-        let rowid = tx.last_insert_rowid();
+        let fts_rowid = fts_rowid(date, tx.last_insert_rowid());
+        tx.execute(
+            "UPDATE messages SET fts_rowid = ?2 WHERE id = ?1",
+            params![mid, fts_rowid],
+        )?;
         let recipients: Vec<String> = p.to.iter().chain(p.cc.iter()).map(fmt_addr).collect();
         tx.execute(
             "INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![rowid, p.subject, fmt_addr(&from), recipients.join(", "), p.body_text],
+            params![fts_rowid, p.subject, fmt_addr(&from), recipients.join(", "), p.body_text],
         )?;
         for a in &p.attachments {
             let aid = new_id("att");
@@ -1222,16 +1252,17 @@ impl Store {
         Ok(serde_json::json!({ "status": status, "project": project, "account": account }))
     }
 
-    /// Full-text search, best-matching threads first.
+    /// Full-text search, most recent matching threads first. FTS rowids are
+    /// date-ordered, so even a word in every message returns in milliseconds.
     pub fn search(&self, q: &str, limit: i64) -> Result<Vec<ThreadSummary>> {
         let Some(fq) = fts_query(q) else {
             return Ok(vec![]);
         };
         let r = self.r.lock().unwrap();
         let sql = format!(
-            "WITH hits AS (SELECT rowid, bm25(messages_fts, 10.0, 5.0, 2.0, 1.0) AS rank FROM messages_fts WHERE messages_fts MATCH ?1 ORDER BY rank LIMIT ?2)
-             SELECT {THREAD_COLS} FROM hits JOIN messages m ON m.rowid = hits.rowid JOIN threads t ON t.id = m.thread_id
-             GROUP BY t.id ORDER BY MIN(hits.rank) LIMIT ?3"
+            "WITH hits AS (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1 ORDER BY rowid DESC LIMIT ?2)
+             SELECT {THREAD_COLS} FROM hits JOIN messages m ON m.fts_rowid = hits.rowid JOIN threads t ON t.id = m.thread_id
+             GROUP BY t.id ORDER BY t.last_date DESC LIMIT ?3"
         );
         let mut st = r.prepare_cached(&sql)?;
         let rows = st
@@ -1865,6 +1896,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(env.store.search("remed", 10).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn reopening_keeps_schema_version(env: Env) {
+        let path = env._dir.path().join("db.sqlite");
+        drop(env.store);
+        let again = Store::open(&path, &env._dir.path().join("blobs")).unwrap();
+        let v: i64 = again
+            .r
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, MIGRATIONS.len() as i64);
+    }
+
+    #[rstest]
+    fn fts_rowid_orders_by_date() {
+        assert!(fts_rowid(2_000, 1) > fts_rowid(1_000, 0xF_FFFF));
+    }
+
+    #[rstest]
+    fn search_returns_newest_first(env: Env) {
+        let s = &env.store;
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "m1",
+                "t1",
+                "marc@x.com",
+                &["INBOX"],
+                now_ms() - DAY,
+                "budget old",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        let newer = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m2", "t2", "marc@x.com", &["INBOX"], now_ms(), "budget new"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        assert_eq!(s.search("budget", 10).unwrap()[0].id, newer);
     }
 
     #[rstest]

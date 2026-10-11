@@ -70,7 +70,9 @@ fn spawn_daemon() -> bool {
 
 impl Client {
     pub fn connect() -> Result<Self, RpcError> {
-        let sock = home().join("mermozd.sock");
+        let sock = std::env::var_os("MERMOZ_SOCKET")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join("mermozd.sock"));
         let stream = match UnixStream::connect(&sock) {
             Ok(s) => s,
             Err(_) => {

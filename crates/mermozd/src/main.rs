@@ -137,7 +137,10 @@ async fn main() -> anyhow::Result<()> {
     // Only this user may talk to the daemon.
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
     info!("mermozd listening on {}", sock.display());
-    svc.start_all();
+    // MERMOZ_NO_SYNC serves the local store only (demo data, offline UI work).
+    if std::env::var_os("MERMOZ_NO_SYNC").is_none() {
+        svc.start_all();
+    }
     let shutdown = async {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("signal");

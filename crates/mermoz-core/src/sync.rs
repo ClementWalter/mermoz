@@ -49,27 +49,51 @@ impl AccountSync {
         self.store.set_labels(&self.account_id, &pairs)
     }
 
-    async fn fetch_many(&self, ids: Vec<(String, String)>) -> Vec<IncomingMessage> {
+    /// Fetches full messages concurrently. Transient failures are retried; if any
+    /// message still can't be fetched the call fails, so callers never advance
+    /// their cursor or history id past mail they don't have.
+    async fn fetch_many(&self, ids: Vec<(String, String)>) -> Result<Vec<IncomingMessage>> {
         let mut out = vec![];
-        for chunk in ids.chunks(FETCH_CONCURRENCY) {
-            let mut set = tokio::task::JoinSet::new();
-            for (id, _) in chunk {
-                let g = self.gmail.clone();
-                let id = id.clone();
-                set.spawn(async move { g.get_raw(&id).await });
-            }
-            while let Some(res) = set.join_next().await {
-                match res {
-                    Ok(Ok(m)) => match to_incoming(m) {
-                        Some(i) => out.push(i),
-                        None => debug!("skipping unparsable message"),
-                    },
-                    Ok(Err(e)) => warn!("fetch failed: {e}"),
-                    Err(e) => warn!("fetch task failed: {e}"),
+        let mut pending: Vec<String> = ids.into_iter().map(|(id, _)| id).collect();
+        let mut delay = std::time::Duration::from_secs(1);
+        for round in 0..4 {
+            let mut failed = vec![];
+            let mut last_err = None;
+            for chunk in pending.chunks(FETCH_CONCURRENCY) {
+                let mut set = tokio::task::JoinSet::new();
+                for id in chunk {
+                    let g = self.gmail.clone();
+                    let id = id.clone();
+                    set.spawn(async move { (id.clone(), g.get_raw(&id).await) });
+                }
+                while let Some(res) = set.join_next().await {
+                    let Ok((id, res)) = res else { continue };
+                    match res {
+                        Ok(m) => match to_incoming(m) {
+                            Some(i) => out.push(i),
+                            None => debug!(id, "skipping unparsable message"),
+                        },
+                        // Deleted between listing and fetching: nothing to import.
+                        Err(Error::Upstream { status: 404, .. }) => {}
+                        Err(e) => {
+                            failed.push(id);
+                            last_err = Some(e);
+                        }
+                    }
                 }
             }
+            if failed.is_empty() {
+                return Ok(out);
+            }
+            if round == 3 {
+                return Err(last_err.unwrap_or_else(|| Error::other("fetch failed")));
+            }
+            warn!(count = failed.len(), "retrying failed fetches");
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+            pending = failed;
         }
-        out
+        Ok(out)
     }
 
     /// Imports the mailbox newest-first, page by page, resuming from the saved cursor.
@@ -113,7 +137,7 @@ impl AccountSync {
                 .collect();
             synced += (page.messages.len() - todo.len()) as i64;
             for chunk in todo.chunks(100) {
-                let msgs = self.fetch_many(chunk.to_vec()).await;
+                let msgs = self.fetch_many(chunk.to_vec()).await?;
                 let ids = self.store.ingest_many(
                     &self.account_id,
                     &self.email,
@@ -191,7 +215,7 @@ impl AccountSync {
             self.refresh_labels().await?;
         }
         if !new.is_empty() {
-            let msgs = self.fetch_many(new).await;
+            let msgs = self.fetch_many(new).await?;
             changed.extend(self.store.ingest_many(
                 &self.account_id,
                 &self.email,

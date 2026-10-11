@@ -95,7 +95,11 @@ pub struct Gmail {
 
 impl Gmail {
     pub fn new(base: String, tokens: Arc<TokenSource>) -> Self {
+        // HTTP/1.1 pool: Google's HTTP/2 DATA framing under concurrent raw fetches
+        // trips h2's anti-DoS guard ("too_many_data_frames") and drops connections.
         let http = reqwest::Client::builder()
+            .http1_only()
+            .pool_max_idle_per_host(32)
             .timeout(Duration::from_secs(60))
             .build()
             .expect("http client");

@@ -814,3 +814,45 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::name("high", 2)]
+    #[case::uppercase("URGENT", 1)]
+    #[case::digit("4", 4)]
+    #[case::none("none", 0)]
+    fn priority_parses(#[case] input: &str, #[case] want: i64) {
+        assert_eq!(parse_priority(input).unwrap(), want);
+    }
+
+    #[rstest]
+    fn bad_priority_lists_valid_values() {
+        assert!(
+            parse_priority("max")
+                .unwrap_err()
+                .message
+                .contains("urgent, high")
+        );
+    }
+
+    #[rstest]
+    #[case::short("abc", 5, "abc")]
+    #[case::long("abcdefgh", 5, "abcd…")]
+    fn truncation(#[case] input: &str, #[case] n: usize, #[case] want: &str) {
+        assert_eq!(truncate(input, n), want);
+    }
+
+    #[rstest]
+    fn missing_body_explains_flags() {
+        assert!(
+            read_body(None, None)
+                .unwrap_err()
+                .message
+                .contains("--body")
+        );
+    }
+}

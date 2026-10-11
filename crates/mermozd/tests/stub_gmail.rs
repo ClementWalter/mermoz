@@ -26,6 +26,8 @@ pub struct Mailbox {
     pub history_id: u64,
     pub history: Vec<(u64, Value)>,
     pub sent: Vec<(String, Option<String>)>, // decoded raw, threadId
+    /// Message ids whose next fetch fails with 503, to exercise retries.
+    pub fail_once: BTreeSet<String>,
     next_label: u64,
 }
 
@@ -138,7 +140,10 @@ async fn get_message(
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, axum::http::StatusCode> {
-    let m = s.lock().unwrap();
+    let mut m = s.lock().unwrap();
+    if m.fail_once.remove(&id) {
+        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
     let msg = m
         .messages
         .get(&id)
