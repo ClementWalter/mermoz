@@ -6,6 +6,10 @@ struct TriageResultView: View {
     @Environment(AppModel.self) private var model
     let result: TriageResult
 
+    private func statusName(_ key: String) -> String {
+        model.statuses.first { $0.key == key }?.name ?? key
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
@@ -25,11 +29,16 @@ struct TriageResultView: View {
                                     Text(m.reason).font(.system(size: 11.5)).foregroundStyle(Theme.text2).lineLimit(2)
                                 }
                                 Spacer(minLength: 8)
-                                HStack(spacing: 4) {
+                                // Names, not just glyphs: Backlog and Todo are both empty rings.
+                                HStack(spacing: 5) {
                                     StatusIcon(key: m.from, color: Color(hex: model.color(forStatus: m.from)))
+                                    Text(statusName(m.from)).foregroundStyle(Theme.text2)
                                     Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(Theme.text3)
                                     StatusIcon(key: m.to, color: Color(hex: model.color(forStatus: m.to)))
+                                    Text(statusName(m.to)).fontWeight(.medium)
                                 }
+                                .font(.system(size: 12))
+                                .fixedSize()
                             }
                             .font(.system(size: 12.5))
                             .padding(.vertical, 7)
