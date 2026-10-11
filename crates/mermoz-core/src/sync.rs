@@ -23,6 +23,7 @@ pub enum Event {
         total: i64,
     },
     DraftsChanged,
+    ContactsChanged,
 }
 
 pub struct AccountSync {

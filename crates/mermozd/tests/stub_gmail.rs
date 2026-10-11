@@ -26,6 +26,8 @@ pub struct Mailbox {
     pub history_id: u64,
     pub history: Vec<(u64, Value)>,
     pub sent: Vec<(String, Option<String>)>, // decoded raw, threadId
+    /// API keys seen by the stub Anthropic endpoint.
+    pub llm_keys: Vec<String>,
     /// Message ids whose next fetch fails with 503, to exercise retries.
     pub fail_once: BTreeSet<String>,
     next_label: u64,
@@ -241,6 +243,24 @@ async fn send(State(s): State<Shared>, Json(body): Json<Value>) -> Json<Value> {
     Json(json!({ "id": id, "threadId": thread }))
 }
 
+/// Stub of Anthropic's Messages API: always returns the same digest.
+async fn llm(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    Json(_body): Json<Value>,
+) -> Json<Value> {
+    let key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    s.lock().unwrap().llm_keys.push(key);
+    let digest = json!({ "clean_body": "Cleaned", "card": { "name": "Marc Petit", "title": "CFO", "company": "Acme", "phones": ["+33 6 12 34 56 78"], "address": "", "website": "", "socials": [] } });
+    Json(
+        json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": digest.to_string() }] }),
+    )
+}
+
 /// Serves the stub on an ephemeral port in a background runtime.
 pub fn start(mailbox: Shared) -> u16 {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -252,6 +272,7 @@ pub fn start(mailbox: Shared) -> u16 {
         rt.block_on(async move {
             let app = Router::new()
                 .route("/token", post(token))
+                .route("/v1/messages", post(llm))
                 .route("/gmail/profile", get(profile))
                 .route("/gmail/messages", get(list))
                 .route("/gmail/messages/send", post(send))

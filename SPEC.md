@@ -220,7 +220,10 @@ Deviations / next:
 - New mail is detected by history polling (20 s); the IMAP IDLE doorbell is next.
 - Search returns most recent matches first (date-ordered FTS) rather than
   bm25 rank — it keeps every query under budget at 500k messages.
-- Built-in agent, Magnify and the learning loop are post-MVP (UI says "Coming soon").
+- Built-in agent v1 ships: providers (Anthropic + OpenAI-compatible, keys in Keychain),
+  per-account allowed providers, and per-message clean view + People directory built
+  from signatures (opt-in per account; new mail + last 30 days). Magnify, triage
+  suggestions and the learning loop are next.
 - The app starts `mermozd` itself; SMAppService login item comes with signing.
 - Build: `scripts/build_app.py --open`. Dev: `MERMOZ_HOME`, `MERMOZ_SOCKET`,
   `MERMOZ_NO_SYNC=1` with `--example seed_demo` for fictional demo data.

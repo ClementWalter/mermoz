@@ -142,6 +142,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 project_id: opt_s(p, "project_id"),
                 account_id: opt_s(p, "account_id"),
                 label_id: opt_s(p, "label_id"),
+                participant: opt_s(p, "participant"),
                 priority,
                 limit: p
                     .get("limit")
@@ -332,6 +333,108 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             }
             let _ = svc.events.send(Event::DraftsChanged);
             Ok(json!({}))
+        }
+        "providers.list" => {
+            let list: Vec<Value> = st
+                .providers()?
+                .into_iter()
+                .map(|pr| {
+                    let has_key = mermoz_core::tokens::load_provider_key(&pr.id).is_ok();
+                    let mut v = serde_json::to_value(&pr).unwrap_or_default();
+                    v["has_key"] = json!(has_key);
+                    v
+                })
+                .collect();
+            Ok(json!(list))
+        }
+        "providers.save" => {
+            app_only(caller, method)?;
+            let pr = mermoz_core::agent::Provider {
+                id: opt_s(p, "id").unwrap_or_else(|| new_id("prv")),
+                name: s(p, "name")?,
+                kind: s(p, "kind")?,
+                base_url: opt_s(p, "base_url").filter(|u| !u.trim().is_empty()),
+                model: s(p, "model")?,
+            };
+            st.save_provider(&pr)?;
+            if let Some(key) = opt_s(p, "api_key").filter(|k| !k.trim().is_empty()) {
+                mermoz_core::tokens::save_provider_key(&pr.id, key.trim())?;
+            }
+            svc.kick_agents();
+            to_value(pr)
+        }
+        "providers.delete" => {
+            app_only(caller, method)?;
+            let id = s(p, "id")?;
+            st.delete_provider(&id)?;
+            mermoz_core::tokens::delete_provider_key(&id)?;
+            Ok(json!({}))
+        }
+        "providers.test" => {
+            let id = s(p, "id")?;
+            let pr = st
+                .providers()?
+                .into_iter()
+                .find(|x| x.id == id)
+                .ok_or_else(|| RpcError::from(Error::NotFound(format!("provider {id}"))))?;
+            let key = mermoz_core::tokens::load_provider_key(&id)?;
+            let sample = "Hi Marc,\n\nThanks, see you Thursday.\n\nBest,\nLéa\n--\nLéa Dubois · Head of Ops · Acme\n+33 6 12 34 56 78";
+            match mermoz_core::agent::Client::new()
+                .digest(
+                    &pr,
+                    &key,
+                    "Léa Dubois <lea@acme.example>",
+                    "Thursday",
+                    sample,
+                )
+                .await
+            {
+                Ok(d) => Ok(json!({ "ok": true, "clean_body": d.clean_body, "card": d.card })),
+                Err(e) => Ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+        "accounts.agent.get" => {
+            let acc = st.account(&s(p, "account_id")?)?;
+            let (done, pending, failed) =
+                st.digest_stats(&acc.id, crate::service::backfill_since(st))?;
+            Ok(json!({
+                "provider_ids": st.account_providers(&acc.id)?,
+                "digest_enabled": st.setting(&format!("digest:{}", acc.id))?.as_deref() == Some("true"),
+                "done": done, "pending": pending, "failed": failed,
+                "error": svc.agent_error(&acc.id),
+            }))
+        }
+        "accounts.agent.set" => {
+            app_only(caller, method)?;
+            let acc = st.account(&s(p, "account_id")?)?;
+            if let Some(ids) = str_list(p, "provider_ids")? {
+                st.set_account_providers(&acc.id, &ids)?;
+            }
+            if let Some(on) = p.get("digest_enabled").and_then(|v| v.as_bool()) {
+                st.set_setting(
+                    &format!("digest:{}", acc.id),
+                    if on { "true" } else { "false" },
+                )?;
+            }
+            svc.kick_agents();
+            Ok(json!({}))
+        }
+        "contacts.list" => {
+            let limit = p
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(200)
+                .clamp(1, 5000);
+            to_value(st.contacts(opt_s(p, "query").as_deref(), limit)?)
+        }
+        "contacts.get" => {
+            let c = st.contact(&s(p, "email")?)?;
+            let (threads, _) = st.threads(&ThreadFilter {
+                participant: Some(c.email.clone()),
+                limit: 50,
+                ..Default::default()
+            })?;
+            Ok(json!({ "contact": c, "threads": threads }))
         }
         "settings.get" => Ok(
             json!({ "agents_may_send": st.setting("agents_may_send")?.as_deref() == Some("true") }),

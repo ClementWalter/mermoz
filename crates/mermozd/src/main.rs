@@ -29,6 +29,7 @@ fn event_json(e: &Event) -> Value {
             json!({ "kind": "sync_progress", "account_id": account_id, "synced": synced, "total": total })
         }
         Event::DraftsChanged => json!({ "kind": "drafts_changed" }),
+        Event::ContactsChanged => json!({ "kind": "contacts_changed" }),
     };
     json!({ "jsonrpc": "2.0", "method": "event", "params": params })
 }

@@ -152,9 +152,174 @@ struct AgentsPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(hex: "#FBEFF5"), in: RoundedRectangle(cornerRadius: 9))
         }
-        SettingsCard(title: "AI providers", subtitle: "Coming soon: connect your own AI and choose which accounts it may read.") {
-            Label("Built-in agent is not available yet", systemImage: "sparkle").font(.system(size: 12.5)).foregroundStyle(Theme.text3)
+        ProvidersCard()
+        ForEach(model.accounts) { a in AccountAgentCard(account: a) }
+    }
+}
+
+/// Models offered for Anthropic providers; any other id can be typed.
+private let claudeModels: [(id: String, label: String)] = [
+    ("claude-opus-5-5", "Claude Opus 5.5 — best quality"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5 — balanced"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5 — fastest, about 40× cheaper"),
+]
+
+struct ProvidersCard: View {
+    @Environment(AppModel.self) private var model
+    @State private var editing: Provider?
+    @State private var adding = false
+    @State private var testResult: [String: String] = [:]
+
+    var body: some View {
+        SettingsCard(title: "AI providers", subtitle: "Keys stay in your Mac's Keychain. Mail only goes to a provider you allow for that account.") {
+            ForEach(model.providers) { p in
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkle").foregroundStyle(Theme.accent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(p.name).font(.system(size: 13, weight: .semibold))
+                        Text("\(claudeModels.first { $0.id == p.model }?.label ?? p.model)\(p.hasKey == true ? "" : " · no key")")
+                            .font(.system(size: 11.5)).foregroundStyle(p.hasKey == true ? Theme.text3 : Color(hex: "#9B2C2C"))
+                        if let r = testResult[p.id] { Text(r).font(.system(size: 11.5)).foregroundStyle(Theme.text2) }
+                    }
+                    Spacer()
+                    Button("Test") {
+                        testResult[p.id] = "Testing…"
+                        Task {
+                            let t = await model.testProvider(p.id)
+                            testResult[p.id] = t.map { $0.ok ? "Works" : ($0.error ?? "Failed") } ?? "Failed"
+                        }
+                    }.buttonStyle(.glass).controlSize(.small)
+                    Button("Edit") { editing = p }.buttonStyle(.glass).controlSize(.small)
+                    Button("Remove", role: .destructive) { model.deleteProvider(p.id) }.buttonStyle(.glass).controlSize(.small)
+                }
+                .padding(10)
+                .background(Color(hex: "#F6FAFE"), in: RoundedRectangle(cornerRadius: 10))
+            }
+            if adding || editing != nil {
+                ProviderForm(existing: editing) { adding = false; editing = nil }
+            } else {
+                Button { adding = true } label: { Label("Add provider", systemImage: "plus") }.buttonStyle(.glass)
+            }
         }
+        .task { await model.loadAgent() }
+    }
+}
+
+struct ProviderForm: View {
+    @Environment(AppModel.self) private var model
+    let existing: Provider?
+    let done: () -> Void
+    @State private var name = ""
+    @State private var kind = "anthropic"
+    @State private var modelId = "claude-opus-5-5"
+    @State private var baseUrl = ""
+    @State private var apiKey = ""
+    @State private var saving = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Name (e.g. Personal AI, Work AI)", text: $name)
+            Picker("Type", selection: $kind) {
+                Text("Anthropic (Claude)").tag("anthropic")
+                Text("OpenAI-compatible").tag("openai")
+            }
+            .pickerStyle(.segmented)
+            if kind == "anthropic" {
+                Picker("Model", selection: $modelId) {
+                    ForEach(claudeModels, id: \.id) { Text($0.label).tag($0.id) }
+                }
+            } else {
+                TextField("Model", text: $modelId)
+                TextField("Base URL (e.g. https://api.example.com/v1)", text: $baseUrl)
+            }
+            SecureField(existing?.hasKey == true ? "API key (leave empty to keep the current one)" : "API key", text: $apiKey)
+            HStack {
+                Button("Cancel") { done() }.buttonStyle(.glass)
+                Button(saving ? "Saving…" : "Save") {
+                    saving = true
+                    Task {
+                        let ok = await model.saveProvider(id: existing?.id, name: name, kind: kind,
+                                                          baseUrl: kind == "openai" ? baseUrl : nil, model: modelId,
+                                                          apiKey: apiKey.isEmpty ? nil : apiKey)
+                        saving = false
+                        if ok { done() }
+                    }
+                }
+                .buttonStyle(.glassProminent).tint(Theme.accent)
+                .disabled(name.isEmpty || modelId.isEmpty || (existing == nil && apiKey.isEmpty))
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+        .padding(12)
+        .background(Color(hex: "#F6FAFE"), in: RoundedRectangle(cornerRadius: 10))
+        .onAppear {
+            if let e = existing {
+                name = e.name; kind = e.kind; modelId = e.model; baseUrl = e.baseUrl ?? ""
+            }
+        }
+        .onChange(of: kind) { _, k in if k == "anthropic", !claudeModels.contains(where: { $0.id == modelId }) { modelId = "claude-opus-5-5" } }
+    }
+}
+
+struct AccountAgentCard: View {
+    @Environment(AppModel.self) private var model
+    let account: Account
+
+    var body: some View {
+        let state = model.agentStates[account.id]
+        let allowed = Set(state?.providerIds ?? [])
+        SettingsCard(title: account.email, subtitle: "Which providers may read this account's mail.") {
+            FlowRow(spacing: 6) {
+                chip("Any provider", on: allowed.contains("*")) { toggle("*", allowed) }
+                ForEach(model.providers) { p in
+                    chip(p.name, on: allowed.contains(p.id) && !allowed.contains("*")) { toggle(p.id, allowed) }
+                }
+            }
+            if allowed.isEmpty {
+                Text("None: this account's mail never leaves your Mac.").font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+            }
+            Toggle(isOn: Binding(get: { state?.digestEnabled ?? false },
+                                 set: { model.setAgent(account: account.id, digestEnabled: $0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Clean messages & build directory").font(.system(size: 13, weight: .semibold))
+                    Text("Removes signatures, disclaimers and clutter, and saves contact details from signatures to People. New mail and the last 30 days.")
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                }
+            }
+            .toggleStyle(.switch)
+            .disabled(allowed.isEmpty)
+            if let s = state, s.digestEnabled {
+                Text("\(s.done.formatted()) cleaned · \(s.pending.formatted()) waiting\(s.failed > 0 ? " · \(s.failed) skipped" : "")")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.text2)
+                if let e = s.error { Text(e).font(.system(size: 11.5)).foregroundStyle(Color(hex: "#9B2C2C")).lineLimit(2) }
+            }
+        }
+    }
+
+    private func toggle(_ id: String, _ allowed: Set<String>) {
+        var next = allowed
+        if id == "*" {
+            next = allowed.contains("*") ? [] : ["*"]
+        } else {
+            next.remove("*")
+            if next.contains(id) { next.remove(id) } else { next.insert(id) }
+        }
+        model.setAgent(account: account.id, providerIds: Array(next).sorted())
+    }
+
+    private func chip(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if on { Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)) }
+                Text(title)
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 10).frame(height: 24)
+            .foregroundStyle(on ? Color(hex: "#164F82") : Theme.text2)
+            .background(on ? Theme.accentSoft : Color(hex: "#F6FAFE"), in: Capsule())
+            .overlay(Capsule().strokeBorder(on ? Color(hex: "#CFE0F2") : Theme.line))
+        }
+        .buttonStyle(.plain)
     }
 }
 

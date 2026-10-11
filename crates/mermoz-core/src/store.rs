@@ -79,7 +79,24 @@ type MsgAgg = (String, String, bool, bool, i64, String, String, i64);
 
 /// Ordered schema migrations; `PRAGMA user_version` records how many ran.
 /// Append new steps, never edit shipped ones.
-const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS, SYNC_FAILURES];
+const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS, SYNC_FAILURES, AGENT];
+
+/// Built-in agent: providers, per-account routing, cleaned messages and the contact directory.
+const AGENT: &str = r#"
+CREATE TABLE IF NOT EXISTS providers (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, base_url TEXT, model TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS account_providers (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  provider_id TEXT NOT NULL, PRIMARY KEY (account_id, provider_id));
+CREATE TABLE IF NOT EXISTS digests (
+  message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  status TEXT NOT NULL, clean_body TEXT, card_json TEXT, provider_id TEXT, error TEXT, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS contacts (
+  email TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '',
+  phones_json TEXT NOT NULL DEFAULT '[]', address TEXT NOT NULL DEFAULT '', website TEXT NOT NULL DEFAULT '',
+  socials_json TEXT NOT NULL DEFAULT '[]', last_seen INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS messages_from_lower ON messages(lower(from_email));
+"#;
 
 /// Messages that could not be imported, kept visible instead of silently dropped.
 const SYNC_FAILURES: &str = r#"
@@ -149,6 +166,8 @@ pub struct ThreadFilter {
     pub account_id: Option<String>,
     pub priority: Option<Vec<i64>>,
     pub label_id: Option<String>,
+    /// Threads with at least one message from this address.
+    pub participant: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -359,6 +378,36 @@ fn draft_row(r: &Row) -> rusqlite::Result<Draft> {
         origin: r.get(8)?,
         created: r.get(9)?,
         updated: r.get(10)?,
+    })
+}
+
+/// (message id, from name, from email, subject, body) awaiting the agent.
+pub type PendingDigest = (String, String, String, String, String);
+
+/// A directory entry: what signatures taught us about one address.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct Contact {
+    pub email: String,
+    #[serde(flatten)]
+    pub card: crate::agent::Card,
+    pub last_seen: i64,
+}
+
+fn contact_row(r: &Row) -> rusqlite::Result<Contact> {
+    let phones: String = r.get(4)?;
+    let socials: String = r.get(7)?;
+    Ok(Contact {
+        email: r.get(0)?,
+        card: crate::agent::Card {
+            name: r.get(1)?,
+            title: r.get(2)?,
+            company: r.get(3)?,
+            phones: serde_json::from_str(&phones).unwrap_or_default(),
+            address: r.get(5)?,
+            website: r.get(6)?,
+            socials: serde_json::from_str(&socials).unwrap_or_default(),
+        },
+        last_seen: r.get(8)?,
     })
 }
 
@@ -1052,6 +1101,13 @@ impl Store {
             args.push(f.account_id.clone().into());
             args.push(f.account_id.clone().into());
         }
+        if let Some(e) = &f.participant {
+            clauses.push(
+                "t.id IN (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) = lower(?))"
+                    .into(),
+            );
+            args.push(e.clone().into());
+        }
         if let Some(p) = &f.priority {
             clauses.push(format!("t.priority IN ({})", vec!["?"; p.len()].join(",")));
             args.extend(p.iter().map(|x| (*x).into()));
@@ -1093,8 +1149,9 @@ impl Store {
     pub fn messages(&self, thread_id: &str) -> Result<Vec<Message>> {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(
-            "SELECT id, from_name, from_email, to_json, cc_json, date, subject, body_text, body_html IS NOT NULL, is_from_me
-             FROM messages WHERE thread_id = ?1 ORDER BY date",
+            "SELECT m.id, from_name, from_email, to_json, cc_json, date, subject, body_text, body_html IS NOT NULL, is_from_me,
+               (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok')
+             FROM messages m WHERE thread_id = ?1 ORDER BY date",
         )?;
         let mut msgs = st
             .query_map([thread_id], |r| {
@@ -1112,6 +1169,7 @@ impl Store {
                     subject: r.get(6)?,
                     body_new: String::new(),
                     has_quoted: false,
+                    body_clean: r.get(10)?,
                     body_text: r.get(7)?,
                     has_html: r.get::<_, i64>(8)? != 0,
                     is_from_me: r.get::<_, i64>(9)? != 0,
@@ -1681,6 +1739,233 @@ impl Store {
         .is_some())
     }
 
+    // ---- built-in agent ---------------------------------------------------
+
+    pub fn providers(&self) -> Result<Vec<crate::agent::Provider>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT id, name, kind, base_url, model FROM providers ORDER BY created",
+        )?;
+        Ok(st
+            .query_map([], |r| {
+                Ok(crate::agent::Provider {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    kind: r.get(2)?,
+                    base_url: r.get(3)?,
+                    model: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn save_provider(&self, p: &crate::agent::Provider) -> Result<()> {
+        if p.kind != "anthropic" && p.kind != "openai" {
+            return Err(Error::InvalidParams(format!(
+                "kind must be anthropic or openai, got '{}'",
+                p.kind
+            )));
+        }
+        if p.name.trim().is_empty() || p.model.trim().is_empty() {
+            return Err(Error::InvalidParams(
+                "provider needs a name and a model".into(),
+            ));
+        }
+        self.w.lock().unwrap().execute(
+            "INSERT INTO providers (id, name, kind, base_url, model, created) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, base_url = excluded.base_url, model = excluded.model",
+            params![p.id, p.name, p.kind, p.base_url, p.model, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_provider(&self, id: &str) -> Result<()> {
+        let w = self.w.lock().unwrap();
+        w.execute("DELETE FROM account_providers WHERE provider_id = ?1", [id])?;
+        if w.execute("DELETE FROM providers WHERE id = ?1", [id])? == 0 {
+            return Err(Error::NotFound(format!("provider {id}")));
+        }
+        Ok(())
+    }
+
+    /// Provider ids an account may send mail to; "*" means any configured provider.
+    pub fn account_providers(&self, account_id: &str) -> Result<Vec<String>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT provider_id FROM account_providers WHERE account_id = ?1 ORDER BY provider_id",
+        )?;
+        Ok(st
+            .query_map([account_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_account_providers(&self, account_id: &str, ids: &[String]) -> Result<()> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        tx.execute(
+            "DELETE FROM account_providers WHERE account_id = ?1",
+            [account_id],
+        )?;
+        for id in ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO account_providers (account_id, provider_id) VALUES (?1, ?2)",
+                params![account_id, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The provider that will read this account's mail: the first allowed one, or none.
+    pub fn provider_for_account(&self, account_id: &str) -> Result<Option<crate::agent::Provider>> {
+        let allowed = self.account_providers(account_id)?;
+        let all = self.providers()?;
+        Ok(all
+            .into_iter()
+            .find(|p| allowed.iter().any(|a| a == "*" || *a == p.id)))
+    }
+
+    /// Received messages not yet digested, newest first, within the backfill window.
+    pub fn pending_digests(
+        &self,
+        account_id: &str,
+        since_ms: i64,
+        limit: i64,
+    ) -> Result<Vec<PendingDigest>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT m.id, m.from_name, m.from_email, m.subject, m.body_text FROM messages m
+             WHERE m.account_id = ?1 AND m.is_from_me = 0 AND m.date >= ?2 AND length(m.body_text) > 0
+               AND NOT EXISTS (SELECT 1 FROM digests d WHERE d.message_id = m.id)
+             ORDER BY m.date DESC LIMIT ?3",
+        )?;
+        Ok(st
+            .query_map(params![account_id, since_ms, limit], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Records a digest outcome; a card is merged into the sender's directory entry.
+    /// Returns the message's thread id.
+    pub fn save_digest(
+        &self,
+        message_id: &str,
+        provider_id: &str,
+        outcome: &Result<crate::agent::Digest>,
+    ) -> Result<String> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let (thread_id, from_name, from_email, date): (String, String, String, i64) = tx
+            .query_row(
+                "SELECT thread_id, from_name, from_email, date FROM messages WHERE id = ?1",
+                [message_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+        match outcome {
+            Ok(d) => {
+                tx.execute(
+                    "INSERT OR REPLACE INTO digests (message_id, status, clean_body, card_json, provider_id, created) VALUES (?1, 'ok', ?2, ?3, ?4, ?5)",
+                    params![message_id, d.clean_body, d.card.as_ref().map(|c| serde_json::to_string(c).unwrap_or_default()), provider_id, now_ms()],
+                )?;
+                if let Some(card) = &d.card {
+                    Self::merge_contact(&tx, &from_email, &from_name, card, date)?;
+                }
+            }
+            Err(e) => {
+                tx.execute(
+                    "INSERT OR REPLACE INTO digests (message_id, status, provider_id, error, created) VALUES (?1, 'error', ?2, ?3, ?4)",
+                    params![message_id, provider_id, e.to_string(), now_ms()],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(thread_id)
+    }
+
+    fn merge_contact(
+        tx: &Connection,
+        email: &str,
+        from_name: &str,
+        card: &crate::agent::Card,
+        seen: i64,
+    ) -> Result<()> {
+        let email = email.trim().to_lowercase();
+        if email.is_empty() {
+            return Ok(());
+        }
+        let old = Self::contact_tx(tx, &email)?
+            .map(|c| c.card)
+            .unwrap_or_default();
+        let mut merged = crate::agent::merge_card(&old, card);
+        if merged.name.is_empty() {
+            merged.name = from_name.to_string();
+        }
+        tx.execute(
+            "INSERT INTO contacts (email, name, title, company, phones_json, address, website, socials_json, last_seen, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(email) DO UPDATE SET name = excluded.name, title = excluded.title, company = excluded.company,
+               phones_json = excluded.phones_json, address = excluded.address, website = excluded.website,
+               socials_json = excluded.socials_json, last_seen = MAX(contacts.last_seen, excluded.last_seen), updated = excluded.updated",
+            params![
+                email,
+                merged.name,
+                merged.title,
+                merged.company,
+                serde_json::to_string(&merged.phones)?,
+                merged.address,
+                merged.website,
+                serde_json::to_string(&merged.socials)?,
+                seen,
+                now_ms()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn contact_tx(conn: &Connection, email: &str) -> Result<Option<Contact>> {
+        Ok(conn
+            .query_row(
+                "SELECT email, name, title, company, phones_json, address, website, socials_json, last_seen FROM contacts WHERE email = ?1",
+                [email],
+                contact_row,
+            )
+            .optional()?)
+    }
+
+    pub fn contact(&self, email: &str) -> Result<Contact> {
+        let r = self.r.lock().unwrap();
+        Self::contact_tx(&r, &email.trim().to_lowercase())?
+            .ok_or_else(|| Error::NotFound(format!("contact {email}")))
+    }
+
+    /// Directory, most recently heard from first; `query` matches name, email or company.
+    pub fn contacts(&self, query: Option<&str>, limit: i64) -> Result<Vec<Contact>> {
+        let r = self.r.lock().unwrap();
+        let like = format!("%{}%", query.unwrap_or("").trim().to_lowercase());
+        let mut st = r.prepare_cached(
+            "SELECT email, name, title, company, phones_json, address, website, socials_json, last_seen FROM contacts
+             WHERE lower(name) LIKE ?1 OR email LIKE ?1 OR lower(company) LIKE ?1 ORDER BY last_seen DESC LIMIT ?2",
+        )?;
+        Ok(st
+            .query_map(params![like, limit], contact_row)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// (done, pending, failed) digests for an account inside the backfill window.
+    pub fn digest_stats(&self, account_id: &str, since_ms: i64) -> Result<(i64, i64, i64)> {
+        let r = self.r.lock().unwrap();
+        Ok(r.query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM digests d JOIN messages m ON m.id = d.message_id WHERE m.account_id = ?1 AND d.status = 'ok'),
+               (SELECT COUNT(*) FROM messages m WHERE m.account_id = ?1 AND m.is_from_me = 0 AND m.date >= ?2 AND length(m.body_text) > 0
+                  AND NOT EXISTS (SELECT 1 FROM digests d WHERE d.message_id = m.id)),
+               (SELECT COUNT(*) FROM digests d JOIN messages m ON m.id = d.message_id WHERE m.account_id = ?1 AND d.status = 'error')",
+            params![account_id, since_ms],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?)
+    }
+
     // ---- settings / feedback ---------------------------------------------
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
@@ -2079,6 +2364,138 @@ mod tests {
             .ingest_many(&env.acc, "me@example.com", &[bad, good], SyncMode::Initial)
             .unwrap();
         assert_eq!(ids.len(), 1);
+    }
+
+    #[rstest]
+    fn digest_card_lands_in_directory(env: Env) {
+        let s = &env.store;
+        let tid = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        let mid = s.messages(&tid).unwrap()[0].id.clone();
+        let card = crate::agent::Card {
+            title: "CFO".into(),
+            ..Default::default()
+        };
+        s.save_digest(
+            &mid,
+            "prv",
+            &Ok(crate::agent::Digest {
+                clean_body: "hi".into(),
+                card: Some(card),
+            }),
+        )
+        .unwrap();
+        assert_eq!(s.contact("Marc@X.com").unwrap().card.title, "CFO");
+    }
+
+    #[rstest]
+    fn digest_clean_body_is_served(env: Env) {
+        let s = &env.store;
+        let tid = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming(
+                    "m1",
+                    "t1",
+                    "marc@x.com",
+                    &["INBOX"],
+                    now_ms(),
+                    "hi\n--\nsig",
+                ),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        let mid = s.messages(&tid).unwrap()[0].id.clone();
+        s.save_digest(
+            &mid,
+            "prv",
+            &Ok(crate::agent::Digest {
+                clean_body: "hi".into(),
+                card: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            s.messages(&tid).unwrap()[0].body_clean.as_deref(),
+            Some("hi")
+        );
+    }
+
+    #[rstest]
+    fn digested_message_is_no_longer_pending(env: Env) {
+        let s = &env.store;
+        let tid = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        let mid = s.messages(&tid).unwrap()[0].id.clone();
+        s.save_digest(&mid, "prv", &Err(Error::other("boom")))
+            .unwrap();
+        assert!(s.pending_digests(&env.acc, 0, 10).unwrap().is_empty());
+    }
+
+    #[rstest]
+    fn wildcard_routing_picks_first_provider(env: Env) {
+        let s = &env.store;
+        s.save_provider(&crate::agent::Provider {
+            id: "p1".into(),
+            name: "Work".into(),
+            kind: "anthropic".into(),
+            base_url: None,
+            model: "claude-opus-5-5".into(),
+        })
+        .unwrap();
+        s.set_account_providers(&env.acc, &["*".into()]).unwrap();
+        assert_eq!(s.provider_for_account(&env.acc).unwrap().unwrap().id, "p1");
+    }
+
+    #[rstest]
+    fn no_routing_means_no_provider(env: Env) {
+        let s = &env.store;
+        s.save_provider(&crate::agent::Provider {
+            id: "p1".into(),
+            name: "Work".into(),
+            kind: "anthropic".into(),
+            base_url: None,
+            model: "m".into(),
+        })
+        .unwrap();
+        assert!(s.provider_for_account(&env.acc).unwrap().is_none());
+    }
+
+    #[rstest]
+    fn participant_filter_finds_sender_threads(env: Env) {
+        let s = &env.store;
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m2", "t2", "lea@y.com", &["INBOX"], now_ms(), "hi"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        let f = ThreadFilter {
+            participant: Some("MARC@x.com".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.threads(&f).unwrap().1, 1);
     }
 
     #[rstest]

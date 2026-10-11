@@ -13,6 +13,8 @@ enum SidebarSelection: Hashable {
     case account(String)
     /// A Gmail label: (account id, label id).
     case label(String, String)
+    /// The directory built from signatures.
+    case people
 }
 
 enum LayoutMode: String, CaseIterable {
@@ -53,6 +55,11 @@ final class AppModel {
     var statuses: [Status] = []
     var projects: [Project] = []
     var labels: [MailLabel] = []
+    var contacts: [Contact] = []
+    var contactQuery = ""
+    var selectedContact: ContactDetail?
+    var providers: [Provider] = []
+    var agentStates: [String: AgentState] = [:]
     var counts = Counts()
     var agentsMaySend = false
     var feedback: [FeedbackEntry] = []
@@ -169,6 +176,10 @@ final class AppModel {
 
     func loadList() async {
         guard let client else { return }
+        if selection == .people {
+            await loadContacts()
+            return
+        }
         if isReview && layout == .list {
             do {
                 reviewDrafts = try await client.drafts(state: "review")
@@ -188,6 +199,8 @@ final class AppModel {
                 page = try await client.threads(status: open, projectId: id)
             case let (.account(id), _):
                 page = try await client.threads(status: open, accountId: id)
+            case (.people, _):
+                return
             case let (.label(acc, id), _):
                 // A label is a mailbox: show everything filed there, whatever its status.
                 page = try await client.threads(accountId: acc, labelId: id)
@@ -421,6 +434,64 @@ final class AppModel {
         Task { await refreshCounts() }
     }
 
+    // MARK: directory
+
+    func loadContacts() async {
+        guard let client else { return }
+        let q = contactQuery.trimmingCharacters(in: .whitespaces)
+        if let c = try? await client.contacts(query: q.isEmpty ? nil : q), c != contacts { contacts = c }
+    }
+
+    func openContact(_ email: String?) {
+        guard let email, let client else { selectedContact = nil; return }
+        Task {
+            do { selectedContact = try await client.contact(email) } catch { report(error) }
+        }
+    }
+
+    // MARK: built-in agent
+
+    func loadAgent() async {
+        guard let client else { return }
+        do {
+            providers = try await client.providers()
+            var states: [String: AgentState] = [:]
+            for a in accounts { states[a.id] = try await client.agentState(account: a.id) }
+            agentStates = states
+        } catch { report(error) }
+    }
+
+    func saveProvider(id: String?, name: String, kind: String, baseUrl: String?, model: String, apiKey: String?) async -> Bool {
+        guard let client else { return false }
+        do {
+            _ = try await client.saveProvider(id: id, name: name, kind: kind, baseUrl: baseUrl, model: model, apiKey: apiKey)
+            await loadAgent()
+            return true
+        } catch { report(error); return false }
+    }
+
+    func deleteProvider(_ id: String) {
+        guard let client else { return }
+        Task {
+            do { try await client.deleteProvider(id); await loadAgent() } catch { report(error) }
+        }
+    }
+
+    func testProvider(_ id: String) async -> ProviderTest? {
+        guard let client else { return nil }
+        do { return try await client.testProvider(id) } catch { report(error); return nil }
+    }
+
+    func setAgent(account: String, providerIds: [String]? = nil, digestEnabled: Bool? = nil) {
+        guard let client else { return }
+        Task {
+            do {
+                try await client.setAgent(account: account, providerIds: providerIds, digestEnabled: digestEnabled)
+                agentStates[account] = try await client.agentState(account: account)
+            } catch { report(error) }
+        }
+    }
+
     // MARK: settings
 
     func addGmail() {
@@ -494,6 +565,8 @@ final class AppModel {
             Task { await refreshAll() }
         case let .syncProgress(acc, synced, total):
             syncProgress[acc] = (synced, total)
+        case .contactsChanged:
+            if selection == .people { Task { await loadContacts() } }
         case .draftsChanged:
             Task { await refreshCounts(); if isReview { await loadList() } }
         case .unknown:

@@ -122,6 +122,8 @@ struct ListHeader: View {
         case let .account(id):
             Circle().fill(Theme.accountColor(id, among: model.accounts)).frame(width: 9, height: 9)
             Text(model.accounts.first { $0.id == id }?.email ?? "Account").font(.system(size: 15, weight: .semibold)).lineLimit(1)
+        case .people:
+            Text("People").font(.system(size: 15, weight: .semibold))
         case let .label(acc, id):
             Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(Theme.text2)
             Text(model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label")

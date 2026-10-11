@@ -112,6 +112,8 @@ func decodeEvent(_ p: [String: Any]) -> DaemonEvent {
                              total: p["total"] as? Int ?? 0)
     case "drafts_changed":
         return .draftsChanged
+    case "contacts_changed":
+        return .contactsChanged
     default:
         return .unknown(kind: kind)
     }

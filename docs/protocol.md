@@ -52,11 +52,15 @@ app, the CLI and the MCP server are clients of this protocol.
 {"id": "msg_…", "from": {"name": "Marc Petit", "email": "marc@…"},
  "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
  "subject": "…", "body_text": "… full text …", "body_new": "… without quoted history, signature or boilerplate …",
- "has_quoted": true, "has_html": true, "is_from_me": false,
+ "has_quoted": true, "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
  "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000}]}
 
 // Status
 {"key": "todo", "name": "Todo", "order": 2, "color": "#5A7386"}
+
+// Contact (directory entry built from signatures)
+{"email": "marc@acme.example", "name": "Marc Petit", "title": "CFO", "company": "Acme",
+ "phones": ["+33 6 12 34 56 78"], "address": "", "website": "", "socials": [], "last_seen": 1791700000000}
 
 // Project
 {"id": "prj_1", "name": "Q4 audit", "color": "#5B8DEF"}
@@ -96,6 +100,14 @@ app, the CLI and the MCP server are clients of this protocol.
 | `drafts.send`        | `{"id"}`                                                                                 | `{"sent": true}` or error `approval_required` |
 | `review.approve`     | `{"id"}` — app only                                                                      | `{"sent": true}`                         |
 | `review.reject`      | `{"id"}` — app only                                                                      | `{}`                                     |
+| `providers.list`     | `{}`                                                                                     | `[{"id","name","kind","base_url","model","has_key"}]` (keys never leave the daemon) |
+| `providers.save`     | `{"id"?, "name", "kind": "anthropic"\|"openai", "base_url"?, "model", "api_key"?}` — app only | `Provider`                              |
+| `providers.delete`   | `{"id"}` — app only                                                                      | `{}`                                     |
+| `providers.test`     | `{"id"}`                                                                                 | `{"ok", "clean_body"?, "card"?, "error"?}` on a built-in sample |
+| `accounts.agent.get` | `{"account_id"}`                                                                         | `{"provider_ids", "digest_enabled", "done", "pending", "failed", "error"}` |
+| `accounts.agent.set` | `{"account_id", "provider_ids"?: [id\|"*"], "digest_enabled"?}` — app only               | `{}`                                     |
+| `contacts.list`      | `{"query"?, "limit"?: 200}`                                                              | `[Contact]` most recently heard from first |
+| `contacts.get`       | `{"email"}`                                                                              | `{"contact": Contact, "threads": [ThreadSummary]}` |
 | `settings.get`       | `{}`                                                                                     | `{"agents_may_send": false}`             |
 | `settings.set`       | `{"agents_may_send"}` — app only                                                         | `{}`                                     |
 | `feedback.submit`    | `{"text", "command"?, "agent"?}`                                                         | `{"id"}`                                 |
@@ -124,4 +136,5 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "accounts_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "sync_progress", "account_id": "acc_1", "synced": 1200, "total": 5400}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "drafts_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "contacts_changed"}}
 ```

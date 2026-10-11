@@ -190,6 +190,8 @@ struct MessageCard: View {
     /// Formatted by default; plain text is the fallback toggle.
     @State private var formatted = true
     @State private var showQuoted = false
+    /// The agent's clean version is the default reading view when it exists.
+    @State private var showOriginal = false
     @State private var html: String?
     @State private var height: CGFloat = 200
 
@@ -202,7 +204,9 @@ struct MessageCard: View {
                     Text(recipientsLine).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
                 }
                 Spacer()
-                if message.hasHtml {
+                if message.bodyClean != nil {
+                    Toggle("Original", isOn: $showOriginal).toggleStyle(.button).controlSize(.small)
+                } else if message.hasHtml {
                     Toggle("Plain text", isOn: Binding(get: { !formatted }, set: { formatted = !$0 }))
                         .toggleStyle(.button).controlSize(.small)
                 }
@@ -210,7 +214,13 @@ struct MessageCard: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { onFold() }
-            if formatted, message.hasHtml, let html {
+            if let clean = message.bodyClean, !showOriginal {
+                Text(clean.isEmpty ? "(empty message)" : clean)
+                    .font(.system(size: 13.5)).lineSpacing(3)
+                    .foregroundStyle(Theme.text.opacity(0.9))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if formatted, message.hasHtml, let html {
                 HTMLMessageView(html: html, height: $height).frame(height: height)
             } else {
                 let body = showQuoted ? message.bodyText : message.displayBody
@@ -220,7 +230,7 @@ struct MessageCard: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if message.hasQuoted == true {
+            if message.hasQuoted == true, message.bodyClean == nil || showOriginal {
                 // Quoted history stays one click away, like Gmail's "…".
                 Button { showQuoted.toggle() } label: {
                     Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold))

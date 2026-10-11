@@ -153,6 +153,32 @@ public final class DaemonClient: Sendable {
     public func reject(_ id: String) async throws { try await callVoid("review.reject", Params().with("id", id)) }
     public func settings() async throws -> AppSettings { try await call("settings.get") }
 
+    public func providers() async throws -> [Provider] { try await call("providers.list") }
+
+    public func saveProvider(id: String?, name: String, kind: String, baseUrl: String?, model: String, apiKey: String?) async throws -> Provider {
+        try await call("providers.save", Params().with("id", id).with("name", name).with("kind", kind)
+            .with("base_url", baseUrl).with("model", model).with("api_key", apiKey))
+    }
+
+    public func deleteProvider(_ id: String) async throws { try await callVoid("providers.delete", Params().with("id", id)) }
+
+    public func testProvider(_ id: String) async throws -> ProviderTest { try await call("providers.test", Params().with("id", id)) }
+
+    public func agentState(account: String) async throws -> AgentState {
+        try await call("accounts.agent.get", Params().with("account_id", account))
+    }
+
+    public func setAgent(account: String, providerIds: [String]? = nil, digestEnabled: Bool? = nil) async throws {
+        try await callVoid("accounts.agent.set", Params().with("account_id", account).with("provider_ids", providerIds)
+            .with("digest_enabled", digestEnabled))
+    }
+
+    public func contacts(query: String? = nil, limit: Int = 500) async throws -> [Contact] {
+        try await call("contacts.list", Params().with("query", query).with("limit", limit))
+    }
+
+    public func contact(_ email: String) async throws -> ContactDetail { try await call("contacts.get", Params().with("email", email)) }
+
     public func setAgentsMaySend(_ v: Bool) async throws {
         try await callVoid("settings.set", Params().with("agents_may_send", v))
     }

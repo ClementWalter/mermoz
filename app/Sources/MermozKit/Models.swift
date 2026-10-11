@@ -89,6 +89,8 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     /// Body without quoted history; optional so older daemons still decode.
     public var bodyNew: String?
     public var hasQuoted: Bool?
+    /// Reading version written by the built-in agent.
+    public var bodyClean: String?
     public var hasHtml: Bool
     public var isFromMe: Bool
     public var attachments: [Attachment]
@@ -115,6 +117,54 @@ public struct Status: Codable, Sendable, Identifiable, Equatable, Hashable {
     public init(key: String, name: String, order: Int, color: String) {
         self.key = key; self.name = name; self.order = order; self.color = color
     }
+}
+
+/// An AI provider; its API key stays in the daemon's Keychain, only `hasKey` is visible.
+public struct Provider: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public var id: String
+    public var name: String
+    public var kind: String
+    public var baseUrl: String?
+    public var model: String
+    public var hasKey: Bool?
+}
+
+/// Built-in agent state for one account.
+public struct AgentState: Codable, Sendable, Equatable {
+    public var providerIds: [String]
+    public var digestEnabled: Bool
+    public var done: Int
+    public var pending: Int
+    public var failed: Int
+    public var error: String?
+}
+
+public struct ProviderTest: Codable, Sendable, Equatable {
+    public var ok: Bool
+    public var cleanBody: String?
+    public var error: String?
+}
+
+/// Directory entry built from email signatures.
+public struct Contact: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public var email: String
+    public var name: String
+    public var title: String
+    public var company: String
+    public var phones: [String]
+    public var address: String
+    public var website: String
+    public var socials: [String]
+    public var lastSeen: Int64
+    public var id: String { email }
+
+    public var display: String { name.isEmpty ? email : name }
+    public var role: String { [title, company].filter { !$0.isEmpty }.joined(separator: " · ") }
+}
+
+public struct ContactDetail: Codable, Sendable, Equatable {
+    public var contact: Contact
+    public var threads: [ThreadSummary]
 }
 
 /// A Gmail label the user files mail into ("mailbox"); `id` is unique within its account.
@@ -205,6 +255,7 @@ public enum DaemonEvent: Sendable, Equatable {
     case accountsChanged
     case syncProgress(accountId: String, synced: Int, total: Int)
     case draftsChanged
+    case contactsChanged
     case unknown(kind: String)
 }
 

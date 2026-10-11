@@ -15,6 +15,10 @@ pub struct Worker {
     pub sync: Arc<AccountSync>,
     pub kick: Arc<Notify>,
     importing: Arc<Mutex<bool>>,
+    /// Wakes the agent loop (settings changed, new mail).
+    pub digest_kick: Arc<Notify>,
+    /// Last provider problem (bad key, quota), shown in settings.
+    pub agent_error: Arc<Mutex<Option<String>>>,
 }
 
 pub struct Service {
@@ -77,12 +81,15 @@ impl Service {
             sync,
             kick: Arc::new(Notify::new()),
             importing: Arc::new(Mutex::new(false)),
+            digest_kick: Arc::new(Notify::new()),
+            agent_error: Arc::new(Mutex::new(None)),
         });
         self.workers
             .lock()
             .unwrap()
             .insert(account_id.to_string(), worker.clone());
-        tokio::spawn(live_loop(self.clone(), worker));
+        tokio::spawn(live_loop(self.clone(), worker.clone()));
+        tokio::spawn(digest_loop(self.clone(), worker));
         Ok(())
     }
 
@@ -110,6 +117,20 @@ impl Service {
         for w in self.workers.lock().unwrap().values() {
             w.kick.notify_one();
         }
+    }
+
+    pub fn kick_agents(&self) {
+        for w in self.workers.lock().unwrap().values() {
+            w.digest_kick.notify_one();
+        }
+    }
+
+    pub fn agent_error(&self, account_id: &str) -> Option<String> {
+        self.workers
+            .lock()
+            .unwrap()
+            .get(account_id)
+            .and_then(|w| w.agent_error.lock().unwrap().clone())
     }
 
     pub fn stop_account(&self, account_id: &str) {
@@ -142,6 +163,109 @@ impl Service {
             let _ = svc.events.send(Event::AccountsChanged);
         });
         Ok(url)
+    }
+}
+
+/// Days of past mail the agent processes when switched on; new mail is always processed.
+pub fn backfill_since(store: &Store) -> i64 {
+    let days: i64 = store
+        .setting("digest_backfill_days")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    mermoz_core::model::now_ms() - days * 24 * 3600 * 1000
+}
+
+/// Network, rate-limit and server errors are retried later, never recorded as a verdict.
+fn transient(e: &Error) -> bool {
+    match e {
+        Error::Http(_) => true,
+        Error::Upstream { status, .. } => {
+            *status == 429 || *status >= 500 || *status == 401 || *status == 403
+        }
+        _ => false,
+    }
+}
+
+/// Per-account agent loop: cleans received mail and grows the directory, newest first,
+/// only when the user enabled it and a provider is allowed for this account.
+async fn digest_loop(svc: Arc<Service>, w: Arc<Worker>) {
+    let id = w.sync.account_id.clone();
+    let client = Arc::new(mermoz_core::agent::Client::new());
+    loop {
+        if !svc.workers.lock().unwrap().contains_key(&id) {
+            return;
+        }
+        let mut idle = Duration::from_secs(15);
+        let enabled = svc
+            .store
+            .setting(&format!("digest:{id}"))
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("true");
+        let provider = if enabled {
+            svc.store.provider_for_account(&id).ok().flatten()
+        } else {
+            None
+        };
+        if let Some(p) = provider {
+            match tokens::load_provider_key(&p.id) {
+                Err(_) => {
+                    *w.agent_error.lock().unwrap() = Some(format!("{} has no API key", p.name))
+                }
+                Ok(key) => {
+                    let batch = svc
+                        .store
+                        .pending_digests(&id, backfill_since(&svc.store), 8)
+                        .unwrap_or_default();
+                    let mut set = tokio::task::JoinSet::new();
+                    for (mid, from_name, from_email, subject, body) in batch {
+                        let (c, p, key) = (client.clone(), p.clone(), key.clone());
+                        set.spawn(async move {
+                            let from = if from_name.is_empty() {
+                                from_email
+                            } else {
+                                format!("{from_name} <{from_email}>")
+                            };
+                            (mid, c.digest(&p, &key, &from, &subject, &body).await)
+                        });
+                    }
+                    let mut threads = vec![];
+                    let mut backoff = false;
+                    while let Some(Ok((mid, outcome))) = set.join_next().await {
+                        if let Err(e) = &outcome
+                            && transient(e)
+                        {
+                            *w.agent_error.lock().unwrap() = Some(e.to_string());
+                            backoff = true;
+                            continue;
+                        }
+                        if let Ok(t) = svc.store.save_digest(&mid, &p.id, &outcome) {
+                            threads.push(t);
+                        }
+                    }
+                    if !threads.is_empty() {
+                        *w.agent_error.lock().unwrap() = None;
+                        let _ = svc.events.send(Event::ThreadsChanged(threads));
+                        let _ = svc.events.send(Event::ContactsChanged);
+                        // More work queued: keep going without waiting.
+                        idle = if backoff {
+                            Duration::from_secs(60)
+                        } else {
+                            Duration::from_millis(50)
+                        };
+                    } else if backoff {
+                        idle = Duration::from_secs(60);
+                    }
+                }
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(idle) => {}
+            _ = w.digest_kick.notified() => {}
+        }
     }
 }
 

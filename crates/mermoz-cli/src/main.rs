@@ -63,6 +63,14 @@ enum Cmd {
     },
     /// List your Gmail labels ("mailboxes") with thread counts.
     Labels,
+    /// Search the directory built from email signatures (name, email or company).
+    Contacts {
+        query: Vec<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Show one person's card and recent threads.
+    Contact { email: String },
     /// Full-text search (from:, to:, subject: prefixes supported).
     Search {
         query: Vec<String>,
@@ -770,6 +778,60 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                     l["name"].as_str().unwrap_or("")
                 ));
             }
+        }
+        Cmd::Contacts { query, limit } => {
+            let q = query.join(" ");
+            let v = c.call("contacts.list", json!({ "query": if q.is_empty() { Value::Null } else { json!(q) }, "limit": limit }))?;
+            if out.json {
+                out.json(&v);
+                return Ok(());
+            }
+            for p in v.as_array().into_iter().flatten() {
+                out.line(format!(
+                    "{:<28} {:<34} {}",
+                    truncate(p["name"].as_str().unwrap_or(""), 28),
+                    p["email"].as_str().unwrap_or(""),
+                    [
+                        p["title"].as_str().unwrap_or(""),
+                        p["company"].as_str().unwrap_or("")
+                    ]
+                    .iter()
+                    .filter(|x| !x.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+                ));
+            }
+        }
+        Cmd::Contact { email } => {
+            let v = c.call("contacts.get", json!({ "email": email }))?;
+            if out.json {
+                out.json(&v);
+                return Ok(());
+            }
+            let p = &v["contact"];
+            out.line(format!(
+                "{} <{}>",
+                p["name"].as_str().unwrap_or(""),
+                p["email"].as_str().unwrap_or("")
+            ));
+            for k in ["title", "company", "address", "website"] {
+                if let Some(x) = p[k].as_str().filter(|x| !x.is_empty()) {
+                    out.line(format!("{k}: {x}"));
+                }
+            }
+            for k in ["phones", "socials"] {
+                for x in p[k]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str())
+                {
+                    out.line(format!("{}: {x}", k.trim_end_matches('s')));
+                }
+            }
+            out.line("");
+            print_threads(&out, &v["threads"]);
         }
         Cmd::Statuses => {
             let v = c.call("statuses.list", json!({}))?;

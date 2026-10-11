@@ -3,6 +3,7 @@
 //! Everything here runs inside `mermozd`; clients only see it through the
 //! JSON-RPC protocol described in `docs/protocol.md`.
 
+pub mod agent;
 pub mod compose;
 pub mod error;
 pub mod gmail;

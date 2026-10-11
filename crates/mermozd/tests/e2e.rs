@@ -30,6 +30,7 @@ struct World {
     home: tempfile::TempDir,
     mailbox: Shared,
     daemon: Child,
+    port: u16,
 }
 
 impl Drop for World {
@@ -238,6 +239,7 @@ fn world() -> World {
         home,
         mailbox,
         daemon,
+        port,
     };
     let deadline = Instant::now() + Duration::from_secs(5);
     while UnixStream::connect(w.sock()).is_err() {
@@ -297,6 +299,68 @@ fn filed_mail_is_listed_under_its_label(world: World) {
     let out = world.cli(&["--json", "list", "--label", "clients/acme"]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["threads"][0]["subject"], "Invoice 42");
+}
+
+/// Configures a provider pointed at the stub and turns the agent on for the account.
+fn enable_agent(w: &World) {
+    let pr = w.ok(
+        "providers.save",
+        json!({ "name": "Work AI", "kind": "anthropic", "model": "claude-opus-5-5",
+        "base_url": format!("http://127.0.0.1:{}", w.port), "api_key": "sk-test" }),
+    );
+    let acc = w.ok("accounts.list", json!({}))[0]["id"].clone();
+    w.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": [pr["id"]], "digest_enabled": true }),
+    );
+}
+
+#[rstest]
+fn agent_builds_directory_from_signatures(synced: World) {
+    enable_agent(&synced);
+    synced.wait_until("contact", |w| {
+        w.ok("contacts.list", json!({}))
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    assert_eq!(
+        synced.ok("contacts.get", json!({ "email": "marc@example.com" }))["contact"]["title"],
+        "CFO"
+    );
+}
+
+#[rstest]
+fn agent_clean_body_is_served(synced: World) {
+    enable_agent(&synced);
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.wait_until("clean body", |w| {
+        w.ok("threads.get", json!({ "id": t["id"] }))["messages"][0]["body_clean"] == "Cleaned"
+    });
+}
+
+#[rstest]
+fn agent_stays_off_without_consent(synced: World) {
+    let pr = synced.ok(
+        "providers.save",
+        json!({ "name": "Work AI", "kind": "anthropic", "model": "claude-opus-5-5",
+        "base_url": format!("http://127.0.0.1:{}", synced.port), "api_key": "sk-test" }),
+    );
+    let acc = synced.ok("accounts.list", json!({}))[0]["id"].clone();
+    synced.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": [pr["id"]] }),
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(synced.mailbox.lock().unwrap().llm_keys.is_empty());
+}
+
+#[rstest]
+fn agent_uses_the_stored_key(synced: World) {
+    enable_agent(&synced);
+    synced.wait_until("llm call", |w| {
+        !w.mailbox.lock().unwrap().llm_keys.is_empty()
+    });
+    assert_eq!(synced.mailbox.lock().unwrap().llm_keys[0], "sk-test");
 }
 
 #[rstest]

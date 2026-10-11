@@ -52,7 +52,10 @@ struct MainLayout: View {
         HStack(spacing: 10) {
             SidebarView()
                 .frame(width: 228)
-            if model.layout == .board && !model.isReview {
+            if model.selection == .people {
+                PeopleListView().frame(width: 420)
+                ContactDetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.layout == .board && !model.isReview {
                 BoardView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .inspector(isPresented: Binding(get: { model.selectedThreadId != nil || model.compose != nil },

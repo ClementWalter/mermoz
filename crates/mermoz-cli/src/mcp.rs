@@ -23,6 +23,8 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "thread_id": s("thread to reply to"), "to": { "type": "array", "items": { "type": "string" } }, "cc": { "type": "array", "items": { "type": "string" } }, "subject": s("subject"), "body": s("plain text body") }, "required": ["body"] } },
         { "name": "send_draft", "description": "Ask to send a draft. Unless the user enabled agent sending, the draft goes to the user's Review lane and this returns approval_required: tell the user, do not retry.",
           "inputSchema": { "type": "object", "properties": { "id": s("draft id") }, "required": ["id"] } },
+        { "name": "search_contacts", "description": "Search the user's directory, built automatically from email signatures: names, titles, companies, phones, addresses, websites. Empty query lists recent contacts.",
+          "inputSchema": { "type": "object", "properties": { "query": s("name, email or company"), "limit": { "type": "integer", "default": 20 } } } },
         { "name": "list_labels", "description": "The user's Gmail labels (mailboxes) with ids, accounts and thread counts.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_statuses", "description": "Workflow statuses.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_projects", "description": "Projects threads can belong to.", "inputSchema": { "type": "object", "properties": {} } },
@@ -78,6 +80,7 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
         "create_draft" => r(c.call("drafts.create", a.clone())),
         "send_draft" => r(c.call("drafts.send", json!({ "id": a["id"] }))),
         "list_labels" => r(c.call("labels.list", json!({}))),
+        "search_contacts" => r(c.call("contacts.list", json!({ "query": a.get("query"), "limit": a.get("limit").cloned().unwrap_or(json!(20)) }))),
         "list_statuses" => r(c.call("statuses.list", json!({}))),
         "list_projects" => r(c.call("projects.list", json!({}))),
         "submit_feedback" => r(c.call(

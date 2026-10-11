@@ -65,6 +65,8 @@ pub struct Message {
     /// `body_text` without the quoted history of earlier messages.
     pub body_new: String,
     pub has_quoted: bool,
+    /// Reading version written by the built-in agent, when it has processed this message.
+    pub body_clean: Option<String>,
     pub has_html: bool,
     pub is_from_me: bool,
     pub attachments: Vec<AttachmentInfo>,

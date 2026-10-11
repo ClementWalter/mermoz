@@ -35,6 +35,12 @@ struct SidebarView: View {
                             }
                         }
                     }
+                    section("Directory") {
+                        row(.people, count: nil) {
+                            Image(systemName: "person.2").font(.system(size: 11)).foregroundStyle(Theme.text2)
+                            Text("People")
+                        }
+                    }
                     section("Projects") {
                         ForEach(model.projects) { p in
                             row(.project(p.id), count: model.counts.project[p.id]) {
