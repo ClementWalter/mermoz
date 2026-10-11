@@ -2285,6 +2285,127 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// What the router tells Jev about a thread: the last three messages without quoted
+    /// history, and where earlier threads with the same people were filed.
+    pub fn route_input(&self, thread_id: &str) -> Result<crate::jev::RouteInput> {
+        let r = self.r.lock().unwrap();
+        let rows: Vec<(String, String, bool, i64, String, String)> = {
+            let mut st = r.prepare_cached(
+                "SELECT from_name, from_email, is_from_me, date, subject, body_text FROM messages WHERE thread_id = ?1 ORDER BY date",
+            )?;
+            st.query_map([thread_id], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        };
+        let now = now_ms();
+        let recent = rows[rows.len().saturating_sub(3)..]
+            .iter()
+            .map(|(name, email, mine, date, _, body)| {
+                let (new, _) = crate::quote::readable(body);
+                crate::jev::RouteMessage {
+                    from: if *mine {
+                        "me".into()
+                    } else if name.is_empty() {
+                        email.clone()
+                    } else {
+                        format!("{name} <{email}>")
+                    },
+                    days_ago: (now - date) / 86_400_000,
+                    text: new
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .chars()
+                        .take(700)
+                        .collect(),
+                }
+            })
+            .collect();
+        let mut st = r.prepare_cached(
+            // Only the indexed sender column is searched for peers: matching recipients of
+            // sent mail too costs 500× more for the same accuracy on a real mailbox.
+            "WITH people AS (
+               SELECT lower(from_email) e FROM messages WHERE thread_id = ?1 AND is_from_me = 0
+               UNION SELECT lower(json_extract(j.value, '$.email')) FROM messages m, json_each(m.to_json) j
+                 WHERE m.thread_id = ?1 AND m.is_from_me = 1),
+             peers AS (
+               SELECT DISTINCT m.thread_id FROM people p JOIN messages m ON lower(m.from_email) = p.e WHERE m.thread_id != ?1)
+             SELECT tp.name, COUNT(*) n FROM thread_projects tp JOIN peers p ON p.thread_id = tp.thread_id
+             GROUP BY tp.name ORDER BY n DESC LIMIT 5",
+        )?;
+        let history = st
+            .query_map([thread_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(crate::jev::RouteInput {
+            subject: rows
+                .iter()
+                .map(|r| r.4.clone())
+                .find(|s| !s.is_empty())
+                .unwrap_or_default(),
+            messages_in_thread: rows.len() as i64,
+            last_message_from_me: rows.last().map(|r| r.2).unwrap_or(false),
+            recent_messages: recent,
+            sender_history: history,
+        })
+    }
+
+    /// Every project with a description built from the mail filed in it: its four most
+    /// frequent correspondents and five latest subjects.
+    pub fn project_descriptions(&self) -> Result<Vec<(String, String)>> {
+        let names: Vec<String> = self.projects()?.into_iter().map(|p| p.name).collect();
+        let r = self.r.lock().unwrap();
+        let mut subjects: std::collections::HashMap<String, Vec<String>> = Default::default();
+        let mut st = r.prepare_cached(
+            "SELECT tp.name, t.subject FROM thread_projects tp JOIN threads t ON t.id = tp.thread_id
+             WHERE t.subject != '' ORDER BY t.last_date DESC",
+        )?;
+        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (n, subj) = row?;
+            let v = subjects.entry(n).or_default();
+            if v.len() < 5 {
+                v.push(subj);
+            }
+        }
+        let mut people: std::collections::HashMap<String, Vec<String>> = Default::default();
+        let mut st = r.prepare_cached(
+            "SELECT tp.name, MAX(m.from_name), lower(m.from_email), COUNT(DISTINCT m.thread_id) n
+             FROM thread_projects tp JOIN messages m ON m.thread_id = tp.thread_id
+             WHERE m.is_from_me = 0 GROUP BY tp.name, lower(m.from_email) ORDER BY tp.name, n DESC",
+        )?;
+        for row in st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })? {
+            let (n, name, email) = row?;
+            let v = people.entry(n).or_default();
+            if v.len() < 4 {
+                v.push(if name.is_empty() { email } else { name });
+            }
+        }
+        Ok(names
+            .into_iter()
+            .map(|n| {
+                let d = crate::jev::describe(
+                    &n,
+                    people.get(&n).map(Vec::as_slice).unwrap_or(&[]),
+                    subjects.get(&n).map(Vec::as_slice).unwrap_or(&[]),
+                );
+                (n, d)
+            })
+            .collect())
+    }
+
     /// Accepts pending suggestions as they stand: status, projects and priority apply,
     /// and the threads count as read.
     pub fn accept_suggestions(&self, ids: &[String]) -> Result<usize> {
@@ -4523,5 +4644,63 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.thread(&tid).unwrap().status, "todo");
+    }
+
+    #[rstest]
+    fn route_input_counts_where_the_sender_was_filed(env: Env) {
+        let s = &env.store;
+        s.set_labels(&env.acc, &[("Label_7".into(), "Immo".into())])
+            .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "m1",
+                "t1",
+                "marc@x.com",
+                &["Label_7"],
+                now_ms() - DAY,
+                "old",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        let tid = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming(
+                    "m2",
+                    "t2",
+                    "marc@x.com",
+                    &["INBOX", "UNREAD"],
+                    now_ms(),
+                    "new",
+                ),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        assert_eq!(
+            s.route_input(&tid).unwrap().sender_history,
+            vec![("Immo".to_string(), 1)]
+        );
+    }
+
+    #[rstest]
+    fn project_description_names_its_correspondents(env: Env) {
+        let s = &env.store;
+        s.set_labels(&env.acc, &[("Label_7".into(), "Immo".into())])
+            .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["Label_7"], now_ms(), "hi"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        assert_eq!(
+            s.project_descriptions().unwrap(),
+            vec![("Immo".to_string(), "Folder 'Immo'. Frequent correspondents: Marc Petit. Example subjects: Audit report v2.".to_string())]
+        );
     }
 }

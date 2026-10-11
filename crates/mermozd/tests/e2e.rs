@@ -246,6 +246,7 @@ fn world() -> World {
             format!("http://127.0.0.1:{port}/gmail"),
         )
         .env("MERMOZ_POLL_SECS", "1")
+        .env("MERMOZ_JEV_BASE", format!("http://127.0.0.1:{port}/jev"))
         .env("MERMOZ_TRUSTED_EXE", std::env::current_exe().unwrap())
         .env(
             "RUST_LOG",
@@ -1080,4 +1081,99 @@ fn mcp_send_reports_approval(synced: World) {
             .unwrap()
             .contains("approval_required")
     );
+}
+
+/// Turns the router on with a "Receipts" project available to file into.
+fn enable_router(w: &World) {
+    w.ok("projects.create", json!({ "name": "Receipts" }));
+    w.ok("router.set", json!({ "api_key": "jev-test" }));
+    w.wait_until("routing", |w| {
+        !w.thread_by_subject("Audit report v2")["suggestion"].is_null()
+    });
+}
+
+#[rstest]
+fn router_suggests_a_status_for_unread_mail(synced: World) {
+    enable_router(&synced);
+    assert_eq!(
+        synced.thread_by_subject("Audit report v2")["suggestion"]["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+fn router_suggests_a_project(synced: World) {
+    enable_router(&synced);
+    assert_eq!(
+        synced.thread_by_subject("Audit report v2")["suggestion"]["projects"],
+        json!(["Receipts"])
+    );
+}
+
+#[rstest]
+fn router_sends_the_typesafe_key(synced: World) {
+    enable_router(&synced);
+    assert!(
+        synced
+            .mailbox
+            .lock()
+            .unwrap()
+            .jev_auth
+            .contains(&"Bearer jev-test".to_string())
+    );
+}
+
+#[rstest]
+fn reading_applies_the_router_suggestion(synced: World) {
+    enable_router(&synced);
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok("threads.mark_read", json!({ "id": t["id"] }));
+    assert_eq!(
+        synced.thread_by_subject("Audit report v2")["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+fn accepting_files_the_thread_in_gmail(synced: World) {
+    enable_router(&synced);
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok("threads.accept_suggestions", json!({ "ids": [t["id"]] }));
+    synced.wait_until("label push", |w| {
+        w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("Receipts")
+    });
+}
+
+#[rstest]
+fn router_reports_its_key(synced: World) {
+    synced.ok("router.set", json!({ "api_key": "jev-test" }));
+    assert_eq!(synced.ok("router.get", json!({}))["configured"], true);
+}
+
+#[rstest]
+fn router_test_checks_the_key(synced: World) {
+    assert_eq!(
+        synced.ok("router.test", json!({ "api_key": "jev-test" }))["ok"],
+        true
+    );
+}
+
+#[rstest]
+fn agents_cannot_set_the_typesafe_key(synced: World) {
+    let script = r#"
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": "router.set", "params": {"api_key": "x"}}) + "\n").encode())
+print(s.makefile().readline())
+"#;
+    let out = Command::new("python3")
+        .args(["-c", script, synced.sock().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], -32011);
 }

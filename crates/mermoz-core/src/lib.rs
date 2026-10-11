@@ -9,6 +9,7 @@ pub mod chatgpt;
 pub mod compose;
 pub mod error;
 pub mod gmail;
+pub mod jev;
 pub mod mime;
 pub mod model;
 pub mod oauth;

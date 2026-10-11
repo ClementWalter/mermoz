@@ -142,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
     // MERMOZ_NO_SYNC serves the local store only (demo data, offline UI work).
     if std::env::var_os("MERMOZ_NO_SYNC").is_none() {
         svc.start_all();
+        svc.start_router();
     }
     let shutdown = async {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

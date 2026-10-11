@@ -4,7 +4,7 @@ use mermoz_core::gmail::{Gmail, default_base};
 use mermoz_core::oauth::{self, ClientConfig, TokenSource};
 use mermoz_core::store::Store;
 use mermoz_core::sync::{AccountSync, Event};
-use mermoz_core::{Error, Result, tokens};
+use mermoz_core::{Error, Result, jev, tokens};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -31,6 +31,10 @@ pub struct Service {
     pub store: Arc<Store>,
     pub events: broadcast::Sender<Event>,
     workers: Mutex<HashMap<String, Arc<Worker>>>,
+    /// Wakes the router (new mail, key changed).
+    pub router_kick: Arc<Notify>,
+    /// Last router problem (refused key, outage), shown in settings.
+    pub router_error: Mutex<Option<String>>,
 }
 
 fn poll_interval() -> Duration {
@@ -51,7 +55,13 @@ impl Service {
             store,
             events,
             workers: Mutex::new(HashMap::new()),
+            router_kick: Arc::new(Notify::new()),
+            router_error: Mutex::new(None),
         })
+    }
+
+    pub fn start_router(self: &Arc<Self>) {
+        tokio::spawn(router_loop(self.clone()));
     }
 
     /// Starts workers for every stored account; accounts without a token show an error.
@@ -477,6 +487,7 @@ async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
         if let Err(e) = w.sync.incremental().await {
             warn!(account = %w.sync.email, "incremental: {e}");
         }
+        svc.router_kick.notify_one();
         match w.sync.push_ops().await {
             Ok(n) if n > 0 => info!(account = %w.sync.email, pushed = n, "pushed local changes"),
             Ok(_) => {}
@@ -533,6 +544,102 @@ fn ensure_import(svc: &Arc<Service>, w: &Arc<Worker>) {
         }
         *w.importing.lock().unwrap() = false;
     });
+}
+
+/// Project descriptions change slowly; rebuilding them costs a scan of filed mail.
+const DESCRIPTIONS_TTL: Duration = Duration::from_secs(600);
+
+/// Routes every new Unread thread through Jev while a TypeSafe key is set.
+async fn router_loop(svc: Arc<Service>) {
+    let mut descriptions: Option<(std::time::Instant, Vec<(String, String)>)> = None;
+    loop {
+        if let Some(key) = jev::load_key() {
+            match route_pending(&svc, &key, &mut descriptions).await {
+                Ok(n) => {
+                    if n > 0 {
+                        info!(routed = n, "routed new mail");
+                    }
+                    *svc.router_error.lock().unwrap() = None;
+                }
+                Err(e) => {
+                    warn!("router: {e}");
+                    *svc.router_error.lock().unwrap() = Some(e.to_string());
+                }
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(poll_interval()) => {}
+            _ = svc.router_kick.notified() => {}
+        }
+    }
+}
+
+/// Routes up to one batch of pending threads, eight requests in flight.
+async fn route_pending(
+    svc: &Arc<Service>,
+    key: &str,
+    descriptions: &mut Option<(std::time::Instant, Vec<(String, String)>)>,
+) -> Result<usize> {
+    let pending = svc.store.threads_to_route(32)?;
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    if descriptions
+        .as_ref()
+        .is_none_or(|(at, _)| at.elapsed() > DESCRIPTIONS_TTL)
+    {
+        *descriptions = Some((std::time::Instant::now(), svc.store.project_descriptions()?));
+    }
+    let descs = &descriptions.as_ref().unwrap().1;
+    let known: Arc<Vec<String>> = Arc::new(descs.iter().map(|(n, _)| n.clone()).collect());
+    let questions = Arc::new(jev::questions(descs));
+    let client = Arc::new(jev::Client::new(key.to_string()));
+    let mut routed = vec![];
+    for chunk in pending.chunks(8) {
+        let mut set = tokio::task::JoinSet::new();
+        for (tid, last_date) in chunk.iter().cloned() {
+            let input = svc.store.route_input(&tid)?;
+            let (client, questions, known) = (client.clone(), questions.clone(), known.clone());
+            set.spawn(async move {
+                (
+                    tid,
+                    last_date,
+                    client.route(&input, &questions, &known).await,
+                )
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let Ok((tid, last_date, res)) = joined else {
+                continue;
+            };
+            match res {
+                Ok(sg) => {
+                    svc.store
+                        .save_suggestion(&tid, &sg, "jev-latest", last_date)?;
+                    routed.push(tid);
+                }
+                // A refused key or an outage stops the round; it retries on the next tick.
+                Err(e @ (Error::InvalidParams(_) | Error::Http(_))) => return Err(e),
+                Err(Error::Upstream { status, .. }) if status == 429 || status >= 500 => {
+                    return Err(Error::other(format!("TypeSafe is unavailable ({status})")));
+                }
+                // Anything else is specific to this thread: record "no suggestion" so it
+                // is not retried forever.
+                Err(e) => {
+                    warn!(thread = %tid, "router skipped thread: {e}");
+                    svc.store.save_suggestion(
+                        &tid,
+                        &Default::default(),
+                        "jev-latest",
+                        last_date,
+                    )?;
+                }
+            }
+        }
+    }
+    let n = routed.len();
+    let _ = svc.events.send(Event::ThreadsChanged(routed));
+    Ok(n)
 }
 
 #[cfg(test)]

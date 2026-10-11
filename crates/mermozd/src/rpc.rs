@@ -383,6 +383,36 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .collect();
             Ok(json!(list))
         }
+        "router.get" => Ok(router_state(svc)),
+        "router.set" => {
+            // The key pays for every routed thread: only the app may change it.
+            app_only(caller, method)?;
+            match p.get("api_key") {
+                Some(Value::String(k)) if !k.trim().is_empty() => mermoz_core::jev::save_key(k)?,
+                Some(Value::Null) | Some(Value::String(_)) => {
+                    let _ = mermoz_core::jev::delete_key();
+                    *svc.router_error.lock().unwrap() = None;
+                }
+                _ => {
+                    return Err(RpcError::invalid(
+                        "missing 'api_key' (string, or null to remove)",
+                    ));
+                }
+            }
+            svc.router_kick.notify_one();
+            Ok(router_state(svc))
+        }
+        "router.test" => {
+            let key = opt_s(p, "api_key")
+                .or_else(mermoz_core::jev::load_key)
+                .ok_or_else(|| RpcError::invalid("No TypeSafe key to test."))?;
+            let t = std::time::Instant::now();
+            let q = json!({ "q": { "type": "noul", "instructions": "Is this an email about a meeting?" } });
+            mermoz_core::jev::Client::new(key)
+                .ask(&json!({ "subject": "Lunch on Friday?" }), &q)
+                .await?;
+            Ok(json!({ "ok": true, "ms": t.elapsed().as_millis() as i64 }))
+        }
         "providers.save" => {
             app_only(caller, method)?;
             let existing =
@@ -649,4 +679,12 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         }
         _ => Err(RpcError::new(-32601, format!("method not found: {method}"))),
     }
+}
+
+fn router_state(svc: &Service) -> Value {
+    json!({
+        "configured": mermoz_core::jev::load_key().is_some(),
+        "error": *svc.router_error.lock().unwrap(),
+        "model": "jev-latest",
+    })
 }

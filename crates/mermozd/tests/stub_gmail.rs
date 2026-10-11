@@ -34,6 +34,8 @@ pub struct Mailbox {
     pub llm_keys: Vec<String>,
     /// Message ids whose next fetch fails with 503, to exercise retries.
     pub fail_once: BTreeSet<String>,
+    /// Authorization headers seen by the stub TypeSafe endpoint.
+    pub jev_auth: Vec<String>,
     next_label: u64,
 }
 
@@ -233,6 +235,35 @@ async fn modify_thread(
     Json(json!({ "id": tid }))
 }
 
+/// Stub Jev: files everything under "Receipts" when that folder is offered, as
+/// automated mail to archive; yes/no questions answer 0.96.
+async fn jev_systemone(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    s.lock().unwrap().jev_auth.push(auth);
+    let mut answers = serde_json::Map::new();
+    for (id, q) in body["questions"].as_object().into_iter().flatten() {
+        let a = match (q["type"].as_str(), id.as_str()) {
+            (Some("noul"), _) => json!({ "type": "noul", "noul": 0.96 }),
+            (_, "project") if q["criteria"].get("Receipts").is_some() => {
+                json!({ "type": "choice", "choice": "Receipts", "confidence": 0.92 })
+            }
+            (_, "project") => json!({ "type": "choice", "choice": "none", "confidence": 0.9 }),
+            (_, "status") => json!({ "type": "choice", "choice": "archive", "confidence": 0.9 }),
+            _ => json!({ "type": "choice", "choice": "none", "confidence": 0.8 }),
+        };
+        answers.insert(id.clone(), a);
+    }
+    Json(json!({ "answers": answers }))
+}
+
 async fn trash_thread(State(s): State<Shared>, Path(tid): Path<String>) -> Json<Value> {
     s.lock()
         .unwrap()
@@ -411,6 +442,7 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/gmail/labels", get(labels).post(create_label))
                 .route("/gmail/threads/{id}/modify", post(modify_thread))
                 .route("/gmail/threads/{id}/trash", post(trash_thread))
+                .route("/jev/v1/systemone", post(jev_systemone))
                 .route("/gmail/threads/{id}/untrash", post(untrash_thread))
                 .route("/gmail/labels/{id}", axum::routing::delete(delete_label))
                 .with_state(mailbox);
