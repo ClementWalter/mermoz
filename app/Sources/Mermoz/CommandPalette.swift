@@ -12,6 +12,7 @@ struct PaletteItem: Identifiable {
 
 struct CommandPalette: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @State private var query = ""
     @State private var results: [ThreadSummary] = []
     @State private var cursor = 0
@@ -93,6 +94,7 @@ struct CommandPalette: View {
         switch model.paletteMode {
         case .status: "Set status…"
         case .priority: "Set priority…"
+        case .project: "Add to project, or type a new name…"
         default: "Search mail or run a command"
         }
     }
@@ -113,38 +115,113 @@ struct CommandPalette: View {
                     if let sel { model.update([sel], priority: p) }
                 }
             }
+        case .project:
+            return projectItems(q)
         default:
-            var out: [PaletteItem] = results.map { t in
+            // Commands that match come first; mail results follow.
+            let mail: [PaletteItem] = results.map { t in
                 PaletteItem(id: t.id, title: t.subject.isEmpty ? "(no subject)" : t.subject,
                             detail: "\(t.number) · \(t.lastFrom)",
                             icon: AnyView(StatusIcon(key: t.status, color: Color(hex: model.color(forStatus: t.status))))) {
                     model.reveal(t)
                 }
             }
-            var commands: [PaletteItem] = [
-                PaletteItem(id: "c-new", title: "New message", detail: "C",
-                            icon: AnyView(Image(systemName: "square.and.pencil"))) { model.startNew() },
-                PaletteItem(id: "c-layout", title: model.layout == .list ? "Switch to board" : "Switch to list",
-                            icon: AnyView(Image(systemName: "rectangle.split.3x1"))) {
-                    model.layout = model.layout == .list ? .board : .list
-                    Task { await model.loadList() }
-                },
-                PaletteItem(id: "c-account", title: "Add Gmail account",
-                            icon: AnyView(Image(systemName: "person.crop.circle.badge.plus"))) { model.addGmail() },
-            ]
-            if sel != nil {
-                commands.insert(PaletteItem(id: "c-reply", title: "Reply", detail: "R",
-                                            icon: AnyView(Image(systemName: "arrowshape.turn.up.left"))) { model.startReply() }, at: 0)
-                commands.insert(PaletteItem(id: "c-status", title: "Set status…", detail: "S",
-                                            icon: AnyView(Image(systemName: "circle.dashed"))) {
-                    DispatchQueue.main.async { model.paletteMode = .status }
-                }, at: 1)
-                commands.insert(PaletteItem(id: "c-done", title: "Mark done", detail: "E",
-                                            icon: AnyView(Image(systemName: "checkmark.circle"))) { model.markDoneSelected() }, at: 2)
-            }
-            out += commands.filter { q.isEmpty || $0.title.lowercased().contains(q) }
-            return out
+            if q.isEmpty { return commands(sel).filter { !$0.navigation }.map(\.item) }
+            let ranked = commands(sel)
+                .map { ($0, CommandMatch.score(q, title: $0.item.title, keywords: $0.keywords)) }
+                .filter { $0.1 > 0 }
+                .sorted { $0.1 > $1.1 }
+                .prefix(8)
+                .map(\.0.item)
+            return ranked + mail
         }
+    }
+
+    private struct Command {
+        var item: PaletteItem
+        var keywords: [String] = []
+        /// "Go to …" entries only show up once the user types.
+        var navigation = false
+    }
+
+    private func command(_ id: String, _ title: String, _ symbol: String, detail: String = "", keywords: [String] = [],
+                         navigation: Bool = false, run: @escaping @MainActor () -> Void) -> Command {
+        Command(item: PaletteItem(id: id, title: title, detail: detail, icon: AnyView(Image(systemName: symbol)), run: run),
+                keywords: keywords, navigation: navigation)
+    }
+
+    private func commands(_ sel: String?) -> [Command] {
+        // Opening another palette mode must wait until this one has closed.
+        let switchTo: (PaletteMode) -> Void = { m in DispatchQueue.main.async { model.paletteMode = m } }
+        var out: [Command] = []
+        if let sel {
+            out += [
+                command("c-reply", "Reply", "arrowshape.turn.up.left", detail: "R", keywords: ["answer", "respond"]) { model.startReply() },
+                command("c-project", "Move to project…", "folder", keywords: ["label", "folder", "tag", "file", "add"]) { switchTo(.project) },
+                command("c-status", "Set status…", "circle.dashed", detail: "S", keywords: ["move", "state"]) { switchTo(.status) },
+                command("c-priority", "Set priority…", "chart.bar", detail: "P", keywords: ["urgent", "important"]) { switchTo(.priority) },
+                command("c-done", "Mark done", "checkmark.circle", detail: "E", keywords: ["complete", "finish"]) { model.markDoneSelected() },
+                command("c-archive", "Archive", "archivebox", detail: "A", keywords: ["file", "away"]) { model.moveSelected(to: "archive") },
+                command("c-delete", "Delete", "trash", detail: "⌫", keywords: ["trash", "bin", "remove"]) { model.moveSelected(to: "deleted") },
+                command("c-unread", "Mark unread", "envelope.badge", detail: "U", keywords: ["new"]) { model.markUnreadSelected() },
+            ]
+            if model.threads.first(where: { $0.id == sel })?.suggestion != nil {
+                out.insert(command("c-accept", "Accept AI suggestion", "sparkle", detail: "Y", keywords: ["sort", "apply"]) { model.acceptSelected() }, at: 0)
+            }
+            if !(currentThread?.projects.isEmpty ?? true) {
+                out.append(command("c-unproject", "Remove from project…", "folder.badge.minus", keywords: ["label", "folder", "untag"]) { switchTo(.project) })
+            }
+        }
+        if let label = model.undoLabel {
+            out.append(command("c-undo", "Undo \(label)", "arrow.uturn.backward", detail: "⌘Z", keywords: ["revert", "back"]) { model.undo() })
+        }
+        out += [
+            command("c-new", "New message", "square.and.pencil", detail: "C", keywords: ["compose", "write", "email"]) { model.startNew() },
+            command("c-layout", model.layout == .list ? "Switch to board" : "Switch to list", "rectangle.split.3x1", keywords: ["view", "layout"]) {
+                model.layout = model.layout == .list ? .board : .list
+                Task { await model.loadList() }
+            },
+            command("c-settings", "Settings", "gearshape", detail: "⌘,", keywords: ["preferences", "options", "typesafe", "ai"]) { openWindow(id: "settings") },
+            command("c-shortcuts", "Keyboard shortcuts", "keyboard", detail: "?", keywords: ["help", "keys"]) { model.showShortcuts = true },
+            command("c-account", "Add Gmail account", "person.crop.circle.badge.plus", keywords: ["sign", "login", "connect"]) { model.addGmail() },
+            command("c-people", "Go to People", "person.2", keywords: ["directory", "contacts"], navigation: true) { model.select(.people) },
+        ]
+        out += model.statuses.map { s in
+            command("g-s-\(s.key)", "Go to \(s.name)", "circle", keywords: ["status", "open", "show"], navigation: true) { model.select(.status(s.key)) }
+        }
+        out += model.projects.map { p in
+            command("g-p-\(p.id)", "Go to \(p.name)", "folder", keywords: ["project", "label", "open", "show"], navigation: true) { model.select(.project(p.id)) }
+        }
+        return out
+    }
+
+    private var currentThread: ThreadSummary? {
+        guard let sel = model.selectedThreadId else { return nil }
+        return model.threads.first { $0.id == sel } ?? (model.detail?.thread.id == sel ? model.detail?.thread : nil)
+    }
+
+    /// Toggle the selected thread in or out of projects; a new name creates the project.
+    private func projectItems(_ q: String) -> [PaletteItem] {
+        guard let t = currentThread else { return [] }
+        var out: [PaletteItem] = model.projects
+            .map { ($0, CommandMatch.score(q, title: $0.name.replacingOccurrences(of: "/", with: " "))) }
+            .filter { $0.1 > 0 }
+            .sorted { q.isEmpty ? $0.0.name < $1.0.name : $0.1 > $1.1 }
+            .map { p, _ in
+                let inIt = t.projects.contains(p.id)
+                return PaletteItem(id: "pr-\(p.id)", title: p.name, detail: inIt ? "✓ remove" : "",
+                                   icon: AnyView(RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 10, height: 10))) {
+                    if inIt { model.update([t.id], removeProjects: [p.id]) } else { model.update([t.id], addProjects: [p.id]) }
+                }
+            }
+        let name = query.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty, !model.projects.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            out.append(PaletteItem(id: "pr-new", title: "Create project “\(name)”", icon: AnyView(Image(systemName: "folder.badge.plus"))) {
+                model.update([t.id], addProjects: [name])
+                Task { await model.refreshAll() }
+            })
+        }
+        return out
     }
 
     private func runSelected() {

@@ -81,7 +81,7 @@ extension ThreadListView {
 
 /// Single-key shortcuts shared by list and board.
 enum ThreadKeys {
-    static let characters = "jkeay#usprc?/"
+    static let characters = "jkeay#usmprc?/"
 
     @MainActor
     static func handle(_ c: String, model: AppModel) -> Bool {
@@ -96,6 +96,7 @@ enum ThreadKeys {
         case "u": model.markUnreadSelected()
         case "s": if model.selectedThreadId != nil { model.paletteMode = .status }
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
+        case "m": if model.selectedThreadId != nil { model.paletteMode = .project }
         case "r": model.startReply()
         case "c": model.startNew()
         // Matched by typed character, so it works on AZERTY (Shift+,) as on QWERTY.

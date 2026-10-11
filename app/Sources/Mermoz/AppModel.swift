@@ -45,6 +45,8 @@ enum PaletteMode: Equatable {
     case search
     case status
     case priority
+    /// Pick projects for the selected thread (toggle, or create one).
+    case project
 }
 
 @MainActor
