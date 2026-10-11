@@ -48,16 +48,21 @@ fn command(args: &[&str]) -> Result<tokio::process::Command> {
 pub async fn login(profile: &str) -> Result<()> {
     std::fs::create_dir_all(config_dir())?;
     let out = command(&["auth", "login", "--profile", profile, "--timeout", "5m"])?
+        .stdin(std::process::Stdio::null())
         .output()
         .await?;
     if out.status.success() {
-        Ok(())
-    } else {
-        Err(Error::other(format!(
-            "sign-in did not complete: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )))
+        return Ok(());
     }
+    // ant's stderr is written for terminals; the app shows one plain sentence.
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    Err(Error::other(if err.contains("timed out") {
+        "Sign-in timed out. Click the button again and finish in your browser."
+    } else if err.contains("denied") || err.contains("access_denied") {
+        "Sign-in was cancelled."
+    } else {
+        "Sign-in didn't complete. Please try again."
+    }))
 }
 
 pub async fn logout(profile: &str) -> Result<()> {

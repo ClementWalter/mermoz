@@ -2,7 +2,54 @@
 //! keeps them in `MERMOZ_HOME/tokens` (0600) for tests and headless use.
 
 use crate::error::{Error, Result};
+use crate::oauth::ClientConfig;
 use crate::paths;
+use serde::{Deserialize, Serialize};
+
+/// A Google sign-in: refresh tokens only work with the OAuth client that issued them,
+/// so the client (and its token endpoint) travels with the token.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GoogleGrant {
+    pub refresh_token: String,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub token_url: Option<String>,
+}
+
+impl GoogleGrant {
+    /// Older entries are a bare refresh token with no client recorded.
+    pub fn parse(raw: &str) -> Self {
+        serde_json::from_str(raw).unwrap_or_else(|_| GoogleGrant {
+            refresh_token: raw.trim().to_string(),
+            client_id: None,
+            client_secret: None,
+            token_url: None,
+        })
+    }
+
+    pub fn client(&self) -> Option<ClientConfig> {
+        let mut c = ClientConfig::with_ids(self.client_id.clone()?, self.client_secret.clone()?);
+        if let Some(t) = &self.token_url {
+            c.token_url = t.clone();
+        }
+        Some(c)
+    }
+}
+
+pub fn save_grant(account: &str, refresh_token: &str, cfg: &ClientConfig) -> Result<()> {
+    let g = GoogleGrant {
+        refresh_token: refresh_token.into(),
+        client_id: Some(cfg.client_id.clone()),
+        client_secret: Some(cfg.client_secret.clone()),
+        token_url: Some(cfg.token_url.clone()),
+    };
+    save(account, &serde_json::to_string(&g)?)
+}
+
+pub fn load_grant(account: &str) -> Result<GoogleGrant> {
+    Ok(GoogleGrant::parse(&load(account)?))
+}
 
 const SERVICE: &str = "ai.mermoz.oauth";
 
@@ -91,4 +138,27 @@ pub fn delete_provider_key(provider_id: &str) -> Result<()> {
     }
     let _ = security_framework::passwords::delete_generic_password(PROVIDER_SERVICE, provider_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    fn bare_token_has_no_client() {
+        assert_eq!(GoogleGrant::parse("1//abc").client_id, None);
+    }
+
+    #[rstest]
+    fn bare_token_is_kept() {
+        assert_eq!(GoogleGrant::parse(" 1//abc\n").refresh_token, "1//abc");
+    }
+
+    #[rstest]
+    fn json_grant_restores_client() {
+        let g =
+            GoogleGrant::parse(r#"{"refresh_token":"r","client_id":"cid","client_secret":"s"}"#);
+        assert_eq!(g.client().unwrap().client_id, "cid");
+    }
 }

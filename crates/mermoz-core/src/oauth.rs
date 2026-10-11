@@ -32,6 +32,22 @@ fn default_token_url() -> String {
 }
 
 impl ClientConfig {
+    pub fn with_ids(client_id: String, client_secret: String) -> Self {
+        Self {
+            client_id,
+            client_secret,
+            auth_url: default_auth_url(),
+            token_url: default_token_url(),
+        }
+    }
+
+    /// Accepts Mermoz's flat file or the JSON Google Cloud console downloads ({"installed": {...}}).
+    pub fn parse(raw: &str) -> Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(raw)?;
+        let inner = v.get("installed").cloned().unwrap_or(v);
+        Ok(serde_json::from_value(inner)?)
+    }
+
     /// Build-time credentials (release builds), then env, then `MERMOZ_HOME/oauth_client.json`.
     pub fn load() -> Result<Self> {
         if let (Some(id), Some(secret)) = (
@@ -63,7 +79,7 @@ impl ClientConfig {
                 p.display()
             ))
         })?;
-        Ok(serde_json::from_str(&raw)?)
+        Self::parse(&raw)
     }
 }
 
@@ -251,5 +267,27 @@ impl TokenSource {
 
     pub fn invalidate(&self) {
         *self.cache.lock().unwrap() = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    fn parses_google_console_download() {
+        let raw = r#"{"installed":{"client_id":"cid","client_secret":"s","token_uri":"https://oauth2.googleapis.com/token"}}"#;
+        assert_eq!(ClientConfig::parse(raw).unwrap().client_id, "cid");
+    }
+
+    #[rstest]
+    fn parses_flat_file() {
+        assert_eq!(
+            ClientConfig::parse(r#"{"client_id":"cid","client_secret":"s"}"#)
+                .unwrap()
+                .client_secret,
+            "s"
+        );
     }
 }

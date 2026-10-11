@@ -69,8 +69,17 @@ impl Service {
     }
 
     pub fn start_account(self: &Arc<Self>, account_id: &str, email: &str) -> Result<()> {
-        let cfg = ClientConfig::load()?;
-        let refresh = tokens::load(email)?;
+        let grant = tokens::load_grant(email)?;
+        let cfg = match grant.client() {
+            Some(c) => c,
+            None => {
+                // Legacy entry: bind it to the client configured today, which issued it.
+                let c = ClientConfig::load()?;
+                tokens::save_grant(email, &grant.refresh_token, &c)?;
+                c
+            }
+        };
+        let refresh = grant.refresh_token;
         let ts = Arc::new(TokenSource::new(cfg, refresh));
         let gmail = Arc::new(Gmail::new(default_base(), ts));
         let sync = Arc::new(AccountSync {
@@ -149,9 +158,9 @@ impl Service {
         tokio::spawn(async move {
             let result: Result<()> = async {
                 let refresh = pending.finish(Duration::from_secs(600)).await?;
-                let ts = Arc::new(TokenSource::new(cfg, refresh.clone()));
+                let ts = Arc::new(TokenSource::new(cfg.clone(), refresh.clone()));
                 let profile = Gmail::new(default_base(), ts).profile().await?;
-                tokens::save(&profile.email_address, &refresh)?;
+                tokens::save_grant(&profile.email_address, &refresh, &cfg)?;
                 let acc = svc.store.add_account(&profile.email_address, "gmail")?;
                 svc.store
                     .set_sync(&acc.id, "initial", None, profile.messages_total, None)?;

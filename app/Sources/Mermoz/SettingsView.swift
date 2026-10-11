@@ -158,6 +158,8 @@ struct AgentsPane: View {
                     Text("Off: every email an agent wants to send waits in Review for you.")
                         .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
                 }
+                // Label takes the row so the switch sits on the right edge.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .toggleStyle(.switch)
             Text("Only you can turn this on, here in the app. Agents can never approve their own emails.")
@@ -371,6 +373,8 @@ struct AccountAgentCard: View {
                     Text("Removes signatures, disclaimers and clutter, and saves contact details from signatures to People. New mail and the last 30 days.")
                         .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
                 }
+                // Label takes the row so the switch sits on the right edge.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .toggleStyle(.switch)
             .disabled(allowed.isEmpty)
