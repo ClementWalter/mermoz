@@ -46,10 +46,10 @@ enum Cmd {
     AddAccount,
     /// List threads, newest first.
     List {
-        /// Status key(s), comma separated (triage, todo, waiting, ...).
+        /// Status key(s), comma separated (unread, todo, waiting, archive, ...).
         #[arg(long)]
         status: Option<String>,
-        /// Project name or id.
+        /// Project, i.e. Gmail label name (e.g. "Clients/Acme").
         #[arg(long)]
         project: Option<String>,
         /// Account email or id.
@@ -92,8 +92,19 @@ enum Cmd {
     },
     /// Set priority: none, urgent, high, normal, low.
     Priority { thread: String, priority: String },
-    /// Put a thread in a project (created if missing); "none" clears.
-    Project { thread: String, project: String },
+    /// Add a thread to a project (a Gmail label, created if missing); "none" clears all.
+    Project {
+        thread: String,
+        project: String,
+        /// Take the thread out of the project instead.
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Accept the AI's suggested status and projects for threads (marks them read).
+    Accept {
+        #[arg(required = true)]
+        threads: Vec<String>,
+    },
     /// Set a follow-up date (YYYY-MM-DD); "none" clears.
     Due { thread: String, date: String },
     /// Mark a thread read or unread.
@@ -476,7 +487,7 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 p["status"] = json!(keys);
             }
             if let Some(pr) = project {
-                p["project_id"] = json!(resolve_project(&mut c, &pr, false)?);
+                p["project"] = json!(resolve_project(&mut c, &pr, false)?);
             }
             if let Some(a) = account {
                 p["account_id"] = json!(resolve_account(&mut c, &a)?);
@@ -527,12 +538,41 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 t["number"].as_str().unwrap_or(""),
                 t["subject"].as_str().unwrap_or("")
             ));
+            let projects: Vec<&str> = t["projects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str())
+                .collect();
             out.line(format!(
-                "status: {} · priority: {} · due: {}",
+                "status: {} · priority: {} · due: {} · projects: {}",
                 t["status"].as_str().unwrap_or(""),
                 prio_name(t["priority"].as_i64().unwrap_or(0)),
-                t["due"].as_str().unwrap_or("-")
+                t["due"].as_str().unwrap_or("-"),
+                if projects.is_empty() {
+                    "-".to_string()
+                } else {
+                    projects.join(", ")
+                }
             ));
+            if let Some(sg) = t["suggestion"].as_object() {
+                let sp: Vec<&str> = sg["projects"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p.as_str())
+                    .collect();
+                out.line(format!(
+                    "suggested: {}{} (mermoz accept {})",
+                    sg["status"].as_str().unwrap_or("-"),
+                    if sp.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {}", sp.join(", "))
+                    },
+                    t["number"].as_str().unwrap_or("")
+                ));
+            }
             for m in v["messages"].as_array().into_iter().flatten() {
                 let f = &m["from"];
                 out.line(format!(
@@ -619,23 +659,45 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             out.line(format!("priority → {}", prio_name(p)));
         }
-        Cmd::Project { thread, project } => {
-            let pid = if project.eq_ignore_ascii_case("none") {
-                Value::Null
+        Cmd::Project {
+            thread,
+            project,
+            remove,
+        } => {
+            let p = if project.eq_ignore_ascii_case("none") {
+                json!({ "ids": [thread], "projects": [] })
             } else {
-                json!(resolve_project(&mut c, &project, true)?)
+                // Existing projects match case-insensitively; a new name creates the label.
+                let name = resolve_project(&mut c, &project, false).unwrap_or(project.clone());
+                let key = if remove {
+                    "remove_projects"
+                } else {
+                    "add_projects"
+                };
+                json!({ "ids": [thread], key: [name] })
             };
-            let v = c.call(
-                "threads.update",
-                json!({ "ids": [thread], "project_id": pid }),
-            )?;
+            let v = c.call("threads.update", p)?;
             if out.json {
                 return {
                     out.json(&v);
                     Ok(())
                 };
             }
-            out.line(format!("project → {project}"));
+            out.line(if remove {
+                format!("removed from {project}")
+            } else {
+                format!("project + {project}")
+            });
+        }
+        Cmd::Accept { threads } => {
+            let v = c.call("threads.accept_suggestions", json!({ "ids": threads }))?;
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            out.line(format!("accepted {}", v["accepted"].as_i64().unwrap_or(0)));
         }
         Cmd::Due { thread, date } => {
             let d = if date.eq_ignore_ascii_case("none") {

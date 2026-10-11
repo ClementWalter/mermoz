@@ -86,7 +86,43 @@ const MIGRATIONS: &[&str] = &[
     AGENT,
     PROVIDER_AUTH,
     PERSON_OVERRIDES,
+    WORKFLOW_V2,
 ];
+
+/// Workflow v2: Unread is the entry status, Done/Canceled collapse into Archive (the old
+/// Done carried no Gmail label, so it cannot be told apart from archived mail), Gmail
+/// labels become the projects, and the router's suggestions get a home.
+const WORKFLOW_V2: &str = r#"
+DELETE FROM statuses;
+UPDATE threads SET status = 'archive' WHERE status IN ('done', 'canceled');
+UPDATE threads SET status = CASE WHEN unread = 1 THEN 'unread' ELSE 'todo' END WHERE status = 'triage';
+ALTER TABLE threads ADD COLUMN prev_status TEXT;
+CREATE TABLE IF NOT EXISTS thread_projects (
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, name TEXT NOT NULL,
+  PRIMARY KEY (thread_id, name));
+CREATE INDEX IF NOT EXISTS thread_projects_name ON thread_projects(name, thread_id);
+INSERT OR IGNORE INTO thread_projects (thread_id, name)
+  SELECT tl.thread_id, l.name FROM thread_labels tl JOIN labels l ON l.account_id = tl.account_id AND l.label_id = tl.label_id
+  WHERE l.label_id NOT IN ('INBOX','UNREAD','SENT','DRAFT','SPAM','TRASH','STARRED','IMPORTANT','CHAT')
+    AND l.label_id NOT LIKE 'CATEGORY\_%' ESCAPE '\' AND l.label_id NOT LIKE '%\_STAR' ESCAPE '\'
+    AND l.name NOT LIKE 'Mermoz/%' AND l.name != 'Mermoz';
+CREATE TABLE IF NOT EXISTS project_colors (name TEXT PRIMARY KEY, color TEXT NOT NULL);
+INSERT OR IGNORE INTO project_colors (name, color) SELECT name, color FROM projects;
+INSERT OR IGNORE INTO thread_projects (thread_id, name) SELECT t.id, p.name FROM threads t JOIN projects p ON p.id = t.project_id;
+INSERT INTO ops (account_id, kind, key, payload, created)
+  SELECT t.account_id, 'projects', t.id, json_object('add', json_array(p.name), 'remove', json_array()), CAST(strftime('%s','now') AS INTEGER) * 1000
+  FROM threads t JOIN projects p ON p.id = t.project_id WHERE true
+  ON CONFLICT(kind, key) DO NOTHING;
+INSERT INTO ops (account_id, kind, key, payload, created)
+  SELECT account_id, 'labels', id, '{}', CAST(strftime('%s','now') AS INTEGER) * 1000 FROM threads WHERE project_id IS NOT NULL AND true
+  ON CONFLICT(kind, key) DO NOTHING;
+UPDATE threads SET project_id = NULL;
+CREATE TABLE IF NOT EXISTS suggestions (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  status TEXT, status_confidence REAL, projects_json TEXT NOT NULL DEFAULT '[]', project_confidence REAL,
+  priority INTEGER, automated REAL, model TEXT NOT NULL, for_date INTEGER NOT NULL, created INTEGER NOT NULL,
+  decision TEXT, decided INTEGER);
+"#;
 
 /// The AI's verdict on who is who: each address mapped to one person with a clean name.
 const PERSON_OVERRIDES: &str = r#"
@@ -134,6 +170,7 @@ INSERT OR IGNORE INTO thread_labels (thread_id, account_id, label_id)
 "#;
 
 /// Gmail system labels that are views, not mailboxes the user files mail into.
+/// Stars (`YELLOW_STAR`…) and `CATEGORY_*` tabs are excluded by [`is_user_label`] too.
 const SYSTEM_LABELS: &[&str] = &[
     "INBOX",
     "UNREAD",
@@ -157,8 +194,50 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Prefix of every Gmail label Mermoz manages; anything else is left untouched.
+/// Prefix of Mermoz's own status/priority labels in Gmail.
 pub const LABEL_PREFIX: &str = "Mermoz/";
+
+/// Whether a Gmail label is one the user files mail into, i.e. a project.
+pub fn is_user_label(id: &str, name: &str) -> bool {
+    !SYSTEM_LABELS.contains(&id)
+        && !id.starts_with("CATEGORY_")
+        && !id.ends_with("_STAR")
+        && !name.starts_with(LABEL_PREFIX)
+        && name != "Mermoz"
+}
+
+/// Gmail rejects empty names and these reserved ones; "/" nests projects.
+fn validate_project_name(name: &str) -> Result<()> {
+    let n = name.trim();
+    let reserved = SYSTEM_LABELS.iter().any(|s| s.eq_ignore_ascii_case(n));
+    if n.is_empty()
+        || n.starts_with('/')
+        || n.ends_with('/')
+        || n.contains("//")
+        || reserved
+        || n.starts_with(LABEL_PREFIX)
+        || n == "Mermoz"
+    {
+        return Err(Error::InvalidParams(format!(
+            "'{name}' cannot be used as a project name"
+        )));
+    }
+    Ok(())
+}
+
+/// Stable color for a project without a chosen one.
+pub fn default_color(name: &str) -> &'static str {
+    const COLORS: &[&str] = &[
+        "#5B8DEF", "#E0782F", "#2E9A6B", "#8A6FD1", "#C2568C", "#2F8FCF",
+    ];
+    let h = name
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    COLORS[h as usize % COLORS.len()]
+}
+
+/// Open statuses a thread returns to after an interruption by new mail.
+const RESUMABLE: &[&str] = &["todo", "waiting", "in_progress", "backlog"];
 
 /// How a message arrives: the initial import must not reopen old threads, live mail must.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,7 +258,8 @@ pub struct IncomingMessage {
 #[derive(Debug, Clone, Default)]
 pub struct ThreadFilter {
     pub status: Option<Vec<String>>,
-    pub project_id: Option<String>,
+    /// Project (label) name.
+    pub project: Option<String>,
     pub account_id: Option<String>,
     pub priority: Option<Vec<i64>>,
     pub label_id: Option<String>,
@@ -195,8 +275,17 @@ pub struct ThreadFilter {
 pub struct ThreadPatch {
     pub status: Option<String>,
     pub priority: Option<i64>,
-    pub project_id: Option<Option<String>>,
+    /// Replaces the thread's projects.
+    pub projects: Option<Vec<String>>,
+    pub add_projects: Vec<String>,
+    pub remove_projects: Vec<String>,
     pub due: Option<Option<String>>,
+}
+
+impl ThreadPatch {
+    fn touches_projects(&self) -> bool {
+        self.projects.is_some() || !self.add_projects.is_empty() || !self.remove_projects.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -214,55 +303,82 @@ pub struct Op {
 /// Status a thread gets when first seen, from its Gmail state.
 pub fn initial_status(
     in_inbox: bool,
+    trashed: bool,
+    unread: bool,
     status_label: Option<&str>,
     last_date: i64,
     now: i64,
     mode: SyncMode,
 ) -> String {
+    if trashed {
+        return "deleted".into();
+    }
     if let Some(s) = status_label {
         return s.to_string();
     }
     if !in_inbox {
-        return "done".into();
+        return "archive".into();
     }
-    // Old inbox mail imported on first sync goes to Backlog so Triage starts manageable.
+    // Old inbox mail imported on first sync goes to Backlog so Unread starts manageable.
     const THIRTY_DAYS: i64 = 30 * 24 * 3600 * 1000;
     if mode == SyncMode::Initial && now - last_date > THIRTY_DAYS {
         "backlog".into()
+    } else if unread {
+        "unread".into()
     } else {
-        "triage".into()
+        "todo".into()
     }
 }
 
-/// Reopen rule: someone else replying on a Done/Waiting thread puts the ball back with you.
-pub fn status_after_new_message(current: &str, from_me: bool) -> Option<&'static str> {
-    if !from_me && (current == "done" || current == "waiting") {
-        Some("todo")
+/// Someone else writing into the inbox puts the thread back in Unread, unless a draft
+/// awaits review there.
+pub fn status_after_new_message(
+    current: &str,
+    from_me: bool,
+    in_inbox: bool,
+) -> Option<&'static str> {
+    if !from_me && in_inbox && current != "unread" && current != "review" {
+        Some("unread")
     } else {
         None
     }
 }
 
-/// Gmail labels (by name) a thread should carry for its issue state; INBOX included.
+/// Where a thread goes once read: back to the open status new mail interrupted (a
+/// Waiting thread has its answer, so To do), else the router's suggestion, else the
+/// sender's habit, else To do.
+pub fn status_after_read(
+    prev: Option<&str>,
+    suggested: Option<&str>,
+    habit: Option<&str>,
+) -> String {
+    match prev {
+        Some("waiting") => "todo".into(),
+        Some(p) if RESUMABLE.contains(&p) => p.into(),
+        _ => suggested.or(habit).unwrap_or("todo").into(),
+    }
+}
+
+/// Gmail labels (by name) a thread should carry for its status and priority; INBOX
+/// included. Deleted threads carry nothing: they are moved to Trash instead.
 pub fn desired_labels(
     status: &str,
     archived: bool,
     status_name: &str,
     priority: i64,
-    project: Option<&str>,
 ) -> BTreeSet<String> {
     let mut s = BTreeSet::new();
+    if status == "deleted" {
+        return s;
+    }
     if !archived {
         s.insert("INBOX".to_string());
     }
-    if status != "triage" && status != "done" {
+    if !matches!(status, "unread" | "archive") {
         s.insert(format!("{LABEL_PREFIX}{status_name}"));
     }
     if let Some(p) = priority_name(priority).filter(|_| priority != 3) {
         s.insert(format!("{LABEL_PREFIX}Priority/{p}"));
-    }
-    if let Some(p) = project {
-        s.insert(format!("{LABEL_PREFIX}Project/{p}"));
     }
     s
 }
@@ -468,7 +584,7 @@ pub struct Store {
 }
 
 const THREAD_COLS: &str = "t.id, t.number, t.account_id, t.subject, t.snippet, t.participants, t.last_from, t.last_date, \
-    t.unread, t.message_count, t.has_attachments, t.status, t.priority, t.project_id, t.due, t.summary, t.next_action";
+    t.unread, t.message_count, t.has_attachments, t.status, t.priority, t.due, t.summary, t.next_action";
 
 fn thread_row(r: &Row) -> rusqlite::Result<ThreadSummary> {
     let participants: String = r.get(5)?;
@@ -486,11 +602,58 @@ fn thread_row(r: &Row) -> rusqlite::Result<ThreadSummary> {
         has_attachments: r.get::<_, i64>(10)? != 0,
         status: r.get(11)?,
         priority: r.get(12)?,
-        project_id: r.get(13)?,
-        due: r.get(14)?,
-        summary: r.get(15)?,
-        next_action: r.get(16)?,
+        projects: vec![],
+        due: r.get(13)?,
+        summary: r.get(14)?,
+        next_action: r.get(15)?,
+        suggestion: None,
     })
+}
+
+/// Fills each thread's projects and pending suggestion in two indexed lookups.
+fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<rusqlite::types::Value> = rows.iter().map(|t| t.id.clone().into()).collect();
+    let marks = vec!["?"; ids.len()].join(",");
+    let mut projects: std::collections::HashMap<String, Vec<String>> = Default::default();
+    let mut st = conn.prepare(&format!(
+        "SELECT thread_id, name FROM thread_projects WHERE thread_id IN ({marks}) ORDER BY name COLLATE NOCASE"
+    ))?;
+    for row in st.query_map(params_from_iter(ids.iter()), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
+        let (t, n) = row?;
+        projects.entry(t).or_default().push(n);
+    }
+    let mut suggestions: std::collections::HashMap<String, Suggestion> = Default::default();
+    let mut st = conn.prepare(&format!(
+        "SELECT thread_id, status, status_confidence, projects_json, project_confidence, priority, automated
+         FROM suggestions WHERE decision IS NULL AND thread_id IN ({marks})"
+    ))?;
+    for row in st.query_map(params_from_iter(ids.iter()), |r| {
+        let pj: String = r.get(3)?;
+        Ok((
+            r.get::<_, String>(0)?,
+            Suggestion {
+                status: r.get(1)?,
+                status_confidence: r.get(2)?,
+                projects: serde_json::from_str(&pj).unwrap_or_default(),
+                project_confidence: r.get(4)?,
+                priority: r.get(5)?,
+                automated: r.get(6)?,
+            },
+        ))
+    })? {
+        let (t, sg) = row?;
+        suggestions.insert(t, sg);
+    }
+    for t in rows.iter_mut() {
+        t.projects = projects.remove(&t.id).unwrap_or_default();
+        t.suggestion = suggestions.remove(&t.id);
+    }
+    Ok(())
 }
 
 fn draft_row(r: &Row) -> rusqlite::Result<Draft> {
@@ -836,13 +999,20 @@ impl Store {
             )
             .optional()?;
         if let Some((mid, tid)) = existing {
+            let was_unread: bool =
+                tx.query_row("SELECT unread FROM threads WHERE id = ?1", [&tid], |r| {
+                    Ok(r.get::<_, i64>(0)? != 0)
+                })?;
+            // A local read/unread not yet pushed wins over the server's older view.
             tx.execute(
-                "UPDATE messages SET labels_json = ?2, unread = ?3 WHERE id = ?1",
-                params![mid, labels_json, unread as i64],
+                "UPDATE messages SET labels_json = ?2,
+                   unread = CASE WHEN EXISTS (SELECT 1 FROM ops WHERE kind = 'read' AND key = ?4) THEN unread ELSE ?3 END
+                 WHERE id = ?1",
+                params![mid, labels_json, unread as i64, tid],
             )?;
             Self::refresh_thread(tx, &tid)?;
             if mode == SyncMode::Incremental {
-                Self::adopt_remote_labels(tx, account_id, &tid)?;
+                Self::adopt_remote_labels(tx, account_id, &tid, was_unread)?;
             }
             return Ok(tid);
         }
@@ -869,14 +1039,11 @@ impl Store {
             .optional()?;
         let (thread_id, new_thread) = match thread {
             Some((tid, status)) => {
+                let in_inbox = msg.label_ids.iter().any(|l| l == "INBOX");
                 if mode == SyncMode::Incremental
-                    && let Some(s) = status_after_new_message(&status, is_from_me)
+                    && status_after_new_message(&status, is_from_me, in_inbox).is_some()
                 {
-                    tx.execute(
-                        "UPDATE threads SET status = ?2 WHERE id = ?1",
-                        params![tid, s],
-                    )?;
-                    Self::enqueue_label_sync_tx(tx, account_id, &tid)?;
+                    Self::enter_unread_tx(tx, account_id, &tid, &status)?;
                 }
                 (tid, false)
             }
@@ -895,7 +1062,7 @@ impl Store {
                     [(number + 1).to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO threads (id, account_id, provider_thread_id, number, status) VALUES (?1, ?2, ?3, ?4, 'triage')",
+                    "INSERT INTO threads (id, account_id, provider_thread_id, number, status) VALUES (?1, ?2, ?3, ?4, 'unread')",
                     params![tid, account_id, msg.provider_thread_id, number],
                 )?;
                 (tid, true)
@@ -952,13 +1119,20 @@ impl Store {
         if new_thread {
             let (in_inbox, names) = Self::thread_remote_labels(tx, account_id, &thread_id)?;
             let status_label = Self::status_from_labels(tx, &names)?;
-            let last_date: i64 = tx.query_row(
-                "SELECT last_date FROM threads WHERE id = ?1",
+            let (last_date, unread): (i64, bool) = tx.query_row(
+                "SELECT last_date, unread FROM threads WHERE id = ?1",
                 [&thread_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
             )?;
-            let status =
-                initial_status(in_inbox, status_label.as_deref(), last_date, now_ms(), mode);
+            let status = initial_status(
+                in_inbox,
+                names.contains("TRASH"),
+                unread,
+                status_label.as_deref(),
+                last_date,
+                now_ms(),
+                mode,
+            );
             tx.execute(
                 "UPDATE threads SET status = ?2 WHERE id = ?1",
                 params![thread_id, status],
@@ -971,6 +1145,12 @@ impl Store {
     /// Recomputes denormalized thread fields from its messages.
     fn refresh_thread(tx: &Connection, thread_id: &str) -> Result<()> {
         Self::index_thread_labels(tx, thread_id)?;
+        let account_id: String = tx.query_row(
+            "SELECT account_id FROM threads WHERE id = ?1",
+            [thread_id],
+            |r| r.get(0),
+        )?;
+        Self::sync_projects_tx(tx, &account_id, thread_id)?;
         let mut st = tx.prepare_cached(
             "SELECT from_name, from_email, is_from_me, unread, date, subject, body_text,
                (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id)
@@ -1114,7 +1294,7 @@ impl Store {
         Ok(None)
     }
 
-    /// Priority and project labels set on another device become local fields.
+    /// A priority label set on another device becomes the local field.
     fn adopt_meta_labels(tx: &Connection, thread_id: &str, names: &BTreeSet<String>) -> Result<()> {
         for n in names {
             if let Some(p) = n.strip_prefix(&format!("{LABEL_PREFIX}Priority/")) {
@@ -1123,44 +1303,22 @@ impl Store {
                     "UPDATE threads SET priority = ?2 WHERE id = ?1",
                     params![thread_id, v],
                 )?;
-            } else if let Some(p) = n.strip_prefix(&format!("{LABEL_PREFIX}Project/")) {
-                let pid = Self::project_id_tx(tx, p)?;
-                tx.execute(
-                    "UPDATE threads SET project_id = ?2 WHERE id = ?1",
-                    params![thread_id, pid],
-                )?;
             }
         }
         Ok(())
     }
 
-    fn project_id_tx(tx: &Connection, name: &str) -> Result<String> {
-        if let Some(id) = tx
-            .query_row("SELECT id FROM projects WHERE name = ?1", [name], |r| {
-                r.get(0)
-            })
-            .optional()?
-        {
-            return Ok(id);
-        }
-        let id = new_id("prj");
-        const COLORS: &[&str] = &[
-            "#5B8DEF", "#E0782F", "#2E9A6B", "#8A6FD1", "#C2568C", "#2F8FCF",
-        ];
-        let n: i64 = tx.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-        tx.execute(
-            "INSERT INTO projects (id, name, color) VALUES (?1, ?2, ?3)",
-            params![id, name, COLORS[n as usize % COLORS.len()]],
-        )?;
-        Ok(id)
-    }
-
-    /// Label changes made elsewhere (phone, webmail) update the issue, unless a
-    /// local change is still waiting to be pushed — local intent wins.
-    fn adopt_remote_labels(tx: &Connection, account_id: &str, thread_id: &str) -> Result<()> {
+    /// Label and read-state changes made elsewhere (phone, webmail) update the status,
+    /// unless a local change is still waiting to be pushed — local intent wins.
+    fn adopt_remote_labels(
+        tx: &Connection,
+        account_id: &str,
+        thread_id: &str,
+        was_unread: bool,
+    ) -> Result<()> {
         let pending: bool = tx
             .query_row(
-                "SELECT 1 FROM ops WHERE kind = 'labels' AND key = ?1",
+                "SELECT 1 FROM ops WHERE kind IN ('labels', 'read') AND key = ?1",
                 [thread_id],
                 |_| Ok(()),
             )
@@ -1170,10 +1328,10 @@ impl Store {
             return Ok(());
         }
         let (in_inbox, names) = Self::thread_remote_labels(tx, account_id, thread_id)?;
-        let current: String = tx.query_row(
-            "SELECT status FROM threads WHERE id = ?1",
+        let (current, unread): (String, bool) = tx.query_row(
+            "SELECT status, unread FROM threads WHERE id = ?1",
             [thread_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
         )?;
         let archived: bool = tx
             .query_row(
@@ -1184,17 +1342,41 @@ impl Store {
             .optional()?
             .unwrap_or(0)
             != 0;
-        let next = match Self::status_from_labels(tx, &names)? {
-            Some(s) => Some(s),
-            None if !in_inbox && !archived => Some("done".to_string()),
-            None if in_inbox && archived => Some("triage".to_string()),
-            None => None,
+        let back_in_inbox = if unread { "unread" } else { "todo" };
+        let next = if names.contains("TRASH") {
+            Some("deleted".to_string())
+        } else {
+            match Self::status_from_labels(tx, &names)? {
+                Some(s) => Some(s),
+                None if current == "deleted" => {
+                    Some(if in_inbox { back_in_inbox } else { "archive" }.to_string())
+                }
+                None if !in_inbox && !archived => Some("archive".to_string()),
+                None if in_inbox && archived => Some(back_in_inbox.to_string()),
+                None => None,
+            }
         };
-        if let Some(s) = next.filter(|s| *s != current) {
-            tx.execute(
-                "UPDATE threads SET status = ?2 WHERE id = ?1",
-                params![thread_id, s],
-            )?;
+        match next.filter(|s| *s != current) {
+            Some(s) => {
+                tx.execute(
+                    "UPDATE threads SET status = ?2, prev_status = NULL WHERE id = ?1",
+                    params![thread_id, s],
+                )?;
+            }
+            // Only a change of read state counts: an unread thread can be filed without reading.
+            None if was_unread && !unread && current == "unread" => {
+                Self::leave_unread_tx(tx, account_id, thread_id)?
+            }
+            None if !was_unread
+                && unread
+                && in_inbox
+                && !archived
+                && current != "unread"
+                && current != "review" =>
+            {
+                Self::enter_unread_tx(tx, account_id, thread_id, &current)?
+            }
+            None => {}
         }
         Self::adopt_meta_labels(tx, thread_id, &names)
     }
@@ -1231,8 +1413,10 @@ impl Store {
             clauses.push(format!("t.status IN ({})", vec!["?"; s.len()].join(",")));
             args.extend(s.iter().map(|x| x.clone().into()));
         }
-        if let Some(p) = &f.project_id {
-            clauses.push("t.project_id = ?".into());
+        if let Some(p) = &f.project {
+            clauses.push(
+                "t.id IN (SELECT tp.thread_id FROM thread_projects tp WHERE tp.name = ?)".into(),
+            );
             args.push(p.clone().into());
         }
         if let Some(a) = &f.account_id {
@@ -1278,21 +1462,27 @@ impl Store {
             f.offset.max(0)
         );
         let mut st = r.prepare_cached(&sql)?;
-        let rows = st
+        let mut rows = st
             .query_map(params_from_iter(args.iter()), thread_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        attach(&r, &mut rows)?;
         Ok((rows, total))
     }
 
     pub fn thread(&self, id: &str) -> Result<ThreadSummary> {
         let r = self.r.lock().unwrap();
-        r.query_row(
-            &format!("SELECT {THREAD_COLS} FROM threads t WHERE t.id = ?1"),
-            [id],
-            thread_row,
-        )
-        .optional()?
-        .ok_or_else(|| Error::NotFound(format!("thread {id}")))
+        let t = r
+            .query_row(
+                &format!("SELECT {THREAD_COLS} FROM threads t WHERE t.id = ?1"),
+                [id],
+                thread_row,
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("thread {id}")))?;
+        let mut rows = [t];
+        attach(&r, &mut rows)?;
+        let [t] = rows;
+        Ok(t)
     }
 
     pub fn messages(&self, thread_id: &str) -> Result<Vec<Message>> {
@@ -1378,14 +1568,8 @@ impl Store {
                 return Err(Error::InvalidParams(format!("unknown status '{s}'")));
             }
         }
-        if let Some(Some(p)) = &patch.project_id {
-            let ok = tx
-                .query_row("SELECT 1 FROM projects WHERE id = ?1", [p], |_| Ok(()))
-                .optional()?
-                .is_some();
-            if !ok {
-                return Err(Error::InvalidParams(format!("unknown project '{p}'")));
-            }
+        for p in patch.projects.iter().flatten().chain(&patch.add_projects) {
+            validate_project_name(p)?;
         }
         if let Some(Some(d)) = &patch.due
             && chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err()
@@ -1413,9 +1597,10 @@ impl Store {
             };
             if let Some(s) = &patch.status {
                 tx.execute(
-                    "UPDATE threads SET status = ?2 WHERE id = ?1",
+                    "UPDATE threads SET status = ?2, prev_status = NULL WHERE id = ?1",
                     params![id, s],
                 )?;
+                Self::decide_suggestion_tx(&tx, id, "user")?;
             }
             if let Some(p) = patch.priority {
                 tx.execute(
@@ -1423,16 +1608,24 @@ impl Store {
                     params![id, p],
                 )?;
             }
-            if let Some(p) = &patch.project_id {
-                tx.execute(
-                    "UPDATE threads SET project_id = ?2 WHERE id = ?1",
-                    params![id, p],
-                )?;
+            if patch.touches_projects() {
+                let current = Self::thread_projects_tx(&tx, id)?;
+                let mut next: BTreeSet<String> = match &patch.projects {
+                    Some(v) => v.iter().map(|p| p.trim().to_string()).collect(),
+                    None => current.clone(),
+                };
+                next.extend(patch.add_projects.iter().map(|p| p.trim().to_string()));
+                for p in &patch.remove_projects {
+                    next.remove(p.trim());
+                }
+                let add: Vec<String> = next.difference(&current).cloned().collect();
+                let remove: Vec<String> = current.difference(&next).cloned().collect();
+                Self::set_thread_projects_tx(&tx, &acc, id, &add, &remove)?;
             }
             if let Some(d) = &patch.due {
                 tx.execute("UPDATE threads SET due = ?2 WHERE id = ?1", params![id, d])?;
             }
-            if patch.status.is_some() || patch.priority.is_some() || patch.project_id.is_some() {
+            if patch.status.is_some() || patch.priority.is_some() {
                 Self::enqueue_label_sync_tx(&tx, &acc, id)?;
             }
             n += 1;
@@ -1441,14 +1634,15 @@ impl Store {
         Ok(n)
     }
 
+    /// Reading leaves Unread for the thread's next status; marking unread brings it back.
     pub fn mark_read(&self, thread_id: &str, read: bool) -> Result<()> {
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
-        let acc: String = tx
+        let (acc, status): (String, String) = tx
             .query_row(
-                "SELECT account_id FROM threads WHERE id = ?1",
+                "SELECT account_id, status FROM threads WHERE id = ?1",
                 [thread_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))?;
@@ -1460,6 +1654,11 @@ impl Store {
             "UPDATE threads SET unread = ?2 WHERE id = ?1",
             params![thread_id, (!read) as i64],
         )?;
+        if read && status == "unread" {
+            Self::leave_unread_tx(&tx, &acc, thread_id)?;
+        } else if !read && status != "unread" && status != "review" {
+            Self::enter_unread_tx(&tx, &acc, thread_id, &status)?;
+        }
         Self::enqueue_tx(
             &tx,
             &acc,
@@ -1471,22 +1670,243 @@ impl Store {
         Ok(())
     }
 
+    /// Moves a thread to Unread, remembering an open status to resume after reading.
+    fn enter_unread_tx(
+        tx: &Connection,
+        account_id: &str,
+        thread_id: &str,
+        current: &str,
+    ) -> Result<()> {
+        let prev = RESUMABLE.contains(&current).then_some(current);
+        tx.execute(
+            "UPDATE threads SET status = 'unread', prev_status = ?2 WHERE id = ?1",
+            params![thread_id, prev],
+        )?;
+        Self::enqueue_label_sync_tx(tx, account_id, thread_id)
+    }
+
+    /// Applies the read transition: status from [`status_after_read`], plus the
+    /// suggested projects, which reading confirms.
+    fn leave_unread_tx(tx: &Connection, account_id: &str, thread_id: &str) -> Result<()> {
+        let prev: Option<String> = tx.query_row(
+            "SELECT prev_status FROM threads WHERE id = ?1",
+            [thread_id],
+            |r| r.get(0),
+        )?;
+        let sugg: Option<(Option<String>, String)> = tx
+            .query_row(
+                "SELECT status, projects_json FROM suggestions WHERE thread_id = ?1 AND decision IS NULL",
+                [thread_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let habit = Self::sender_habit_tx(tx, thread_id)?;
+        let suggested = sugg.as_ref().and_then(|(s, _)| s.clone());
+        let next = status_after_read(prev.as_deref(), suggested.as_deref(), habit.as_deref());
+        tx.execute(
+            "UPDATE threads SET status = ?2, prev_status = NULL WHERE id = ?1",
+            params![thread_id, next],
+        )?;
+        if let Some((_, pj)) = &sugg {
+            let wanted: Vec<String> = serde_json::from_str(pj).unwrap_or_default();
+            let current = Self::thread_projects_tx(tx, thread_id)?;
+            let add: Vec<String> = wanted
+                .into_iter()
+                .filter(|p| !current.contains(p))
+                .collect();
+            Self::set_thread_projects_tx(tx, account_id, thread_id, &add, &[])?;
+        }
+        Self::decide_suggestion_tx(tx, thread_id, "read")?;
+        Self::enqueue_label_sync_tx(tx, account_id, thread_id)
+    }
+
+    /// The most frequent routed status of the last sender's other threads, for automated
+    /// senders only: archived history says nothing about the next mail from a person.
+    fn sender_habit_tx(tx: &Connection, thread_id: &str) -> Result<Option<String>> {
+        let email: Option<String> = tx
+            .query_row(
+                "SELECT lower(from_email) FROM messages WHERE thread_id = ?1 AND is_from_me = 0 ORDER BY date DESC LIMIT 1",
+                [thread_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(email) = email.filter(|e| is_automated(e)) else {
+            return Ok(None);
+        };
+        Ok(tx
+            .query_row(
+                "SELECT t.status FROM threads t WHERE t.id != ?1
+                   AND t.status IN ('todo','waiting','in_progress','backlog','done','archive')
+                   AND t.id IN (SELECT thread_id FROM messages WHERE lower(from_email) = ?2)
+                 GROUP BY t.status ORDER BY COUNT(*) DESC LIMIT 1",
+                params![thread_id, email],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    fn decide_suggestion_tx(tx: &Connection, thread_id: &str, decision: &str) -> Result<()> {
+        tx.execute(
+            "UPDATE suggestions SET decision = ?2, decided = ?3 WHERE thread_id = ?1 AND decision IS NULL",
+            params![thread_id, decision, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    fn thread_projects_tx(tx: &Connection, thread_id: &str) -> Result<BTreeSet<String>> {
+        let mut st = tx.prepare_cached("SELECT name FROM thread_projects WHERE thread_id = ?1")?;
+        Ok(st
+            .query_map([thread_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Adds/removes projects locally and queues the matching Gmail label change. The op
+    /// carries explicit adds/removes so it never strips a label added on another device.
+    fn set_thread_projects_tx(
+        tx: &Connection,
+        account_id: &str,
+        thread_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<()> {
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        for p in add {
+            tx.execute(
+                "INSERT OR IGNORE INTO thread_projects (thread_id, name) VALUES (?1, ?2)",
+                params![thread_id, p],
+            )?;
+        }
+        for p in remove {
+            tx.execute(
+                "DELETE FROM thread_projects WHERE thread_id = ?1 AND name = ?2",
+                params![thread_id, p],
+            )?;
+        }
+        let (mut adds, mut removes) = Self::pending_project_delta_tx(tx, thread_id)?;
+        for p in add {
+            removes.remove(p);
+            adds.insert(p.clone());
+        }
+        for p in remove {
+            adds.remove(p);
+            removes.insert(p.clone());
+        }
+        Self::enqueue_tx(
+            tx,
+            account_id,
+            "projects",
+            thread_id,
+            &serde_json::json!({ "add": adds, "remove": removes }),
+        )
+    }
+
+    /// Project adds/removes still waiting to be pushed for a thread.
+    fn pending_project_delta_tx(
+        tx: &Connection,
+        thread_id: &str,
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+        let payload: Option<String> = tx
+            .query_row(
+                "SELECT payload FROM ops WHERE kind = 'projects' AND key = ?1",
+                [thread_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let v: serde_json::Value = payload
+            .and_then(|p| serde_json::from_str(&p).ok())
+            .unwrap_or_default();
+        let set = |k: &str| -> BTreeSet<String> {
+            v[k].as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Ok((set("add"), set("remove")))
+    }
+
+    /// Local projects follow the thread's Gmail labels, with unpushed edits on top.
+    fn sync_projects_tx(tx: &Connection, account_id: &str, thread_id: &str) -> Result<()> {
+        let (_, _, names) = Self::thread_remote_user_labels(tx, account_id, thread_id)?;
+        let (adds, removes) = Self::pending_project_delta_tx(tx, thread_id)?;
+        let wanted: BTreeSet<String> = names
+            .into_iter()
+            .chain(adds)
+            .filter(|n| !removes.contains(n))
+            .collect();
+        let current = Self::thread_projects_tx(tx, thread_id)?;
+        for p in current.difference(&wanted) {
+            tx.execute(
+                "DELETE FROM thread_projects WHERE thread_id = ?1 AND name = ?2",
+                params![thread_id, p],
+            )?;
+        }
+        for p in wanted.difference(&current) {
+            tx.execute(
+                "INSERT OR IGNORE INTO thread_projects (thread_id, name) VALUES (?1, ?2)",
+                params![thread_id, p],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// (in inbox, in trash, user label names) as last seen on the server.
+    fn thread_remote_user_labels(
+        tx: &Connection,
+        account_id: &str,
+        thread_id: &str,
+    ) -> Result<(bool, bool, BTreeSet<String>)> {
+        // System labels may be missing from the label cache; their id is their name.
+        let mut st = tx.prepare_cached(
+            "SELECT tl.label_id, l.name FROM thread_labels tl LEFT JOIN labels l ON l.account_id = tl.account_id AND l.label_id = tl.label_id
+             WHERE tl.thread_id = ?1 AND tl.account_id = ?2",
+        )?;
+        let (mut inbox, mut trash, mut names) = (false, false, BTreeSet::new());
+        for row in st.query_map(params![thread_id, account_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })? {
+            match row? {
+                (id, _) if id == "INBOX" => inbox = true,
+                (id, _) if id == "TRASH" => trash = true,
+                (id, Some(name)) if is_user_label(&id, &name) => {
+                    names.insert(name);
+                }
+                _ => {}
+            }
+        }
+        Ok((inbox, trash, names))
+    }
+
+    pub fn thread_status(&self, thread_id: &str) -> Result<String> {
+        let r = self.r.lock().unwrap();
+        r.query_row(
+            "SELECT status FROM threads WHERE id = ?1",
+            [thread_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))
+    }
+
+    /// Whether the server has the thread in Trash.
+    pub fn thread_trashed(&self, account_id: &str, thread_id: &str) -> Result<bool> {
+        let r = self.r.lock().unwrap();
+        Ok(Self::thread_remote_user_labels(&r, account_id, thread_id)?.1)
+    }
+
     /// Desired Gmail labels for a thread, from its current issue fields.
     pub fn thread_desired_labels(&self, thread_id: &str) -> Result<BTreeSet<String>> {
         let r = self.r.lock().unwrap();
-        let (status, name, archived, priority, project): (String, String, i64, i64, Option<String>) = r.query_row(
-            "SELECT t.status, s.name, s.archived, t.priority, p.name FROM threads t JOIN statuses s ON s.key = t.status
-             LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+        let (status, name, archived, priority): (String, String, i64, i64) = r.query_row(
+            "SELECT t.status, s.name, s.archived, t.priority FROM threads t JOIN statuses s ON s.key = t.status WHERE t.id = ?1",
             [thread_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
-        Ok(desired_labels(
-            &status,
-            archived != 0,
-            &name,
-            priority,
-            project.as_deref(),
-        ))
+        Ok(desired_labels(&status, archived != 0, &name, priority))
     }
 
     /// Managed labels (INBOX + Mermoz/*) currently on the thread, by name.
@@ -1561,7 +1981,9 @@ impl Store {
             status.insert(k, n.into());
         }
         let mut project = serde_json::Map::new();
-        let mut st = r.prepare_cached(&format!("SELECT t.project_id, COUNT(*) FROM threads t WHERE {open} AND t.project_id IS NOT NULL GROUP BY t.project_id"))?;
+        let mut st = r.prepare_cached(&format!(
+            "SELECT tp.name, COUNT(*) FROM thread_projects tp JOIN threads t ON t.id = tp.thread_id WHERE {open} GROUP BY tp.name"
+        ))?;
         for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
             let (k, n) = row?;
             project.insert(k, n.into());
@@ -1600,9 +2022,10 @@ impl Store {
              GROUP BY t.id ORDER BY t.last_date DESC LIMIT ?3"
         );
         let mut st = r.prepare_cached(&sql)?;
-        let rows = st
+        let mut rows = st
             .query_map(params![fq, limit * 4, limit], thread_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        attach(&r, &mut rows)?;
         Ok(rows)
     }
 
@@ -1635,21 +2058,47 @@ impl Store {
         )
     }
 
+    /// Every project: the user's Gmail labels on any account, plus projects created here
+    /// that no thread carries yet.
     pub fn projects(&self) -> Result<Vec<Project>> {
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached("SELECT id, name, color FROM projects ORDER BY name")?;
-        Ok(st
-            .query_map([], |r| {
-                Ok(Project {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    color: r.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?)
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        let mut st = r.prepare_cached("SELECT label_id, name FROM labels")?;
+        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (id, name) = row?;
+            if is_user_label(&id, &name) {
+                names.insert(name);
+            }
+        }
+        let mut st = r.prepare_cached(
+            "SELECT name FROM project_colors UNION SELECT DISTINCT name FROM thread_projects",
+        )?;
+        for n in st.query_map([], |r| r.get::<_, String>(0))? {
+            names.insert(n?);
+        }
+        let mut colors: std::collections::HashMap<String, String> = Default::default();
+        let mut st = r.prepare_cached("SELECT name, color FROM project_colors")?;
+        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (n, c) = row?;
+            colors.insert(n, c);
+        }
+        let mut out: Vec<Project> = names
+            .into_iter()
+            .map(|n| Project {
+                id: n.clone(),
+                color: colors
+                    .get(&n)
+                    .cloned()
+                    .unwrap_or_else(|| default_color(&n).to_string()),
+                name: n,
+            })
+            .collect();
+        out.sort_by_key(|p| p.name.to_lowercase());
+        Ok(out)
     }
 
-    /// Renames and/or recolors a project; its threads get their Gmail label renamed.
+    /// Renames and/or recolors a project. A rename carries the sub-projects
+    /// ("Old/x" → "New/x") and queues the Gmail label renames on every account.
     pub fn update_project(
         &self,
         id: &str,
@@ -1658,122 +2107,250 @@ impl Store {
     ) -> Result<Project> {
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
-        if tx
-            .query_row("SELECT 1 FROM projects WHERE id = ?1", [id], |_| Ok(()))
-            .optional()?
-            .is_none()
-        {
-            return Err(Error::NotFound(format!("project {id}")));
-        }
-        if let Some(n) = name {
-            let n = n.trim();
-            if n.is_empty() || n.contains('/') {
-                return Err(Error::InvalidParams(
-                    "project name must be non-empty and contain no '/'".into(),
-                ));
-            }
-            if tx
+        let mut current = id.to_string();
+        if let Some(n) = name.map(str::trim).filter(|n| *n != id) {
+            validate_project_name(n)?;
+            let taken = tx
                 .query_row(
-                    "SELECT 1 FROM projects WHERE name = ?1 AND id != ?2",
-                    params![n, id],
+                    "SELECT 1 FROM thread_projects WHERE name = ?1 UNION SELECT 1 FROM project_colors WHERE name = ?1
+                     UNION SELECT 1 FROM labels WHERE name = ?1",
+                    [n],
                     |_| Ok(()),
                 )
                 .optional()?
-                .is_some()
-            {
+                .is_some();
+            if taken {
                 return Err(Error::InvalidParams(format!(
                     "a project named '{n}' already exists"
                 )));
             }
-            tx.execute(
-                "UPDATE projects SET name = ?2 WHERE id = ?1",
-                params![id, n],
-            )?;
-            Self::relabel_project_threads(&tx, id)?;
+            let accounts: Vec<String> = {
+                let mut st = tx.prepare("SELECT id FROM accounts")?;
+                st.query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for (old, new) in Self::project_family_tx(&tx, id)?.into_iter().map(|o| {
+                let n2 = format!("{n}{}", &o[id.len()..]);
+                (o, n2)
+            }) {
+                tx.execute(
+                    "UPDATE thread_projects SET name = ?2 WHERE name = ?1",
+                    params![old, new],
+                )?;
+                tx.execute(
+                    "UPDATE project_colors SET name = ?2 WHERE name = ?1",
+                    params![old, new],
+                )?;
+                tx.execute(
+                    "UPDATE labels SET name = ?2 WHERE name = ?1",
+                    params![old, new],
+                )?;
+                for acc in &accounts {
+                    Self::enqueue_tx(
+                        &tx,
+                        acc,
+                        "label_rename",
+                        &format!("{acc}:{new}"),
+                        &serde_json::json!({ "from": old, "to": new }),
+                    )?;
+                }
+            }
+            current = n.to_string();
         }
         if let Some(c) = color {
             tx.execute(
-                "UPDATE projects SET color = ?2 WHERE id = ?1",
-                params![id, c],
+                "INSERT INTO project_colors (name, color) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET color = excluded.color",
+                params![current, c],
             )?;
         }
-        let p = tx.query_row(
-            "SELECT id, name, color FROM projects WHERE id = ?1",
-            [id],
-            |r| {
-                Ok(Project {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    color: r.get(2)?,
-                })
-            },
-        )?;
+        let color: String = tx
+            .query_row(
+                "SELECT color FROM project_colors WHERE name = ?1",
+                [&current],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| default_color(&current).to_string());
         tx.commit()?;
-        Ok(p)
+        Ok(Project {
+            id: current.clone(),
+            name: current,
+            color,
+        })
     }
 
-    /// Deletes a project: its threads leave it (and lose the Gmail label), nothing else changes.
+    /// A project and its sub-projects, by name.
+    fn project_family_tx(tx: &Connection, name: &str) -> Result<Vec<String>> {
+        let child = format!("{name}/%");
+        let mut st = tx.prepare(
+            "SELECT name FROM labels WHERE name = ?1 OR name LIKE ?2
+             UNION SELECT name FROM thread_projects WHERE name = ?1 OR name LIKE ?2
+             UNION SELECT name FROM project_colors WHERE name = ?1 OR name LIKE ?2",
+        )?;
+        let v = st
+            .query_map(params![name, child], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(v)
+    }
+
+    /// Deletes a project: its Gmail label is deleted on every account (the mail stays,
+    /// only the label goes). Returns how many threads carried it.
     pub fn delete_project(&self, id: &str) -> Result<usize> {
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
-        let threads: Vec<(String, String)> = {
-            let mut st = tx.prepare("SELECT id, account_id FROM threads WHERE project_id = ?1")?;
-            st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        let n = tx.execute("DELETE FROM thread_projects WHERE name = ?1", [id])?;
+        let known = tx.execute("DELETE FROM project_colors WHERE name = ?1", [id])?;
+        let accounts: Vec<String> = {
+            let mut st = tx.prepare("SELECT DISTINCT account_id FROM labels WHERE name = ?1")?;
+            st.query_map([id], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        tx.execute(
-            "UPDATE threads SET project_id = NULL WHERE project_id = ?1",
-            [id],
-        )?;
-        if tx.execute("DELETE FROM projects WHERE id = ?1", [id])? == 0 {
+        if n == 0 && known == 0 && accounts.is_empty() {
             return Err(Error::NotFound(format!("project {id}")));
         }
-        for (t, acc) in &threads {
-            Self::enqueue_label_sync_tx(&tx, acc, t)?;
+        for acc in &accounts {
+            Self::enqueue_tx(
+                &tx,
+                acc,
+                "label_delete",
+                &format!("{acc}:{id}"),
+                &serde_json::json!({ "name": id }),
+            )?;
         }
         tx.commit()?;
-        Ok(threads.len())
+        Ok(n)
     }
 
-    fn relabel_project_threads(tx: &Connection, project_id: &str) -> Result<()> {
-        let threads: Vec<(String, String)> = {
-            let mut st = tx.prepare("SELECT id, account_id FROM threads WHERE project_id = ?1")?;
-            st.query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?
-        };
-        for (t, acc) in &threads {
-            Self::enqueue_label_sync_tx(tx, acc, t)?;
-        }
+    /// Creates a project; its Gmail label is created when a thread first gets it.
+    pub fn create_project(&self, name: &str, color: Option<&str>) -> Result<Project> {
+        let name = name.trim();
+        validate_project_name(name)?;
+        let color = color.unwrap_or_else(|| default_color(name)).to_string();
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "INSERT INTO project_colors (name, color) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET color = excluded.color",
+            params![name, color],
+        )?;
+        Ok(Project {
+            id: name.into(),
+            name: name.into(),
+            color,
+        })
+    }
+
+    // ---- routing suggestions -------------------------------------------
+
+    /// Stores the router's prediction for a thread, replacing an older one.
+    pub fn save_suggestion(
+        &self,
+        thread_id: &str,
+        sg: &Suggestion,
+        model: &str,
+        for_date: i64,
+    ) -> Result<()> {
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "INSERT INTO suggestions (thread_id, status, status_confidence, projects_json, project_confidence, priority, automated, model, for_date, created)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(thread_id) DO UPDATE SET status = excluded.status, status_confidence = excluded.status_confidence,
+               projects_json = excluded.projects_json, project_confidence = excluded.project_confidence, priority = excluded.priority,
+               automated = excluded.automated, model = excluded.model, for_date = excluded.for_date, created = excluded.created,
+               decision = NULL, decided = NULL",
+            params![
+                thread_id,
+                sg.status,
+                sg.status_confidence,
+                serde_json::to_string(&sg.projects)?,
+                sg.project_confidence,
+                sg.priority,
+                sg.automated,
+                model,
+                for_date,
+                now_ms()
+            ],
+        )?;
         Ok(())
     }
 
-    pub fn create_project(&self, name: &str, color: Option<&str>) -> Result<Project> {
-        let name = name.trim();
-        if name.is_empty() || name.contains('/') {
-            return Err(Error::InvalidParams(
-                "project name must be non-empty and contain no '/'".into(),
-            ));
-        }
-        let w = self.w.lock().unwrap();
-        let id = Self::project_id_tx(&w, name)?;
-        if let Some(c) = color {
-            w.execute(
-                "UPDATE projects SET color = ?2 WHERE id = ?1",
-                params![id, c],
-            )?;
-        }
-        let p = w.query_row(
-            "SELECT id, name, color FROM projects WHERE id = ?1",
-            [&id],
-            |r| {
-                Ok(Project {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    color: r.get(2)?,
-                })
-            },
+    /// Unread threads without a prediction for their latest message, newest first.
+    pub fn threads_to_route(&self, limit: i64) -> Result<Vec<(String, i64)>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT t.id, t.last_date FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
+             WHERE t.status = 'unread' AND (s.thread_id IS NULL OR s.for_date < t.last_date)
+             ORDER BY t.last_date DESC LIMIT ?1",
         )?;
-        Ok(p)
+        Ok(st
+            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Accepts pending suggestions as they stand: status, projects and priority apply,
+    /// and the threads count as read.
+    pub fn accept_suggestions(&self, ids: &[String]) -> Result<usize> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let mut n = 0;
+        for id in ids {
+            let row: Option<(String, Option<String>, String, Option<i64>)> = tx
+                .query_row(
+                    "SELECT t.account_id, s.status, s.projects_json, s.priority FROM suggestions s JOIN threads t ON t.id = s.thread_id
+                     WHERE s.thread_id = ?1 AND s.decision IS NULL",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let Some((acc, status, pj, priority)) = row else {
+                continue;
+            };
+            let wanted: Vec<String> = serde_json::from_str(&pj).unwrap_or_default();
+            let current = Self::thread_projects_tx(&tx, id)?;
+            let add: Vec<String> = wanted
+                .into_iter()
+                .filter(|p| !current.contains(p))
+                .collect();
+            Self::set_thread_projects_tx(&tx, &acc, id, &add, &[])?;
+            if let Some(st) = status {
+                tx.execute(
+                    "UPDATE threads SET status = ?2, prev_status = NULL WHERE id = ?1",
+                    params![id, st],
+                )?;
+            }
+            if let Some(p) = priority {
+                tx.execute(
+                    "UPDATE threads SET priority = ?2 WHERE id = ?1",
+                    params![id, p],
+                )?;
+            }
+            let unread: bool =
+                tx.query_row("SELECT unread FROM threads WHERE id = ?1", [id], |r| {
+                    Ok(r.get::<_, i64>(0)? != 0)
+                })?;
+            if unread {
+                tx.execute("UPDATE messages SET unread = 0 WHERE thread_id = ?1", [id])?;
+                tx.execute("UPDATE threads SET unread = 0 WHERE id = ?1", [id])?;
+                Self::enqueue_tx(&tx, &acc, "read", id, &serde_json::json!({ "read": true }))?;
+            }
+            Self::decide_suggestion_tx(&tx, id, "accepted")?;
+            Self::enqueue_label_sync_tx(&tx, &acc, id)?;
+            n += 1;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Forgets a label deleted on the server.
+    pub fn remove_label(&self, account_id: &str, label_id: &str) -> Result<()> {
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "DELETE FROM thread_labels WHERE account_id = ?1 AND label_id = ?2",
+            params![account_id, label_id],
+        )?;
+        w.execute(
+            "DELETE FROM labels WHERE account_id = ?1 AND label_id = ?2",
+            params![account_id, label_id],
+        )?;
+        Ok(())
     }
 
     // ---- drafts --------------------------------------------------------
@@ -2437,7 +3014,7 @@ impl Store {
             .query_map(params![status, limit], |r| {
                 Ok((
                     thread_row(r)?,
-                    r.get::<_, Option<i64>>(17)?.unwrap_or(0) != 0,
+                    r.get::<_, Option<i64>>(16)?.unwrap_or(0) != 0,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2664,13 +3241,25 @@ mod tests {
     }
 
     #[rstest]
-    #[case::status_label_wins(true, Some("waiting"), 0, SyncMode::Initial, "waiting")]
-    #[case::archived_is_done(false, None, 0, SyncMode::Initial, "done")]
-    #[case::recent_inbox_is_triage(true, None, 0, SyncMode::Initial, "triage")]
-    #[case::old_inbox_initial_is_backlog(true, None, 40, SyncMode::Initial, "backlog")]
-    #[case::old_inbox_incremental_is_triage(true, None, 40, SyncMode::Incremental, "triage")]
+    #[case::status_label_wins(true, false, false, Some("waiting"), 0, SyncMode::Initial, "waiting")]
+    #[case::trash_wins(true, true, true, Some("waiting"), 0, SyncMode::Incremental, "deleted")]
+    #[case::archived_is_archive(false, false, false, None, 0, SyncMode::Initial, "archive")]
+    #[case::recent_unread_inbox_is_unread(true, false, true, None, 0, SyncMode::Initial, "unread")]
+    #[case::recent_read_inbox_is_todo(true, false, false, None, 0, SyncMode::Initial, "todo")]
+    #[case::old_inbox_initial_is_backlog(true, false, true, None, 40, SyncMode::Initial, "backlog")]
+    #[case::old_inbox_incremental_is_unread(
+        true,
+        false,
+        true,
+        None,
+        40,
+        SyncMode::Incremental,
+        "unread"
+    )]
     fn initial_status_rules(
         #[case] inbox: bool,
+        #[case] trashed: bool,
+        #[case] unread: bool,
         #[case] label: Option<&str>,
         #[case] age_days: i64,
         #[case] mode: SyncMode,
@@ -2678,40 +3267,80 @@ mod tests {
     ) {
         let now = 1_000 * DAY;
         assert_eq!(
-            initial_status(inbox, label, now - age_days * DAY, now, mode),
+            initial_status(
+                inbox,
+                trashed,
+                unread,
+                label,
+                now - age_days * DAY,
+                now,
+                mode
+            ),
             want
         );
     }
 
     #[rstest]
-    #[case::done_reopens("done", false, Some("todo"))]
-    #[case::waiting_reopens("waiting", false, Some("todo"))]
-    #[case::my_reply_does_not_reopen("done", true, None)]
-    #[case::todo_stays("todo", false, None)]
-    #[case::canceled_stays("canceled", false, None)]
-    fn reopen_rule(#[case] current: &str, #[case] from_me: bool, #[case] want: Option<&str>) {
-        assert_eq!(status_after_new_message(current, from_me), want);
+    #[case::done_reopens("done", false, true, Some("unread"))]
+    #[case::archive_reopens("archive", false, true, Some("unread"))]
+    #[case::in_progress_is_interrupted("in_progress", false, true, Some("unread"))]
+    #[case::my_reply_does_not_reopen("done", true, true, None)]
+    #[case::filtered_out_of_inbox_does_not_reopen("archive", false, false, None)]
+    #[case::review_keeps_its_draft("review", false, true, None)]
+    fn reopen_rule(
+        #[case] current: &str,
+        #[case] from_me: bool,
+        #[case] in_inbox: bool,
+        #[case] want: Option<&str>,
+    ) {
+        assert_eq!(status_after_new_message(current, from_me, in_inbox), want);
     }
 
     #[rstest]
-    #[case::triage_inbox_only("triage", false, "Triage", 0, None, vec!["INBOX"])]
-    #[case::done_has_nothing("done", true, "Done", 0, None, vec![])]
-    #[case::todo_label("todo", false, "Todo", 0, None, vec!["INBOX", "Mermoz/Todo"])]
-    #[case::canceled_archived_with_label("canceled", true, "Canceled", 0, None, vec!["Mermoz/Canceled"])]
-    #[case::priority_and_project("todo", false, "Todo", 2, Some("Q4"), vec!["INBOX", "Mermoz/Priority/High", "Mermoz/Project/Q4", "Mermoz/Todo"])]
-    #[case::normal_priority_no_label("triage", false, "Triage", 3, None, vec!["INBOX"])]
+    #[case::waiting_gets_its_answer(Some("waiting"), Some("archive"), None, "todo")]
+    #[case::in_progress_resumes(Some("in_progress"), Some("archive"), None, "in_progress")]
+    #[case::suggestion_applies(None, Some("archive"), Some("done"), "archive")]
+    #[case::habit_without_suggestion(None, None, Some("archive"), "archive")]
+    #[case::todo_by_default(None, None, None, "todo")]
+    #[case::done_does_not_resume(Some("done"), None, None, "todo")]
+    fn read_rule(
+        #[case] prev: Option<&str>,
+        #[case] suggested: Option<&str>,
+        #[case] habit: Option<&str>,
+        #[case] want: &str,
+    ) {
+        assert_eq!(status_after_read(prev, suggested, habit), want);
+    }
+
+    #[rstest]
+    #[case::unread_inbox_only("unread", false, "Unread", 0, vec!["INBOX"])]
+    #[case::archive_has_nothing("archive", true, "Archive", 0, vec![])]
+    #[case::done_archived_with_label("done", true, "Done", 0, vec!["Mermoz/Done"])]
+    #[case::todo_label("todo", false, "Todo", 0, vec!["INBOX", "Mermoz/Todo"])]
+    #[case::deleted_has_nothing("deleted", true, "Deleted", 2, vec![])]
+    #[case::priority_label("todo", false, "Todo", 2, vec!["INBOX", "Mermoz/Priority/High", "Mermoz/Todo"])]
+    #[case::normal_priority_no_label("unread", false, "Unread", 3, vec!["INBOX"])]
     fn desired_label_sets(
         #[case] status: &str,
         #[case] archived: bool,
         #[case] name: &str,
         #[case] prio: i64,
-        #[case] project: Option<&str>,
         #[case] want: Vec<&str>,
     ) {
-        let got: Vec<String> = desired_labels(status, archived, name, prio, project)
+        let got: Vec<String> = desired_labels(status, archived, name, prio)
             .into_iter()
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[rstest]
+    #[case::user_label("Label_7", "Immo/Houlgate", true)]
+    #[case::inbox("INBOX", "INBOX", false)]
+    #[case::star("YELLOW_STAR", "YELLOW_STAR", false)]
+    #[case::category("CATEGORY_UPDATES", "CATEGORY_UPDATES", false)]
+    #[case::mermoz_status("Label_1", "Mermoz/Todo", false)]
+    fn user_label_detection(#[case] id: &str, #[case] name: &str, #[case] want: bool) {
+        assert_eq!(is_user_label(id, name), want);
     }
 
     #[rstest]
@@ -2724,7 +3353,7 @@ mod tests {
     }
 
     #[rstest]
-    fn new_inbox_thread_is_triage(env: Env) {
+    fn new_unread_inbox_thread_is_unread(env: Env) {
         let tid = env
             .store
             .ingest(
@@ -2741,7 +3370,7 @@ mod tests {
                 SyncMode::Initial,
             )
             .unwrap();
-        assert_eq!(env.store.thread(&tid).unwrap().status, "triage");
+        assert_eq!(env.store.thread(&tid).unwrap().status, "unread");
     }
 
     #[rstest]
@@ -2776,7 +3405,7 @@ mod tests {
             SyncMode::Incremental,
         )
         .unwrap();
-        assert_eq!(s.thread(&tid).unwrap().status, "todo");
+        assert_eq!(s.thread(&tid).unwrap().status, "unread");
     }
 
     #[rstest]
@@ -3214,13 +3843,13 @@ mod tests {
         s.update_threads(
             std::slice::from_ref(&tid),
             &ThreadPatch {
-                project_id: Some(Some(p.id.clone())),
+                add_projects: vec![p.id.clone()],
                 ..Default::default()
             },
         )
         .unwrap();
         s.delete_project(&p.id).unwrap();
-        assert_eq!(s.thread(&tid).unwrap().project_id, None);
+        assert!(s.thread(&tid).unwrap().projects.is_empty());
     }
 
     #[rstest]
@@ -3439,7 +4068,7 @@ mod tests {
     }
 
     #[rstest]
-    fn remote_archive_marks_done(env: Env) {
+    fn remote_archive_marks_archive(env: Env) {
         let s = &env.store;
         let tid = s
             .ingest(
@@ -3456,7 +4085,7 @@ mod tests {
             SyncMode::Incremental,
         )
         .unwrap();
-        assert_eq!(s.thread(&tid).unwrap().status, "done");
+        assert_eq!(s.thread(&tid).unwrap().status, "archive");
     }
 
     #[rstest]
@@ -3539,7 +4168,7 @@ mod tests {
     }
 
     #[rstest]
-    fn counts_exclude_done(env: Env) {
+    fn counts_exclude_archive(env: Env) {
         let s = &env.store;
         s.ingest(
             &env.acc,
@@ -3548,6 +4177,351 @@ mod tests {
             SyncMode::Initial,
         )
         .unwrap();
-        assert_eq!(s.counts().unwrap()["status"].get("done"), None);
+        assert_eq!(s.counts().unwrap()["status"].get("archive"), None);
+    }
+
+    fn unread_thread(env: &Env) -> String {
+        env.store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming(
+                    "m1",
+                    "t1",
+                    "marc@x.com",
+                    &["INBOX", "UNREAD"],
+                    now_ms(),
+                    "hi",
+                ),
+                SyncMode::Incremental,
+            )
+            .unwrap()
+    }
+
+    fn archive_suggestion() -> Suggestion {
+        Suggestion {
+            status: Some("archive".into()),
+            projects: vec!["Receipts".into()],
+            ..Default::default()
+        }
+    }
+
+    #[rstest]
+    fn reading_applies_suggested_status(env: Env) {
+        let tid = unread_thread(&env);
+        env.store
+            .save_suggestion(&tid, &archive_suggestion(), "jev", now_ms())
+            .unwrap();
+        env.store.mark_read(&tid, true).unwrap();
+        assert_eq!(env.store.thread(&tid).unwrap().status, "archive");
+    }
+
+    #[rstest]
+    fn reading_applies_suggested_projects(env: Env) {
+        let tid = unread_thread(&env);
+        env.store
+            .save_suggestion(&tid, &archive_suggestion(), "jev", now_ms())
+            .unwrap();
+        env.store.mark_read(&tid, true).unwrap();
+        assert_eq!(
+            env.store.thread(&tid).unwrap().projects,
+            vec!["Receipts".to_string()]
+        );
+    }
+
+    #[rstest]
+    fn read_suggestion_is_no_longer_pending(env: Env) {
+        let tid = unread_thread(&env);
+        env.store
+            .save_suggestion(&tid, &archive_suggestion(), "jev", now_ms())
+            .unwrap();
+        env.store.mark_read(&tid, true).unwrap();
+        assert_eq!(env.store.thread(&tid).unwrap().suggestion, None);
+    }
+
+    #[rstest]
+    fn reading_without_suggestion_is_todo(env: Env) {
+        let tid = unread_thread(&env);
+        env.store.mark_read(&tid, true).unwrap();
+        assert_eq!(env.store.thread(&tid).unwrap().status, "todo");
+    }
+
+    #[rstest]
+    fn reading_after_new_mail_resumes_in_progress(env: Env) {
+        let s = &env.store;
+        let tid = unread_thread(&env);
+        s.update_threads(
+            std::slice::from_ref(&tid),
+            &ThreadPatch {
+                status: Some("in_progress".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "m2",
+                "t1",
+                "marc@x.com",
+                &["INBOX", "UNREAD"],
+                now_ms(),
+                "more",
+            ),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        s.mark_read(&tid, true).unwrap();
+        assert_eq!(s.thread(&tid).unwrap().status, "in_progress");
+    }
+
+    #[rstest]
+    fn marking_unread_moves_back_to_unread(env: Env) {
+        let tid = unread_thread(&env);
+        env.store.mark_read(&tid, true).unwrap();
+        env.store.mark_read(&tid, false).unwrap();
+        assert_eq!(env.store.thread(&tid).unwrap().status, "unread");
+    }
+
+    #[rstest]
+    fn accepting_a_suggestion_marks_read(env: Env) {
+        let tid = unread_thread(&env);
+        env.store
+            .save_suggestion(&tid, &archive_suggestion(), "jev", now_ms())
+            .unwrap();
+        env.store
+            .accept_suggestions(std::slice::from_ref(&tid))
+            .unwrap();
+        assert!(!env.store.thread(&tid).unwrap().unread);
+    }
+
+    #[rstest]
+    fn routed_thread_waits_for_its_next_message(env: Env) {
+        let tid = unread_thread(&env);
+        let last = env.store.thread(&tid).unwrap().last_date;
+        env.store
+            .save_suggestion(&tid, &archive_suggestion(), "jev", last)
+            .unwrap();
+        assert!(env.store.threads_to_route(10).unwrap().is_empty());
+    }
+
+    #[rstest]
+    fn gmail_label_is_a_project(env: Env) {
+        let s = &env.store;
+        s.set_labels(&env.acc, &[("Label_7".into(), "Immo/Houlgate".into())])
+            .unwrap();
+        let tid = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["Label_7"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        assert_eq!(
+            s.thread(&tid).unwrap().projects,
+            vec!["Immo/Houlgate".to_string()]
+        );
+    }
+
+    #[rstest]
+    fn project_filter_finds_labelled_thread(env: Env) {
+        let s = &env.store;
+        s.set_labels(&env.acc, &[("Label_7".into(), "Immo".into())])
+            .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["Label_7"], now_ms(), "hi"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m2", "t2", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        let f = ThreadFilter {
+            project: Some("Immo".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.threads(&f).unwrap().1, 1);
+    }
+
+    #[rstest]
+    fn removing_a_project_added_offline_queues_only_the_removal(env: Env) {
+        let s = &env.store;
+        let tid = unread_thread(&env);
+        s.update_threads(
+            std::slice::from_ref(&tid),
+            &ThreadPatch {
+                add_projects: vec!["P".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.update_threads(
+            std::slice::from_ref(&tid),
+            &ThreadPatch {
+                remove_projects: vec!["P".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let op = s
+            .pending_ops(10)
+            .unwrap()
+            .into_iter()
+            .find(|o| o.kind == "projects")
+            .unwrap();
+        assert_eq!(
+            op.payload,
+            serde_json::json!({ "add": [], "remove": ["P"] })
+        );
+    }
+
+    #[rstest]
+    fn server_update_keeps_unpushed_project(env: Env) {
+        let s = &env.store;
+        let tid = unread_thread(&env);
+        s.update_threads(
+            std::slice::from_ref(&tid),
+            &ThreadPatch {
+                add_projects: vec!["P".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        assert_eq!(s.thread(&tid).unwrap().projects, vec!["P".to_string()]);
+    }
+
+    #[rstest]
+    fn remote_trash_marks_deleted(env: Env) {
+        let s = &env.store;
+        let tid = unread_thread(&env);
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["TRASH"], now_ms(), "hi"),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        assert_eq!(s.thread(&tid).unwrap().status, "deleted");
+    }
+
+    #[rstest]
+    fn renaming_a_project_renames_its_sub_projects(env: Env) {
+        let s = &env.store;
+        s.set_labels(
+            &env.acc,
+            &[
+                ("Label_1".into(), "Immo".into()),
+                ("Label_2".into(), "Immo/Houlgate".into()),
+            ],
+        )
+        .unwrap();
+        let tid = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["Label_2"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        s.update_project("Immo", Some("Logement"), None).unwrap();
+        assert_eq!(
+            s.thread(&tid).unwrap().projects,
+            vec!["Logement/Houlgate".to_string()]
+        );
+    }
+
+    /// A store last opened before Workflow v2, with one thread per old status.
+    fn v1_store(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("db.sqlite");
+        let c = Connection::open(&path).unwrap();
+        for (i, step) in MIGRATIONS.iter().take(6).enumerate() {
+            c.execute_batch(&format!(
+                "BEGIN; {step}; PRAGMA user_version = {}; COMMIT;",
+                i + 1
+            ))
+            .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO accounts (id, email, provider, created) VALUES ('acc', 'me@example.com', 'gmail', 0);
+             INSERT INTO threads (id, account_id, provider_thread_id, number, status, unread) VALUES
+               ('t_done', 'acc', 'p1', 1, 'done', 0), ('t_cancel', 'acc', 'p2', 2, 'canceled', 0),
+               ('t_triage_unread', 'acc', 'p3', 3, 'triage', 1), ('t_triage_read', 'acc', 'p4', 4, 'triage', 0),
+               ('t_backlog', 'acc', 'p5', 5, 'backlog', 1);",
+        )
+        .unwrap();
+        path
+    }
+
+    #[rstest]
+    #[case::done_becomes_archive("t_done", "archive")]
+    #[case::canceled_becomes_archive("t_cancel", "archive")]
+    #[case::unread_triage_becomes_unread("t_triage_unread", "unread")]
+    #[case::read_triage_becomes_todo("t_triage_read", "todo")]
+    #[case::backlog_stays("t_backlog", "backlog")]
+    fn v2_migration_maps_old_statuses(#[case] thread: &str, #[case] want: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = v1_store(&dir);
+        let store = Store::open(&path, &dir.path().join("blobs")).unwrap();
+        assert_eq!(store.thread(thread).unwrap().status, want);
+    }
+
+    #[rstest]
+    fn filing_an_unread_thread_survives_the_server_echo(env: Env) {
+        let s = &env.store;
+        let tid = unread_thread(&env);
+        s.update_threads(
+            std::slice::from_ref(&tid),
+            &ThreadPatch {
+                status: Some("todo".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let op = s.pending_ops(10).unwrap().remove(0);
+        s.op_done(&op).unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "m1",
+                "t1",
+                "marc@x.com",
+                &["INBOX", "UNREAD"],
+                now_ms(),
+                "hi",
+            ),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        assert_eq!(s.thread(&tid).unwrap().status, "todo");
+    }
+
+    #[rstest]
+    fn reading_on_another_device_leaves_unread(env: Env) {
+        let s = &env.store;
+        let tid = unread_thread(&env);
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+            SyncMode::Incremental,
+        )
+        .unwrap();
+        assert_eq!(s.thread(&tid).unwrap().status, "todo");
     }
 }

@@ -155,7 +155,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             };
             let f = ThreadFilter {
                 status: str_list(p, "status")?,
-                project_id: opt_s(p, "project_id"),
+                project: opt_s(p, "project").or_else(|| opt_s(p, "project_id")),
                 account_id: opt_s(p, "account_id"),
                 label_id: opt_s(p, "label_id"),
                 participants: str_list(p, "participant")?,
@@ -181,10 +181,17 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .iter()
                 .map(|i| st.resolve_thread_id(i))
                 .collect::<Result<_, _>>()?;
+            // `project` (one name or null) is shorthand for replacing the whole set.
+            let projects = match nullable_s(p, "project") {
+                Some(one) => Some(one.into_iter().collect()),
+                None => str_list(p, "projects")?,
+            };
             let patch = ThreadPatch {
                 status: opt_s(p, "status"),
                 priority: p.get("priority").and_then(|v| v.as_i64()),
-                project_id: nullable_s(p, "project_id"),
+                projects,
+                add_projects: str_list(p, "add_projects")?.unwrap_or_default(),
+                remove_projects: str_list(p, "remove_projects")?.unwrap_or_default(),
                 due: nullable_s(p, "due"),
             };
             let n = st.update_threads(&ids, &patch)?;
@@ -195,6 +202,17 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 }
             }
             Ok(json!({ "updated": n }))
+        }
+        "threads.accept_suggestions" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            let ids: Vec<String> = ids
+                .iter()
+                .map(|i| st.resolve_thread_id(i))
+                .collect::<Result<_, _>>()?;
+            let n = st.accept_suggestions(&ids)?;
+            let _ = svc.events.send(Event::ThreadsChanged(ids.clone()));
+            svc.kick_all();
+            Ok(json!({ "accepted": n }))
         }
         "threads.mark_read" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;

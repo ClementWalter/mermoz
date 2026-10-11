@@ -11,12 +11,14 @@ fn tools() -> Value {
     json!([
         { "name": "search_mail", "description": "Full-text search across all local mail (instant, offline). Supports from:, to:, subject: prefixes. Returns threads best match first.",
           "inputSchema": { "type": "object", "properties": { "query": s("search words"), "limit": { "type": "integer", "default": 20 } }, "required": ["query"] } },
-        { "name": "list_threads", "description": "List threads (issues) filtered by status/project/account, newest first. Statuses: triage, backlog, todo, in_progress, waiting, review, done, canceled.",
-          "inputSchema": { "type": "object", "properties": { "status": { "type": "array", "items": { "type": "string" } }, "project_id": s("project id"), "account_id": s("account id"), "label_id": s("Gmail label id from list_labels (pass its account_id too)"), "limit": { "type": "integer", "default": 50 } } } },
+        { "name": "list_threads", "description": "List threads (issues) filtered by status/project/account, newest first. Statuses: unread, todo, waiting, in_progress, backlog, review, done, archive, deleted. Projects are the user's Gmail labels; each thread lists its `projects` and the AI's pending `suggestion`.",
+          "inputSchema": { "type": "object", "properties": { "status": { "type": "array", "items": { "type": "string" } }, "project": s("project (Gmail label) name"), "account_id": s("account id"), "label_id": s("Gmail label id from list_labels (pass its account_id too)"), "limit": { "type": "integer", "default": 50 } } } },
         { "name": "get_thread", "description": "Read a whole thread: every message's plain-text body, recipients and attachment ids.",
           "inputSchema": { "type": "object", "properties": { "id": s("thread id or number like M-1287") }, "required": ["id"] } },
-        { "name": "update_thread", "description": "Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), project_id (null clears) or due date (YYYY-MM-DD, null clears).",
-          "inputSchema": { "type": "object", "properties": { "id": s("thread id or number"), "status": s("status key"), "priority": { "type": "integer" }, "project_id": { "type": ["string", "null"] }, "due": { "type": ["string", "null"] } }, "required": ["id"] } },
+        { "name": "update_thread", "description": "Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), projects (Gmail labels: add_projects/remove_projects, or projects to replace) or due date (YYYY-MM-DD, null clears). 'deleted' moves the thread to Gmail Trash.",
+          "inputSchema": { "type": "object", "properties": { "id": s("thread id or number"), "status": s("status key"), "priority": { "type": "integer" }, "add_projects": { "type": "array", "items": { "type": "string" } }, "remove_projects": { "type": "array", "items": { "type": "string" } }, "projects": { "type": "array", "items": { "type": "string" } }, "due": { "type": ["string", "null"] } }, "required": ["id"] } },
+        { "name": "accept_suggestions", "description": "Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read.",
+          "inputSchema": { "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "string" } } }, "required": ["ids"] } },
         { "name": "get_attachment", "description": "Get an attachment's local file path (readable offline); text attachments also return their content.",
           "inputSchema": { "type": "object", "properties": { "id": s("attachment id from get_thread") }, "required": ["id"] } },
         { "name": "create_draft", "description": "Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves.",
@@ -27,7 +29,7 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "query": s("name, email or company"), "limit": { "type": "integer", "default": 20 } } } },
         { "name": "list_labels", "description": "The user's Gmail labels (mailboxes) with ids, accounts and thread counts.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_statuses", "description": "Workflow statuses.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "list_projects", "description": "Projects threads can belong to.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "list_projects", "description": "Projects: the user's Gmail labels. A thread can be in several.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "submit_feedback", "description": "Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.",
           "inputSchema": { "type": "object", "properties": { "text": s("what went wrong or is missing"), "tool": s("tool name") }, "required": ["text"] } }
     ])
@@ -83,6 +85,7 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
         "search_contacts" => r(c.call("contacts.list", json!({ "query": a.get("query"), "limit": a.get("limit").cloned().unwrap_or(json!(20)) }))),
         "list_statuses" => r(c.call("statuses.list", json!({}))),
         "list_projects" => r(c.call("projects.list", json!({}))),
+        "accept_suggestions" => r(c.call("threads.accept_suggestions", json!({ "ids": a["ids"] }))),
         "submit_feedback" => r(c.call(
             "feedback.submit",
             json!({ "text": a["text"], "command": a.get("tool"), "agent": "mcp" }),

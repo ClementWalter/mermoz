@@ -33,10 +33,25 @@ pub struct ThreadSummary {
     pub has_attachments: bool,
     pub status: String,
     pub priority: i64,
-    pub project_id: Option<String>,
+    /// The thread's projects: names of the user's Gmail labels on it.
+    pub projects: Vec<String>,
     pub due: Option<String>,
     pub summary: Option<String>,
     pub next_action: Option<String>,
+    /// The router's pending prediction, until the thread is read or the user decides.
+    pub suggestion: Option<Suggestion>,
+}
+
+/// What the router predicts for a thread. Fields below the confidence bar are absent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Suggestion {
+    pub status: Option<String>,
+    pub status_confidence: Option<f64>,
+    pub projects: Vec<String>,
+    pub project_confidence: Option<f64>,
+    pub priority: Option<i64>,
+    /// Probability the thread was sent by a machine (newsletter, receipt, notification).
+    pub automated: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -89,6 +104,7 @@ pub struct Label {
     pub count: i64,
 }
 
+/// A project is one of the user's Gmail labels; `id` is its name, shared across accounts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Project {
     pub id: String,
@@ -120,16 +136,28 @@ pub struct Feedback {
     pub created: i64,
 }
 
-/// Default workflow, Linear-style. `archived` statuses remove the thread from the Gmail inbox.
+/// Default workflow: Unread first, then what to do with read mail. `archived` statuses
+/// remove the thread from the Gmail inbox.
 pub const DEFAULT_STATUSES: &[(&str, &str, &str, bool)] = &[
-    ("triage", "Triage", "#8A6FD1", false),
-    ("backlog", "Backlog", "#9AAFC0", false),
+    ("unread", "Unread", "#3D7FE0", false),
     ("todo", "Todo", "#5A7386", false),
-    ("in_progress", "In Progress", "#D9902F", false),
     ("waiting", "Waiting", "#2F8FCF", false),
+    ("in_progress", "In Progress", "#D9902F", false),
+    ("backlog", "Backlog", "#9AAFC0", false),
     ("review", "Review", "#C2568C", false),
     ("done", "Done", "#2E9A6B", true),
-    ("canceled", "Canceled", "#9AAFC0", true),
+    ("archive", "Archive", "#8FA3B5", true),
+    ("deleted", "Deleted", "#C0645A", true),
+];
+
+/// Statuses a read thread can be routed to; Unread, Review and Deleted are never predicted.
+pub const ROUTABLE_STATUSES: &[&str] = &[
+    "todo",
+    "waiting",
+    "in_progress",
+    "backlog",
+    "done",
+    "archive",
 ];
 
 pub fn priority_name(p: i64) -> Option<&'static str> {

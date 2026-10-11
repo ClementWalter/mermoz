@@ -297,6 +297,9 @@ impl AccountSync {
         for op in ops.into_iter().filter(|o| o.account_id == self.account_id) {
             let res = match op.kind.as_str() {
                 "labels" => self.push_labels(&op.key).await,
+                "projects" => self.push_projects(&op.key, &op.payload).await,
+                "label_rename" => self.push_label_rename(&op.payload).await,
+                "label_delete" => self.push_label_delete(&op.payload).await,
                 "read" => {
                     let read = op.payload["read"].as_bool().unwrap_or(true);
                     self.push_read(&op.key, read).await
@@ -324,6 +327,20 @@ impl AccountSync {
 
     async fn push_labels(&self, thread_id: &str) -> Result<()> {
         let (_, provider_thread) = self.store.provider_thread_id(thread_id)?;
+        let trashed = self.store.thread_trashed(&self.account_id, thread_id)?;
+        let trash = vec!["TRASH".to_string()];
+        if self.store.thread_status(thread_id)? == "deleted" {
+            if !trashed {
+                self.gmail.trash_thread(&provider_thread).await?;
+                self.store
+                    .apply_label_delta(thread_id, &trash, &["INBOX".to_string()])?;
+            }
+            return Ok(());
+        }
+        if trashed {
+            self.gmail.untrash_thread(&provider_thread).await?;
+            self.store.apply_label_delta(thread_id, &[], &trash)?;
+        }
         let desired = self.store.thread_desired_labels(thread_id)?;
         let current = self
             .store
@@ -345,6 +362,67 @@ impl AccountSync {
             .await?;
         self.store
             .apply_label_delta(thread_id, &add_ids, &remove_ids)
+    }
+
+    /// Pushes explicit project adds/removes; labels missing on the server are created.
+    async fn push_projects(&self, thread_id: &str, payload: &serde_json::Value) -> Result<()> {
+        let names = |k: &str| -> BTreeSet<String> {
+            payload[k]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (add, remove) = (names("add"), names("remove"));
+        let (_, provider_thread) = self.store.provider_thread_id(thread_id)?;
+        let add_ids = self.label_ids(&add).await?;
+        let mut remove_ids = vec![];
+        for n in &remove {
+            if let Some(id) = self.store.label_id(&self.account_id, n)? {
+                remove_ids.push(id);
+            }
+        }
+        if add_ids.is_empty() && remove_ids.is_empty() {
+            return Ok(());
+        }
+        self.gmail
+            .modify_thread(&provider_thread, &add_ids, &remove_ids)
+            .await?;
+        self.store
+            .apply_label_delta(thread_id, &add_ids, &remove_ids)
+    }
+
+    async fn push_label_rename(&self, payload: &serde_json::Value) -> Result<()> {
+        let (from, to) = (
+            payload["from"].as_str().unwrap_or_default(),
+            payload["to"].as_str().unwrap_or_default(),
+        );
+        // The local cache already carries the new name; the server id is under either.
+        let id = match self.store.label_id(&self.account_id, to)? {
+            Some(id) => Some(id),
+            None => self.store.label_id(&self.account_id, from)?,
+        };
+        let Some(id) = id else { return Ok(()) };
+        match self.gmail.rename_label(&id, to).await {
+            Ok(()) | Err(Error::Upstream { status: 404, .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn push_label_delete(&self, payload: &serde_json::Value) -> Result<()> {
+        let name = payload["name"].as_str().unwrap_or_default();
+        let Some(id) = self.store.label_id(&self.account_id, name)? else {
+            return Ok(());
+        };
+        match self.gmail.delete_label(&id).await {
+            Ok(()) | Err(Error::Upstream { status: 404, .. }) => {
+                self.store.remove_label(&self.account_id, &id)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     async fn push_read(&self, thread_id: &str, read: bool) -> Result<()> {

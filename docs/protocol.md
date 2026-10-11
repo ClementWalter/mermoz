@@ -17,8 +17,14 @@ app, the CLI and the MCP server are clients of this protocol.
 - Timestamps: integer Unix milliseconds.
 - Dates without time (due dates): `"YYYY-MM-DD"`.
 - Priority: `0` none, `1` urgent, `2` high, `3` normal, `4` low.
-- Status keys (default set, configurable): `triage`, `backlog`, `todo`,
-  `in_progress`, `waiting`, `review`, `done`, `canceled`.
+- Status keys: `unread` (entry status), then for read mail `todo`, `waiting`,
+  `in_progress`, `backlog`, `review` (an agent draft awaits approval), `done`,
+  `archive`, `deleted` (Gmail Trash). `done`, `archive` and `deleted` are out of
+  the inbox. Reading an `unread` thread moves it to the open status new mail
+  interrupted, else the router's suggestion, else `todo`; new mail from someone
+  else brings it back to `unread`.
+- Projects are the user's Gmail labels, identified by name (nested with `/`).
+  A thread can be in several.
 - Thread `number` is a stable human id like `"M-1287"`; every method taking a
   thread `id` also accepts its number.
 
@@ -45,8 +51,15 @@ app, the CLI and the MCP server are clients of this protocol.
  "subject": "…", "snippet": "…", "participants": ["Marc Petit", "You"],
  "last_from": "Marc Petit", "last_date": 1791700000000,
  "unread": true, "message_count": 3, "has_attachments": true,
- "status": "todo", "priority": 2, "project_id": "prj_1" | null,
- "due": "2026-10-16" | null, "summary": "…" | null, "next_action": "…" | null}
+ "status": "todo", "priority": 2, "projects": ["Clients/Acme"],
+ "due": "2026-10-16" | null, "summary": "…" | null, "next_action": "…" | null,
+ "suggestion": Suggestion | null}
+
+// Suggestion: the router's pending prediction (absent once read or decided).
+// Fields under the confidence bar are null / empty.
+{"status": "archive" | null, "status_confidence": 0.93 | null,
+ "projects": ["Receipts"], "project_confidence": 0.88 | null,
+ "priority": 0 | null, "automated": 0.97 | null}
 
 // Message
 {"id": "msg_…", "from": {"name": "Marc Petit", "email": "marc@…"},
@@ -62,8 +75,8 @@ app, the CLI and the MCP server are clients of this protocol.
 {"email": "marc@acme.example", "name": "Marc Petit", "title": "CFO", "company": "Acme",
  "phones": ["+33 6 12 34 56 78"], "address": "", "website": "", "socials": [], "last_seen": 1791700000000}
 
-// Project
-{"id": "prj_1", "name": "Q4 audit", "color": "#5B8DEF"}
+// Project (a Gmail label; id is its name)
+{"id": "Clients/Acme", "name": "Clients/Acme", "color": "#5B8DEF"}
 
 // Draft
 {"id": "dft_…", "account_id": "acc_1", "thread_id": "thr_…" | null,
@@ -83,13 +96,14 @@ app, the CLI and the MCP server are clients of this protocol.
 | `statuses.list`      | `{}`                                                                                     | `[Status]`                               |
 | `labels.list`        | `{}`                                                                                     | `[{"account_id","id","name","count"}]` user labels ("mailboxes"), nested with `/` |
 | `projects.list`      | `{}`                                                                                     | `[Project]`                              |
-| `projects.create`    | `{"name", "color"?}`                                                                     | `Project`                                |
-| `projects.update`    | `{"id", "name"?, "color"?}` — renames the Gmail label on its threads                     | `Project`                                |
-| `projects.delete`    | `{"id"}` — its threads leave the project                                                 | `{"threads": n}`                         |
-| `counts`             | `{}`                                                                                     | `{"status": {key: n}, "project": {id: n}, "account": {id: n}}` (open threads only, except `done`/`canceled` which are omitted) |
-| `threads.list`       | `{"status"?: [key], "project_id"?, "account_id"?, "label_id"?, "priority"?: [n], "limit"?: 200, "offset"?: 0}` | `{"threads": [ThreadSummary], "total": n}` ordered by `last_date` desc |
+| `projects.create`    | `{"name", "color"?}` — the Gmail label is created when a thread first gets it            | `Project`                                |
+| `projects.update`    | `{"id", "name"?, "color"?}` — renames the Gmail label (and its sub-labels) on every account | `Project`                             |
+| `projects.delete`    | `{"id"}` — deletes the Gmail label on every account; the mail stays                       | `{"threads": n}`                         |
+| `counts`             | `{}`                                                                                     | `{"status": {key: n}, "project": {name: n}, "account": {id: n}}` (open threads only: `done`/`archive`/`deleted` are omitted) |
+| `threads.list`       | `{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "limit"?: 200, "offset"?: 0}` | `{"threads": [ThreadSummary], "total": n}` ordered by `last_date` desc |
 | `threads.get`        | `{"id"}`                                                                                 | `{"thread": ThreadSummary, "messages": [Message]}` |
-| `threads.update`     | `{"ids": [id], "status"?, "priority"?, "project_id"? (null clears), "due"? (null clears)}` | `{"updated": n}`                         |
+| `threads.update`     | `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
+| `threads.accept_suggestions` | `{"ids": [id]}` — applies each pending suggestion and marks the thread read     | `{"accepted": n}`                        |
 | `threads.mark_read`  | `{"id", "read"?: true}`                                                                  | `{}`                                     |
 | `messages.html`      | `{"id", "full"?: false}` — quoted history removed unless `full`                         | `{"html": "…", "has_quoted": bool}` sanitized, remote content stripped |
 | `search`             | `{"query", "limit"?: 50}`                                                                | `{"threads": [ThreadSummary]}` full-text, most recent first |

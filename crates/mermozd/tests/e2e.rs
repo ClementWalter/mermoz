@@ -247,7 +247,10 @@ fn world() -> World {
         )
         .env("MERMOZ_POLL_SECS", "1")
         .env("MERMOZ_TRUSTED_EXE", std::env::current_exe().unwrap())
-        .env("RUST_LOG", "warn")
+        .env(
+            "RUST_LOG",
+            std::env::var("E2E_LOG").unwrap_or("warn".into()),
+        )
         .stderr(if std::env::var("E2E_LOG").is_ok() {
             Stdio::inherit()
         } else {
@@ -352,14 +355,14 @@ fn agent_builds_directory_from_signatures(synced: World) {
 #[rstest]
 fn ai_triage_moves_a_column(synced: World) {
     enable_agent(&synced);
-    let v = synced.ok("agent.triage", json!({ "status": "triage" }));
-    assert_eq!(v["moved"], 2);
+    let v = synced.ok("agent.triage", json!({ "status": "todo" }));
+    assert_eq!(v["moved"], 1);
 }
 
 #[rstest]
 fn ai_triage_applies_the_moves(synced: World) {
     enable_agent(&synced);
-    synced.ok("agent.triage", json!({ "status": "triage" }));
+    synced.ok("agent.triage", json!({ "status": "todo" }));
     assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "done");
 }
 
@@ -367,7 +370,7 @@ fn ai_triage_applies_the_moves(synced: World) {
 fn ai_triage_needs_an_allowed_provider(synced: World) {
     assert!(
         synced
-            .call("agent.triage", json!({ "status": "triage" }))
+            .call("agent.triage", json!({ "status": "unread" }))
             .is_err()
     );
 }
@@ -629,40 +632,103 @@ fn chatgpt_calls_send_the_access_token(synced: World) {
 
 #[rstest]
 fn deleting_a_project_removes_its_gmail_label(synced: World) {
-    let pr = synced.ok("projects.create", json!({ "name": "test" }));
+    synced.ok("projects.create", json!({ "name": "test" }));
     let t = synced.thread_by_subject("Audit report v2");
     synced.ok(
         "threads.update",
-        json!({ "ids": [t["id"]], "project_id": pr["id"] }),
+        json!({ "ids": [t["id"]], "add_projects": ["test"] }),
     );
     synced.wait_until("label added", |w| {
         w.mailbox
             .lock()
             .unwrap()
             .thread_label_names("t1")
-            .contains("Mermoz/Project/test")
+            .contains("test")
     });
-    synced.ok("projects.delete", json!({ "id": pr["id"] }));
-    synced.wait_until("label removed", |w| {
+    synced.ok("projects.delete", json!({ "id": "test" }));
+    synced.wait_until("label deleted", |w| {
+        !w.mailbox
+            .lock()
+            .unwrap()
+            .labels
+            .values()
+            .any(|n| n == "test")
+    });
+}
+
+#[rstest]
+fn adding_a_project_files_the_thread_in_gmail(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "add_projects": ["Clients/Acme"] }),
+    );
+    synced.wait_until("label added", |w| {
+        w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("Clients/Acme")
+    });
+}
+
+#[rstest]
+fn deleted_moves_the_thread_to_gmail_trash(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "deleted" }),
+    );
+    synced.wait_until("trash", |w| {
+        w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("TRASH")
+    });
+}
+
+#[rstest]
+fn restoring_a_deleted_thread_untrashes_it(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "deleted" }),
+    );
+    synced.wait_until("trash", |w| {
+        w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("TRASH")
+    });
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "todo" }),
+    );
+    synced.wait_until("untrash", |w| {
         !w.mailbox
             .lock()
             .unwrap()
             .thread_label_names("t1")
-            .contains("Mermoz/Project/test")
+            .contains("TRASH")
     });
 }
 
 #[rstest]
-fn inbox_mail_lands_in_triage(synced: World) {
+fn unread_inbox_mail_lands_in_unread(synced: World) {
     assert_eq!(
         synced.thread_by_subject("Audit report v2")["status"],
-        "triage"
+        "unread"
     );
 }
 
 #[rstest]
-fn archived_mail_is_done(synced: World) {
-    assert_eq!(synced.thread_by_subject("Your statement")["status"], "done");
+fn archived_mail_is_archive(synced: World) {
+    assert_eq!(
+        synced.thread_by_subject("Your statement")["status"],
+        "archive"
+    );
 }
 
 #[rstest]
@@ -765,7 +831,7 @@ fn reply_reopens_done_thread(synced: World) {
         NOW + 5000,
     );
     synced.wait_until("reopen", |w| {
-        w.thread_by_subject("Audit report v2")["status"] == "todo"
+        w.thread_by_subject("Audit report v2")["status"] == "unread"
     });
 }
 
@@ -911,7 +977,7 @@ fn rejection_restores_status(synced: World) {
     synced.ok("review.reject", json!({ "id": draft["id"] }));
     assert_eq!(
         synced.thread_by_subject("Audit report v2")["status"],
-        "triage"
+        "unread"
     );
 }
 
@@ -938,7 +1004,7 @@ fn cli_search_json_lists_thread(synced: World) {
 #[rstest]
 fn cli_unknown_status_lists_valid_ones(synced: World) {
     let out = synced.cli(&["status", "M-1", "nope"]);
-    assert!(String::from_utf8_lossy(&out.stderr).contains("valid: triage"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("valid: unread"));
 }
 
 #[rstest]

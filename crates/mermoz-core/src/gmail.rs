@@ -237,6 +237,47 @@ impl Gmail {
             .await?)
     }
 
+    pub async fn rename_label(&self, id: &str, name: &str) -> Result<()> {
+        self.call(
+            reqwest::Method::PATCH,
+            &format!("/labels/{id}"),
+            &[],
+            Some(json!({ "name": name })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Deletes a label; Gmail removes it from every message, the messages stay.
+    pub async fn delete_label(&self, id: &str) -> Result<()> {
+        self.call(reqwest::Method::DELETE, &format!("/labels/{id}"), &[], None)
+            .await?;
+        Ok(())
+    }
+
+    /// Moves a thread to Trash; Gmail purges it after 30 days.
+    pub async fn trash_thread(&self, thread_id: &str) -> Result<()> {
+        self.call(
+            reqwest::Method::POST,
+            &format!("/threads/{thread_id}/trash"),
+            &[],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn untrash_thread(&self, thread_id: &str) -> Result<()> {
+        self.call(
+            reqwest::Method::POST,
+            &format!("/threads/{thread_id}/untrash"),
+            &[],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn modify_thread(
         &self,
         thread_id: &str,

@@ -251,8 +251,9 @@ fn main() {
         ThreadPatch {
             status: Some("todo".into()),
             priority: Some(2),
-            project_id: Some(Some(q4.id.clone())),
+            add_projects: vec![q4.id.clone()],
             due: Some(Some("2026-10-16".into())),
+            ..Default::default()
         },
     );
     set(
@@ -260,7 +261,7 @@ fn main() {
         ThreadPatch {
             status: Some("todo".into()),
             priority: Some(1),
-            project_id: Some(Some(house.id.clone())),
+            add_projects: vec![house.id.clone()],
             ..Default::default()
         },
     );
@@ -269,7 +270,7 @@ fn main() {
         ThreadPatch {
             status: Some("todo".into()),
             priority: Some(2),
-            project_id: Some(Some(hiring.id.clone())),
+            add_projects: vec![hiring.id.clone()],
             ..Default::default()
         },
     );
@@ -286,7 +287,7 @@ fn main() {
         ThreadPatch {
             status: Some("todo".into()),
             priority: Some(3),
-            project_id: Some(Some(house.id)),
+            add_projects: vec![house.id],
             ..Default::default()
         },
     );
@@ -295,7 +296,7 @@ fn main() {
         ThreadPatch {
             status: Some("in_progress".into()),
             priority: Some(3),
-            project_id: Some(Some(hiring.id)),
+            add_projects: vec![hiring.id],
             ..Default::default()
         },
     );
@@ -311,7 +312,7 @@ fn main() {
         &tid("Contract redlines"),
         ThreadPatch {
             status: Some("waiting".into()),
-            project_id: Some(Some(q4.id)),
+            add_projects: vec![q4.id],
             due: Some(Some("2026-10-14".into())),
             ..Default::default()
         },

@@ -233,6 +233,28 @@ async fn modify_thread(
     Json(json!({ "id": tid }))
 }
 
+async fn trash_thread(State(s): State<Shared>, Path(tid): Path<String>) -> Json<Value> {
+    s.lock()
+        .unwrap()
+        .relabel_thread(&tid, &["TRASH"], &["INBOX"]);
+    Json(json!({ "id": tid }))
+}
+
+async fn untrash_thread(State(s): State<Shared>, Path(tid): Path<String>) -> Json<Value> {
+    s.lock().unwrap().relabel_thread(&tid, &[], &["TRASH"]);
+    Json(json!({ "id": tid }))
+}
+
+/// Like Gmail: the label disappears from every message, the messages stay.
+async fn delete_label(State(s): State<Shared>, Path(id): Path<String>) -> Json<Value> {
+    let mut m = s.lock().unwrap();
+    m.labels.remove(&id);
+    for msg in m.messages.values_mut() {
+        msg.labels.remove(&id);
+    }
+    Json(json!({}))
+}
+
 async fn send(State(s): State<Shared>, Json(body): Json<Value>) -> Json<Value> {
     let mut m = s.lock().unwrap();
     let raw = base64::engine::general_purpose::URL_SAFE
@@ -388,6 +410,9 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/gmail/history", get(history))
                 .route("/gmail/labels", get(labels).post(create_label))
                 .route("/gmail/threads/{id}/modify", post(modify_thread))
+                .route("/gmail/threads/{id}/trash", post(trash_thread))
+                .route("/gmail/threads/{id}/untrash", post(untrash_thread))
+                .route("/gmail/labels/{id}", axum::routing::delete(delete_label))
                 .with_state(mailbox);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap().port()).unwrap();
