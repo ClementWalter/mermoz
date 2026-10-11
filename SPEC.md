@@ -202,3 +202,20 @@ Post-MVP: built-in agent + learning loop, IMAP (if fast).
   visible storage indicator and possibly an attachment age cap setting.
 - **IDLE-as-doorbell reliability** for Gmail; polling is the fallback (no
   server, by design).
+
+## MVP status (2026-10-11)
+
+Shipped: Gmail sync (resumable import, history-based incremental, offline
+label write-back), issue workflow + reopen rule, search, list/board, thread
+view, compose + recipient check, Review lane send gate, CLI (`--json`
+everywhere, exit 3 = approval required), MCP server, Developer settings.
+Speed bar met at 500k messages (`cargo run --release -p mermoz-core --example bench`).
+
+Deviations / next:
+- New mail is detected by history polling (20 s); the IMAP IDLE doorbell is next.
+- Search returns most recent matches first (date-ordered FTS) rather than
+  bm25 rank — it keeps every query under budget at 500k messages.
+- Built-in agent, Magnify and the learning loop are post-MVP (UI says "Coming soon").
+- The app starts `mermozd` itself; SMAppService login item comes with signing.
+- Build: `scripts/build_app.py --open`. Dev: `MERMOZ_HOME`, `MERMOZ_SOCKET`,
+  `MERMOZ_NO_SYNC=1` with `--example seed_demo` for fictional demo data.
