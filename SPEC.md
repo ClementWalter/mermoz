@@ -60,12 +60,17 @@ tracked as issues (Linear-style), not as a pile in an inbox.
 
 - **Gmail / Workspace (MVP):** Gmail API, incremental sync via `history.list`.
   New-mail detection: IMAP IDLE connection used purely as a doorbell + history
-  polling (15–30 s foreground, 2–5 min background). No server.
-- **Optional later:** stateless push relay (Gmail Pub/Sub → client). Pub/Sub
-  payloads only carry `{email, historyId}`, so no mail content touches it.
+  polling (15–30 s foreground, 2–5 min background).
+- **No server.** Mermoz has no hosted component of any kind.
 - **Generic IMAP:** only if it meets the speed bar (CONDSTORE/QRESYNC/IDLE
   required). Otherwise not supported.
 - Credentials and API keys in the macOS Keychain.
+
+### Search
+
+Local full-text index owned by mermozd. SQLite FTS5 and Tantivy are both
+benchmarked against the 50 ms / 500k-message budget; the faster one that meets
+it wins (Tantivy if FTS5 can't, e.g. for fuzzy/prefix queries).
 
 ### Rendering & compose
 
@@ -85,6 +90,8 @@ tracked as issues (Linear-style), not as a pile in an inbox.
 - **Fields:** status, priority (Urgent/High/Normal/Low), project/tags,
   due/follow-up date (Waiting past due resurfaces the thread), agent summary +
   next action.
+- **Multi-account:** one unified issue space across all accounts. Account is
+  just another field: group by / filter by account like any other field.
 - **Server mapping:** status/priority/project map to Gmail labels
   (`mermoz/status/todo`, …) so state survives reinstall and is visible on
   other devices. Done = archive.
@@ -93,7 +100,9 @@ tracked as issues (Linear-style), not as a pile in an inbox.
 
 - **Sidebar:** statuses, projects, saved views (Linear-style); raw
   labels/folders tucked below.
-- **Middle:** issue list or board (toggle), grouped/filtered by any field.
+- **Middle:** issue list or board (toggle), group by / filter by any field
+  (status, priority, project, account, sender, due date…). Saved views persist
+  a grouping + filter combination.
 - **Right:** thread content.
 - **Keyboard-first:** j/k navigation, single-key status/priority changes, ⌘K
   command palette (also hosts "ask your mailbox").
@@ -140,6 +149,22 @@ improvements.
   optional draft), on demand (draft/summarize/ask on current thread), follow-up
   sweeps (Waiting past due → draft a nudge), chat over mailbox (⌘K).
 - Agent drafts follow the same send gate.
+- **No hand-written rules.** Newsletters, notifications and other noise are
+  handled by the built-in agent's on-arrival triage, not by a rules engine.
+
+### Learning loop
+
+The built-in agent learns from the user, locally:
+
+- Every user override of an agent suggestion (status, priority, project,
+  ignore/keep) is recorded as a labeled example.
+- Diffs between an agent draft and what the user actually sent are recorded
+  as style examples.
+- Examples are distilled into a per-account preferences file (readable and
+  editable in settings) that is injected into every agent prompt; recent
+  relevant examples are retrieved as few-shot context.
+- Senders/patterns with consistent user decisions become cheap local
+  shortcuts (no LLM call), keeping triage fast and token-light.
 
 ## MVP scope
 
@@ -147,7 +172,7 @@ improvements.
 2. Compose / reply / drafts + send approval (Review lane).
 3. CLI + MCP for external agents, including `feedback`.
 
-Post-MVP: built-in agent, IMAP (if fast), push relay.
+Post-MVP: built-in agent + learning loop, IMAP (if fast).
 
 ## Open risks
 
@@ -160,5 +185,5 @@ Post-MVP: built-in agent, IMAP (if fast), push relay.
   local-only exemption.
 - **Disk usage.** Full mirror incl. attachments can reach tens of GB; need a
   visible storage indicator and possibly an attachment age cap setting.
-- **IDLE-as-doorbell reliability** for Gmail; fall back to polling, relay
-  later if needed.
+- **IDLE-as-doorbell reliability** for Gmail; polling is the fallback (no
+  server, by design).
