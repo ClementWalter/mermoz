@@ -79,7 +79,15 @@ type MsgAgg = (String, String, bool, bool, i64, String, String, i64);
 
 /// Ordered schema migrations; `PRAGMA user_version` records how many ran.
 /// Append new steps, never edit shipped ones.
-const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS];
+const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS, SYNC_FAILURES];
+
+/// Messages that could not be imported, kept visible instead of silently dropped.
+const SYNC_FAILURES: &str = r#"
+CREATE TABLE IF NOT EXISTS sync_failures (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  provider_id TEXT NOT NULL, error TEXT NOT NULL, at INTEGER NOT NULL,
+  PRIMARY KEY (account_id, provider_id));
+"#;
 
 /// Per-thread label index so label views ("mailboxes") are an index lookup, not a JSON scan.
 const THREAD_LABELS: &str = r#"
@@ -224,6 +232,38 @@ pub fn desired_labels(
 /// Date in the high bits, a slice of the message rowid in the low 20 bits for uniqueness.
 pub fn fts_rowid(date_ms: i64, rowid: i64) -> i64 {
     (date_ms.max(0) << 20) | (rowid & 0xF_FFFF)
+}
+
+/// Filesystem-safe attachment name: no separators or control characters, and at most
+/// 120 bytes (APFS caps names at 255) with the extension kept so files still open.
+pub fn safe_filename(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let clean = clean.trim().trim_start_matches('.').to_string();
+    if clean.is_empty() {
+        return "attachment".into();
+    }
+    const MAX: usize = 120;
+    if clean.len() <= MAX {
+        return clean;
+    }
+    let (stem, ext) = match clean.rfind('.') {
+        Some(i) if clean.len() - i <= 16 => (&clean[..i], &clean[i..]),
+        _ => (clean.as_str(), ""),
+    };
+    let mut end = MAX - ext.len();
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &stem[..end.min(stem.len())], ext)
 }
 
 /// Turns free text into a safe FTS5 query: every word is a quoted prefix term,
@@ -562,7 +602,24 @@ impl Store {
         let tx = w.transaction()?;
         let mut ids = vec![];
         for m in msgs {
-            ids.push(Self::ingest_tx(&tx, &self.blobs, account_id, me, m, mode)?);
+            // One malformed message must not stall the mailbox: isolate each in a savepoint,
+            // record failures for a later retry, and keep importing.
+            tx.execute_batch("SAVEPOINT msg")?;
+            match Self::ingest_tx(&tx, &self.blobs, account_id, me, m, mode) {
+                Ok(id) => {
+                    tx.execute_batch("RELEASE msg")?;
+                    ids.push(id);
+                }
+                Err(e) => {
+                    tx.execute_batch("ROLLBACK TO msg; RELEASE msg")?;
+                    tracing::warn!(provider_id = %m.provider_id, "skipping message: {e}");
+                    tx.execute(
+                        "INSERT INTO sync_failures (account_id, provider_id, error, at) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(account_id, provider_id) DO UPDATE SET error = excluded.error, at = excluded.at",
+                        params![account_id, m.provider_id, e.to_string(), now_ms()],
+                    )?;
+                }
+            }
         }
         tx.commit()?;
         Ok(ids)
@@ -689,24 +746,9 @@ impl Store {
         )?;
         for a in &p.attachments {
             let aid = new_id("att");
-            let safe: String = a
-                .filename
-                .chars()
-                .map(|c| {
-                    if c == '/' || c == '\\' || c == ':' {
-                        '_'
-                    } else {
-                        c
-                    }
-                })
-                .collect();
             let dir = blobs.join(&aid);
             std::fs::create_dir_all(&dir)?;
-            let path = dir.join(if safe.is_empty() {
-                "attachment".into()
-            } else {
-                safe
-            });
+            let path = dir.join(safe_filename(&a.filename));
             std::fs::write(&path, &a.data)?;
             tx.execute(
                 "INSERT INTO attachments (id, message_id, filename, mime, size, path) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1986,6 +2028,57 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, MIGRATIONS.len() as i64);
+    }
+
+    #[rstest]
+    #[case::separators("a/b:c.pdf", "a_b_c.pdf")]
+    #[case::empty("  ", "attachment")]
+    #[case::hidden(".env", "env")]
+    #[case::newline("re\nport.pdf", "re_port.pdf")]
+    fn safe_filename_cleans(#[case] input: &str, #[case] want: &str) {
+        assert_eq!(safe_filename(input), want);
+    }
+
+    #[rstest]
+    fn safe_filename_caps_length_keeping_extension() {
+        let long = format!("{}.pdf", "é".repeat(200));
+        let out = safe_filename(&long);
+        assert!(out.len() <= 120 && out.ends_with(".pdf"));
+    }
+
+    #[rstest]
+    fn long_attachment_name_does_not_block_ingest(env: Env) {
+        let mut m = incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi");
+        m.parsed.attachments.push(crate::mime::ParsedAttachment {
+            filename: "x".repeat(400),
+            mime: "text/plain".into(),
+            data: b"d".to_vec(),
+        });
+        assert!(
+            env.store
+                .ingest(&env.acc, "me@example.com", &m, SyncMode::Initial)
+                .is_ok()
+        );
+    }
+
+    #[rstest]
+    fn failing_message_does_not_block_batch(env: Env) {
+        let blobs = env._dir.path().join("blobs");
+        let good = incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "ok");
+        let mut bad = incoming("m2", "t2", "marc@x.com", &["INBOX"], now_ms(), "bad");
+        bad.parsed.attachments.push(crate::mime::ParsedAttachment {
+            filename: "a.txt".into(),
+            mime: "text/plain".into(),
+            data: b"d".to_vec(),
+        });
+        // Blobs dir replaced by a file: attachment writes fail for this batch.
+        std::fs::remove_dir_all(&blobs).unwrap();
+        std::fs::write(&blobs, b"").unwrap();
+        let ids = env
+            .store
+            .ingest_many(&env.acc, "me@example.com", &[bad, good], SyncMode::Initial)
+            .unwrap();
+        assert_eq!(ids.len(), 1);
     }
 
     #[rstest]
