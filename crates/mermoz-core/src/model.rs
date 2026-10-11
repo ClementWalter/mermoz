@@ -78,6 +78,15 @@ pub struct Status {
     pub color: String,
 }
 
+/// A Gmail label the user files mail into ("mailbox"); `id` is unique within its account.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Label {
+    pub account_id: String,
+    pub id: String,
+    pub name: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Project {
     pub id: String,

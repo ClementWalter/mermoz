@@ -77,10 +77,11 @@ app, the CLI and the MCP server are clients of this protocol.
 | `accounts.add_gmail` | `{}`                                                                                     | `{"auth_url": "https://…"}`; completes in background, emits `accounts_changed` |
 | `accounts.remove`    | `{"id"}`                                                                                 | `{}`                                     |
 | `statuses.list`      | `{}`                                                                                     | `[Status]`                               |
+| `labels.list`        | `{}`                                                                                     | `[{"account_id","id","name","count"}]` user labels ("mailboxes"), nested with `/` |
 | `projects.list`      | `{}`                                                                                     | `[Project]`                              |
 | `projects.create`    | `{"name", "color"?}`                                                                     | `Project`                                |
 | `counts`             | `{}`                                                                                     | `{"status": {key: n}, "project": {id: n}, "account": {id: n}}` (open threads only, except `done`/`canceled` which are omitted) |
-| `threads.list`       | `{"status"?: [key], "project_id"?, "account_id"?, "priority"?: [n], "limit"?: 200, "offset"?: 0}` | `{"threads": [ThreadSummary], "total": n}` ordered by `last_date` desc |
+| `threads.list`       | `{"status"?: [key], "project_id"?, "account_id"?, "label_id"?, "priority"?: [n], "limit"?: 200, "offset"?: 0}` | `{"threads": [ThreadSummary], "total": n}` ordered by `last_date` desc |
 | `threads.get`        | `{"id"}`                                                                                 | `{"thread": ThreadSummary, "messages": [Message]}` |
 | `threads.update`     | `{"ids": [id], "status"?, "priority"?, "project_id"? (null clears), "due"? (null clears)}` | `{"updated": n}`                         |
 | `threads.mark_read`  | `{"id", "read"?: true}`                                                                  | `{}`                                     |

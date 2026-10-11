@@ -85,6 +85,8 @@ public final class DaemonClient: Sendable {
     public func statuses() async throws -> [Status] { try await call("statuses.list") }
     public func projects() async throws -> [Project] { try await call("projects.list") }
 
+    public func labels() async throws -> [MailLabel] { try await call("labels.list") }
+
     public func createProject(name: String, color: String?) async throws -> Project {
         try await call("projects.create", Params().with("name", name).with("color", color))
     }
@@ -92,9 +94,9 @@ public final class DaemonClient: Sendable {
     public func counts() async throws -> Counts { try await call("counts") }
 
     public func threads(status: [String]? = nil, projectId: String? = nil, accountId: String? = nil,
-                        priority: [Int]? = nil, limit: Int = 300, offset: Int = 0) async throws -> ThreadPage {
+                        labelId: String? = nil, priority: [Int]? = nil, limit: Int = 300, offset: Int = 0) async throws -> ThreadPage {
         try await call("threads.list", Params()
-            .with("status", status).with("project_id", projectId).with("account_id", accountId)
+            .with("status", status).with("project_id", projectId).with("account_id", accountId).with("label_id", labelId)
             .with("priority", priority).with("limit", limit).with("offset", offset))
     }
 

@@ -55,9 +55,14 @@ enum Cmd {
         /// Account email or id.
         #[arg(long)]
         account: Option<String>,
+        /// Gmail label ("mailbox") name, e.g. "Clients/Acme".
+        #[arg(long)]
+        label: Option<String>,
         #[arg(long, default_value_t = 50)]
         limit: i64,
     },
+    /// List your Gmail labels ("mailboxes") with thread counts.
+    Labels,
     /// Full-text search (from:, to:, subject: prefixes supported).
     Search {
         query: Vec<String>,
@@ -318,6 +323,29 @@ fn resolve_project(c: &mut Client, name: &str, create: bool) -> Result<String, R
         .to_string())
 }
 
+/// Label by name (case-insensitive) or id; returns (account_id, label_id).
+fn resolve_label(c: &mut Client, name: &str) -> Result<(String, String), RpcError> {
+    let labels = c.call("labels.list", json!({}))?;
+    for l in labels.as_array().into_iter().flatten() {
+        if l["id"].as_str() == Some(name)
+            || l["name"]
+                .as_str()
+                .map(|n| n.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        {
+            return Ok((
+                l["account_id"].as_str().unwrap_or("").into(),
+                l["id"].as_str().unwrap_or("").into(),
+            ));
+        }
+    }
+    Err(RpcError {
+        code: -32004,
+        message: format!("no label named '{name}'; see `mermoz labels`"),
+        data: None,
+    })
+}
+
 fn resolve_account(c: &mut Client, a: &str) -> Result<String, RpcError> {
     let accounts = c.call("accounts.list", json!({}))?;
     for acc in accounts.as_array().into_iter().flatten() {
@@ -428,6 +456,7 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             status,
             project,
             account,
+            label,
             limit,
         } => {
             let mut p = json!({ "limit": limit });
@@ -443,6 +472,11 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             if let Some(a) = account {
                 p["account_id"] = json!(resolve_account(&mut c, &a)?);
+            }
+            if let Some(l) = label {
+                let (acc, id) = resolve_label(&mut c, &l)?;
+                p["label_id"] = json!(id);
+                p["account_id"] = json!(acc);
             }
             let v = c.call("threads.list", p)?;
             if out.json {
@@ -722,6 +756,20 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 };
             }
             out.line("sent");
+        }
+        Cmd::Labels => {
+            let v = c.call("labels.list", json!({}))?;
+            if out.json {
+                out.json(&v);
+                return Ok(());
+            }
+            for l in v.as_array().into_iter().flatten() {
+                out.line(format!(
+                    "{:>6}  {}",
+                    l["count"],
+                    l["name"].as_str().unwrap_or("")
+                ));
+            }
         }
         Cmd::Statuses => {
             let v = c.call("statuses.list", json!({}))?;

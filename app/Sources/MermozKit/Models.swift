@@ -117,6 +117,18 @@ public struct Status: Codable, Sendable, Identifiable, Equatable, Hashable {
     }
 }
 
+/// A Gmail label the user files mail into ("mailbox"); `id` is unique within its account.
+public struct MailLabel: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public var accountId: String
+    public var id: String
+    public var name: String
+    public var count: Int
+
+    /// Nesting depth from Gmail's "Parent/Child" naming.
+    public var depth: Int { name.split(separator: "/").count - 1 }
+    public var leaf: String { name.split(separator: "/").last.map(String.init) ?? name }
+}
+
 public struct Project: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var id: String
     public var name: String

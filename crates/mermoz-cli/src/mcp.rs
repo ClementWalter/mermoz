@@ -12,7 +12,7 @@ fn tools() -> Value {
         { "name": "search_mail", "description": "Full-text search across all local mail (instant, offline). Supports from:, to:, subject: prefixes. Returns threads best match first.",
           "inputSchema": { "type": "object", "properties": { "query": s("search words"), "limit": { "type": "integer", "default": 20 } }, "required": ["query"] } },
         { "name": "list_threads", "description": "List threads (issues) filtered by status/project/account, newest first. Statuses: triage, backlog, todo, in_progress, waiting, review, done, canceled.",
-          "inputSchema": { "type": "object", "properties": { "status": { "type": "array", "items": { "type": "string" } }, "project_id": s("project id"), "account_id": s("account id"), "limit": { "type": "integer", "default": 50 } } } },
+          "inputSchema": { "type": "object", "properties": { "status": { "type": "array", "items": { "type": "string" } }, "project_id": s("project id"), "account_id": s("account id"), "label_id": s("Gmail label id from list_labels (pass its account_id too)"), "limit": { "type": "integer", "default": 50 } } } },
         { "name": "get_thread", "description": "Read a whole thread: every message's plain-text body, recipients and attachment ids.",
           "inputSchema": { "type": "object", "properties": { "id": s("thread id or number like M-1287") }, "required": ["id"] } },
         { "name": "update_thread", "description": "Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), project_id (null clears) or due date (YYYY-MM-DD, null clears).",
@@ -23,6 +23,7 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "thread_id": s("thread to reply to"), "to": { "type": "array", "items": { "type": "string" } }, "cc": { "type": "array", "items": { "type": "string" } }, "subject": s("subject"), "body": s("plain text body") }, "required": ["body"] } },
         { "name": "send_draft", "description": "Ask to send a draft. Unless the user enabled agent sending, the draft goes to the user's Review lane and this returns approval_required: tell the user, do not retry.",
           "inputSchema": { "type": "object", "properties": { "id": s("draft id") }, "required": ["id"] } },
+        { "name": "list_labels", "description": "The user's Gmail labels (mailboxes) with ids, accounts and thread counts.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_statuses", "description": "Workflow statuses.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_projects", "description": "Projects threads can belong to.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "submit_feedback", "description": "Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.",
@@ -76,6 +77,7 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
         }
         "create_draft" => r(c.call("drafts.create", a.clone())),
         "send_draft" => r(c.call("drafts.send", json!({ "id": a["id"] }))),
+        "list_labels" => r(c.call("labels.list", json!({}))),
         "list_statuses" => r(c.call("statuses.list", json!({}))),
         "list_projects" => r(c.call("projects.list", json!({}))),
         "submit_feedback" => r(c.call(

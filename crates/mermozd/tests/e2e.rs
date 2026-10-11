@@ -280,6 +280,26 @@ fn transient_fetch_failure_loses_no_mail(world: World) {
 }
 
 #[rstest]
+fn filed_mail_is_listed_under_its_label(world: World) {
+    {
+        let mut m = world.mailbox.lock().unwrap();
+        let id = m.label_id_for("Clients/Acme");
+        m.add_message(
+            "f1",
+            "tf1",
+            &[&id],
+            &raw("Acme <a@acme.example>", "Invoice 42", "Filed away", "f1"),
+            NOW - 9000,
+        );
+    }
+    sign_in(&world);
+    world.wait_until("import", |w| w.ok("threads.list", json!({}))["total"] == 4);
+    let out = world.cli(&["--json", "list", "--label", "clients/acme"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["threads"][0]["subject"], "Invoice 42");
+}
+
+#[rstest]
 fn inbox_mail_lands_in_triage(synced: World) {
     assert_eq!(
         synced.thread_by_subject("Audit report v2")["status"],

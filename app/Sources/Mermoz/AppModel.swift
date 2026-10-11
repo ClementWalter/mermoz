@@ -11,6 +11,8 @@ enum SidebarSelection: Hashable {
     case status(String)
     case project(String)
     case account(String)
+    /// A Gmail label: (account id, label id).
+    case label(String, String)
 }
 
 enum LayoutMode: String, CaseIterable {
@@ -50,6 +52,7 @@ final class AppModel {
     var accounts: [Account] = []
     var statuses: [Status] = []
     var projects: [Project] = []
+    var labels: [MailLabel] = []
     var counts = Counts()
     var agentsMaySend = false
     var feedback: [FeedbackEntry] = []
@@ -128,11 +131,13 @@ final class AppModel {
         async let a = client.accounts()
         async let s = client.statuses()
         async let p = client.projects()
+        async let l = client.labels()
         async let st = client.settings()
         do {
             accounts = try await a
             statuses = try await s.sorted { $0.order < $1.order }
             projects = try await p
+            labels = try await l
             agentsMaySend = try await st.agentsMaySend
         } catch {
             report(error)
@@ -183,6 +188,9 @@ final class AppModel {
                 page = try await client.threads(status: open, projectId: id)
             case let (.account(id), _):
                 page = try await client.threads(status: open, accountId: id)
+            case let (.label(acc, id), _):
+                // A label is a mailbox: show everything filed there, whatever its status.
+                page = try await client.threads(accountId: acc, labelId: id)
             }
             // Unchanged pages must not re-render the list (sync streams change events).
             if threads != page.threads { threads = page.threads }
@@ -196,6 +204,8 @@ final class AppModel {
 
     /// Threads grouped for list mode: priority buckets in Linear order (urgent first, none last).
     var priorityGroups: [(priority: Int, threads: [ThreadSummary])] {
+        // Mailboxes read chronologically; priority buckets are for the workflow views.
+        if case .label = selection { return threads.isEmpty ? [] : [(-1, threads)] }
         let order = [1, 2, 3, 4, 0]
         let byP = Dictionary(grouping: threads, by: \.priority)
         return order.compactMap { p in byP[p].map { (p, $0) } }
@@ -499,6 +509,8 @@ final class AppModel {
             try? await Task.sleep(for: .milliseconds(1000))
             guard !Task.isCancelled else { return }
             await refreshCounts()
+            // New labels appear as the import reaches older mail.
+            if let l = try? await client?.labels(), l != labels { labels = l }
             await loadList()
         }
     }

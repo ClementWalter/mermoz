@@ -79,7 +79,30 @@ type MsgAgg = (String, String, bool, bool, i64, String, String, i64);
 
 /// Ordered schema migrations; `PRAGMA user_version` records how many ran.
 /// Append new steps, never edit shipped ones.
-const MIGRATIONS: &[&str] = &[SCHEMA];
+const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS];
+
+/// Per-thread label index so label views ("mailboxes") are an index lookup, not a JSON scan.
+const THREAD_LABELS: &str = r#"
+CREATE TABLE IF NOT EXISTS thread_labels (
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL, label_id TEXT NOT NULL, PRIMARY KEY (thread_id, label_id));
+CREATE INDEX IF NOT EXISTS thread_labels_label ON thread_labels(account_id, label_id);
+INSERT OR IGNORE INTO thread_labels (thread_id, account_id, label_id)
+  SELECT DISTINCT m.thread_id, m.account_id, j.value FROM messages m, json_each(m.labels_json) j;
+"#;
+
+/// Gmail system labels that are views, not mailboxes the user files mail into.
+const SYSTEM_LABELS: &[&str] = &[
+    "INBOX",
+    "UNREAD",
+    "SENT",
+    "DRAFT",
+    "SPAM",
+    "TRASH",
+    "STARRED",
+    "IMPORTANT",
+    "CHAT",
+];
 
 fn migrate(conn: &Connection) -> Result<()> {
     let done: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -117,6 +140,7 @@ pub struct ThreadFilter {
     pub project_id: Option<String>,
     pub account_id: Option<String>,
     pub priority: Option<Vec<i64>>,
+    pub label_id: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -711,6 +735,7 @@ impl Store {
 
     /// Recomputes denormalized thread fields from its messages.
     fn refresh_thread(tx: &Connection, thread_id: &str) -> Result<()> {
+        Self::index_thread_labels(tx, thread_id)?;
         let mut st = tx.prepare_cached(
             "SELECT from_name, from_email, is_from_me, unread, date, subject, body_text,
                (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id)
@@ -779,6 +804,47 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    fn index_thread_labels(tx: &Connection, thread_id: &str) -> Result<()> {
+        tx.execute(
+            "DELETE FROM thread_labels WHERE thread_id = ?1",
+            [thread_id],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO thread_labels (thread_id, account_id, label_id)
+             SELECT DISTINCT m.thread_id, m.account_id, j.value FROM messages m, json_each(m.labels_json) j WHERE m.thread_id = ?1",
+            [thread_id],
+        )?;
+        Ok(())
+    }
+
+    /// The user's own labels per account, with thread counts; nested names use "/".
+    pub fn user_labels(&self) -> Result<Vec<Label>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT l.account_id, l.label_id, l.name, (SELECT COUNT(*) FROM thread_labels tl WHERE tl.account_id = l.account_id AND tl.label_id = l.label_id)
+             FROM labels l ORDER BY l.name COLLATE NOCASE",
+        )?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(Label {
+                    account_id: r.get(0)?,
+                    id: r.get(1)?,
+                    name: r.get(2)?,
+                    count: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|l| {
+                !SYSTEM_LABELS.contains(&l.id.as_str())
+                    && !l.id.starts_with("CATEGORY_")
+                    && !l.name.starts_with(LABEL_PREFIX)
+                    && l.name != "Mermoz"
+            })
+            .collect())
     }
 
     /// Union of label names across the thread's messages, as last seen on the server.
@@ -937,6 +1003,12 @@ impl Store {
         if let Some(a) = &f.account_id {
             clauses.push("t.account_id = ?".into());
             args.push(a.clone().into());
+        }
+        if let Some(l) = &f.label_id {
+            clauses.push("t.id IN (SELECT tl.thread_id FROM thread_labels tl WHERE tl.label_id = ? AND (? IS NULL OR tl.account_id = ?))".into());
+            args.push(l.clone().into());
+            args.push(f.account_id.clone().into());
+            args.push(f.account_id.clone().into());
         }
         if let Some(p) = &f.priority {
             clauses.push(format!("t.priority IN ({})", vec!["?"; p.len()].join(",")));
@@ -1212,6 +1284,7 @@ impl Store {
                 params![mid, serde_json::to_string(&v)?],
             )?;
         }
+        Self::index_thread_labels(&tx, thread_id)?;
         tx.commit()?;
         Ok(())
     }
@@ -2133,6 +2206,53 @@ mod tests {
         .unwrap();
         s.op_done(&in_flight).unwrap();
         assert_eq!(s.pending_ops(10).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn label_filter_finds_filed_thread(env: Env) {
+        let s = &env.store;
+        s.set_labels(&env.acc, &[("Label_7".into(), "Clients/Acme".into())])
+            .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["Label_7"], now_ms(), "hi"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m2", "t2", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        let f = ThreadFilter {
+            label_id: Some("Label_7".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.threads(&f).unwrap().1, 1);
+    }
+
+    #[rstest]
+    fn user_labels_hide_system_and_mermoz(env: Env) {
+        let s = &env.store;
+        s.set_labels(
+            &env.acc,
+            &[
+                ("INBOX".into(), "INBOX".into()),
+                ("Label_1".into(), "Mermoz/Todo".into()),
+                ("Label_2".into(), "Receipts".into()),
+            ],
+        )
+        .unwrap();
+        let names: Vec<String> = s
+            .user_labels()
+            .unwrap()
+            .into_iter()
+            .map(|l| l.name)
+            .collect();
+        assert_eq!(names, vec!["Receipts".to_string()]);
     }
 
     #[rstest]

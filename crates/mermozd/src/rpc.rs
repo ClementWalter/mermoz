@@ -126,6 +126,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             Ok(json!({}))
         }
         "statuses.list" => to_value(st.statuses()?),
+        "labels.list" => to_value(st.user_labels()?),
         "projects.list" => to_value(st.projects()?),
         "projects.create" => {
             to_value(st.create_project(&s(p, "name")?, opt_s(p, "color").as_deref())?)
@@ -140,6 +141,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 status: str_list(p, "status")?,
                 project_id: opt_s(p, "project_id"),
                 account_id: opt_s(p, "account_id"),
+                label_id: opt_s(p, "label_id"),
                 priority,
                 limit: p
                     .get("limit")

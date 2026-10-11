@@ -6,6 +6,7 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @State private var addingProject = false
     @State private var newProject = ""
+    @AppStorage("sidebar.labelsOpen") private var labelsOpen = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -57,6 +58,35 @@ struct SidebarView: View {
                                     .padding(.horizontal, 8).frame(height: 26)
                             }
                             .buttonStyle(.plain)
+                        }
+                    }
+                    if !model.labels.isEmpty {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Button { labelsOpen.toggle() } label: {
+                                HStack(spacing: 4) {
+                                    Text("LABELS").font(.system(size: 11, weight: .semibold)).kerning(0.6)
+                                    Image(systemName: labelsOpen ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .bold))
+                                    Spacer()
+                                }
+                                .foregroundStyle(Theme.text3)
+                                .padding(.horizontal, 8).padding(.bottom, 4)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            if labelsOpen {
+                                ForEach(model.labels) { l in
+                                    row(.label(l.accountId, l.id), count: nil) {
+                                        Image(systemName: "folder").font(.system(size: 11)).foregroundStyle(Theme.text3)
+                                        Text(l.leaf).lineLimit(1)
+                                        if model.accounts.count > 1 {
+                                            Circle().strokeBorder(Theme.accountColor(l.accountId, among: model.accounts), lineWidth: 1.5)
+                                                .frame(width: 7, height: 7)
+                                        }
+                                    }
+                                    .padding(.leading, CGFloat(l.depth) * 14)
+                                    .help(l.name)
+                                }
+                            }
                         }
                     }
                     section("Accounts") {
