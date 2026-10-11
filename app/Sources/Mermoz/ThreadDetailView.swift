@@ -179,6 +179,10 @@ struct CollapsedMessage: View {
         HStack(spacing: 10) {
             Avatar(name: message.from.display, me: message.isFromMe)
             Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.text)
+            if !message.isFromMe, !message.from.name.isEmpty {
+                // Who it is when the display name is generic ("complaints", "support").
+                Text(message.from.domain).font(.system(size: 11.5)).foregroundStyle(Theme.text3).lineLimit(1)
+            }
             Text(message.displayBody.replacingOccurrences(of: "\n", with: " ")).lineLimit(1).foregroundStyle(Theme.text2)
             Spacer(minLength: 6)
             Text(Format.short(message.date)).foregroundStyle(Theme.text3)
@@ -207,7 +211,12 @@ struct MessageCard: View {
             HStack(spacing: 10) {
                 Avatar(name: message.from.display, me: message.isFromMe)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 6) {
+                        Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 13, weight: .semibold))
+                        if !message.isFromMe, !message.from.name.isEmpty {
+                            Text(message.from.email).font(.system(size: 12)).foregroundStyle(Theme.text3).textSelection(.enabled).lineLimit(1)
+                        }
+                    }
                     Text(recipientsLine).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
                 }
                 Spacer()

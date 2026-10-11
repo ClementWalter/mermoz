@@ -161,6 +161,10 @@ public final class DaemonClient: Sendable {
             .with("base_url", baseUrl).with("model", model).with("api_key", apiKey))
     }
 
+    public func peopleClean() async throws -> JobStart { try await call("agent.people_clean") }
+
+    public func peopleStatus() async throws -> JobState { try await call("agent.people_status") }
+
     public func aiClean(thread id: String) async throws -> CleanResult { try await call("agent.clean", Params().with("id", id)) }
 
     public func aiTriage(status: String, limit: Int = 40) async throws -> TriageResult {

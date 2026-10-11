@@ -26,6 +26,8 @@ pub struct Service {
     pub login: Mutex<LoginState>,
     /// The sign-in in flight; a new attempt aborts it (a stuck browser flow never blocks a retry).
     login_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Progress of the AI directory clean-up.
+    pub people_job: Mutex<JobState>,
     pub store: Arc<Store>,
     pub events: broadcast::Sender<Event>,
     workers: Mutex<HashMap<String, Arc<Worker>>>,
@@ -45,6 +47,7 @@ impl Service {
         Arc::new(Self {
             login: Mutex::new(LoginState::default()),
             login_task: Mutex::new(None),
+            people_job: Mutex::new(JobState::default()),
             store,
             events,
             workers: Mutex::new(HashMap::new()),
@@ -182,6 +185,14 @@ impl Service {
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct JobState {
+    pub running: bool,
+    pub done: usize,
+    pub total: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LoginState {
     pub running: bool,
     pub error: Option<String>,
@@ -227,6 +238,65 @@ impl Service {
             svc.kick_agents();
         });
         *self.login_task.lock().unwrap() = Some(handle);
+    }
+
+    /// Lets the AI merge duplicate people and clean their names, in batches, in the background.
+    pub fn clean_people(self: &Arc<Self>) -> Result<usize> {
+        let accounts = self.store.accounts()?;
+        let provider = accounts
+            .iter()
+            .find_map(|a| self.store.provider_for_account(&a.id).ok().flatten());
+        let Some(pr) = provider else {
+            return Err(Error::InvalidParams(
+                "Allow an AI for one of your accounts in Settings › Agents first.".into(),
+            ));
+        };
+        let people = self.store.people(None, i64::MAX)?;
+        // Sorted by family name, so variants of one name share a batch.
+        const BATCH: usize = 100;
+        let total = people.len().div_ceil(BATCH);
+        {
+            let mut j = self.people_job.lock().unwrap();
+            if j.running {
+                return Ok(j.total);
+            }
+            *j = JobState {
+                running: true,
+                done: 0,
+                total,
+                error: None,
+            };
+        }
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let result: Result<()> = async {
+                let key = credential(&pr).await?;
+                let client = mermoz_core::agent::Client::new();
+                for (i, chunk) in people.chunks(BATCH).enumerate() {
+                    let entries: Vec<mermoz_core::agent::PersonEntry> = chunk
+                        .iter()
+                        .map(|p| mermoz_core::agent::PersonEntry {
+                            id: p.email.clone(),
+                            name: p.card.name.clone(),
+                            emails: p.emails.clone(),
+                            company: p.card.company.clone(),
+                        })
+                        .collect();
+                    let groups = client.people_groups(&pr, &key, &entries).await?;
+                    svc.store.apply_person_groups(chunk, &groups)?;
+                    svc.people_job.lock().unwrap().done = i + 1;
+                    let _ = svc.events.send(Event::ContactsChanged);
+                }
+                Ok(())
+            }
+            .await;
+            let mut j = svc.people_job.lock().unwrap();
+            j.running = false;
+            j.error = result.err().map(|e| e.to_string());
+            drop(j);
+            let _ = svc.events.send(Event::ContactsChanged);
+        });
+        Ok(total)
     }
 
     /// Starts "Continue with ChatGPT"; returns the URL the app opens in the browser.

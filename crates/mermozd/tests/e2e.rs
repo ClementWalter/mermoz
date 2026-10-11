@@ -392,6 +392,26 @@ fn forced_clean_runs_without_auto_cleaning(synced: World) {
 }
 
 #[rstest]
+fn ai_people_clean_renames_the_directory(synced: World) {
+    enable_agent(&synced);
+    // Make Marc a correspondent so the directory has someone in it.
+    let t = synced.thread_by_subject("Audit report v2");
+    let d = synced.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "ok" }),
+    );
+    synced.ok("drafts.send", json!({ "id": d["id"] }));
+    synced.ok("agent.people_clean", json!({}));
+    synced.wait_until("people clean", |w| {
+        w.ok("agent.people_status", json!({}))["running"] == false
+    });
+    assert_eq!(
+        synced.ok("contacts.list", json!({}))[0]["name"],
+        "Tidy Name"
+    );
+}
+
+#[rstest]
 fn agent_clean_body_is_served(synced: World) {
     enable_agent(&synced);
     let t = synced.thread_by_subject("Audit report v2");

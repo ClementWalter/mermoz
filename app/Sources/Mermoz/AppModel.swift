@@ -72,6 +72,7 @@ final class AppModel {
     var listDisplay: DisplayOptions = AppModel.loadDisplay("list") ?? DisplayOptions(grouping: .priority)
     var boardDisplay: DisplayOptions = AppModel.loadDisplay("board") ?? DisplayOptions(grouping: .status)
     var triageResult: TriageResult?
+    var peopleJob = JobState()
     /// Keys of AI actions in flight ("clean:<thread>", "triage:<status>").
     var aiBusy: Set<String> = []
     var threads: [ThreadSummary] = []
@@ -356,6 +357,17 @@ final class AppModel {
     }
 
     // MARK: AI actions
+
+    /// Lets the AI merge duplicates and tidy names across the whole directory.
+    func aiCleanPeople() {
+        guard let client else { return }
+        Task {
+            do {
+                let start = try await client.peopleClean()
+                peopleJob = JobState(running: true, done: 0, total: start.total)
+            } catch { report(error) }
+        }
+    }
 
     /// Re-cleans every message of a thread now (the ✦ button in a thread).
     func aiClean(_ threadId: String) {
@@ -772,6 +784,7 @@ final class AppModel {
             }
         case .contactsChanged:
             if selection == .people { Task { await loadContacts() } }
+            if peopleJob.running { Task { if let j = try? await client?.peopleStatus() { peopleJob = j } } }
         case .draftsChanged:
             Task { await refreshCounts(); if isReview { await loadList() } }
         case .unknown:

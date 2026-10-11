@@ -253,6 +253,23 @@ async fn llm(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Json<Value> {
+    // People clean-up (schema with "groups"): merge everything into one tidy person.
+    if body["output_config"]["format"]["schema"]["required"][0] == "groups" {
+        let input: Value =
+            serde_json::from_str(body["messages"][0]["content"].as_str().unwrap_or("{}"))
+                .unwrap_or_default();
+        let ids: Vec<Value> = input["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| e["id"].clone())
+            .collect();
+        let text = json!({ "groups": [{ "ids": ids, "name": "Tidy Name", "kind": "person" }] })
+            .to_string();
+        return Json(
+            json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
+        );
+    }
     // Triage requests (schema with "moves"): send every listed thread to Done.
     if body["output_config"]["format"]["schema"]["required"][0] == "moves" {
         let input: Value =

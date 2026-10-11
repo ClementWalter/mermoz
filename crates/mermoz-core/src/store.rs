@@ -79,7 +79,21 @@ type MsgAgg = (String, String, bool, bool, i64, String, String, i64);
 
 /// Ordered schema migrations; `PRAGMA user_version` records how many ran.
 /// Append new steps, never edit shipped ones.
-const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS, SYNC_FAILURES, AGENT, PROVIDER_AUTH];
+const MIGRATIONS: &[&str] = &[
+    SCHEMA,
+    THREAD_LABELS,
+    SYNC_FAILURES,
+    AGENT,
+    PROVIDER_AUTH,
+    PERSON_OVERRIDES,
+];
+
+/// The AI's verdict on who is who: each address mapped to one person with a clean name.
+const PERSON_OVERRIDES: &str = r#"
+CREATE TABLE IF NOT EXISTS person_overrides (
+  email TEXT PRIMARY KEY, person_id TEXT NOT NULL, name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'person', updated INTEGER NOT NULL);
+"#;
 
 /// Providers signed in through Anthropic's OAuth login instead of a pasted key.
 const PROVIDER_AUTH: &str = "ALTER TABLE providers ADD COLUMN auth TEXT NOT NULL DEFAULT 'key'; ALTER TABLE providers ADD COLUMN profile TEXT;";
@@ -510,6 +524,8 @@ pub struct Person {
     /// Conversations (threads) with them, whoever wrote.
     pub conversations: i64,
     pub last_seen: i64,
+    /// "person", "organization" or "list" (set by the AI clean-up; "person" until then).
+    pub kind: String,
 }
 
 /// A directory entry: what signatures taught us about one address.
@@ -2155,6 +2171,21 @@ impl Store {
                 threads_of.entry(e).or_default().insert(t);
             }
         }
+        let mut overrides: std::collections::HashMap<String, (String, String, String)> =
+            Default::default();
+        let mut st =
+            r.prepare_cached("SELECT email, person_id, name, kind FROM person_overrides")?;
+        for row in st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })? {
+            let (e, id, n, k) = row?;
+            overrides.insert(e, (id, n, k));
+        }
         let mut cards: std::collections::HashMap<String, Contact> = Default::default();
         let mut st = r.prepare_cached("SELECT email, name, title, company, phones_json, address, website, socials_json, last_seen FROM contacts")?;
         for c in st.query_map([], contact_row)? {
@@ -2184,10 +2215,20 @@ impl Store {
             };
             let key = person_key(&display);
             let card_data = card.map(|c| c.card.clone()).unwrap_or_default();
-            let merge_key = if key.split(' ').count() >= 2 {
+            let mut merge_key = if key.split(' ').count() >= 2 {
                 key
             } else {
                 email.clone()
+            };
+            // The AI's grouping and clean name win over the heuristics.
+            let mut kind = "person".to_string();
+            let display = match overrides.get(&email) {
+                Some((id, name, k)) => {
+                    merge_key = format!("ai:{id}");
+                    kind = k.clone();
+                    name.clone()
+                }
+                None => display,
             };
             match index.get(&merge_key) {
                 Some(&i) => {
@@ -2208,6 +2249,7 @@ impl Store {
                         card: c,
                         conversations: 0,
                         last_seen: last,
+                        kind,
                     });
                 }
             }
@@ -2239,6 +2281,46 @@ impl Store {
             .into_iter()
             .find(|p| p.emails.contains(&e))
             .ok_or_else(|| Error::NotFound(format!("person {email}")))
+    }
+
+    /// Records the AI's grouping: every address of every member maps to one person.
+    pub fn apply_person_groups(
+        &self,
+        people: &[Person],
+        groups: &[crate::agent::PersonGroup],
+    ) -> Result<usize> {
+        let by_id: std::collections::HashMap<&str, &Person> =
+            people.iter().map(|p| (p.email.as_str(), p)).collect();
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let mut n = 0;
+        for g in groups {
+            let members: Vec<&Person> = g
+                .ids
+                .iter()
+                .filter_map(|i| by_id.get(i.as_str()).copied())
+                .collect();
+            let Some(first) = members.first() else {
+                continue;
+            };
+            let name = g.name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let person_id = first.email.clone();
+            for m in &members {
+                for e in &m.emails {
+                    tx.execute(
+                        "INSERT INTO person_overrides (email, person_id, name, kind, updated) VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(email) DO UPDATE SET person_id = excluded.person_id, name = excluded.name, kind = excluded.kind, updated = excluded.updated",
+                        params![e, person_id, name, g.kind, now_ms()],
+                    )?;
+                }
+            }
+            n += 1;
+        }
+        tx.commit()?;
+        Ok(n)
     }
 
     /// What the triage model sees for the newest threads in a status, per account.
@@ -2972,6 +3054,51 @@ mod tests {
             ..Default::default()
         };
         assert_eq!((person.conversations, s.threads(&f).unwrap().1), (2, 2));
+    }
+
+    #[rstest]
+    fn ai_groups_merge_and_rename_people(env: Env) {
+        let s = &env.store;
+        for (i, (name, email)) in [
+            ("lieber adele", "adele@x.com"),
+            ("Adèle L.", "a.lieber@y.com"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut m = incoming(
+                &format!("s{i}"),
+                &format!("t{i}"),
+                "me@example.com",
+                &["SENT"],
+                now_ms(),
+                "hi",
+            );
+            m.parsed.to = vec![Address {
+                name: name.to_string(),
+                email: email.to_string(),
+            }];
+            s.ingest(&env.acc, "me@example.com", &m, SyncMode::Initial)
+                .unwrap();
+        }
+        let people = s.people(None, 10).unwrap();
+        let ids = people.iter().map(|p| p.email.clone()).collect();
+        s.apply_person_groups(
+            &people,
+            &[crate::agent::PersonGroup {
+                ids,
+                name: "Adèle Lieber".into(),
+                kind: "person".into(),
+            }],
+        )
+        .unwrap();
+        let names: Vec<String> = s
+            .people(None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.card.name)
+            .collect();
+        assert_eq!(names, vec!["Adèle Lieber"]);
     }
 
     #[rstest]

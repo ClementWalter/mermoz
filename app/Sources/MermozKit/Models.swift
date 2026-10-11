@@ -69,6 +69,9 @@ public struct Address: Codable, Sendable, Equatable, Hashable {
 
     /// Display name falling back to the address, since many senders omit a name.
     public var display: String { name.isEmpty ? email : name }
+
+    /// The sender's domain ("imaginecurve.com"), to tell apart generic names like "complaints".
+    public var domain: String { email.split(separator: "@").last.map(String.init) ?? "" }
 }
 
 public struct Attachment: Codable, Sendable, Identifiable, Equatable, Hashable {
@@ -159,6 +162,20 @@ public struct TriageResult: Codable, Sendable, Equatable, Identifiable {
 }
 
 public struct CleanResult: Codable, Sendable { public var cleaned: Int }
+
+/// Progress of a background AI job.
+public struct JobState: Codable, Sendable, Equatable {
+    public var running: Bool
+    public var done: Int
+    public var total: Int
+    public var error: String?
+
+    public init(running: Bool = false, done: Int = 0, total: Int = 0, error: String? = nil) {
+        self.running = running; self.done = done; self.total = total; self.error = error
+    }
+}
+
+public struct JobStart: Codable, Sendable { public var total: Int }
 
 public struct ProviderModel: Codable, Sendable, Equatable, Identifiable, Hashable {
     public var id: String

@@ -14,6 +14,16 @@ struct PeopleListView: View {
                 Text("People").font(.system(size: 15, weight: .semibold))
                 Text(model.contacts.count.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
+                if model.peopleJob.running {
+                    ProgressView().controlSize(.mini)
+                    Text("Tidying \(model.peopleJob.done)/\(model.peopleJob.total)").font(.system(size: 11.5)).foregroundStyle(Theme.text2)
+                } else {
+                    // ✦ merges duplicates and cleans names with AI.
+                    Button { model.aiCleanPeople() } label: { Image(systemName: "sparkles") }
+                        .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                        .help("Merge duplicates and clean names with AI")
+                        .accessibilityLabel("Clean up with AI")
+                }
             }
             .padding(.horizontal, 16).frame(height: 50)
             TextField("Search name, email or company", text: $model.contactQuery)

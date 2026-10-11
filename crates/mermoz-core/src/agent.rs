@@ -166,6 +166,30 @@ impl Client {
         Ok(serde_json::from_value(v["moves"].clone()).unwrap_or_default())
     }
 
+    /// Groups and renames a batch of directory entries.
+    pub async fn people_groups(
+        &self,
+        p: &Provider,
+        key: &str,
+        entries: &[PersonEntry],
+    ) -> Result<Vec<PersonGroup>> {
+        let schema = json!({
+            "type": "object", "additionalProperties": false, "required": ["groups"],
+            "properties": { "groups": { "type": "array", "items": {
+                "type": "object", "additionalProperties": false, "required": ["ids", "name", "kind"],
+                "properties": {
+                    "ids": { "type": "array", "items": { "type": "string" } },
+                    "name": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["person", "organization", "list"] }
+                } } } }
+        });
+        let user = serde_json::to_string(&json!({ "entries": entries }))?;
+        let raw = self.complete(p, key, PEOPLE_SYSTEM, &user, &schema).await?;
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|_| Error::other("provider returned malformed JSON"))?;
+        Ok(serde_json::from_value(v["groups"].clone()).unwrap_or_default())
+    }
+
     /// One call per message; the stable system prompt is cached across calls.
     pub async fn digest(
         &self,
@@ -303,6 +327,33 @@ impl Client {
             .ok_or_else(|| Error::other("no content in provider response"))
     }
 }
+
+/// One directory entry as the people clean-up sees it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PersonEntry {
+    pub id: String,
+    pub name: String,
+    pub emails: Vec<String>,
+    pub company: String,
+}
+
+/// Entries the AI says are one person (or organization/list), with a clean display name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PersonGroup {
+    pub ids: Vec<String>,
+    pub name: String,
+    pub kind: String,
+}
+
+const PEOPLE_SYSTEM: &str = "You clean up an address book built from email headers.\n\
+Each entry has an id, a raw display name, its email addresses and maybe a company.\n\
+Return every entry exactly once inside a group:\n\
+- Put entries in the same group only when they are clearly the same human (same person writing from several addresses, \
+or the same name written differently: order, case, accents, initials, nicknames). When unsure, keep them apart.\n\
+- name: how the address book should show them. People: \"First Last\" with proper capitalization and accents \
+(\"NAGEOTTE Pierre-Etienne (75)\" -> \"Pierre-Etienne Nageotte\", \"lieber adele\" -> \"Adèle Lieber\", \"Delobelle, Anne-Charlotte\" -> \"Anne-Charlotte Delobelle\"). \
+Drop noise like \"(Airbnb)\" unless it is the only identifying part. If only an address is known, infer the name from it only when obvious (jean.dupont@ -> Jean Dupont), else keep the address.\n\
+- kind: person, organization (companies, services, shops) or list (mailing lists, groups, shared inboxes).";
 
 /// What the triage model sees about one thread.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

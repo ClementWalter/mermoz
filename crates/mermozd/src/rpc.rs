@@ -490,6 +490,10 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             })?;
             Ok(json!({ "contact": person, "threads": threads }))
         }
+        "agent.people_clean" => Ok(json!({ "total": svc.clean_people()? })),
+        "agent.people_status" => {
+            Ok(serde_json::to_value(svc.people_job.lock().unwrap().clone()).unwrap_or_default())
+        }
         "agent.clean" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;
             let (account, _) = st.provider_thread_id(&id)?;
