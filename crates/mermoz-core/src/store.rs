@@ -2145,6 +2145,14 @@ impl Store {
                 }
             }
         }
+        // Alphabetical by family name, then first name, like Contacts (accents and
+        // "Last, First" folded); entries
+        // without a real name (just an address) go last.
+        people.sort_by_cached_key(|p| {
+            let key = person_key(&p.card.name);
+            let last = key.rsplit(' ').next().unwrap_or("").to_string();
+            (p.card.name.contains('@'), last, key)
+        });
         let q = query.unwrap_or("").trim().to_lowercase();
         Ok(people
             .into_iter()
@@ -2812,6 +2820,41 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(s.people(None, 50).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn people_are_sorted_by_family_name(env: Env) {
+        let s = &env.store;
+        for (i, (name, email)) in [
+            ("Zoé Martin", "z@x.com"),
+            ("Émile Abel", "e@x.com"),
+            ("Bob Durand", "b@x.com"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut m = incoming(
+                &format!("s{i}"),
+                &format!("t{i}"),
+                "me@example.com",
+                &["SENT"],
+                now_ms(),
+                "hi",
+            );
+            m.parsed.to = vec![Address {
+                name: name.to_string(),
+                email: email.to_string(),
+            }];
+            s.ingest(&env.acc, "me@example.com", &m, SyncMode::Initial)
+                .unwrap();
+        }
+        let names: Vec<String> = s
+            .people(None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.card.name)
+            .collect();
+        assert_eq!(names, vec!["Émile Abel", "Bob Durand", "Zoé Martin"]);
     }
 
     #[rstest]
