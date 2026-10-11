@@ -141,8 +141,13 @@ struct Chip<Label: View>: View {
 struct GlassPanel: ViewModifier {
     var radius: CGFloat = 14
 
+    /// The glass sits behind the content: content inside a `glassEffect` view never
+    /// receives drops (drag a status or a thread card onto the sidebar).
     func body(content: Content) -> some View {
-        content.glassEffect(.regular.tint(Color.white.opacity(0.35)), in: RoundedRectangle(cornerRadius: radius))
+        content.background {
+            RoundedRectangle(cornerRadius: radius).fill(.clear)
+                .glassEffect(.regular.tint(Color.white.opacity(0.35)), in: RoundedRectangle(cornerRadius: radius))
+        }
     }
 }
 

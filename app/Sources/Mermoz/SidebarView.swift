@@ -34,22 +34,7 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     section("Workflow") {
                         ForEach(model.statuses) { s in
-                            row(.status(s.key), count: model.key(s)) {
-                                StatusIcon(key: s.key, color: Color(hex: s.color))
-                                Text(s.name)
-                            }
-                            // Drag a status onto another to reorder; drop thread cards to move them.
-                            .draggable("status:\(s.key)")
-                            .dropDestination(for: String.self) { items, _ in
-                                for item in items {
-                                    if item.hasPrefix("status:") {
-                                        model.moveStatus(String(item.dropFirst(7)), before: s.key)
-                                    } else {
-                                        model.update([item], status: s.key)
-                                    }
-                                }
-                                return true
-                            }
+                            StatusRow(status: s, count: model.key(s))
                         }
                     }
                     section("Directory") {
@@ -191,6 +176,49 @@ extension AppModel {
         if s.key == "review" { return max(reviewDrafts.count, counts.status["review"] ?? 0) }
         if closedStatusKeys.contains(s.key) { return nil }
         return counts.status[s.key]
+    }
+}
+
+/// A status in the sidebar: click to open, drag to reorder, drop thread cards on it.
+struct StatusRow: View {
+    @Environment(AppModel.self) private var model
+    let status: Status
+    let count: Int?
+    @State private var targeted = false
+
+    var body: some View {
+        let on = model.selection == .status(status.key)
+        HStack(spacing: 9) {
+            StatusIcon(key: status.key, color: Color(hex: status.color))
+            Text(status.name)
+            Spacer(minLength: 4)
+            if let count, count > 0 {
+                Text(count.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
+            }
+        }
+        .font(.system(size: 13, weight: on ? .semibold : .regular))
+        .foregroundStyle(Theme.text)
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(on || targeted ? Theme.accent.opacity(targeted ? 0.2 : 0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture { model.select(.status(status.key)) }
+        .accessibilityAddTraits(.isButton)
+        // Drag a status onto another to reorder; drop thread cards to move them here.
+        .draggable("status:\(status.key)") {
+            HStack(spacing: 6) { StatusIcon(key: status.key, color: Color(hex: status.color)); Text(status.name) }
+                .padding(6).background(.white, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .dropDestination(for: String.self) { items, _ in
+            for item in items {
+                if item.hasPrefix("status:") {
+                    model.moveStatus(String(item.dropFirst(7)), before: status.key)
+                } else {
+                    model.update([item], status: status.key)
+                }
+            }
+            return !items.isEmpty
+        } isTargeted: { targeted = $0 }
     }
 }
 
