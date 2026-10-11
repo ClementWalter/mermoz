@@ -88,3 +88,19 @@ public enum Grouper {
         }
     }
 }
+
+/// Nesting of "/"-separated project names in the sidebar.
+public enum ProjectTree {
+    /// Indent by the ancestors that are projects themselves, and label with the rest of
+    /// the path: "[Gmail]/Famille" without a "[Gmail]" project stays a top-level row.
+    public static func place(_ name: String, among names: Set<String>) -> (depth: Int, label: String) {
+        let parts = name.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        var depth = 0
+        var start = 0
+        for i in 1..<max(parts.count, 1) where names.contains(parts[0..<i].joined(separator: "/")) {
+            depth += 1
+            start = i
+        }
+        return (depth, parts[start...].joined(separator: "/"))
+    }
+}

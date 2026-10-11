@@ -142,9 +142,18 @@ project's column.
 
 ### Instant AI routing
 
-- On arrival a fast **decision model** (TypeSafe Jev first; OpenAI Decisions API
-  once access is confirmed; big LLM as fallback) predicts, per thread: post-read
-  status, project(s) among the user's labels, and priority, with probabilities.
+- On arrival a fast **decision model** predicts, per thread: post-read status,
+  project among the user's labels, priority and "automated", with probabilities.
+  It is TypeSafe Jev with the user's own key (Settings › Developer); OpenAI's
+  Decisions API stays a candidate once access is confirmed.
+- Jev sees the thread plus two hints built locally: where earlier threads from
+  the same senders were filed, and a one-line description of every project
+  (frequent correspondents, recent subjects). Measured on a real mailbox (300
+  filed threads, 68 labels): 78% exact project, 90% exact on the 80% of threads
+  where confidence ≥ 0.7, ~250 ms per thread. Only confident fields are suggested.
+- Apple's on-device model was evaluated and rejected for routing: 4,096-token
+  context (project descriptions don't fit), ~2 s per call, and barely better
+  than the free sender-history rule (58% vs 54%).
 - The prediction is a **suggestion**, never applied silently: reading the thread
   confirms it, one key corrects it. Automated mail (newsletters, receipts,
   notifications) follows the same rule, confirmable in batches.
@@ -154,6 +163,14 @@ project's column.
   frequent status, else To do.
 - The big LLM keeps the slow jobs: clean reading view, drafts, directory,
   column triage.
+
+### Built (2026-10-11)
+
+Statuses, Gmail mapping (Trash both ways), labels as projects (explicit add/remove
+pushes so labels set elsewhere survive), the read transition, Jev routing with
+suggestions shown on rows and cards, `y` / "Accept n" to accept, an Undo bar after
+reading applied a suggestion, and the key in Settings › Developer. Not built yet:
+the one-time migration pass over old Backlog threads (needs Jev pricing first).
 
 ### Migration
 

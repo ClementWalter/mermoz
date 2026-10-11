@@ -41,3 +41,14 @@ private let order: @Sendable (Grouping) -> [String] = { f in
     t.projects = ["a", "b"]
     #expect(Grouper.group([t], by: .project, order: { _ in ["a", "b"] }).map(\.key) == ["a", "b"])
 }
+
+@Test(arguments: [
+    ("Immo/Houlgate", Set(["Immo", "Immo/Houlgate"]), 1, "Houlgate"),
+    ("[Gmail]/Famille", Set(["[Gmail]/Famille"]), 0, "[Gmail]/Famille"),
+    ("A/B/C", Set(["A", "A/B/C"]), 1, "B/C"),
+    ("Perso", Set(["Perso"]), 0, "Perso"),
+])
+func projectNesting(_ name: String, _ names: Set<String>, _ depth: Int, _ label: String) {
+    let p = ProjectTree.place(name, among: names)
+    #expect(p.depth == depth && p.label == label)
+}

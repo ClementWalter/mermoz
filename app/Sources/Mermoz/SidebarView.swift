@@ -11,6 +11,8 @@ struct SidebarView: View {
     @State private var deleting: Project?
     @AppStorage("sidebar.projectsOpen") private var projectsOpen = true
 
+    private var projectNames: Set<String> { Set(model.projects.map(\.name)) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Button { model.paletteMode = .search } label: {
@@ -66,11 +68,12 @@ struct SidebarView: View {
                                         .onSubmit { model.renameProject(p.id, to: renameText); renaming = nil }
                                         .onExitCommand { renaming = nil }
                                 } else {
+                                    let place = ProjectTree.place(p.name, among: projectNames)
                                     row(.project(p.id), count: model.counts.project[p.id]) {
                                         RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
-                                        Text(p.name.split(separator: "/").last.map(String.init) ?? p.name).lineLimit(1)
+                                        Text(place.label).lineLimit(1)
                                     }
-                                    .padding(.leading, CGFloat(p.name.filter { $0 == "/" }.count) * 14)
+                                    .padding(.leading, CGFloat(place.depth) * 14)
                                     .help(p.name)
                                     .contextMenu {
                                         Button("Rename…") { renameText = p.name; renaming = p.id }
