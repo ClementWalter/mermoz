@@ -72,6 +72,8 @@ struct BoardColumn: View {
     let group: ThreadGroup
     let total: Int
     @State private var targeted = false
+    /// One width for every column; drag any column's right edge to change it.
+    @AppStorage("layout.boardColumnWidth") private var columnWidth = 250.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -106,7 +108,10 @@ struct BoardColumn: View {
             .scrollIndicators(.never)
         }
         .padding(10)
-        .frame(width: 250)
+        .frame(width: columnWidth)
+        .overlay(alignment: .trailing) {
+            ResizeHandle(width: $columnWidth, range: 200...480, thickness: 8).offset(x: 9)
+        }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Color.white.opacity(targeted ? 0.6 : 0.32), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(targeted ? Theme.accent.opacity(0.5) : Color.white.opacity(0.8)))

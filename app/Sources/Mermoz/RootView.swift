@@ -47,33 +47,73 @@ struct RootView: View {
 
 struct MainLayout: View {
     @Environment(AppModel.self) private var model
+    // Pane widths are remembered across launches; drag the gaps between panes to change them.
+    @AppStorage("layout.sidebarWidth") private var sidebarWidth = 228.0
+    @AppStorage("layout.listWidth") private var listWidth = 420.0
 
     var body: some View {
         @Bindable var model = model
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             SidebarView()
-                .frame(width: 228)
+                .frame(width: sidebarWidth)
+            ResizeHandle(width: $sidebarWidth, range: 180...360)
             if model.selection == .people {
-                PeopleListView().frame(width: 420)
+                PeopleListView().frame(width: listWidth)
+                ResizeHandle(width: $listWidth, range: 300...760)
                 ContactDetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.layout == .board && !model.isReview {
                 BoardView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .inspector(isPresented: Binding(get: { model.selectedThreadId != nil || model.compose != nil },
                                                     set: { if !$0 { model.open(nil); model.compose = nil } })) {
-                        DetailPane().inspectorColumnWidth(min: 440, ideal: 560, max: 760)
+                        DetailPane().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
                     }
             } else {
                 Group {
                     if model.isReview { ReviewListView() } else { ThreadListView() }
                 }
-                .frame(width: 420)
+                .frame(width: listWidth)
+                ResizeHandle(width: $listWidth, range: 300...760)
                 DetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         // The traffic lights get their own strip so they never collide with a panel corner.
         .padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 36)
         .ignoresSafeArea(edges: .top)
+    }
+}
+
+/// The gap between two panes; dragging it resizes the pane on its left.
+struct ResizeHandle: View {
+    @Binding var width: Double
+    let range: ClosedRange<Double>
+    var thickness: CGFloat = 10
+    @State private var start: Double?
+    @State private var hovering = false
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: thickness)
+            .overlay {
+                // A faint guide appears on hover so the handle is discoverable.
+                Capsule().fill(Theme.accent.opacity(hovering || start != nil ? 0.35 : 0)).frame(width: 3, height: 36)
+            }
+            .contentShape(Rectangle())
+            .onHover { inside in
+                hovering = inside
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { v in
+                        if start == nil { start = width }
+                        width = min(range.upperBound, max(range.lowerBound, (start ?? width) + v.translation.width))
+                    }
+                    .onEnded { _ in start = nil }
+            )
+            .onTapGesture(count: 2) { width = range.lowerBound + (range.upperBound - range.lowerBound) * 0.3 }
+            .accessibilityLabel("Resize")
     }
 }
 
