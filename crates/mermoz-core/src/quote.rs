@@ -181,6 +181,40 @@ const HTML_MARKERS: &[&str] = &[
     "<hr id=\"stopspelling\"",
 ];
 
+/// The list preview of a message: its new text on one line, without the CSS and the
+/// invisible "preheader" padding some newsletters put first.
+pub fn snippet(body: &str) -> String {
+    const INVISIBLE: &[char] = &[
+        '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}', '\u{034F}', '\u{00AD}',
+        '\u{180E}',
+    ];
+    let (text, _) = readable(body);
+    let looks_like_css = |l: &str| {
+        let t = l.trim();
+        t.starts_with('@')
+            && (t.contains("url(")
+                || t.contains('{')
+                || t.starts_with("@media")
+                || t.starts_with("@import"))
+            || t.ends_with('{')
+            || t == "}"
+            || (t.contains('{') && t.contains('}') && t.contains(':'))
+    };
+    text.lines()
+        .filter(|l| !looks_like_css(l))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !INVISIBLE.contains(c))
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect()
+}
+
 /// Whether the subject marks a forward ("TR:", "Fwd:", "WG:"…): the forwarded email,
 /// though it looks like a quoted reply, is then the content.
 pub fn is_forward(subject: &str) -> bool {
@@ -265,6 +299,17 @@ mod tests {
         let html =
             r#"<p>Merci</p><div id="appendonsend"></div><hr><div id="divRplyFwdMsg">From: x</div>"#;
         assert_eq!(split_html(html).0, "<p>Merci</p>");
+    }
+
+    #[rstest]
+    #[case::css_and_preheader(
+        "@import url('https://fonts.googleapis.com/css?family=Montserrat'); \u{200C} \u{200C} \u{200C}\nDemande de place en crèche\n\nBonjour",
+        "Demande de place en crèche Bonjour"
+    )]
+    #[case::style_block("body { color: red; }\nHello there", "Hello there")]
+    #[case::plain("Just a note.", "Just a note.")]
+    fn snippets_skip_css_and_invisible_padding(#[case] body: &str, #[case] want: &str) {
+        assert_eq!(snippet(body), want);
     }
 
     #[rstest]

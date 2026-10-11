@@ -178,20 +178,10 @@ extension View {
 }
 
 enum Format {
-    private static let time: DateFormatter = { let f = DateFormatter(); f.dateFormat = "H:mm"; return f }()
-    private static let weekday: DateFormatter = { let f = DateFormatter(); f.dateFormat = "EEE"; return f }()
-    private static let day: DateFormatter = { let f = DateFormatter(); f.dateFormat = "MMM d"; return f }()
     private static let full: DateFormatter = { let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; return f }()
 
-    /// Mail-list style relative time: "9:41", "Yesterday", "Fri", "Oct 3".
-    static func short(_ ms: Int64) -> String {
-        let d = Date(timeIntervalSince1970: Double(ms) / 1000)
-        let cal = Calendar.current
-        if cal.isDateInToday(d) { return time.string(from: d) }
-        if cal.isDateInYesterday(d) { return "Yesterday" }
-        if let days = cal.dateComponents([.day], from: d, to: Date()).day, days < 7 { return weekday.string(from: d) }
-        return day.string(from: d)
-    }
+    /// Mail-list style: "9:41", "Yesterday", "Fri", else the date with its year.
+    static func short(_ ms: Int64) -> String { MailDate.short(Date(timeIntervalSince1970: Double(ms) / 1000)) }
 
     static func long(_ ms: Int64) -> String { full.string(from: Date(timeIntervalSince1970: Double(ms) / 1000)) }
 

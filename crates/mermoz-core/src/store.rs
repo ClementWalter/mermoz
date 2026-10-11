@@ -759,7 +759,44 @@ impl Store {
             blobs: blobs.to_path_buf(),
         };
         store.seed()?;
+        store.backfill_snippets()?;
         Ok(store)
+    }
+
+    /// Recomputes every list preview once when the preview rules change.
+    fn backfill_snippets(&self) -> Result<()> {
+        const VERSION: &str = "2";
+        let mut w = self.w.lock().unwrap();
+        let done: Option<String> = w
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'snippet_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if done.as_deref() == Some(VERSION) {
+            return Ok(());
+        }
+        let tx = w.transaction()?;
+        let rows: Vec<(String, String)> = {
+            let mut st = tx.prepare(
+                "SELECT t.id, COALESCE((SELECT body_text FROM messages m WHERE m.thread_id = t.id ORDER BY date DESC LIMIT 1), '') FROM threads t",
+            )?;
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        for (id, body) in rows {
+            tx.execute(
+                "UPDATE threads SET snippet = ?2 WHERE id = ?1",
+                params![id, crate::quote::snippet(&body)],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('snippet_version', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [VERSION],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     fn seed(&self) -> Result<()> {
@@ -1209,14 +1246,7 @@ impl Store {
             .map(|r| r.5.clone())
             .find(|s| !s.is_empty())
             .unwrap_or_default();
-        let snippet: String = last
-            .6
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(200)
-            .collect();
+        let snippet = crate::quote::snippet(&last.6);
         let last_from = if last.2 {
             "You".to_string()
         } else {
