@@ -87,7 +87,9 @@ pub fn secret_set(service: &str, account: &str, value: &str) -> Result<()> {
         let p = secret_path(service, account);
         let dir = p.parent().expect("secret dir");
         std::fs::create_dir_all(dir)?;
+        // Owner-only all the way down: the tokens folder and each service folder.
         std::fs::set_permissions(paths::tokens_dir(), std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         let tmp = p.with_extension("tmp");
         std::fs::write(&tmp, value)?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
