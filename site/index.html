@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermoz — Email, finally light</title>
+  <meta name="description" content="Mermoz is a light, fast email app for macOS. New mail is sorted before you read it, one key handles a thread, and your whole mailbox lives on your Mac.">
+  <link rel="canonical" href="https://mermoz.xyz/">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="apple-touch-icon" href="assets/icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mermoz.xyz/">
+  <meta property="og:title" content="Mermoz — Email, finally light">
+  <meta property="og:description" content="A light, fast email app for macOS. Sorted before you read it. One key, done.">
+  <meta property="og:image" content="https://mermoz.xyz/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#EAF3FB">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Pencil filter: gives every hand-drawn stroke a slightly wobbly graphite edge. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <filter id="pencil">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.4"/>
+    </filter>
+    <filter id="paper-crease">
+      <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="3" seed="8" result="n"/>
+      <feDiffuseLighting in="n" lighting-color="#ffffff" surfaceScale="2.2" result="l">
+        <feDistantLight azimuth="235" elevation="55"/>
+      </feDiffuseLighting>
+      <feComposite in="l" in2="SourceAlpha" operator="in"/>
+    </filter>
+  </svg>
+
+  <header class="nav">
+    <a class="brand" href="#top"><img src="assets/icon.png" alt="" width="34" height="34"> Mermoz</a>
+    <nav>
+      <a href="#film">Film</a>
+      <a href="#features">Features</a>
+      <a href="#story">The name</a>
+      <a class="nav-cta" href="#download">Download</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="sky" id="sky" aria-hidden="true">
+        <svg class="trail" id="trail" preserveAspectRatio="none"><path id="trail-path" /></svg>
+        <div class="plane" id="plane">
+          <svg viewBox="0 0 120 80" width="120" height="80">
+            <g filter="url(#pencil)">
+              <path d="M2 40 L118 6 L46 48 Z" fill="#FFFFFF" stroke="#5F7F99" stroke-width="1.6" stroke-linejoin="round"/>
+              <path d="M46 48 L118 6 L62 74 Z" fill="#DCEBFA" stroke="#5F7F99" stroke-width="1.6" stroke-linejoin="round"/>
+              <path d="M46 48 L54 60 L62 74" fill="none" stroke="#5F7F99" stroke-width="1.2"/>
+            </g>
+          </svg>
+        </div>
+      </div>
+      <div class="hero-copy">
+        <p class="eyebrow">Mail for macOS</p>
+        <h1 id="hero-title">Email,<br><em>finally light.</em></h1>
+        <p class="lede">New mail is sorted before you read it. One key handles a thread. Your whole mailbox lives on your Mac, quiet and instant.</p>
+        <div class="ctas">
+          <a class="btn primary" href="https://github.com/ClementWalter/mermoz/releases/latest" data-download>
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M16.4 12.6c0-2.4 2-3.5 2-3.6-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.9-.9-3.1-.8c-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.6.8 1.2 1.7 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8 1.5 0 1.9.8 3.1.8 1.3 0 2.1-1.2 2.9-2.4.9-1.3 1.3-2.6 1.3-2.7 0 0-2.7-1-2.7-4zM14 5.4c.7-.8 1.1-1.9 1-3-1 0-2.1.7-2.8 1.5-.6.7-1.2 1.8-1 2.9 1.1.1 2.1-.6 2.8-1.4z"/></svg>
+            Download for Mac
+          </a>
+          <a class="btn ghost" href="#film">Watch the film <span aria-hidden="true">→</span></a>
+        </div>
+        <p class="fine">Free &amp; open source · macOS 26 · Gmail</p>
+        <p class="note note-hero" aria-hidden="true">sorted in 0.25 s ↓</p>
+      </div>
+    </section>
+
+    <section class="film" id="film" aria-label="The film">
+      <figure class="paper-card taped reveal">
+        <video id="film-video" controls playsinline preload="metadata" poster="assets/film-poster.jpg">
+          <source src="assets/mermoz-film.mp4" type="video/mp4">
+        </video>
+        <figcaption>36 seconds, no sound needed.</figcaption>
+      </figure>
+    </section>
+
+    <section class="features" id="features" aria-labelledby="features-title">
+      <h2 id="features-title" class="reveal">Built for a lighter workflow</h2>
+      <p class="section-lede reveal">An inbox that behaves like a flight plan: everything has a status, a destination, and a key to get it there.</p>
+      <div class="notes">
+        <article class="note-card reveal">
+          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><path d="M32 6 L36 26 L56 30 L36 34 L32 56 L28 34 L8 30 L28 26 Z"/></g></svg>
+          <h3>Sorted before you read it</h3>
+          <p>Each new email arrives with a suggested status and project. Read it and the suggestion applies, or press <kbd>y</kbd>.</p>
+        </article>
+        <article class="note-card reveal">
+          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><rect x="8" y="14" width="22" height="22" rx="5"/><rect x="34" y="28" width="22" height="22" rx="5"/><path d="M15 25h8M41 39h8"/></g></svg>
+          <h3>One key, done</h3>
+          <p><kbd>e</kbd> done, <kbd>a</kbd> archive, <kbd>⌫</kbd> delete, <kbd>⌘Z</kbd> undo. Select several with <kbd>⇧</kbd> and move them together.</p>
+        </article>
+        <article class="note-card reveal">
+          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><path d="M8 12v40M24 12v40M40 12v40M56 12v40"/><rect x="11" y="18" width="10" height="7" rx="2"/><path d="M27 30h10v7H27z"/><path d="M14 22 C 30 10, 36 18, 30 32" stroke-dasharray="3 4"/></g></svg>
+          <h3>Flows, not folders</h3>
+          <p>Unread, To do, Waiting, Done. A list or a board, grouped and ordered your way. Your Gmail labels are your projects.</p>
+        </article>
+        <article class="note-card reveal">
+          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><path d="M14 10h28l10 10v34H14z"/><path d="M22 28h22M22 36h22M22 44h14"/><path d="M42 10v10h10"/></g></svg>
+          <h3>Read what matters</h3>
+          <p>Original, exactly as sent. Or Optimized: the same words without signatures, disclaimers and quoted history. Made once, kept.</p>
+        </article>
+        <article class="note-card reveal">
+          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><circle cx="28" cy="28" r="15"/><path d="M39 39l15 15"/><path d="M21 28h14" stroke-dasharray="2 4"/></g></svg>
+          <h3>Your whole mailbox, instant</h3>
+          <p>Every message lives on your Mac. Search, read and sort offline, with <kbd>⌘K</kbd> for anything else.</p>
+        </article>
+        <article class="note-card reveal">
+          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><path d="M10 20h44v28H10z"/><path d="M10 20l22 16 22-16"/><circle cx="50" cy="16" r="7" fill="#EAF3FB"/><path d="M47 16l2 2 4-4"/></g></svg>
+          <h3>Agents draft, you approve</h3>
+          <p>Scripts and AI agents work through a command line and MCP. Nothing they write leaves without your OK.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="story" id="story" aria-labelledby="story-title">
+      <div class="story-inner reveal">
+        <svg class="postmark" viewBox="0 0 200 200" aria-hidden="true">
+          <g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2">
+            <circle cx="100" cy="100" r="88"/>
+            <circle cx="100" cy="100" r="66"/>
+            <path id="pm-arc" d="M 27 100 A 73 73 0 1 1 173 100" stroke="none"/>
+            <path d="M58 118 q10 -6 20 0 t20 0 t20 0 t20 0 M58 130 q10 -6 20 0 t20 0 t20 0 t20 0" stroke-width="1.4" opacity="0.6"/>
+          </g>
+          <text font-family="Fraunces, serif" font-size="12.5" letter-spacing="2.5" fill="#1F6FB5"><textPath href="#pm-arc" startOffset="50%" text-anchor="middle">AÉROPOSTALE · 1930</textPath></text>
+          <text x="100" y="104" text-anchor="middle" font-family="Fraunces, serif" font-size="24" font-weight="700" fill="#1F6FB5">MERMOZ</text>
+        </svg>
+        <div>
+          <p class="eyebrow">Why “Mermoz”</p>
+          <h2 id="story-title">Named after a pilot who carried the mail.</h2>
+          <p>In 1930, Jean Mermoz flew the Aéropostale mail across the South Atlantic, from Senegal to Brazil, in a little over twenty hours. Letters that used to take weeks by sea arrived in days.</p>
+          <p>Mermoz keeps that spirit: mail that moves, light and fast, without the heavy machinery around it.</p>
+          <p class="note" aria-hidden="true">pioneers travel light ✈</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="download" id="download" aria-labelledby="download-title">
+      <div class="paper-card download-card reveal">
+        <img src="assets/icon.png" alt="Mermoz icon" width="112" height="112">
+        <h2 id="download-title">Take off.</h2>
+        <p>Mermoz is free and open source. Sign in with Gmail and your mail is on your Mac in minutes.</p>
+        <a class="btn primary big" href="https://github.com/ClementWalter/mermoz/releases/latest" data-download>Download for Mac</a>
+        <p class="fine">Requires macOS 26 · <a href="https://github.com/ClementWalter/mermoz">Source on GitHub</a></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>© 2026 Mermoz · Made with paper, pencil and Rust</span>
+    <span><a href="https://github.com/ClementWalter/mermoz">GitHub</a></span>
+  </footer>
+
+  <script src="main.js" defer></script>
+</body>
+</html>

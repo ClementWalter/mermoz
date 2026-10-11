@@ -1,0 +1,9 @@
+<!doctype html><html><body style="margin:0">
+<iframe id="f" src="index.html" style="width:390px;height:4600px;border:0"></iframe>
+<script>
+document.getElementById("f").onload = () => setTimeout(() => {
+  const d = document.getElementById("f").contentDocument;
+  const wide = [...d.querySelectorAll("body *")].filter(e => e.getBoundingClientRect().right > 391 && getComputedStyle(e).position !== "fixed" && !e.closest(".sky")).slice(0, 8).map(e => e.tagName + "." + e.className + " right=" + Math.round(e.getBoundingClientRect().right));
+  document.title = "inner=" + d.documentElement.clientWidth + " scroll=" + d.documentElement.scrollWidth + " | " + wide.join(" ; ");
+}, 1500);
+</script></body></html>
