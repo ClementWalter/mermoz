@@ -12,6 +12,25 @@ struct SidebarView: View {
     @AppStorage("sidebar.projectsOpen") private var projectsOpen = true
 
     private var projectNames: Set<String> { Set(model.projects.map(\.name)) }
+    private var projectParents: Set<String> { ProjectTree.parents(among: model.projects.map(\.name)) }
+
+    /// Folded projects, kept across launches (JSON array of names; names may hold commas).
+    @AppStorage("sidebar.collapsedProjects") private var collapsedJSON = "[]"
+
+    private var collapsed: Set<String> {
+        Set((try? JSONDecoder().decode([String].self, from: Data(collapsedJSON.utf8))) ?? [])
+    }
+
+    private var visibleProjects: [Project] {
+        let shown = Set(ProjectTree.visible(model.projects.map(\.name), collapsed: collapsed))
+        return model.projects.filter { shown.contains($0.name) }
+    }
+
+    private func toggleFold(_ name: String) {
+        var c = collapsed
+        if c.contains(name) { c.remove(name) } else { c.insert(name) }
+        if let d = try? JSONEncoder().encode(c.sorted()) { collapsedJSON = String(decoding: d, as: UTF8.self) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -57,7 +76,7 @@ struct SidebarView: View {
                         }
                         .buttonStyle(.plain)
                         if projectsOpen {
-                            ForEach(model.projects) { p in
+                            ForEach(visibleProjects) { p in
                                 if renaming == p.id {
                                     TextField("Project name", text: $renameText)
                                         .textFieldStyle(.plain)
@@ -66,9 +85,23 @@ struct SidebarView: View {
                                         .onExitCommand { renaming = nil }
                                 } else {
                                     let place = ProjectTree.place(p.name, among: projectNames)
-                                    row(.project(p.id), count: model.counts.project[p.id]) {
-                                        RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
-                                        Text(place.label).lineLimit(1)
+                                    HStack(spacing: 0) {
+                                        // Fold arrow on projects with sub-projects; same width elsewhere to keep rows aligned.
+                                        if projectParents.contains(p.name) {
+                                            Button { toggleFold(p.name) } label: {
+                                                Image(systemName: collapsed.contains(p.name) ? "chevron.right" : "chevron.down")
+                                                    .font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.text3)
+                                                    .frame(width: 14, height: 28).contentShape(Rectangle())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .accessibilityLabel(collapsed.contains(p.name) ? "Show sub-projects" : "Hide sub-projects")
+                                        } else {
+                                            Color.clear.frame(width: 14, height: 28)
+                                        }
+                                        row(.project(p.id), count: model.counts.project[p.id]) {
+                                            RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
+                                            Text(place.label).lineLimit(1)
+                                        }
                                     }
                                     .padding(.leading, CGFloat(place.depth) * 14)
                                     .help(p.name)

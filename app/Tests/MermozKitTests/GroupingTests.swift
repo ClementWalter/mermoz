@@ -58,3 +58,17 @@ func projectNesting(_ name: String, _ names: Set<String>, _ depth: Int, _ label:
     let old = #"{"grouping":"status","subGrouping":"none","ordering":"priority"}"#
     #expect(try JSONDecoder().decode(DisplayOptions.self, from: Data(old.utf8)).reversed == false)
 }
+
+private let tree = ["Cato", "Cato/Caté", "Cato/EAQ", "Immo", "Immo/Poncelet", "Immo/Poncelet/Mamet", "Perso"]
+
+@Test func foldingAProjectHidesItsSubProjects() {
+    #expect(ProjectTree.visible(tree, collapsed: ["Immo"]) == ["Cato", "Cato/Caté", "Cato/EAQ", "Immo", "Perso"])
+}
+
+@Test func foldingANestedProjectHidesOnlyItsBranch() {
+    #expect(ProjectTree.visible(tree, collapsed: ["Immo/Poncelet"]) == ["Cato", "Cato/Caté", "Cato/EAQ", "Immo", "Immo/Poncelet", "Perso"])
+}
+
+@Test func onlyProjectsWithChildrenGetAnArrow() {
+    #expect(ProjectTree.parents(among: tree) == ["Cato", "Immo", "Immo/Poncelet"])
+}

@@ -123,4 +123,22 @@ public enum ProjectTree {
         }
         return (depth, parts[start...].joined(separator: "/"))
     }
+
+    /// Projects that have sub-projects (and so get a fold arrow).
+    public static func parents(among names: [String]) -> Set<String> {
+        let all = Set(names)
+        return Set(names.compactMap { n in ancestors(n, among: all).last })
+    }
+
+    /// The projects to list: those with no folded ancestor.
+    public static func visible(_ names: [String], collapsed: Set<String>) -> [String] {
+        let all = Set(names)
+        return names.filter { n in !ancestors(n, among: all).contains(where: collapsed.contains) }
+    }
+
+    /// Ancestors that are projects themselves, outermost first.
+    static func ancestors(_ name: String, among names: Set<String>) -> [String] {
+        let parts = name.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        return (1..<max(parts.count, 1)).map { parts[0..<$0].joined(separator: "/") }.filter(names.contains)
+    }
 }
