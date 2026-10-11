@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/mermoz-core", "crates/mermozd", "crates/mermoz-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ClementWalter/mermoz"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "query", "form", "gzip"] }
+mail-parser = "0.11"
+mail-builder = "1"
+base64 = "0.22"
+rand = "0.9"
+sha2 = "0.10"
+url = "2"
+ammonia = "4"
+libc = "0.2"
+security-framework = "3"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rstest = "0.27"
+tempfile = "3"
+axum = "0.8"
+mermoz-core = { path = "crates/mermoz-core" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
