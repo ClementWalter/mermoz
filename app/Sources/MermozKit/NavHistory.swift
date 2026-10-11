@@ -30,3 +30,25 @@ public struct NavHistory<Place: Equatable>: Sendable where Place: Sendable {
         return p
     }
 }
+
+/// What to send to put a thread back the way it was before a change (⌘Z).
+public struct RestorePlan: Equatable, Sendable {
+    /// Read state to set first, if it changed (`true` = read).
+    public var markRead: Bool?
+    public var status: String
+    public var priority: Int?
+    public var addProjects: [String]
+    public var removeProjects: [String]
+    /// `nil`: keep; `.some(nil)`: clear; `.some(d)`: set.
+    public var due: String??
+
+    public static func between(before: ThreadSummary, now: ThreadSummary) -> RestorePlan {
+        RestorePlan(
+            markRead: before.unread == now.unread ? nil : !before.unread,
+            status: before.status,
+            priority: before.priority == now.priority ? nil : before.priority,
+            addProjects: Set(before.projects).subtracting(now.projects).sorted(),
+            removeProjects: Set(now.projects).subtracting(before.projects).sorted(),
+            due: before.due == now.due ? nil : .some(before.due))
+    }
+}

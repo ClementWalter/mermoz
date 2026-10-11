@@ -264,16 +264,35 @@ async fn jev_systemone(
     Json(json!({ "answers": answers }))
 }
 
-async fn trash_thread(State(s): State<Shared>, Path(tid): Path<String>) -> Json<Value> {
+/// Like Gmail, a POST without a Content-Length is refused with 411.
+fn has_length(headers: &axum::http::HeaderMap) -> bool {
+    headers.contains_key(axum::http::header::CONTENT_LENGTH)
+}
+
+async fn trash_thread(
+    State(s): State<Shared>,
+    Path(tid): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, axum::http::StatusCode> {
+    if !has_length(&headers) {
+        return Err(axum::http::StatusCode::LENGTH_REQUIRED);
+    }
     s.lock()
         .unwrap()
         .relabel_thread(&tid, &["TRASH"], &["INBOX"]);
-    Json(json!({ "id": tid }))
+    Ok(Json(json!({ "id": tid })))
 }
 
-async fn untrash_thread(State(s): State<Shared>, Path(tid): Path<String>) -> Json<Value> {
+async fn untrash_thread(
+    State(s): State<Shared>,
+    Path(tid): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, axum::http::StatusCode> {
+    if !has_length(&headers) {
+        return Err(axum::http::StatusCode::LENGTH_REQUIRED);
+    }
     s.lock().unwrap().relabel_thread(&tid, &[], &["TRASH"]);
-    Json(json!({ "id": tid }))
+    Ok(Json(json!({ "id": tid })))
 }
 
 /// Like Gmail: the label disappears from every message, the messages stay.

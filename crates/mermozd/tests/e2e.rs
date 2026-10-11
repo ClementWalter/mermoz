@@ -1206,3 +1206,24 @@ fn html_with_accent_at_the_quote_edge_opens(synced: World) {
     let html = synced.ok("messages.html", json!({ "id": full["messages"][0]["id"] }));
     assert!(html["html"].as_str().unwrap().contains("Bonjour"));
 }
+
+#[rstest]
+fn statuses_can_be_reordered(synced: World) {
+    let mut keys: Vec<Value> = synced
+        .ok("statuses.list", json!({}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["key"].clone())
+        .collect();
+    keys.swap(1, 4);
+    synced.ok("statuses.reorder", json!({ "keys": keys }));
+    let after: Vec<Value> = synced
+        .ok("statuses.list", json!({}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["key"].clone())
+        .collect();
+    assert_eq!(after, keys);
+}

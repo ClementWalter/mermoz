@@ -85,6 +85,10 @@ public final class DaemonClient: Sendable {
     public func statuses() async throws -> [Status] { try await call("statuses.list") }
     public func projects() async throws -> [Project] { try await call("projects.list") }
 
+    public func reorderStatuses(_ keys: [String]) async throws -> [Status] {
+        try await call("statuses.reorder", Params().with("keys", keys))
+    }
+
     public func labels() async throws -> [MailLabel] { try await call("labels.list") }
 
     public func updateProject(_ id: String, name: String? = nil, color: String? = nil) async throws -> Project {

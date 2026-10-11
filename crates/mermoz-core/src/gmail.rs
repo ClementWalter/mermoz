@@ -261,7 +261,8 @@ impl Gmail {
             reqwest::Method::POST,
             &format!("/threads/{thread_id}/trash"),
             &[],
-            None,
+            // Gmail answers 411 to a POST without a body.
+            Some(json!({})),
         )
         .await?;
         Ok(())
@@ -272,7 +273,8 @@ impl Gmail {
             reqwest::Method::POST,
             &format!("/threads/{thread_id}/untrash"),
             &[],
-            None,
+            // Gmail answers 411 to a POST without a body.
+            Some(json!({})),
         )
         .await?;
         Ok(())

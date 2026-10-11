@@ -37,6 +37,19 @@ struct MermozApp: App {
                     .keyboardShortcut(.rightArrow, modifiers: .command)
                     .disabled(!model.canGoForward || model.compose != nil || model.paletteMode != nil)
             }
+            // ⌘Z undoes the last change to threads, unless a text field is being edited.
+            CommandGroup(replacing: .undoRedo) {
+                Button(model.undoLabel.map { "Undo \($0)" } ?? "Undo") {
+                    if NSApp.keyWindow?.firstResponder is NSText {
+                        NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+                    } else {
+                        model.undo()
+                    }
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                Button("Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             CommandMenu("Thread") {
                 Button("Search or Ask…") { model.paletteMode = .search }.keyboardShortcut("k")
                 Button("Reply") { model.startReply() }.keyboardShortcut("r", modifiers: [.command])

@@ -383,6 +383,11 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .collect();
             Ok(json!(list))
         }
+        "statuses.reorder" => {
+            let keys = str_list(p, "keys")?.ok_or_else(|| RpcError::invalid("missing 'keys'"))?;
+            st.reorder_statuses(&keys)?;
+            to_value(st.statuses()?)
+        }
         "router.get" => Ok(router_state(svc)),
         "router.set" => {
             // The key pays for every routed thread: only the app may change it.

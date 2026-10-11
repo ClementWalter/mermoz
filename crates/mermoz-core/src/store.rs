@@ -2046,6 +2046,32 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Saves the user's status order; `keys` must list every status exactly once.
+    pub fn reorder_statuses(&self, keys: &[String]) -> Result<()> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let known: BTreeSet<String> = {
+            let mut st = tx.prepare("SELECT key FROM statuses")?;
+            st.query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let given: BTreeSet<String> = keys.iter().cloned().collect();
+        if given != known || keys.len() != known.len() {
+            return Err(Error::InvalidParams(format!(
+                "list every status exactly once: {}",
+                known.into_iter().collect::<Vec<_>>().join(", ")
+            )));
+        }
+        for (i, k) in keys.iter().enumerate() {
+            tx.execute(
+                "UPDATE statuses SET ord = ?2 WHERE key = ?1",
+                params![k, i as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn status_archived(&self, key: &str) -> Result<bool> {
         let r = self.r.lock().unwrap();
         Ok(
@@ -4702,5 +4728,22 @@ mod tests {
             s.project_descriptions().unwrap(),
             vec![("Immo".to_string(), "Folder 'Immo'. Frequent correspondents: Marc Petit. Example subjects: Audit report v2.".to_string())]
         );
+    }
+
+    fn status_keys(s: &Store) -> Vec<String> {
+        s.statuses().unwrap().into_iter().map(|x| x.key).collect()
+    }
+
+    #[rstest]
+    fn statuses_keep_the_users_order(env: Env) {
+        let mut keys = status_keys(&env.store);
+        keys.swap(1, 4);
+        env.store.reorder_statuses(&keys).unwrap();
+        assert_eq!(status_keys(&env.store), keys);
+    }
+
+    #[rstest]
+    fn reorder_must_list_every_status(env: Env) {
+        assert!(env.store.reorder_statuses(&["todo".to_string()]).is_err());
     }
 }

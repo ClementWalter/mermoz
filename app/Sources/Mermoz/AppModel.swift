@@ -88,6 +88,14 @@ final class AppModel {
     var reviewDrafts: [Draft] = []
     var selectedDraftId: String?
 
+    /// Thread states before each change, newest last; ⌘Z restores the last one.
+    var undoStack: [UndoEntry] = []
+
+    struct UndoEntry {
+        var label: String
+        var before: [ThreadSummary]
+    }
+
     var paletteMode: PaletteMode?
     var showShortcuts = false
     var toast: String?
@@ -477,6 +485,7 @@ final class AppModel {
     /// Accepts the AI's suggestions as they stand (the threads count as read).
     func acceptSuggestions(_ ids: [String]) {
         guard let client, !ids.isEmpty else { return }
+        recordUndo(ids.count == 1 ? "Accept Suggestion" : "Accept \(ids.count) Suggestions", ids)
         Task {
             do {
                 try await client.acceptSuggestions(ids)
@@ -533,6 +542,10 @@ final class AppModel {
     func update(_ ids: [String], status: String? = nil, priority: Int? = nil,
                 addProjects: [String] = [], removeProjects: [String] = [], due: Patch<String> = .keep) {
         guard let client else { return }
+        let label: String = if let status {
+            status == "deleted" ? "Delete" : "Move to \(statuses.first { $0.key == status }?.name ?? status)"
+        } else if priority != nil { "Priority" } else if !addProjects.isEmpty || !removeProjects.isEmpty { "Project" } else { "Follow-up" }
+        recordUndo(label, ids)
         let before = threads
         let beforeDetail = detail
         for id in ids {
@@ -565,6 +578,7 @@ final class AppModel {
     /// Back to Unread, like Gmail's "mark unread": the thread waits for a fresh look.
     func markUnreadSelected() {
         guard let id = selectedThreadId, let client else { return }
+        recordUndo("Mark Unread", [id])
         setLocal(id) { $0.unread = true; $0.status = "unread" }
         Task {
             do { try await client.markRead(id, read: false); await refreshCounts() } catch { report(error) }
@@ -581,6 +595,64 @@ final class AppModel {
         if let idx {
             let rest = order.filter { $0.id != id }
             open(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id, record: false)
+        }
+    }
+
+    // MARK: undo (⌘Z)
+
+    private func recordUndo(_ label: String, _ ids: [String]) {
+        let before = ids.compactMap { id in threads.first { $0.id == id } ?? (detail?.thread.id == id ? detail?.thread : nil) }
+        guard !before.isEmpty else { return }
+        undoStack.append(UndoEntry(label: label, before: before))
+        if undoStack.count > 100 { undoStack.removeFirst() }
+    }
+
+    var undoLabel: String? { undoStack.last?.label }
+
+    /// Puts the threads of the last change back as they were: read state, status,
+    /// priority, projects and follow-up date.
+    func undo() {
+        guard let entry = undoStack.popLast(), let client else { toast = "Nothing to undo"; return }
+        Task {
+            do {
+                for t in entry.before {
+                    let plan = RestorePlan.between(before: t, now: try await client.thread(t.id).thread)
+                    // Read state first: marking unread moves the thread to Unread, the
+                    // status update below then restores the exact status.
+                    if let read = plan.markRead { try await client.markRead(t.id, read: read) }
+                    let due: Patch<String> = switch plan.due {
+                    case .none: .keep
+                    case .some(.none): .clear
+                    case let .some(.some(d)): .set(d)
+                    }
+                    try await client.updateThreads(ids: [t.id], status: plan.status, priority: plan.priority,
+                                                   addProjects: plan.addProjects, removeProjects: plan.removeProjects, due: due)
+                }
+                toast = "Undid \(entry.label)"
+                await refreshCounts()
+                await loadList()
+                if let id = selectedThreadId, entry.before.contains(where: { $0.id == id }) { open(id, record: false) }
+            } catch { report(error) }
+        }
+    }
+
+    // MARK: statuses
+
+    /// Drag-and-drop in the sidebar: puts `key` where `target` is.
+    func moveStatus(_ key: String, before target: String) {
+        guard key != target, let client,
+              let from = statuses.firstIndex(where: { $0.key == key }),
+              let to = statuses.firstIndex(where: { $0.key == target }) else { return }
+        let before = statuses
+        var next = statuses
+        let s = next.remove(at: from)
+        next.insert(s, at: to)
+        statuses = next
+        Task {
+            do { statuses = try await client.reorderStatuses(next.map(\.key)).sorted { $0.order < $1.order } } catch {
+                statuses = before
+                report(error)
+            }
         }
     }
 

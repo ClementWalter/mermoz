@@ -38,6 +38,18 @@ struct SidebarView: View {
                                 StatusIcon(key: s.key, color: Color(hex: s.color))
                                 Text(s.name)
                             }
+                            // Drag a status onto another to reorder; drop thread cards to move them.
+                            .draggable("status:\(s.key)")
+                            .dropDestination(for: String.self) { items, _ in
+                                for item in items {
+                                    if item.hasPrefix("status:") {
+                                        model.moveStatus(String(item.dropFirst(7)), before: s.key)
+                                    } else {
+                                        model.update([item], status: s.key)
+                                    }
+                                }
+                                return true
+                            }
                         }
                     }
                     section("Directory") {
