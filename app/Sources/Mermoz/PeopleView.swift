@@ -64,7 +64,7 @@ struct ContactRow: View {
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(Format.short(contact.lastSeen)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
-                if let n = contact.messages { Text("\(n) msg").font(.system(size: 10.5)).foregroundStyle(Theme.text3) }
+                if let n = contact.conversations { Text(n == 1 ? "1 conv." : "\(n) conv.").font(.system(size: 10.5)).foregroundStyle(Theme.text3) }
             }
         }
         .foregroundStyle(Theme.text)

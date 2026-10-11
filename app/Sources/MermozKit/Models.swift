@@ -193,8 +193,8 @@ public struct Contact: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var lastSeen: Int64
     /// Every address this person writes from (one entry per person).
     public var emails: [String]?
-    /// Messages exchanged with them.
-    public var messages: Int?
+    /// Conversations (threads) with them, whoever wrote.
+    public var conversations: Int?
     public var id: String { email }
 
     public var display: String { name.isEmpty ? email : name }

@@ -507,7 +507,8 @@ pub struct Person {
     pub emails: Vec<String>,
     #[serde(flatten)]
     pub card: crate::agent::Card,
-    pub messages: i64,
+    /// Conversations (threads) with them, whoever wrote.
+    pub conversations: i64,
     pub last_seen: i64,
 }
 
@@ -1229,10 +1230,14 @@ impl Store {
             args.push(f.account_id.clone().into());
         }
         if let Some(es) = f.participants.as_ref().filter(|e| !e.is_empty()) {
+            // Threads they wrote in, or where the user wrote to them.
+            let list = vec!["lower(?)"; es.len()].join(",");
             clauses.push(format!(
-                "t.id IN (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) IN ({}))",
-                vec!["lower(?)"; es.len()].join(",")
+                "(t.id IN (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) IN ({list}))
+                  OR t.id IN (SELECT m.thread_id FROM messages m, json_each(m.to_json) j
+                              WHERE m.is_from_me = 1 AND lower(json_extract(j.value, '$.email')) IN ({list})))"
             ));
+            args.extend(es.iter().map(|e| e.clone().into()));
             args.extend(es.iter().map(|e| e.clone().into()));
         }
         if let Some(p) = &f.priority {
@@ -2135,6 +2140,21 @@ impl Store {
             entry.2 = entry.2.max(d);
             entry.3 = true;
         }
+        // Threads per address, both directions, to count conversations per person.
+        let mut threads_of: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            Default::default();
+        let mut st = r.prepare_cached(
+            "SELECT lower(from_email), thread_id FROM messages WHERE is_from_me = 0 GROUP BY 1, 2
+             UNION SELECT lower(json_extract(j.value, '$.email')), m.thread_id FROM messages m, json_each(m.to_json) j
+             WHERE m.is_from_me = 1 GROUP BY 1, 2",
+        )?;
+        for row in st.query_map([], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+        })? {
+            if let (Some(e), t) = row? {
+                threads_of.entry(e).or_default().insert(t);
+            }
+        }
         let mut cards: std::collections::HashMap<String, Contact> = Default::default();
         let mut st = r.prepare_cached("SELECT email, name, title, company, phones_json, address, website, socials_json, last_seen FROM contacts")?;
         for c in st.query_map([], contact_row)? {
@@ -2144,9 +2164,10 @@ impl Store {
         // People only: someone the user wrote to, or whose signature carried details.
         let mut people: Vec<Person> = vec![];
         let mut index: std::collections::HashMap<String, usize> = Default::default();
+        let mut convs: Vec<std::collections::HashSet<String>> = vec![];
         let mut emails: Vec<_> = by_email.into_iter().collect();
         emails.sort_by(|a, b| b.1.2.cmp(&a.1.2));
-        for (email, (name, count, last, written)) in emails {
+        for (email, (name, _count, last, written)) in emails {
             let card = cards.get(&email);
             if is_automated(&email) || (!written && card.is_none()) {
                 continue;
@@ -2172,7 +2193,7 @@ impl Store {
                 Some(&i) => {
                     let p = &mut people[i];
                     p.emails.push(email.clone());
-                    p.messages += count;
+                    convs[i].extend(threads_of.remove(&email).unwrap_or_default());
                     p.last_seen = p.last_seen.max(last);
                     p.card = crate::agent::merge_card(&card_data, &p.card);
                 }
@@ -2180,15 +2201,19 @@ impl Store {
                     let mut c = card_data;
                     c.name = display;
                     index.insert(merge_key, people.len());
+                    convs.push(threads_of.remove(&email).unwrap_or_default());
                     people.push(Person {
                         email: email.clone(),
                         emails: vec![email],
                         card: c,
-                        messages: count,
+                        conversations: 0,
                         last_seen: last,
                     });
                 }
             }
+        }
+        for (p, c) in people.iter_mut().zip(convs) {
+            p.conversations = c.len() as i64;
         }
         // Alphabetical by family name, then first name, like Contacts (accents and
         // "Last, First" folded); entries
@@ -2912,6 +2937,41 @@ mod tests {
             .map(|p| p.card.name)
             .collect();
         assert_eq!(names, vec!["Émile Abel", "Bob Durand", "Zoé Martin"]);
+    }
+
+    #[rstest]
+    fn conversation_count_matches_their_threads(env: Env) {
+        let s = &env.store;
+        // Marc writes in t1 and I reply; in t2 I write first and get no answer.
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "a"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("m2", "t1", "marc@x.com", &["INBOX"], now_ms(), "b"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        for (id, t) in [("s1", "t1"), ("s2", "t2")] {
+            let mut m = incoming(id, t, "me@example.com", &["SENT"], now_ms(), "re");
+            m.parsed.to = vec![Address {
+                name: "Marc Petit".into(),
+                email: "marc@x.com".into(),
+            }];
+            s.ingest(&env.acc, "me@example.com", &m, SyncMode::Initial)
+                .unwrap();
+        }
+        let person = s.person("marc@x.com").unwrap();
+        let f = ThreadFilter {
+            participants: Some(person.emails.clone()),
+            ..Default::default()
+        };
+        assert_eq!((person.conversations, s.threads(&f).unwrap().1), (2, 2));
     }
 
     #[rstest]
