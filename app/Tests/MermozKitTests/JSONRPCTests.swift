@@ -68,16 +68,28 @@ func eventsDecode(_ raw: String, _ expected: DaemonEvent) {
     let json = Data(#"""
     {"id":"thr_1","number":"M-1287","account_id":"acc_1","subject":"Audit","snippet":"s","participants":["Marc"],
      "last_from":"Marc","last_date":1791700000000,"unread":true,"message_count":3,"has_attachments":true,
-     "status":"todo","priority":2,"project_id":null,"due":"2026-10-16","summary":null,"next_action":null}
+     "status":"todo","priority":2,"projects":["Clients/Acme"],"due":"2026-10-16","summary":null,"next_action":null,
+     "suggestion":null}
     """#.utf8)
     let t = try RPCCoding.decoder().decode(ThreadSummary.self, from: json)
     #expect(t.accountId == "acc_1" && t.lastDate == 1791700000000 && t.due == "2026-10-16")
 }
 
+@Test func suggestionDecodesSnakeCase() throws {
+    let json = Data(#"""
+    {"status":"archive","status_confidence":0.9,"projects":["Receipts"],"project_confidence":0.88,"priority":0,"automated":0.97}
+    """#.utf8)
+    let s = try RPCCoding.decoder().decode(Suggestion.self, from: json)
+    var want = Suggestion(status: "archive", projects: ["Receipts"], priority: 0, automated: 0.97)
+    want.statusConfidence = 0.9
+    want.projectConfidence = 0.88
+    #expect(s == want)
+}
+
 @Test func paramsEncodeExplicitNull() throws {
-    let data = Params().with("ids", ["t1"]).null("project_id").data()
+    let data = Params().with("ids", ["t1"]).null("due").data()
     let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    #expect(obj?["project_id"] is NSNull)
+    #expect(obj?["due"] is NSNull)
 }
 
 @Test func paramsOmitNilValues() throws {

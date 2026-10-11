@@ -4,20 +4,20 @@ import Testing
 
 private func thread(_ id: String, status: String, priority: Int = 0, project: String? = nil) -> ThreadSummary {
     ThreadSummary(id: id, number: id, accountId: "a", subject: "", snippet: "", participants: [], lastFrom: "",
-                  lastDate: 0, unread: false, messageCount: 1, hasAttachments: false, status: status, priority: priority, projectId: project)
+                  lastDate: 0, unread: false, messageCount: 1, hasAttachments: false, status: status, priority: priority, projects: project.map { [$0] } ?? [])
 }
 
-private let sample = [thread("1", status: "todo", priority: 2), thread("2", status: "triage"), thread("3", status: "todo", priority: 1, project: "p")]
+private let sample = [thread("1", status: "todo", priority: 2), thread("2", status: "unread"), thread("3", status: "todo", priority: 1, project: "p")]
 private let order: @Sendable (Grouping) -> [String] = { f in
     switch f {
-    case .status: ["triage", "todo"]
+    case .status: ["unread", "todo"]
     case .priority: ["1", "2", "3", "4", "0"]
     default: []
     }
 }
 
 @Test func statusGroupsFollowWorkflowOrder() {
-    #expect(Grouper.group(sample, by: .status, order: order).map(\.key) == ["triage", "todo"])
+    #expect(Grouper.group(sample, by: .status, order: order).map(\.key) == ["unread", "todo"])
 }
 
 @Test func groupsKeepIncomingThreadOrder() {
@@ -34,4 +34,10 @@ private let order: @Sendable (Grouping) -> [String] = { f in
 
 @Test func flattenedOrderFollowsSubGroups() {
     #expect(Grouper.group(sample, by: .status, then: .priority, order: order)[1].all.map(\.id) == ["3", "1"])
+}
+
+@Test func threadInTwoProjectsShowsInBoth() {
+    var t = thread("9", status: "todo")
+    t.projects = ["a", "b"]
+    #expect(Grouper.group([t], by: .project, order: { _ in ["a", "b"] }).map(\.key) == ["a", "b"])
 }

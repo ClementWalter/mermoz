@@ -1,4 +1,4 @@
-/// Glass sidebar: search/ask, workflow statuses, projects, accounts, sync state.
+/// Glass sidebar: search/ask, workflow statuses, projects (Gmail labels), accounts, sync state.
 import MermozKit
 import SwiftUI
 
@@ -9,7 +9,7 @@ struct SidebarView: View {
     @State private var renaming: String?
     @State private var renameText = ""
     @State private var deleting: Project?
-    @AppStorage("sidebar.labelsOpen") private var labelsOpen = true
+    @AppStorage("sidebar.projectsOpen") private var projectsOpen = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -31,7 +31,7 @@ struct SidebarView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     section("Workflow") {
-                        ForEach(model.statuses.filter { $0.key != "canceled" }) { s in
+                        ForEach(model.statuses) { s in
                             row(.status(s.key), count: model.key(s)) {
                                 StatusIcon(key: s.key, color: Color(hex: s.color))
                                 Text(s.name)
@@ -44,75 +44,62 @@ struct SidebarView: View {
                             Text("People")
                         }
                     }
-                    section("Projects") {
-                        ForEach(model.projects) { p in
-                            if renaming == p.id {
-                                TextField("Project name", text: $renameText)
+                    VStack(alignment: .leading, spacing: 1) {
+                        // Projects are the user's Gmail labels, nested with "/".
+                        Button { projectsOpen.toggle() } label: {
+                            HStack(spacing: 4) {
+                                Text("PROJECTS").font(.system(size: 11, weight: .semibold)).kerning(0.6)
+                                Image(systemName: projectsOpen ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .bold))
+                                Spacer()
+                            }
+                            .foregroundStyle(Theme.text3)
+                            .padding(.horizontal, 8).padding(.bottom, 4)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if projectsOpen {
+                            ForEach(model.projects) { p in
+                                if renaming == p.id {
+                                    TextField("Project name", text: $renameText)
+                                        .textFieldStyle(.plain)
+                                        .padding(.horizontal, 8).frame(height: 28)
+                                        .onSubmit { model.renameProject(p.id, to: renameText); renaming = nil }
+                                        .onExitCommand { renaming = nil }
+                                } else {
+                                    row(.project(p.id), count: model.counts.project[p.id]) {
+                                        RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
+                                        Text(p.name.split(separator: "/").last.map(String.init) ?? p.name).lineLimit(1)
+                                    }
+                                    .padding(.leading, CGFloat(p.name.filter { $0 == "/" }.count) * 14)
+                                    .help(p.name)
+                                    .contextMenu {
+                                        Button("Rename…") { renameText = p.name; renaming = p.id }
+                                        Menu("Color") {
+                                            ForEach(Theme.projectColors, id: \.self) { c in
+                                                Button(Theme.colorName(c)) { model.recolorProject(p.id, to: c) }
+                                            }
+                                        }
+                                        Divider()
+                                        Button("Delete project…", role: .destructive) { deleting = p }
+                                    }
+                                }
+                            }
+                            if addingProject {
+                                TextField("Project name", text: $newProject)
                                     .textFieldStyle(.plain)
                                     .padding(.horizontal, 8).frame(height: 28)
-                                    .onSubmit { model.renameProject(p.id, to: renameText); renaming = nil }
-                                    .onExitCommand { renaming = nil }
+                                    .onSubmit {
+                                        let name = newProject.trimmingCharacters(in: .whitespaces)
+                                        addingProject = false
+                                        newProject = ""
+                                        if !name.isEmpty { Task { _ = await model.createProject(name) } }
+                                    }
                             } else {
-                                row(.project(p.id), count: model.counts.project[p.id]) {
-                                    RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
-                                    Text(p.name)
+                                Button { addingProject = true } label: {
+                                    Label("New project", systemImage: "plus").foregroundStyle(Theme.text3)
+                                        .padding(.horizontal, 8).frame(height: 26)
                                 }
-                                .contextMenu {
-                                    Button("Rename…") { renameText = p.name; renaming = p.id }
-                                    Menu("Color") {
-                                        ForEach(Theme.projectColors, id: \.self) { c in
-                                            Button(Theme.colorName(c)) { model.recolorProject(p.id, to: c) }
-                                        }
-                                    }
-                                    Divider()
-                                    Button("Delete project…", role: .destructive) { deleting = p }
-                                }
-                            }
-                        }
-                        if addingProject {
-                            TextField("Project name", text: $newProject)
-                                .textFieldStyle(.plain)
-                                .padding(.horizontal, 8).frame(height: 28)
-                                .onSubmit {
-                                    let name = newProject.trimmingCharacters(in: .whitespaces)
-                                    addingProject = false
-                                    newProject = ""
-                                    if !name.isEmpty { Task { _ = await model.createProject(name) } }
-                                }
-                        } else {
-                            Button { addingProject = true } label: {
-                                Label("New project", systemImage: "plus").foregroundStyle(Theme.text3)
-                                    .padding(.horizontal, 8).frame(height: 26)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    if !model.labels.isEmpty {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Button { labelsOpen.toggle() } label: {
-                                HStack(spacing: 4) {
-                                    Text("LABELS").font(.system(size: 11, weight: .semibold)).kerning(0.6)
-                                    Image(systemName: labelsOpen ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .bold))
-                                    Spacer()
-                                }
-                                .foregroundStyle(Theme.text3)
-                                .padding(.horizontal, 8).padding(.bottom, 4)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            if labelsOpen {
-                                ForEach(model.labels) { l in
-                                    row(.label(l.accountId, l.id), count: nil) {
-                                        Image(systemName: "folder").font(.system(size: 11)).foregroundStyle(Theme.text3)
-                                        Text(l.leaf).lineLimit(1)
-                                        if model.accounts.count > 1 {
-                                            Circle().strokeBorder(Theme.accountColor(l.accountId, among: model.accounts), lineWidth: 1.5)
-                                                .frame(width: 7, height: 7)
-                                        }
-                                    }
-                                    .padding(.leading, CGFloat(l.depth) * 14)
-                                    .help(l.name)
-                                }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -148,7 +135,7 @@ struct SidebarView: View {
                 deleting = nil
             }
         } message: {
-            Text("Its threads stay where they are; they just leave the project.")
+            Text("This deletes the Gmail label “\(deleting?.name ?? "")” on every account. The mail itself stays.")
         }
     }
 
@@ -187,7 +174,7 @@ extension AppModel {
     /// Sidebar badge: review counts drafts awaiting approval, others count threads.
     func key(_ s: Status) -> Int? {
         if s.key == "review" { return max(reviewDrafts.count, counts.status["review"] ?? 0) }
-        if s.key == "done" { return nil }
+        if closedStatusKeys.contains(s.key) { return nil }
         return counts.status[s.key]
     }
 }

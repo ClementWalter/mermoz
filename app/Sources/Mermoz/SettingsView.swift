@@ -458,6 +458,7 @@ struct DeveloperPane: View {
     var body: some View {
         Text("For people who drive Mermoz from their own scripts and agents. Nothing here is needed for everyday use.")
             .font(.system(size: 12)).foregroundStyle(Theme.text3)
+        InstantSortingCard()
         SettingsCard(title: "Command line tool", subtitle: "Same mailbox, same speed, from your shell. Every command supports --json.") {
             Text("$ mermoz search \"from:marc audit\" --json\n$ mermoz thread M-1287\n$ mermoz draft reply M-1287 --file reply.txt\n$ mermoz send <draft>   # waits in Review")
                 .font(.system(size: 11.5, design: .monospaced))
@@ -487,6 +488,58 @@ struct DeveloperPane: View {
             }
         }
         .task { await model.loadFeedback() }
+    }
+}
+
+/// Bring-your-own TypeSafe key: new mail gets a suggested status and project in a
+/// fraction of a second.
+struct InstantSortingCard: View {
+    @Environment(AppModel.self) private var model
+    @State private var key = ""
+    @State private var busy = false
+    @State private var result: String?
+
+    var body: some View {
+        SettingsCard(title: "Instant sorting (TypeSafe)",
+                     subtitle: "Suggests a status and a project for each new email in about a quarter second. Each new email is sent to TypeSafe to be sorted.") {
+            if model.router.configured {
+                HStack(spacing: 8) {
+                    Circle().fill(model.router.error == nil ? Theme.ok : Theme.danger).frame(width: 8, height: 8)
+                    Text(model.router.error ?? "On — new mail is sorted as it arrives").font(.system(size: 12.5))
+                    Spacer()
+                    Button("Test") { Task { await test(nil) } }.buttonStyle(.glass).disabled(busy)
+                    Button("Remove key", role: .destructive) { Task { _ = await model.setRouterKey(nil) } }.buttonStyle(.glass)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    SecureField("TypeSafe API key", text: $key)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 10).frame(height: 30)
+                        .background(Color(hex: "#F2F7FC"), in: RoundedRectangle(cornerRadius: 8))
+                    Button("Turn on") { Task { await save() } }
+                        .buttonStyle(.glassProminent)
+                        .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || busy)
+                }
+            }
+            if let result { Text(result).font(.system(size: 12)).foregroundStyle(Theme.text2) }
+        }
+        .task { await model.loadRouter() }
+    }
+
+    /// Checks the key with one tiny request before keeping it.
+    private func save() async {
+        let k = key.trimmingCharacters(in: .whitespaces)
+        guard await test(k) else { return }
+        if await model.setRouterKey(k) { key = "" }
+    }
+
+    @discardableResult
+    private func test(_ k: String?) async -> Bool {
+        busy = true
+        defer { busy = false }
+        guard let r = await model.testRouter(key: k) else { result = nil; return false }
+        result = "Working · answered in \(r.ms) ms"
+        return r.ok
     }
 }
 

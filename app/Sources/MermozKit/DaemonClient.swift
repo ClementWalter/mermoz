@@ -99,30 +99,44 @@ public final class DaemonClient: Sendable {
 
     public func counts() async throws -> Counts { try await call("counts") }
 
-    public func threads(status: [String]? = nil, projectId: String? = nil, accountId: String? = nil,
+    public func threads(status: [String]? = nil, project: String? = nil, accountId: String? = nil,
                         labelId: String? = nil, priority: [Int]? = nil, order: String? = nil,
                         limit: Int = 300, offset: Int = 0) async throws -> ThreadPage {
         try await call("threads.list", Params()
-            .with("status", status).with("project_id", projectId).with("account_id", accountId).with("label_id", labelId).with("order", order)
+            .with("status", status).with("project", project).with("account_id", accountId).with("label_id", labelId).with("order", order)
             .with("priority", priority).with("limit", limit).with("offset", offset))
     }
 
     public func thread(_ id: String) async throws -> ThreadDetail { try await call("threads.get", Params().with("id", id)) }
 
     public func updateThreads(ids: [String], status: String? = nil, priority: Int? = nil,
-                              project: Patch<String> = .keep, due: Patch<String> = .keep) async throws {
+                              addProjects: [String] = [], removeProjects: [String] = [],
+                              due: Patch<String> = .keep) async throws {
         var p = Params().with("ids", ids).with("status", status).with("priority", priority)
-        switch project {
-        case .keep: break
-        case let .set(v): p = p.with("project_id", v)
-        case .clear: p = p.null("project_id")
-        }
+        if !addProjects.isEmpty { p = p.with("add_projects", addProjects) }
+        if !removeProjects.isEmpty { p = p.with("remove_projects", removeProjects) }
         switch due {
         case .keep: break
         case let .set(v): p = p.with("due", v)
         case .clear: p = p.null("due")
         }
         try await callVoid("threads.update", p)
+    }
+
+    public func acceptSuggestions(_ ids: [String]) async throws {
+        try await callVoid("threads.accept_suggestions", Params().with("ids", ids))
+    }
+
+    public func router() async throws -> RouterState { try await call("router.get") }
+
+    /// `nil` removes the key and stops instant sorting.
+    public func setRouterKey(_ key: String?) async throws -> RouterState {
+        let p = key.map { Params().with("api_key", $0) } ?? Params().null("api_key")
+        return try await call("router.set", p)
+    }
+
+    public func testRouter(key: String?) async throws -> RouterTest {
+        try await call("router.test", Params().with("api_key", key))
     }
 
     public func markRead(_ id: String, read: Bool = true) async throws {

@@ -59,6 +59,10 @@ final class AppModel {
     var contactQuery = ""
     var selectedContact: ContactDetail?
     var providers: [Provider] = []
+    var router = RouterState()
+    /// What the AI filed a thread under when it was opened (reading confirms the
+    /// suggestion); shown with an Undo in the reading pane.
+    var appliedSuggestion: [String: Suggestion] = [:]
     var agentStates: [String: AgentState] = [:]
     var login = LoginState(running: false, error: nil)
     var counts = Counts()
@@ -66,7 +70,7 @@ final class AppModel {
     var feedback: [FeedbackEntry] = []
     var syncProgress: [String: (synced: Int, total: Int)] = [:]
 
-    var selection: SidebarSelection = .status("triage")
+    var selection: SidebarSelection = .status("unread")
     var layout: LayoutMode = .list
     /// Display options are kept per layout, like Linear's per-view settings.
     var listDisplay: DisplayOptions = AppModel.loadDisplay("list") ?? DisplayOptions(grouping: .priority)
@@ -199,13 +203,13 @@ final class AppModel {
         let d = effectiveDisplay
         let order = d.ordering.rawValue
         let open = openStatuses.map(\.key)
-        var projectId: String?
+        var project: String?
         var accountId: String?
         var labelId: String?
         var statuses: [String]? = open
         switch selection {
         case let .status(k): if layout == .list { statuses = [k] }
-        case let .project(id): projectId = id
+        case let .project(id): project = id
         case let .account(id): accountId = id
         case let .label(acc, id): accountId = acc; labelId = id; statuses = nil
         case .people: return
@@ -217,8 +221,8 @@ final class AppModel {
                 // One page per column, so every status shows its own newest threads and real size.
                 try await withThrowingTaskGroup(of: (Int, ThreadPage).self) { group in
                     for (i, k) in sts.enumerated() {
-                        group.addTask { [client, projectId, accountId, order] in
-                            (i, try await client.threads(status: [k], projectId: projectId, accountId: accountId, order: order, limit: 150))
+                        group.addTask { [client, project, accountId, order] in
+                            (i, try await client.threads(status: [k], project: project, accountId: accountId, order: order, limit: 150))
                         }
                     }
                     var pages: [(Int, ThreadPage)] = []
@@ -229,18 +233,22 @@ final class AppModel {
                     }
                 }
             } else {
-                let page = try await client.threads(status: statuses, projectId: projectId, accountId: accountId, labelId: labelId,
+                let page = try await client.threads(status: statuses, project: project, accountId: accountId, labelId: labelId,
                                                     order: order, limit: layout == .board ? 600 : 300)
                 fetched = page.threads
                 total = page.total
             }
+            // The thread being read stays in place even once it no longer matches the view
+            // (reading moves it out of Unread), so j/k continue from where it was.
+            if let sel = selectedThreadId, !fetched.contains(where: { $0.id == sel }),
+               let i = threads.firstIndex(where: { $0.id == sel }) {
+                var kept = threads[i]
+                if let d = detail?.thread, d.id == sel { kept = d }
+                fetched.insert(kept, at: min(i, fetched.count))
+            }
             // Unchanged pages must not re-render the list (sync streams change events).
             if threads != fetched { threads = fetched }
             if totalThreads != total { totalThreads = total }
-            if let sel = selectedThreadId, !threads.contains(where: { $0.id == sel }) {
-                selectedThreadId = nil
-                detail = nil
-            }
         } catch { report(error) }
     }
 
@@ -316,8 +324,12 @@ final class AppModel {
         }
     }
 
-    /// Flat order matching what's on screen, for keyboard navigation.
-    var displayOrder: [ThreadSummary] { groups.flatMap(\.all) }
+    /// Flat order matching what's on screen, for keyboard navigation; a thread in two
+    /// project groups is visited once.
+    var displayOrder: [ThreadSummary] {
+        var seen = Set<String>()
+        return groups.flatMap(\.all).filter { seen.insert($0.id).inserted }
+    }
 
     /// Real size of a group when the server knows it (all-open views), else what's loaded.
     func groupTotal(_ g: ThreadGroup) -> Int {
@@ -422,11 +434,45 @@ final class AppModel {
                 detail = d
                 learnAddresses(from: d)
                 if d.thread.unread {
+                    // Reading an Unread thread applies the AI's suggestion; remember it for Undo.
+                    if d.thread.status == "unread", let sg = d.thread.suggestion, !sg.isEmpty {
+                        appliedSuggestion[id] = sg
+                    }
                     try? await client.markRead(id)
-                    setLocal(id) { $0.unread = false }
+                    if let fresh = try? await client.thread(id), selectedThreadId == id {
+                        detail = fresh
+                        setLocal(id) { $0 = fresh.thread }
+                    } else {
+                        setLocal(id) { $0.unread = false }
+                    }
+                    await refreshCounts()
                 }
             } catch { report(error) }
         }
+    }
+
+    /// Accepts the AI's suggestions as they stand (the threads count as read).
+    func acceptSuggestions(_ ids: [String]) {
+        guard let client, !ids.isEmpty else { return }
+        Task {
+            do {
+                try await client.acceptSuggestions(ids)
+                toast = ids.count == 1 ? "Done as suggested" : "Accepted \(ids.count) suggestions"
+                await refreshCounts()
+                await loadList()
+            } catch { report(error) }
+        }
+    }
+
+    func acceptSelected() {
+        guard let id = selectedThreadId else { return }
+        if threads.first(where: { $0.id == id })?.suggestion != nil { acceptSuggestions([id]) }
+    }
+
+    /// Puts back what reading applied: To do, without the projects the AI added.
+    func undoApplied(_ id: String) {
+        guard let sg = appliedSuggestion.removeValue(forKey: id) else { return }
+        update([id], status: "todo", removeProjects: sg.projects)
     }
 
     /// Esc peels one layer: palette first, then the open thread or draft.
@@ -462,7 +508,7 @@ final class AppModel {
 
     /// Optimistic update: change local state now, roll back if the daemon refuses.
     func update(_ ids: [String], status: String? = nil, priority: Int? = nil,
-                project: Patch<String> = .keep, due: Patch<String> = .keep) {
+                addProjects: [String] = [], removeProjects: [String] = [], due: Patch<String> = .keep) {
         guard let client else { return }
         let before = threads
         let beforeDetail = detail
@@ -470,7 +516,7 @@ final class AppModel {
             setLocal(id) { t in
                 if let status { t.status = status }
                 if let priority { t.priority = priority }
-                switch project { case let .set(v): t.projectId = v; case .clear: t.projectId = nil; case .keep: break }
+                t.projects = Array(Set(t.projects).union(addProjects).subtracting(removeProjects)).sorted()
                 switch due { case let .set(v): t.due = v; case .clear: t.due = nil; case .keep: break }
             }
         }
@@ -480,7 +526,8 @@ final class AppModel {
         }
         Task {
             do {
-                try await client.updateThreads(ids: ids, status: status, priority: priority, project: project, due: due)
+                try await client.updateThreads(ids: ids, status: status, priority: priority,
+                                               addProjects: addProjects, removeProjects: removeProjects, due: due)
                 await refreshCounts()
             } catch {
                 threads = before
@@ -490,11 +537,23 @@ final class AppModel {
         }
     }
 
-    func markDoneSelected() {
+    func markDoneSelected() { moveSelected(to: "done") }
+
+    /// Back to Unread, like Gmail's "mark unread": the thread waits for a fresh look.
+    func markUnreadSelected() {
+        guard let id = selectedThreadId, let client else { return }
+        setLocal(id) { $0.unread = true; $0.status = "unread" }
+        Task {
+            do { try await client.markRead(id, read: false); await refreshCounts() } catch { report(error) }
+        }
+    }
+
+    /// Moves the selected thread to a status and lands on the next one.
+    func moveSelected(to status: String) {
         guard let id = selectedThreadId else { return }
         let order = layout == .list ? displayOrder : threads
         let idx = order.firstIndex { $0.id == id }
-        update([id], status: "done")
+        update([id], status: status)
         // Keep the keyboard flow going: land on the next thread.
         if let idx {
             let rest = order.filter { $0.id != id }
@@ -537,7 +596,7 @@ final class AppModel {
             do {
                 try await client.deleteProject(id)
                 projects.removeAll { $0.id == id }
-                if selection == .project(id) { select(.status("triage")) } else { await loadList() }
+                if selection == .project(id) { select(.status("unread")) } else { await loadList() }
                 await refreshCounts()
             } catch { report(error) }
         }
@@ -756,6 +815,26 @@ final class AppModel {
                 await refreshAll()
             } catch { report(error) }
         }
+    }
+
+    // MARK: instant sorting
+
+    func loadRouter() async {
+        guard let client else { return }
+        if let r = try? await client.router() { router = r }
+    }
+
+    func setRouterKey(_ key: String?) async -> Bool {
+        guard let client else { return false }
+        do {
+            router = try await client.setRouterKey(key)
+            return true
+        } catch { report(error); return false }
+    }
+
+    func testRouter(key: String?) async -> RouterTest? {
+        guard let client else { return nil }
+        do { return try await client.testRouter(key: key) } catch { report(error); return nil }
     }
 
     func setAgentsMaySend(_ v: Bool) {

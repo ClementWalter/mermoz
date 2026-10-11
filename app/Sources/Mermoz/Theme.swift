@@ -16,8 +16,8 @@ enum Theme {
 
     /// Fallback colors when the daemon sends none, keyed by default status key.
     static let statusColors: [String: String] = [
-        "triage": "#8A6FD1", "backlog": "#8AA0B2", "todo": "#5A7386", "in_progress": "#D9902F",
-        "waiting": "#2F8FCF", "review": "#C2568C", "done": "#2E9A6B", "canceled": "#8AA0B2",
+        "unread": "#3D7FE0", "backlog": "#8AA0B2", "todo": "#5A7386", "in_progress": "#D9902F",
+        "waiting": "#2F8FCF", "review": "#C2568C", "done": "#2E9A6B", "archive": "#8FA3B5", "deleted": "#C0645A",
     ]
 
     static let accountPalette = ["#1F6FB5", "#8A6FD1", "#2E9A6B", "#E0782F", "#C2568C", "#2F8FCF"]
@@ -46,7 +46,8 @@ extension Color {
     }
 }
 
-/// Linear-style status glyph: dashed ring for triage, filling ring for progress, solid for done.
+/// Linear-style status glyph: dot for unread, filling ring for progress, solid for done,
+/// a box for archive and a bin for deleted.
 struct StatusIcon: View {
     let key: String
     var color: Color? = nil
@@ -56,14 +57,16 @@ struct StatusIcon: View {
         let c = color ?? Color(hex: Theme.statusColors[key] ?? "#5A7386")
         ZStack {
             switch key {
-            case "triage":
+            case "unread":
                 Circle().strokeBorder(c, style: StrokeStyle(lineWidth: 1.5, dash: [2, 1.6]))
+                Circle().fill(c).padding(size * 0.3)
+            case "archive":
+                Image(systemName: "archivebox.fill").font(.system(size: size * 0.85)).foregroundStyle(c)
+            case "deleted":
+                Image(systemName: "trash.fill").font(.system(size: size * 0.8)).foregroundStyle(c)
             case "done":
                 Circle().fill(c)
                 Image(systemName: "checkmark").font(.system(size: size * 0.5, weight: .heavy)).foregroundStyle(.white)
-            case "canceled":
-                Circle().fill(c.opacity(0.8))
-                Image(systemName: "xmark").font(.system(size: size * 0.45, weight: .heavy)).foregroundStyle(.white)
             default:
                 Circle().strokeBorder(c, lineWidth: 1.5)
                 Circle().trim(from: 0, to: fill).stroke(c, style: StrokeStyle(lineWidth: size / 2 - 2))
@@ -198,4 +201,48 @@ enum Format {
     }
 
     static func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+}
+
+/// A thread's projects as small colored chips; past `limit`, a "+n" chip.
+struct ProjectChips: View {
+    @Environment(AppModel.self) private var model
+    let names: [String]
+    var limit = 2
+
+    var body: some View {
+        ForEach(names.prefix(limit), id: \.self) { n in
+            Chip(small: true) {
+                RoundedRectangle(cornerRadius: 2).fill(Color(hex: model.project(n)?.color ?? "#C6D7E6")).frame(width: 7, height: 7)
+                Text(n.split(separator: "/").last.map(String.init) ?? n).lineLimit(1)
+            }
+            .help(n)
+        }
+        if names.count > limit { Chip(small: true) { Text("+\(names.count - limit)") } }
+    }
+}
+
+/// "✦ Archive · Voyage": where the AI would put the thread; y accepts.
+struct SuggestionChip: View {
+    @Environment(AppModel.self) private var model
+    let suggestion: Suggestion
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "sparkle").font(.system(size: 9, weight: .semibold))
+            Text(text).lineLimit(1)
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(Theme.accent)
+        .padding(.horizontal, 6)
+        .frame(height: 18)
+        .background(Theme.accentSoft.opacity(0.8), in: RoundedRectangle(cornerRadius: 5))
+        .help("Suggested by AI — press y to accept, or just read it")
+    }
+
+    private var text: String {
+        var parts: [String] = []
+        if let s = suggestion.status { parts.append(model.statuses.first { $0.key == s }?.name ?? s) }
+        parts += suggestion.projects.map { $0.split(separator: "/").last.map(String.init) ?? $0 }
+        return parts.joined(separator: " · ")
+    }
 }

@@ -39,23 +39,62 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable, Hashabl
     public var hasAttachments: Bool
     public var status: String
     public var priority: Int
-    public var projectId: String?
+    /// Names of the user's Gmail labels on the thread; a thread can be in several projects.
+    public var projects: [String]
     public var due: String?
     public var summary: String?
     public var nextAction: String?
+    /// The AI's pending prediction, until the thread is read or decided.
+    public var suggestion: Suggestion?
 
     public init(id: String, number: String, accountId: String, subject: String, snippet: String,
                 participants: [String], lastFrom: String, lastDate: Int64, unread: Bool,
                 messageCount: Int, hasAttachments: Bool, status: String, priority: Int,
-                projectId: String? = nil, due: String? = nil, summary: String? = nil, nextAction: String? = nil) {
+                projects: [String] = [], due: String? = nil, summary: String? = nil, nextAction: String? = nil,
+                suggestion: Suggestion? = nil) {
         self.id = id; self.number = number; self.accountId = accountId; self.subject = subject
         self.snippet = snippet; self.participants = participants; self.lastFrom = lastFrom
         self.lastDate = lastDate; self.unread = unread; self.messageCount = messageCount
         self.hasAttachments = hasAttachments; self.status = status; self.priority = priority
-        self.projectId = projectId; self.due = due; self.summary = summary; self.nextAction = nextAction
+        self.projects = projects; self.due = due; self.summary = summary; self.nextAction = nextAction
+        self.suggestion = suggestion
     }
 
     public func hash(into h: inout Hasher) { h.combine(id) }
+}
+
+/// Where the AI would put a thread; fields it was unsure about are nil or empty.
+public struct Suggestion: Codable, Sendable, Equatable, Hashable {
+    public var status: String?
+    public var statusConfidence: Double?
+    public var projects: [String]
+    public var projectConfidence: Double?
+    public var priority: Int?
+    /// Probability the mail was sent by a machine (newsletter, receipt, notification).
+    public var automated: Double?
+
+    public init(status: String? = nil, projects: [String] = [], priority: Int? = nil, automated: Double? = nil) {
+        self.status = status; self.projects = projects; self.priority = priority; self.automated = automated
+    }
+
+    /// Nothing worth showing.
+    public var isEmpty: Bool { status == nil && projects.isEmpty }
+}
+
+/// Instant sorting (TypeSafe) state, from `router.get`.
+public struct RouterState: Codable, Sendable, Equatable {
+    public var configured: Bool
+    public var error: String?
+    public var model: String
+
+    public init(configured: Bool = false, error: String? = nil, model: String = "") {
+        self.configured = configured; self.error = error; self.model = model
+    }
+}
+
+public struct RouterTest: Codable, Sendable {
+    public var ok: Bool
+    public var ms: Int
 }
 
 public struct Address: Codable, Sendable, Equatable, Hashable {
@@ -319,4 +358,4 @@ public enum DaemonEvent: Sendable, Equatable {
 }
 
 /// Statuses the daemon treats as closed; used to scope "open" views.
-public let closedStatusKeys: Set<String> = ["done", "canceled"]
+public let closedStatusKeys: Set<String> = ["done", "archive", "deleted"]

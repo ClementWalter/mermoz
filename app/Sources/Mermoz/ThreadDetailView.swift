@@ -12,6 +12,7 @@ struct ThreadDetailView: View {
         VStack(spacing: 0) {
             IssueToolbar(thread: detail.thread)
             Divider().overlay(Theme.line)
+            if let sg = model.appliedSuggestion[detail.thread.id] { AppliedSuggestionBar(threadId: detail.thread.id, suggestion: sg) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 6) {
@@ -74,19 +75,20 @@ struct IssueToolbar: View {
             }
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
 
+            // A thread can be in several projects: each item toggles one (a Gmail label).
             Menu {
                 ForEach(model.projects) { p in
-                    Button(p.name) { model.update([thread.id], project: .set(p.id)) }
-                }
-                if thread.projectId != nil {
-                    Divider()
-                    Button("Remove from project") { model.update([thread.id], project: .clear) }
+                    Toggle(p.name, isOn: Binding(
+                        get: { thread.projects.contains(p.id) },
+                        set: { on in
+                            if on { model.update([thread.id], addProjects: [p.id]) } else { model.update([thread.id], removeProjects: [p.id]) }
+                        }))
                 }
             } label: {
                 Chip {
-                    let p = model.project(thread.projectId)
-                    RoundedRectangle(cornerRadius: 3).fill(Color(hex: p?.color ?? "#C6D7E6")).frame(width: 9, height: 9)
-                    Text(p?.name ?? "Project")
+                    let first = thread.projects.first.flatMap { model.project($0) }
+                    RoundedRectangle(cornerRadius: 3).fill(Color(hex: first?.color ?? "#C6D7E6")).frame(width: 9, height: 9)
+                    Text(projectLabel)
                 }
             }
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
@@ -126,12 +128,54 @@ struct IssueToolbar: View {
             .buttonStyle(.plain).foregroundStyle(Theme.accent)
             .disabled(model.aiBusy.contains("clean:\(thread.id)"))
             .help("Clean this thread with AI").accessibilityLabel("Clean with AI")
-            Button { model.markDoneSelected() } label: { Image(systemName: "archivebox") }
+            Button { model.markDoneSelected() } label: { Image(systemName: "checkmark.circle") }
                 .buttonStyle(.plain).foregroundStyle(Theme.text2)
                 .help("Done (e)").accessibilityLabel("Mark done")
+            Button { model.moveSelected(to: "archive") } label: { Image(systemName: "archivebox") }
+                .buttonStyle(.plain).foregroundStyle(Theme.text2)
+                .help("Archive (a)").accessibilityLabel("Archive")
+            Button { model.moveSelected(to: "deleted") } label: { Image(systemName: "trash") }
+                .buttonStyle(.plain).foregroundStyle(Theme.text2)
+                .help("Delete (#)").accessibilityLabel("Delete")
         }
         .padding(.horizontal, 12)
         .frame(height: 50)
+    }
+
+    private var projectLabel: String {
+        switch thread.projects.count {
+        case 0: "Project"
+        case 1: thread.projects[0]
+        default: "\(thread.projects[0]) +\(thread.projects.count - 1)"
+        }
+    }
+}
+
+/// Shown after opening an Unread thread the AI had sorted: reading applied its
+/// suggestion; Undo puts the thread in To do without the added projects.
+struct AppliedSuggestionBar: View {
+    @Environment(AppModel.self) private var model
+    let threadId: String
+    let suggestion: Suggestion
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkle").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.accent)
+            Text("Sorted by AI:").foregroundStyle(Theme.text2)
+            Text(description).fontWeight(.medium)
+            Spacer()
+            Button("Undo") { model.undoApplied(threadId) }.buttonStyle(.plain).foregroundStyle(Theme.accent)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 14).frame(height: 32)
+        .background(Theme.accentSoft.opacity(0.55))
+    }
+
+    private var description: String {
+        var parts: [String] = []
+        if let s = suggestion.status { parts.append(model.statuses.first { $0.key == s }?.name ?? s) }
+        parts += suggestion.projects
+        return parts.joined(separator: " · ")
     }
 }
 

@@ -45,19 +45,20 @@ public struct ThreadGroup: Identifiable, Equatable, Sendable {
     public var subgroups: [ThreadGroup]
     public var id: String { "\(field.rawValue):\(key)" }
 
-    /// Threads in display order, sub-groups flattened.
+    /// Threads in display order, sub-groups flattened. A thread in several projects
+    /// appears once per project group.
     public var all: [ThreadSummary] { subgroups.isEmpty ? threads : subgroups.flatMap(\.all) }
 }
 
 public enum Grouper {
-    /// The value a thread has for a field; "" means "none".
-    public static func key(_ t: ThreadSummary, by field: Grouping) -> String {
+    /// The values a thread has for a field; "" means "none". Only projects can have several.
+    public static func keys(_ t: ThreadSummary, by field: Grouping) -> [String] {
         switch field {
-        case .status: t.status
-        case .priority: String(t.priority)
-        case .project: t.projectId ?? ""
-        case .account: t.accountId
-        case .none: ""
+        case .status: [t.status]
+        case .priority: [String(t.priority)]
+        case .project: t.projects.isEmpty ? [""] : t.projects
+        case .account: [t.accountId]
+        case .none: [""]
         }
     }
 
@@ -71,9 +72,10 @@ public enum Grouper {
         var buckets: [String: [ThreadSummary]] = [:]
         var seen: [String] = []
         for t in threads {
-            let k = key(t, by: field)
-            if buckets[k] == nil { seen.append(k) }
-            buckets[k, default: []].append(t)
+            for k in keys(t, by: field) {
+                if buckets[k] == nil { seen.append(k) }
+                buckets[k, default: []].append(t)
+            }
         }
         let known = order(field)
         var keys = known.filter { buckets[$0] != nil }

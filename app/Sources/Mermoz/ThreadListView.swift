@@ -52,7 +52,7 @@ struct ThreadListView: View {
         .focused($focused)
         .focusEffectDisabled()
         .onAppear { focused = true }
-        .onKeyPress(characters: .init(charactersIn: "jkesprc?/"), phases: .down) { press in
+        .onKeyPress(characters: .init(charactersIn: ThreadKeys.characters), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
         .onKeyPress(.downArrow) { model.moveSelection(1); return .handled }
@@ -76,12 +76,19 @@ extension ThreadListView {
 
 /// Single-key shortcuts shared by list and board.
 enum ThreadKeys {
+    static let characters = "jkeay#usprc?/"
+
     @MainActor
     static func handle(_ c: String, model: AppModel) -> Bool {
         switch c {
         case "j": model.moveSelection(1)
         case "k": model.moveSelection(-1)
         case "e": model.markDoneSelected()
+        case "a": model.moveSelected(to: "archive")
+        // Typed character, so it is Shift+3 on QWERTY and a plain key on AZERTY alike.
+        case "#": model.moveSelected(to: "deleted")
+        case "y": model.acceptSelected()
+        case "u": model.markUnreadSelected()
         case "s": if model.selectedThreadId != nil { model.paletteMode = .status }
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
         case "r": model.startReply()
@@ -184,6 +191,7 @@ struct GroupHeaderView: View {
             GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
             Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
             Spacer()
+            AcceptAllButton(threads: group.all)
             if group.field == .status { AITriageButton(status: group.key) }
         }
         .foregroundStyle(Theme.text.opacity(0.85))
@@ -204,6 +212,24 @@ struct SubGroupHeader: View {
         .font(.system(size: 11.5, weight: .medium))
         .foregroundStyle(Theme.text2)
         .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 4)
+    }
+}
+
+/// "Accept n": applies every pending AI suggestion in a group at once.
+struct AcceptAllButton: View {
+    @Environment(AppModel.self) private var model
+    let threads: [ThreadSummary]
+
+    var body: some View {
+        let ids = threads.filter { $0.suggestion.map { !$0.isEmpty } ?? false }.map(\.id)
+        if !ids.isEmpty {
+            Button { model.acceptSuggestions(ids) } label: {
+                Label("Accept \(ids.count)", systemImage: "checkmark.circle").font(.system(size: 11.5))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accent)
+            .help("Apply the AI's suggestion to these \(ids.count) threads")
+        }
     }
 }
 
@@ -278,6 +304,8 @@ struct ThreadRow: View {
                     Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(Theme.text3)
                 }
                 Spacer(minLength: 4)
+                if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg) }
+                ProjectChips(names: thread.projects)
                 if let due = thread.due { Chip(small: true) { Text("Due \(Format.due(due))") } }
                 Text(Format.short(thread.lastDate)).font(.system(size: 12)).foregroundStyle(Theme.text3)
             }

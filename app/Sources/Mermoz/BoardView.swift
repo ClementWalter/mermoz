@@ -47,7 +47,7 @@ struct BoardView: View {
         .focused($focused)
         .focusEffectDisabled()
         .onAppear { focused = true }
-        .onKeyPress(characters: .init(charactersIn: "jkesprc?/"), phases: .down) { press in
+        .onKeyPress(characters: .init(charactersIn: ThreadKeys.characters), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
         .onKeyPress(.leftArrow) { model.moveBoard(dx: -1, dy: 0); return .handled }
@@ -85,6 +85,7 @@ struct BoardColumn: View {
                 }
                 Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
+                AcceptAllButton(threads: group.all)
                 if group.field == .status { AITriageButton(status: group.key) }
             }
             .padding(.horizontal, 4).padding(.top, 2)
@@ -116,11 +117,13 @@ struct BoardColumn: View {
         .background(Color.white.opacity(targeted ? 0.6 : 0.32), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(targeted ? Theme.accent.opacity(0.5) : Color.white.opacity(0.8)))
         .dropDestination(for: String.self) { ids, _ in
-            // Dropping sets the column's value: status, priority or project.
+            // Dropping sets the column's value: status, priority, or adds the project.
             switch group.field {
             case .status: model.update(ids, status: group.key)
             case .priority: model.update(ids, priority: Int(group.key) ?? 0)
-            case .project: model.update(ids, project: group.key.isEmpty ? .clear : .set(group.key))
+            case .project:
+                if group.key.isEmpty { return false }
+                model.update(ids, addProjects: [group.key])
             default: return false
             }
             return true
@@ -163,14 +166,10 @@ struct BoardCard: View {
                         .frame(width: 7, height: 7).help(model.accounts.first { $0.id == thread.accountId }?.email ?? "")
                 }
                 Text(thread.lastFrom).lineLimit(1)
-                if let p = model.project(thread.projectId) {
-                    Chip(small: true) {
-                        RoundedRectangle(cornerRadius: 2).fill(Color(hex: p.color)).frame(width: 7, height: 7)
-                        Text(p.name)
-                    }
-                }
+                ProjectChips(names: thread.projects, limit: 1)
             }
             .font(.system(size: 11.5)).foregroundStyle(Theme.text2)
+            if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg) }
             if let next = thread.nextAction, !next.isEmpty {
                 Label(next, systemImage: "sparkle").font(.system(size: 11.5)).foregroundStyle(Theme.text2).lineLimit(2)
             }
