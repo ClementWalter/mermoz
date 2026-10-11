@@ -84,6 +84,13 @@ it wins (Tantivy if FTS5 can't, e.g. for fuzzy/prefix queries).
 - Composer: plain text. An LLM "magnify" action polishes/expands the draft on
   request. Sent as plain text (+ minimal HTML alternative when magnified output
   has structure).
+- Recipient check: every address gets a mark as it's typed — green tick when
+  it looks legitimate, red tick (with a one-line reason) for random-looking or
+  newly registered domains, disposable/spam domains, malformed addresses and
+  lookalikes of a known contact (e.g. a familiar name on an unfamiliar
+  domain). Fast local signals first (contact history, edit distance to known
+  domains, MX lookup cache), AI only for the ambiguous rest, so the tick never
+  waits on the network. A red tick on a send triggers a confirmation.
 
 ## Issue model
 
