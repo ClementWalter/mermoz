@@ -108,6 +108,58 @@ it wins (Tantivy if FTS5 can't, e.g. for fuzzy/prefix queries).
   (`mermoz/status/todo`, …) so state survives reinstall and is visible on
   other devices. Done = archive.
 
+## Workflow v2 (decided 2026-10-11, supersedes the issue model above)
+
+Two philosophies were competing: the mailbox (read/unread, inbox/archive, labels)
+and the tracker (statuses, projects). v2 merges them into one axis.
+
+### One status axis
+
+```
+Unread ──► (read) To do · Waiting · In progress · Backlog · Done · Archive
+                                                             ╲── Deleted
+```
+
+- **Unread** is the entry status; every other status is a refinement of "read".
+- **Done** = "I handled it" (reopens when someone else replies). **Archive** = "filed,
+  nothing to do". Both are kept forever; nothing moves automatically between them.
+- **Deleted** = Gmail Trash (Gmail purges it after 30 days, its own rule).
+
+| Status | Gmail |
+| --- | --- |
+| Unread | `UNREAD` + `INBOX` |
+| To do / Waiting / In progress / Backlog | `INBOX` + `Mermoz/<Status>` |
+| Done | archived + `Mermoz/Done` |
+| Archive | archived, no status label |
+| Deleted | Trash |
+
+### Labels are the projects
+
+The user's Gmail labels *are* the projects: no `Mermoz/Project/…` prefix, no
+parallel taxonomy. Colors, boards and counts apply to existing labels. A thread
+can carry several labels, so it belongs to several projects and shows in each
+project's column.
+
+### Instant AI routing
+
+- On arrival a fast **decision model** (TypeSafe Jev first; OpenAI Decisions API
+  once access is confirmed; big LLM as fallback) predicts, per thread: post-read
+  status, project(s) among the user's labels, and priority, with probabilities.
+- The prediction is a **suggestion**, never applied silently: reading the thread
+  confirms it, one key corrects it. Automated mail (newsletters, receipts,
+  notifications) follows the same rule, confirmable in batches.
+- Every correction is a labeled example; the learning loop turns them into
+  per-sender shortcuts and few-shot context.
+- A thread read before its prediction arrives defaults to the sender's most
+  frequent status, else To do.
+- The big LLM keeps the slow jobs: clean reading view, drafts, directory,
+  column triage.
+
+### Migration
+
+The existing open threads (e.g. 7,000+ in Backlog from an old inbox) get one
+classification pass shown as a preview with undo, instead of staying as debt.
+
 ## UI
 
 - **Sidebar:** statuses, projects, saved views (Linear-style); raw
