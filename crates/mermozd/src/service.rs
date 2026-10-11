@@ -24,6 +24,8 @@ pub struct Worker {
 pub struct Service {
     /// Outcome of the last "Sign in with Anthropic".
     pub login: Mutex<LoginState>,
+    /// The sign-in in flight; a new attempt aborts it (a stuck browser flow never blocks a retry).
+    login_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub store: Arc<Store>,
     pub events: broadcast::Sender<Event>,
     workers: Mutex<HashMap<String, Arc<Worker>>>,
@@ -42,6 +44,7 @@ impl Service {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Self {
             login: Mutex::new(LoginState::default()),
+            login_task: Mutex::new(None),
             store,
             events,
             workers: Mutex::new(HashMap::new()),
@@ -201,6 +204,31 @@ pub async fn credential(p: &mermoz_core::agent::Provider) -> Result<String> {
 }
 
 impl Service {
+    /// Runs one sign-in attempt in the background, replacing any attempt still waiting.
+    fn run_login<F>(self: &Arc<Self>, attempt: F)
+    where
+        F: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        if let Some(old) = self.login_task.lock().unwrap().take() {
+            old.abort();
+        }
+        *self.login.lock().unwrap() = LoginState {
+            running: true,
+            error: None,
+        };
+        let svc = self.clone();
+        let handle = tokio::spawn(async move {
+            let result = attempt.await;
+            *svc.login.lock().unwrap() = LoginState {
+                running: false,
+                error: result.err().map(|e| e.to_string()),
+            };
+            let _ = svc.events.send(Event::ProvidersChanged);
+            svc.kick_agents();
+        });
+        *self.login_task.lock().unwrap() = Some(handle);
+    }
+
     /// Starts "Continue with ChatGPT"; returns the URL the app opens in the browser.
     pub async fn login_chatgpt(self: &Arc<Self>) -> Result<String> {
         let host = match self.store.setting("chatgpt_host_id")? {
@@ -213,39 +241,26 @@ impl Service {
         };
         let pending = mermoz_core::chatgpt::start(&host, None).await?;
         let url = pending.url.clone();
-        *self.login.lock().unwrap() = LoginState {
-            running: true,
-            error: None,
-        };
         let svc = self.clone();
-        tokio::spawn(async move {
-            let result = async {
-                let cred = pending.finish(Duration::from_secs(600)).await?;
-                // The account's own catalog decides the model; the first listed is the default.
-                let (model, _) = mermoz_core::chatgpt::models(&cred.access_token)
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| Error::other("No ChatGPT model is available on this plan"))?;
-                let id = mermoz_core::model::new_id("prv");
-                mermoz_core::chatgpt::save(&id, &cred)?;
-                svc.store.save_provider(&mermoz_core::agent::Provider {
-                    id,
-                    name: "ChatGPT".into(),
-                    kind: "chatgpt".into(),
-                    base_url: None,
-                    model,
-                    auth: "oauth".into(),
-                    profile: None,
-                })
-            }
-            .await;
-            *svc.login.lock().unwrap() = LoginState {
-                running: false,
-                error: result.err().map(|e| e.to_string()),
-            };
-            let _ = svc.events.send(Event::ProvidersChanged);
-            svc.kick_agents();
+        self.run_login(async move {
+            let cred = pending.finish(Duration::from_secs(600)).await?;
+            // The account's own catalog decides the model; the first listed is the default.
+            let (model, _) = mermoz_core::chatgpt::models(&cred.access_token)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::other("No ChatGPT model is available on this plan"))?;
+            let id = mermoz_core::model::new_id("prv");
+            mermoz_core::chatgpt::save(&id, &cred)?;
+            svc.store.save_provider(&mermoz_core::agent::Provider {
+                id,
+                name: "ChatGPT".into(),
+                kind: "chatgpt".into(),
+                base_url: None,
+                model,
+                auth: "oauth".into(),
+                profile: None,
+            })
         });
         Ok(url)
     }
@@ -257,40 +272,21 @@ impl Service {
                 "Anthropic sign-in is not available in this build",
             ));
         }
-        {
-            let mut l = self.login.lock().unwrap();
-            if l.running {
-                return Ok(());
-            }
-            *l = LoginState {
-                running: true,
-                error: None,
-            };
-        }
         let svc = self.clone();
-        tokio::spawn(async move {
+        self.run_login(async move {
             let id = mermoz_core::model::new_id("prv");
-            let result = async {
-                mermoz_core::ant::login(&id).await?;
-                // Proves the login yields a token before showing the provider as connected.
-                mermoz_core::ant::access_token(&id).await?;
-                svc.store.save_provider(&mermoz_core::agent::Provider {
-                    id: id.clone(),
-                    name: "Claude".into(),
-                    kind: "anthropic".into(),
-                    base_url: None,
-                    model: "claude-opus-5-5".into(),
-                    auth: "oauth".into(),
-                    profile: Some(id.clone()),
-                })
-            }
-            .await;
-            *svc.login.lock().unwrap() = LoginState {
-                running: false,
-                error: result.err().map(|e| e.to_string()),
-            };
-            let _ = svc.events.send(Event::ProvidersChanged);
-            svc.kick_agents();
+            mermoz_core::ant::login(&id).await?;
+            // Proves the login yields a token before showing the provider as connected.
+            mermoz_core::ant::access_token(&id).await?;
+            svc.store.save_provider(&mermoz_core::agent::Provider {
+                id: id.clone(),
+                name: "Claude".into(),
+                kind: "anthropic".into(),
+                base_url: None,
+                model: "claude-opus-5-5".into(),
+                auth: "oauth".into(),
+                profile: Some(id.clone()),
+            })
         });
         Ok(())
     }

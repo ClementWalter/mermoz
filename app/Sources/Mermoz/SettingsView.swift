@@ -225,8 +225,8 @@ struct ProvidersCard: View {
             }
             Spacer()
             Button(button, action: action)
+                // Stays clickable: a new click restarts a browser flow that got stuck.
                 .buttonStyle(.glassProminent).tint(button.contains("ChatGPT") ? Color.black : Theme.accent).controlSize(.large)
-                .disabled(model.login.running)
         }
         .padding(14)
         .background(Theme.accentSoft.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))

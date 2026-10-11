@@ -504,6 +504,17 @@ fn chatgpt_rejects_identity_with_wrong_nonce(synced: World) {
 }
 
 #[rstest]
+fn chatgpt_retry_replaces_a_stuck_attempt(synced: World) {
+    // First attempt is abandoned in the browser; the second one completes.
+    synced.ok("providers.login_chatgpt", json!({}));
+    chatgpt_sign_in(&synced);
+    assert_eq!(
+        synced.ok("providers.login_status", json!({}))["running"],
+        false
+    );
+}
+
+#[rstest]
 fn chatgpt_sign_in_registers_dynamically(synced: World) {
     assert_eq!(chatgpt_sign_in(&synced), "dynamic_agent_client");
 }
