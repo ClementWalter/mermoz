@@ -162,6 +162,12 @@ public final class DaemonClient: Sendable {
 
     public func loginAnthropic() async throws { try await callVoid("providers.login_anthropic") }
 
+    public func loginChatGPT() async throws -> AuthStart { try await call("providers.login_chatgpt") }
+
+    public func providerModels(_ id: String) async throws -> [ProviderModel] {
+        try await call("providers.models", Params().with("id", id))
+    }
+
     public func loginStatus() async throws -> LoginState { try await call("providers.login_status") }
 
     public func deleteProvider(_ id: String) async throws { try await callVoid("providers.delete", Params().with("id", id)) }

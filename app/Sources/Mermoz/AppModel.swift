@@ -471,6 +471,26 @@ final class AppModel {
         } catch { report(error); return false }
     }
 
+    var providerModels: [String: [ProviderModel]] = [:]
+
+    func signInWithChatGPT() {
+        guard let client else { return }
+        login = LoginState(running: true, error: nil)
+        Task {
+            do {
+                let start = try await client.loginChatGPT()
+                if let url = URL(string: start.authUrl) { NSWorkspace.shared.open(url) }
+            } catch {
+                login = LoginState(running: false, error: (error as? RPCError)?.message ?? error.localizedDescription)
+            }
+        }
+    }
+
+    func loadModels(for p: Provider) async {
+        guard let client, p.kind == "chatgpt" else { return }
+        if let m = try? await client.providerModels(p.id) { providerModels[p.id] = m }
+    }
+
     func signInWithAnthropic() {
         guard let client else { return }
         login = LoginState(running: true, error: nil)

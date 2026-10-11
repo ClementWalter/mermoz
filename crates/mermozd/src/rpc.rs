@@ -374,6 +374,13 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "providers.delete" => {
             app_only(caller, method)?;
             let id = s(p, "id")?;
+            if st
+                .providers()?
+                .iter()
+                .any(|x| x.id == id && x.kind == "chatgpt")
+            {
+                mermoz_core::chatgpt::sign_out(&id).await?;
+            }
             if let Some(profile) = st
                 .providers()?
                 .into_iter()
@@ -413,6 +420,28 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             app_only(caller, method)?;
             svc.login_anthropic()?;
             Ok(json!({ "started": true }))
+        }
+        "providers.login_chatgpt" => {
+            app_only(caller, method)?;
+            Ok(json!({ "auth_url": svc.login_chatgpt().await? }))
+        }
+        "providers.models" => {
+            let id = s(p, "id")?;
+            let pr = st
+                .providers()?
+                .into_iter()
+                .find(|x| x.id == id)
+                .ok_or_else(|| RpcError::from(Error::NotFound(format!("provider {id}"))))?;
+            if pr.kind != "chatgpt" {
+                return Ok(json!([]));
+            }
+            let token = crate::service::credential(&pr).await?;
+            let models: Vec<Value> = mermoz_core::chatgpt::models(&token)
+                .await?
+                .into_iter()
+                .map(|(slug, name)| json!({ "id": slug, "name": name }))
+                .collect();
+            Ok(json!(models))
         }
         "providers.login_status" => {
             Ok(serde_json::to_value(svc.login.lock().unwrap().clone()).unwrap_or_default())

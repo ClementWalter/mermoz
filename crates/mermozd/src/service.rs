@@ -186,6 +186,9 @@ pub struct LoginState {
 
 /// The secret for a provider: a fresh OAuth access token, or the stored API key.
 pub async fn credential(p: &mermoz_core::agent::Provider) -> Result<String> {
+    if p.kind == "chatgpt" {
+        return mermoz_core::chatgpt::access_token(&p.id).await;
+    }
     if p.auth == "oauth" {
         let profile = p
             .profile
@@ -198,6 +201,55 @@ pub async fn credential(p: &mermoz_core::agent::Provider) -> Result<String> {
 }
 
 impl Service {
+    /// Starts "Continue with ChatGPT"; returns the URL the app opens in the browser.
+    pub async fn login_chatgpt(self: &Arc<Self>) -> Result<String> {
+        let host = match self.store.setting("chatgpt_host_id")? {
+            Some(h) => h,
+            None => {
+                let h = mermoz_core::chatgpt::new_host_id();
+                self.store.set_setting("chatgpt_host_id", &h)?;
+                h
+            }
+        };
+        let pending = mermoz_core::chatgpt::start(&host, None).await?;
+        let url = pending.url.clone();
+        *self.login.lock().unwrap() = LoginState {
+            running: true,
+            error: None,
+        };
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let cred = pending.finish(Duration::from_secs(600)).await?;
+                // The account's own catalog decides the model; the first listed is the default.
+                let (model, _) = mermoz_core::chatgpt::models(&cred.access_token)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| Error::other("No ChatGPT model is available on this plan"))?;
+                let id = mermoz_core::model::new_id("prv");
+                mermoz_core::chatgpt::save(&id, &cred)?;
+                svc.store.save_provider(&mermoz_core::agent::Provider {
+                    id,
+                    name: "ChatGPT".into(),
+                    kind: "chatgpt".into(),
+                    base_url: None,
+                    model,
+                    auth: "oauth".into(),
+                    profile: None,
+                })
+            }
+            .await;
+            *svc.login.lock().unwrap() = LoginState {
+                running: false,
+                error: result.err().map(|e| e.to_string()),
+            };
+            let _ = svc.events.send(Event::ProvidersChanged);
+            svc.kick_agents();
+        });
+        Ok(url)
+    }
+
     /// Runs the browser sign-in; on success the provider appears in Settings.
     pub fn login_anthropic(self: &Arc<Self>) -> Result<()> {
         if mermoz_core::ant::binary().is_none() {

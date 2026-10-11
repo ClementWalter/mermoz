@@ -26,6 +26,10 @@ pub struct Mailbox {
     pub history_id: u64,
     pub history: Vec<(u64, Value)>,
     pub sent: Vec<(String, Option<String>)>, // decoded raw, threadId
+    /// Nonce the stub OpenAI puts in the next ID token (set by the test from the authorize URL).
+    pub oidc_nonce: String,
+    /// Authorization headers seen by the stub Responses endpoint.
+    pub responses_auth: Vec<String>,
     /// API keys seen by the stub Anthropic endpoint.
     pub llm_keys: Vec<String>,
     /// Message ids whose next fetch fails with 503, to exercise retries.
@@ -262,6 +266,71 @@ async fn llm(
     )
 }
 
+const TEST_KEY: &[u8] = include_bytes!("fixtures/test-oidc-key.pem");
+
+fn oidc_key() -> jsonwebtoken::EncodingKey {
+    jsonwebtoken::EncodingKey::from_rsa_pem(TEST_KEY).unwrap()
+}
+
+async fn oidc_config(headers: axum::http::HeaderMap) -> Json<Value> {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    Json(
+        json!({ "jwks_uri": format!("http://{host}/oa/.well-known/jwks.json"), "revocation_endpoint": format!("http://{host}/oa/oauth/revoke") }),
+    )
+}
+
+async fn jwks() -> Json<Value> {
+    let mut jwk =
+        jsonwebtoken::jwk::Jwk::from_encoding_key(&oidc_key(), jsonwebtoken::Algorithm::RS256)
+            .unwrap();
+    jwk.common.key_id = Some("test".into());
+    Json(json!({ "keys": [jwk] }))
+}
+
+/// Stub of OpenAI's token endpoint: issues a signed ID token for the registered client.
+async fn oa_token(
+    State(s): State<Shared>,
+    axum::Form(form): axum::Form<HashMap<String, String>>,
+) -> Json<Value> {
+    let nonce = s.lock().unwrap().oidc_nonce.clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("test".into());
+    let claims = json!({ "iss": "https://auth.openai.com", "aud": form.get("client_id").cloned().unwrap_or_default(),
+        "sub": "user-123", "email": "me@example.com", "nonce": nonce, "iat": now, "exp": now + 3600 });
+    let id_token = jsonwebtoken::encode(&header, &claims, &oidc_key()).unwrap();
+    Json(
+        json!({ "access_token": "chatgpt-access", "refresh_token": "chatgpt-refresh", "id_token": id_token, "expires_in": 3600,
+        "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", "token_type": "Bearer" }),
+    )
+}
+
+async fn oa_models() -> Json<Value> {
+    Json(
+        json!({ "models": [ { "slug": "gpt-test-mini", "display_name": "GPT Test Mini", "visibility": "list" }, { "slug": "hidden", "display_name": "Hidden", "visibility": "hide" } ] }),
+    )
+}
+
+/// Stub of the Responses API stream: one completed event carrying the digest JSON.
+async fn oa_responses(State(s): State<Shared>, headers: axum::http::HeaderMap) -> String {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    s.lock().unwrap().responses_auth.push(auth);
+    let digest = json!({ "clean_body": "Cleaned by ChatGPT", "card": null }).to_string();
+    let ev = json!({ "type": "response.completed", "response": { "output": [ { "content": [ { "type": "output_text", "text": digest } ] } ] } });
+    format!("event: response.completed\ndata: {ev}\n\n")
+}
+
 /// Serves the stub on an ephemeral port in a background runtime.
 pub fn start(mailbox: Shared) -> u16 {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -274,6 +343,11 @@ pub fn start(mailbox: Shared) -> u16 {
             let app = Router::new()
                 .route("/token", post(token))
                 .route("/v1/messages", post(llm))
+                .route("/oa/.well-known/openid-configuration", get(oidc_config))
+                .route("/oa/.well-known/jwks.json", get(jwks))
+                .route("/oa/api/accounts/oauth/token", post(oa_token))
+                .route("/oa/v1/models", get(oa_models))
+                .route("/oa/v1/responses", post(oa_responses))
                 .route("/gmail/profile", get(profile))
                 .route("/gmail/messages", get(list))
                 .route("/gmail/messages/send", post(send))

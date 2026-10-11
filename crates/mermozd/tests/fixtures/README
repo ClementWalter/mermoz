@@ -1,0 +1,1 @@
+Throwaway RSA key used only by the stub OpenAI server in e2e tests to sign fake ID tokens.

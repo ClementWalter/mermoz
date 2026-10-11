@@ -1765,7 +1765,7 @@ impl Store {
     }
 
     pub fn save_provider(&self, p: &crate::agent::Provider) -> Result<()> {
-        if p.kind != "anthropic" && p.kind != "openai" {
+        if !matches!(p.kind.as_str(), "anthropic" | "openai" | "chatgpt") {
             return Err(Error::InvalidParams(format!(
                 "kind must be anthropic or openai, got '{}'",
                 p.kind

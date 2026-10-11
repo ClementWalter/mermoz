@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod ant;
+pub mod chatgpt;
 pub mod compose;
 pub mod error;
 pub mod gmail;

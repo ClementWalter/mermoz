@@ -134,6 +134,16 @@ impl Client {
                 self.anthropic(p, api_key, &user_prompt(from, subject, body))
                     .await?
             }
+            "chatgpt" => {
+                crate::chatgpt::respond(
+                    api_key,
+                    &p.model,
+                    SYSTEM,
+                    &user_prompt(from, subject, body),
+                    &schema(),
+                )
+                .await?
+            }
             "openai" => {
                 self.openai(p, api_key, &user_prompt(from, subject, body))
                     .await?

@@ -187,7 +187,23 @@ struct ProvidersCard: View {
     var body: some View {
         SettingsCard(title: "AI", subtitle: "Mermoz uses AI to clean your messages and build your directory. Your mail only goes to the AI you allow for each account.") {
             ForEach(model.providers) { p in providerRow(p) }
-            if !model.providers.contains(where: { $0.auth == "oauth" }) { signIn }
+            if let e = model.login.error {
+                Text(e).font(.system(size: 11.5)).foregroundStyle(Color(hex: "#9B2C2C")).lineLimit(2)
+            }
+            if !model.providers.contains(where: { $0.kind == "chatgpt" }) {
+                signInRow(title: "Connect ChatGPT", subtitle: "Uses your ChatGPT Plus or Pro plan. No key, no extra bill.",
+                          button: "Continue with ChatGPT", tile: AnyView(ChatGPTTile())) { model.signInWithChatGPT() }
+            }
+            if !model.providers.contains(where: { $0.kind == "anthropic" && $0.auth == "oauth" }) {
+                signInRow(title: "Connect Claude", subtitle: "Sign in with your Anthropic account (API credits).",
+                          button: "Sign in with Anthropic", tile: AnyView(LogoTile())) { model.signInWithAnthropic() }
+            }
+            if model.login.running {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Finish signing in in your browser…").font(.system(size: 12)).foregroundStyle(Theme.text2)
+                }
+            }
             if let editing {
                 ProviderForm(existing: editing) { self.editing = nil }
             } else if advanced {
@@ -200,21 +216,16 @@ struct ProvidersCard: View {
         .task { await model.loadAgent() }
     }
 
-    private var signIn: some View {
+    private func signInRow(title: String, subtitle: String, button: String, tile: AnyView, action: @escaping () -> Void) -> some View {
         HStack(spacing: 14) {
-            LogoTile()
+            tile
             VStack(alignment: .leading, spacing: 3) {
-                Text("Connect Claude").font(.system(size: 14, weight: .semibold))
-                Text(model.login.running ? "Finish signing in in your browser…" : "Sign in with your Anthropic account. No key to copy.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.text2)
-                if let e = model.login.error {
-                    Text(e).font(.system(size: 11.5)).foregroundStyle(Color(hex: "#9B2C2C")).lineLimit(2)
-                }
+                Text(title).font(.system(size: 14, weight: .semibold))
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.text2)
             }
             Spacer()
-            if model.login.running { ProgressView().controlSize(.small) }
-            Button("Sign in with Anthropic") { model.signInWithAnthropic() }
-                .buttonStyle(.glassProminent).tint(Theme.accent).controlSize(.large)
+            Button(button, action: action)
+                .buttonStyle(.glassProminent).tint(button.contains("ChatGPT") ? Color.black : Theme.accent).controlSize(.large)
                 .disabled(model.login.running)
         }
         .padding(14)
@@ -224,7 +235,7 @@ struct ProvidersCard: View {
 
     private func providerRow(_ p: Provider) -> some View {
         HStack(spacing: 12) {
-            LogoTile(small: true)
+            if p.kind == "chatgpt" { ChatGPTTile(small: true) } else { LogoTile(small: true) }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text(p.name).font(.system(size: 13, weight: .semibold))
@@ -233,7 +244,19 @@ struct ProvidersCard: View {
                 if let r = testResult[p.id] { Text(r).font(.system(size: 11.5)).foregroundStyle(Theme.text2) }
             }
             Spacer()
-            if p.kind == "anthropic" {
+            if p.kind == "chatgpt" {
+                Menu {
+                    ForEach(model.providerModels[p.id] ?? []) { m in
+                        Button(m.name.isEmpty ? m.id : m.name) {
+                            Task { _ = await model.saveProvider(id: p.id, name: p.name, kind: p.kind, baseUrl: nil, model: m.id, apiKey: nil) }
+                        }
+                    }
+                } label: {
+                    Text(model.providerModels[p.id]?.first { $0.id == p.model }?.name ?? p.model).font(.system(size: 12))
+                }
+                .menuStyle(.button).fixedSize()
+                .task { await model.loadModels(for: p) }
+            } else if p.kind == "anthropic" {
                 Menu {
                     ForEach(claudeModels, id: \.id) { m in
                         Button(m.label) {
@@ -255,6 +278,9 @@ struct ProvidersCard: View {
                 }
                 if p.auth != "oauth" { Button("Edit…") { editing = p } }
                 Divider()
+                if p.kind == "chatgpt" {
+                    Button("Usage & limits in ChatGPT…") { NSWorkspace.shared.open(URL(string: "https://chatgpt.com/#settings/Usage")!) }
+                }
                 Button(p.auth == "oauth" ? "Sign out" : "Remove", role: .destructive) { model.deleteProvider(p.id) }
             } label: {
                 Image(systemName: "ellipsis")
@@ -275,6 +301,18 @@ struct LogoTile: View {
         RoundedRectangle(cornerRadius: small ? 8 : 10)
             .fill(LinearGradient(colors: [Color(hex: "#D97757"), Color(hex: "#C2603F")], startPoint: .top, endPoint: .bottom))
             .overlay(Image(systemName: "sparkle").font(.system(size: small ? 13 : 17, weight: .semibold)).foregroundStyle(.white))
+            .frame(width: small ? 30 : 40, height: small ? 30 : 40)
+            .accessibilityHidden(true)
+    }
+}
+
+struct ChatGPTTile: View {
+    var small = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: small ? 8 : 10)
+            .fill(Color.black)
+            .overlay(Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.system(size: small ? 12 : 15)).foregroundStyle(.white))
             .frame(width: small ? 30 : 40, height: small ? 30 : 40)
             .accessibilityHidden(true)
     }

@@ -141,6 +141,11 @@ public struct AgentState: Codable, Sendable, Equatable {
     public var error: String?
 }
 
+public struct ProviderModel: Codable, Sendable, Equatable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+}
+
 public struct LoginState: Codable, Sendable, Equatable {
     public var running: Bool
     public var error: String?

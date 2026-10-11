@@ -231,6 +231,14 @@ fn world() -> World {
     }
     let daemon = Command::new(env!("CARGO_BIN_EXE_mermozd"))
         .env("MERMOZ_ANT", &fake_ant)
+        .env(
+            "MERMOZ_CHATGPT_AUTH_BASE",
+            format!("http://127.0.0.1:{port}/oa"),
+        )
+        .env(
+            "MERMOZ_OPENAI_API_BASE",
+            format!("http://127.0.0.1:{port}/oa/v1"),
+        )
         .env("MERMOZ_HOME", home.path())
         .env("MERMOZ_TOKEN_STORE", "file")
         .env(
@@ -429,6 +437,121 @@ print(s.makefile().readline())
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["error"]["code"], -32011);
+}
+
+/// Plays the browser side of "Continue with ChatGPT": OpenAI redirects back with the issued client id.
+fn chatgpt_sign_in(w: &World) -> String {
+    let v = w.ok("providers.login_chatgpt", json!({}));
+    let url = url_parse(v["auth_url"].as_str().unwrap());
+    let get = |k: &str| {
+        url.iter()
+            .find(|(kk, _)| kk == k)
+            .map(|x| x.1.clone())
+            .unwrap_or_default()
+    };
+    w.mailbox.lock().unwrap().oidc_nonce = get("nonce");
+    let redirect = get("redirect_uri");
+    let hostport = redirect
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut s = std::net::TcpStream::connect(&hostport).unwrap();
+    write!(s, "GET /auth/callback?code=c1&state={}&client_id=oaiapp_test HTTP/1.1\r\nHost: {hostport}\r\n\r\n", urlencode(&get("state"))).unwrap();
+    let mut resp = String::new();
+    let _ = s.read_to_string(&mut resp);
+    w.wait_until("chatgpt provider", |w| {
+        w.ok("providers.list", json!({}))
+            .as_array()
+            .is_some_and(|a| a.iter().any(|p| p["kind"] == "chatgpt"))
+    });
+    get("client_id")
+}
+
+#[rstest]
+fn chatgpt_rejects_identity_with_wrong_nonce(synced: World) {
+    let v = synced.ok("providers.login_chatgpt", json!({}));
+    let url = url_parse(v["auth_url"].as_str().unwrap());
+    let get = |k: &str| {
+        url.iter()
+            .find(|(kk, _)| kk == k)
+            .map(|x| x.1.clone())
+            .unwrap_or_default()
+    };
+    synced.mailbox.lock().unwrap().oidc_nonce = "forged".into();
+    let redirect = get("redirect_uri");
+    let hostport = redirect
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut s = std::net::TcpStream::connect(&hostport).unwrap();
+    write!(s, "GET /auth/callback?code=c1&state={}&client_id=oaiapp_test HTTP/1.1\r\nHost: {hostport}\r\n\r\n", urlencode(&get("state"))).unwrap();
+    let mut resp = String::new();
+    let _ = s.read_to_string(&mut resp);
+    synced.wait_until("login to finish", |w| {
+        w.ok("providers.login_status", json!({}))["running"] == false
+    });
+    assert!(
+        synced
+            .ok("providers.list", json!({}))
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[rstest]
+fn chatgpt_sign_in_registers_dynamically(synced: World) {
+    assert_eq!(chatgpt_sign_in(&synced), "dynamic_agent_client");
+}
+
+#[rstest]
+fn chatgpt_provider_uses_first_listed_model(synced: World) {
+    chatgpt_sign_in(&synced);
+    let list = synced.ok("providers.list", json!({}));
+    assert_eq!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["kind"] == "chatgpt")
+            .unwrap()["model"],
+        "gpt-test-mini"
+    );
+}
+
+#[rstest]
+fn chatgpt_cleans_mail_with_plan_token(synced: World) {
+    chatgpt_sign_in(&synced);
+    let acc = synced.ok("accounts.list", json!({}))[0]["id"].clone();
+    synced.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": ["*"], "digest_enabled": true }),
+    );
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.wait_until("clean body", |w| {
+        w.ok("threads.get", json!({ "id": t["id"] }))["messages"][0]["body_clean"]
+            == "Cleaned by ChatGPT"
+    });
+}
+
+#[rstest]
+fn chatgpt_calls_send_the_access_token(synced: World) {
+    chatgpt_sign_in(&synced);
+    let acc = synced.ok("accounts.list", json!({}))[0]["id"].clone();
+    synced.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": ["*"], "digest_enabled": true }),
+    );
+    synced.wait_until("responses call", |w| {
+        !w.mailbox.lock().unwrap().responses_auth.is_empty()
+    });
+    assert_eq!(
+        synced.mailbox.lock().unwrap().responses_auth[0],
+        "Bearer chatgpt-access"
+    );
 }
 
 #[rstest]
