@@ -71,7 +71,8 @@ Given one email, return:\n\
 1. clean_body: the message as its author meant it, in its original language, with every word of substance kept verbatim. \
 Remove: quoted earlier messages, signatures, legal disclaimers, confidentiality notices, \"sent from my phone\" footers, unsubscribe and tracking boilerplate, \
 and leftover formatting debris (stray symbols, repeated blank lines, broken line wraps). Keep greetings and sign-off names. \
-Use plain text: paragraphs separated by one blank line, bullet lists as \"• \" lines. Never summarize, translate, rephrase or add anything.\n\
+Format it with light Markdown so it reads well: paragraphs separated by one blank line, lists as \"- \" lines, \
+**bold** only for headings or labels the author used, links as [label](url) or the bare URL. Never summarize, translate, rephrase or add anything.\n\
 2. card: contact details for the SENDER found in their signature (name, job title, company, phone numbers, postal address, website, social profile URLs). \
 Only include what is written in this email; leave a field empty when absent. Return null when the email has no signature details.";
 

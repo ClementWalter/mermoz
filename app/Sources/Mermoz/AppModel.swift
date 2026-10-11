@@ -440,6 +440,24 @@ final class AppModel {
         }
     }
 
+    /// Threads already sent for an Optimized version this session, so a failure (no AI
+    /// set up, quota) is not retried on every render.
+    private var optimizeRequested: Set<String> = []
+
+    /// Builds the Optimized view of a thread's messages that don't have one yet. Stored
+    /// versions are reused forever; the AI is never asked twice for a message.
+    func optimize(_ threadId: String) {
+        guard let client, optimizeRequested.insert(threadId).inserted else { return }
+        aiBusy.insert("optimize:\(threadId)")
+        Task {
+            defer { aiBusy.remove("optimize:\(threadId)") }
+            do {
+                _ = try await client.aiClean(thread: threadId, missingOnly: true)
+                if selectedThreadId == threadId, let d = try? await client.thread(threadId) { detail = d }
+            } catch { report(error) }
+        }
+    }
+
     /// Lets the AI sort the newest threads of a status column (the ✦ button on a column).
     func aiTriage(_ status: String) {
         guard let client else { return }

@@ -127,7 +127,7 @@ struct IssueToolbar: View {
             }
             .buttonStyle(.plain).foregroundStyle(Theme.accent)
             .disabled(model.aiBusy.contains("clean:\(thread.id)"))
-            .help("Clean this thread with AI").accessibilityLabel("Clean with AI")
+            .help("Rewrite the optimized version with AI (asks your AI again)").accessibilityLabel("Rewrite with AI")
             Button { model.markDoneSelected() } label: { Image(systemName: "checkmark.circle") }
                 .buttonStyle(.plain).foregroundStyle(Theme.text2)
                 .help("Done (e)").accessibilityLabel("Mark done")
@@ -238,15 +238,18 @@ struct CollapsedMessage: View {
     }
 }
 
+/// How a message is shown: as sent (rendered HTML), or the AI's clean version.
+enum ReadingMode: String {
+    case original, optimized
+}
+
 struct MessageCard: View {
     @Environment(AppModel.self) private var model
     let message: Message
     var onFold: () -> Void = {}
-    /// Formatted by default; plain text is the fallback toggle.
-    @State private var formatted = true
+    /// One choice for every message, remembered across launches.
+    @AppStorage("reading.mode") private var mode: ReadingMode = .original
     @State private var showQuoted = false
-    /// The agent's clean version is the default reading view when it exists.
-    @State private var showOriginal = false
     @State private var html: String?
     @State private var height: CGFloat = 200
 
@@ -264,43 +267,20 @@ struct MessageCard: View {
                     Text(recipientsLine).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
                 }
                 Spacer()
-                if message.bodyClean != nil {
-                    Toggle("Original", isOn: $showOriginal).toggleStyle(.button).controlSize(.small)
-                } else if message.hasHtml {
-                    Toggle("Plain text", isOn: Binding(get: { !formatted }, set: { formatted = !$0 }))
-                        .toggleStyle(.button).controlSize(.small)
+                Picker("", selection: $mode) {
+                    Text("Original").tag(ReadingMode.original)
+                    Label("Optimized", systemImage: "sparkle").tag(ReadingMode.optimized)
                 }
+                .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+                .help("Original: the email as sent · Optimized: a clean version written by AI, kept once made")
                 Text(Format.long(message.date)).font(.system(size: 12)).foregroundStyle(Theme.text3)
             }
             .contentShape(Rectangle())
             .onTapGesture { onFold() }
-            if let clean = message.bodyClean, !showOriginal {
-                Text(clean.isEmpty ? "(empty message)" : clean)
-                    .font(.system(size: 13.5)).lineSpacing(3)
-                    .foregroundStyle(Theme.text.opacity(0.9))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if formatted, message.hasHtml, let html {
-                HTMLMessageView(html: html, height: $height).frame(height: height)
+            if mode == .optimized {
+                optimized
             } else {
-                let body = showQuoted ? message.bodyText : message.displayBody
-                Text(body.isEmpty ? "(empty message)" : body)
-                    .font(.system(size: 13.5)).lineSpacing(3)
-                    .foregroundStyle(Theme.text.opacity(0.9))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if message.hasQuoted == true, message.bodyClean == nil || showOriginal {
-                // Quoted history stays one click away, like Gmail's "…".
-                Button { showQuoted.toggle() } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Theme.text3)
-                        .frame(width: 30, height: 16)
-                        .background(Theme.accentSoft.opacity(0.7), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .help(showQuoted ? "Hide earlier messages" : "Show earlier messages")
-                .accessibilityLabel(showQuoted ? "Hide quoted text" : "Show quoted text")
+                original
             }
             if !message.attachments.isEmpty {
                 FlowRow(spacing: 8) {
@@ -313,9 +293,60 @@ struct MessageCard: View {
         .padding(.horizontal, 16).padding(.vertical, 14)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: "#E3EDF6")))
-        .task(id: "\(formatted)-\(showQuoted)") {
-            if formatted, message.hasHtml { html = await model.html(for: message.id, full: showQuoted) }
+        .task(id: "\(mode)-\(showQuoted)") {
+            if mode == .original, message.hasHtml { html = await model.html(for: message.id, full: showQuoted) }
         }
+    }
+
+    /// The email as people expect it: rendered HTML, or its text for plain-text mail.
+    @ViewBuilder private var original: some View {
+        if message.hasHtml, let html {
+            HTMLMessageView(html: html, height: $height).frame(height: height)
+        } else if message.hasHtml {
+            ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 40)
+        } else {
+            bodyText(Text((showQuoted ? message.bodyText : message.displayBody).nonEmpty ?? "(empty message)"))
+        }
+        if message.hasQuoted == true {
+            // Quoted history stays one click away, like Gmail's "…".
+            Button { showQuoted.toggle() } label: {
+                Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.text3)
+                    .frame(width: 30, height: 16)
+                    .background(Theme.accentSoft.opacity(0.7), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .help(showQuoted ? "Hide earlier messages" : "Show earlier messages")
+            .accessibilityLabel(showQuoted ? "Hide quoted text" : "Show quoted text")
+        }
+    }
+
+    /// The AI's clean version, made once per message and stored.
+    @ViewBuilder private var optimized: some View {
+        if let clean = message.bodyClean {
+            bodyText(Text(clean.isEmpty ? AttributedString("(empty message)") : CleanText.attributed(clean)))
+        } else if let threadId = model.detail?.thread.id {
+            HStack(spacing: 8) {
+                if model.aiBusy.contains("optimize:\(threadId)") {
+                    ProgressView().controlSize(.small)
+                    Text("Writing the optimized version…")
+                } else {
+                    Image(systemName: "sparkle")
+                    Text("No optimized version yet")
+                    Button("Make it") { model.optimize(threadId) }.buttonStyle(.link)
+                }
+            }
+            .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .task(id: threadId) { model.optimize(threadId) }
+        }
+    }
+
+    private func bodyText(_ text: Text) -> some View {
+        text.font(.system(size: 13.5)).lineSpacing(3)
+            .foregroundStyle(Theme.text.opacity(0.9))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var recipientsLine: String {
@@ -407,4 +438,8 @@ struct FlowRow: Layout {
             rowH = max(rowH, s.height)
         }
     }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

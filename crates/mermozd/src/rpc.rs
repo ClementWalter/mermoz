@@ -573,7 +573,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let key = crate::service::credential(&pr).await?;
             let client = mermoz_core::agent::Client::new();
             let mut cleaned = 0;
-            for (mid, from_name, from_email, subject, body) in st.thread_digest_inputs(&id)? {
+            // `missing_only` (the Optimized view) never pays twice for a message.
+            let missing_only = p
+                .get("missing_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            for (mid, from_name, from_email, subject, body) in
+                st.thread_digest_inputs(&id, missing_only)?
+            {
                 let from = if from_name.is_empty() {
                     from_email
                 } else {

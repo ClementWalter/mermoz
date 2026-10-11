@@ -189,7 +189,10 @@ public final class DaemonClient: Sendable {
 
     public func peopleStatus() async throws -> JobState { try await call("agent.people_status") }
 
-    public func aiClean(thread id: String) async throws -> CleanResult { try await call("agent.clean", Params().with("id", id)) }
+    /// `missingOnly`: clean only messages without a stored version (never re-pays).
+    public func aiClean(thread id: String, missingOnly: Bool = false) async throws -> CleanResult {
+        try await call("agent.clean", Params().with("id", id).with("missing_only", missingOnly))
+    }
 
     public func aiTriage(status: String, limit: Int = 40) async throws -> TriageResult {
         try await call("agent.triage", Params().with("status", status).with("limit", limit))

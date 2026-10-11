@@ -3204,12 +3204,21 @@ impl Store {
             .collect())
     }
 
-    /// Every message of a thread for a forced re-clean, mine included.
-    pub fn thread_digest_inputs(&self, thread_id: &str) -> Result<Vec<PendingDigest>> {
+    /// A thread's messages to clean, mine included: every one for a forced re-clean, or
+    /// only those without a stored clean version (`missing_only`), which are never redone.
+    pub fn thread_digest_inputs(
+        &self,
+        thread_id: &str,
+        missing_only: bool,
+    ) -> Result<Vec<PendingDigest>> {
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached("SELECT id, from_name, from_email, subject, body_text FROM messages WHERE thread_id = ?1 AND length(body_text) > 0 ORDER BY date")?;
+        let mut st = r.prepare_cached(
+            "SELECT id, from_name, from_email, subject, body_text FROM messages m WHERE thread_id = ?1 AND length(body_text) > 0
+               AND (?2 = 0 OR NOT EXISTS (SELECT 1 FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'))
+             ORDER BY date",
+        )?;
         Ok(st
-            .query_map([thread_id], |r| {
+            .query_map(params![thread_id, missing_only as i64], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<rusqlite::Result<_>>()?)

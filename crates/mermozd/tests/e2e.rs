@@ -1242,3 +1242,50 @@ fn reversed_order_is_the_list_backwards(synced: World) {
     backwards.reverse();
     assert_eq!(ids(true), backwards);
 }
+
+/// An AI allowed for the account, without automatic cleaning.
+fn allow_ai(w: &World) {
+    let pr = w.ok(
+        "providers.save",
+        json!({ "name": "Work AI", "kind": "anthropic", "model": "claude-opus-5-5",
+        "base_url": format!("http://127.0.0.1:{}", w.port), "api_key": "sk-test" }),
+    );
+    let acc = w.ok("accounts.list", json!({}))[0]["id"].clone();
+    w.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": [pr["id"]] }),
+    );
+}
+
+#[rstest]
+fn optimized_view_cleans_a_message_once(synced: World) {
+    allow_ai(&synced);
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "agent.clean",
+        json!({ "id": t["id"], "missing_only": true }),
+    );
+    assert_eq!(
+        synced.ok(
+            "agent.clean",
+            json!({ "id": t["id"], "missing_only": true })
+        )["cleaned"],
+        0
+    );
+}
+
+#[rstest]
+fn optimized_view_does_not_call_the_ai_again(synced: World) {
+    allow_ai(&synced);
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "agent.clean",
+        json!({ "id": t["id"], "missing_only": true }),
+    );
+    let calls = synced.mailbox.lock().unwrap().llm_keys.len();
+    synced.ok(
+        "agent.clean",
+        json!({ "id": t["id"], "missing_only": true }),
+    );
+    assert_eq!(synced.mailbox.lock().unwrap().llm_keys.len(), calls);
+}
