@@ -329,6 +329,38 @@ pub fn person_key(name: &str) -> String {
     folded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Address-book order: family name, then the rest. "(Airbnb)"-style suffixes are ignored,
+/// a leading ALL-CAPS word is the family name ("NAGEOTTE Pierre"), and entries that are
+/// just an address sort last.
+pub fn sort_key(name: &str) -> (bool, String, String) {
+    let mut clean = String::new();
+    let mut depth = 0;
+    for c in name.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = (depth - 1).max(0),
+            c if depth == 0 => clean.push(c),
+            _ => {}
+        }
+    }
+    let raw: Vec<&str> = clean.split_whitespace().collect();
+    let caps_first = raw.len() > 1
+        && raw[0].chars().filter(|c| c.is_alphabetic()).count() > 1
+        && raw[0].chars().all(|c| !c.is_lowercase())
+        && raw[1..].iter().any(|w| w.chars().any(|c| c.is_lowercase()));
+    let key = person_key(&clean);
+    let words: Vec<&str> = key.split(' ').collect();
+    let family = if caps_first {
+        words.first()
+    } else {
+        words.last()
+    }
+    .copied()
+    .unwrap_or("")
+    .to_string();
+    (name.contains('@'), family, key)
+}
+
 /// Automated senders never belong in a people directory.
 pub fn is_automated(email: &str) -> bool {
     let local = email.split('@').next().unwrap_or("").to_lowercase();
@@ -2154,11 +2186,7 @@ impl Store {
         // Alphabetical by family name, then first name, like Contacts (accents and
         // "Last, First" folded); entries
         // without a real name (just an address) go last.
-        people.sort_by_cached_key(|p| {
-            let key = person_key(&p.card.name);
-            let last = key.rsplit(' ').next().unwrap_or("").to_string();
-            (p.card.name.contains('@'), last, key)
-        });
+        people.sort_by_cached_key(|p| sort_key(&p.card.name));
         let q = query.unwrap_or("").trim().to_lowercase();
         Ok(people
             .into_iter()
@@ -2826,6 +2854,15 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(s.people(None, 50).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    #[case::western("Bob Durand", "durand")]
+    #[case::caps_family_first("NAGEOTTE Pierre-Etienne (75)", "nageotte")]
+    #[case::suffix_ignored("Amanda (Airbnb)", "amanda")]
+    #[case::comma("Delobelle, Anne-Charlotte", "delobelle")]
+    fn family_name_for_sorting(#[case] name: &str, #[case] want: &str) {
+        assert_eq!(sort_key(name).1, want);
     }
 
     #[rstest]
