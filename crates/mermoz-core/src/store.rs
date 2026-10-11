@@ -350,12 +350,17 @@ pub fn sort_key(name: &str) -> (bool, bool, String, String) {
         && raw[1..].iter().any(|w| w.chars().any(|c| c.is_lowercase()));
     let key = person_key(&clean);
     let words: Vec<&str> = key.split(' ').collect();
+    // Initials and suffixes like "S.A." or "Jr" are not family names: skip 1-letter words.
     let family = if caps_first {
-        words.first()
+        words.first().copied()
     } else {
-        words.last()
+        words
+            .iter()
+            .rev()
+            .find(|w| w.chars().count() > 1)
+            .or(words.last())
+            .copied()
     }
-    .copied()
     .unwrap_or("")
     .to_string();
     // Entries not starting with a letter ("09filali", "ICASP 12") follow the alphabet.
@@ -2864,6 +2869,7 @@ mod tests {
     #[case::suffix_ignored("Amanda (Airbnb)", "amanda")]
     #[case::comma("Delobelle, Anne-Charlotte", "delobelle")]
     #[case::digits_kept("ICASP 12", "12")]
+    #[case::company_suffix("Kourouniotis Bros S.A.", "bros")]
     fn family_name_for_sorting(#[case] name: &str, #[case] want: &str) {
         assert_eq!(sort_key(name).2, want);
     }
