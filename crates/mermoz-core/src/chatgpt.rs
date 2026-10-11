@@ -8,7 +8,6 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest;
-use std::sync::Mutex;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -454,41 +453,16 @@ pub fn output_from_sse(stream: &str) -> Result<String> {
 // ---- credential storage (Keychain, or files under MERMOZ_TOKEN_STORE=file) ----
 
 const SERVICE: &str = "ai.mermoz.chatgpt";
-static FILE_LOCK: Mutex<()> = Mutex::new(());
-
-fn file_store() -> bool {
-    std::env::var("MERMOZ_TOKEN_STORE")
-        .map(|v| v == "file")
-        .unwrap_or(false)
-}
 
 pub fn save(provider_id: &str, c: &Credential) -> Result<()> {
-    let raw = serde_json::to_string(c)?;
-    if file_store() {
-        use std::os::unix::fs::PermissionsExt;
-        let _g = FILE_LOCK.lock().unwrap();
-        let dir = crate::paths::tokens_dir();
-        std::fs::create_dir_all(&dir)?;
-        let tmp = dir.join(format!("{provider_id}.chatgpt.tmp"));
-        std::fs::write(&tmp, raw)?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::rename(tmp, dir.join(format!("{provider_id}.chatgpt")))?;
-        return Ok(());
-    }
-    security_framework::passwords::set_generic_password(SERVICE, provider_id, raw.as_bytes())
-        .map_err(|e| Error::other(format!("keychain write failed: {e}")))
+    crate::tokens::secret_set(SERVICE, provider_id, &serde_json::to_string(c)?)
 }
 
 pub fn load(provider_id: &str) -> Result<Credential> {
-    let raw = if file_store() {
-        std::fs::read_to_string(crate::paths::tokens_dir().join(format!("{provider_id}.chatgpt")))
-            .map_err(|_| Error::NotFound(format!("ChatGPT sign-in for {provider_id}")))?
-    } else {
-        let b = security_framework::passwords::get_generic_password(SERVICE, provider_id)
-            .map_err(|_| Error::NotFound(format!("ChatGPT sign-in for {provider_id}")))?;
-        String::from_utf8(b).map_err(|_| Error::other("credential is not utf-8"))?
-    };
-    Ok(serde_json::from_str(&raw)?)
+    Ok(serde_json::from_str(&crate::tokens::secret_get(
+        SERVICE,
+        provider_id,
+    )?)?)
 }
 
 /// Revokes the renewable session, then forgets it locally.
@@ -517,13 +491,7 @@ pub async fn sign_out(provider_id: &str) -> Result<()> {
             .send()
             .await;
     }
-    if file_store() {
-        let _ =
-            std::fs::remove_file(crate::paths::tokens_dir().join(format!("{provider_id}.chatgpt")));
-    } else {
-        let _ = security_framework::passwords::delete_generic_password(SERVICE, provider_id);
-    }
-    Ok(())
+    crate::tokens::secret_delete(SERVICE, provider_id)
 }
 
 #[cfg(test)]
