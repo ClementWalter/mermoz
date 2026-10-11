@@ -155,8 +155,11 @@ improvements.
 
 - Providers: Anthropic + any OpenAI-compatible endpoint (OpenRouter, Ollama,
   company gateways). Multiple providers configured at once.
-- **Account → provider mapping**: e.g. work mail → company provider, personal
-  mail → personal key. An account with no provider never leaves the device.
+- **Account → allowed providers** (multi-select): e.g. Work → only the
+  company's Claude and Codex; Personal → any provider. The agent picks and
+  falls back only within an account's allowed set — mail never reaches a
+  provider not allowed for its account. An account with none never leaves the
+  device.
 - Runs: on arrival (summary, next action, suggested status/priority/project,
   optional draft), on demand (draft/summarize/ask on current thread), follow-up
   sweeps (Waiting past due → draft a nudge), chat over mailbox (⌘K).
