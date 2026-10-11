@@ -37,6 +37,7 @@ struct CommandPalette: View {
                 }
                 .padding(.horizontal, 18).frame(height: 56)
                 Divider().overlay(Color(hex: "#E3EDF6"))
+                ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
@@ -54,6 +55,7 @@ struct CommandPalette: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .id(item.id)
                         }
                         if items.isEmpty {
                             Text(query.isEmpty ? "Type to search your mail" : "No matches")
@@ -62,6 +64,11 @@ struct CommandPalette: View {
                     }
                 }
                 .frame(maxHeight: 380)
+                // Keep the highlighted row on screen while moving with the arrows.
+                .onChange(of: cursor) { _, c in
+                    if items.indices.contains(c) { proxy.scrollTo(items[c].id) }
+                }
+                }
                 HStack(spacing: 16) {
                     Text("↑↓ navigate"); Text("↩ run"); Text("esc close")
                     Spacer()
@@ -80,6 +87,7 @@ struct CommandPalette: View {
             try? await Task.sleep(for: .milliseconds(20))
             focused = true
         }
+        .onChange(of: query) { cursor = 0 }
         .task(id: query) {
             guard model.paletteMode == .search else { return }
             // Debounce keystrokes so the daemon only sees settled queries.
