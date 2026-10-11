@@ -5,7 +5,7 @@ struct ShortcutsOverlay: View {
     @Environment(AppModel.self) private var model
 
     private let groups: [(String, [(String, String)])] = [
-        ("Navigate", [("j / ↓", "Next thread"), ("k / ↑", "Previous thread"), ("Esc", "Close message or panel"), ("⌘K or /", "Search or run a command")]),
+        ("Navigate", [("j / ↓", "Next thread"), ("k / ↑", "Previous thread"), ("Esc", "Close message or panel"), ("⌘← / ⌘→", "Back / forward"), ("⌘K or /", "Search or run a command")]),
         ("Triage", [("e", "Mark done"), ("s", "Set status"), ("p", "Set priority")]),
         ("Write", [("r", "Reply"), ("c", "New message"), ("⌘↩", "Send / approve"), ("Esc", "Discard draft")]),
         ("Help", [("? or ⌘/", "Show this help")]),

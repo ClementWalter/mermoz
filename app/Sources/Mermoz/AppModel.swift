@@ -173,6 +173,7 @@ final class AppModel {
     // MARK: list
 
     func select(_ s: SidebarSelection) {
+        recordHistory()
         selection = s
         selectedThreadId = nil
         detail = nil
@@ -242,6 +243,46 @@ final class AppModel {
         } catch { report(error) }
     }
 
+    // MARK: history (⌘← / ⌘→)
+
+    struct NavState: Equatable, Sendable {
+        var selection: SidebarSelection
+        var threadId: String?
+    }
+
+    private var history = NavHistory<NavState>()
+    private var restoring = false
+
+    var canGoBack: Bool { history.canGoBack }
+    var canGoForward: Bool { history.canGoForward }
+
+    private var here: NavState { NavState(selection: selection, threadId: selectedThreadId) }
+
+    private func recordHistory() {
+        guard !restoring else { return }
+        history.record(leaving: here)
+    }
+
+    func goBack() {
+        if let prev = history.goBack(from: here) { restore(prev) }
+    }
+
+    func goForward() {
+        if let next = history.goForward(from: here) { restore(next) }
+    }
+
+    private func restore(_ state: NavState) {
+        restoring = true
+        compose = nil
+        let changedView = state.selection != selection
+        selection = state.selection
+        Task {
+            if changedView { await loadList() }
+            open(state.threadId, record: false)
+            restoring = false
+        }
+    }
+
     // MARK: display
 
     var display: DisplayOptions {
@@ -297,12 +338,12 @@ final class AppModel {
         guard let sel = selectedThreadId,
               let ci = cols.firstIndex(where: { $0.contains { $0.id == sel } }),
               let ri = cols[ci].firstIndex(where: { $0.id == sel }) else {
-            open(cols[0][0].id)
+            open(cols[0][0].id, record: false)
             return
         }
         let nc = max(0, min(cols.count - 1, ci + dx))
         let nr = max(0, min(cols[nc].count - 1, dx != 0 ? ri : ri + dy))
-        open(cols[nc][nr].id)
+        open(cols[nc][nr].id, record: false)
     }
 
     private static func loadDisplay(_ key: String) -> DisplayOptions? {
@@ -355,7 +396,10 @@ final class AppModel {
 
     // MARK: thread
 
-    func open(_ id: String?) {
+    /// `record: false` for keyboard stepping (j/k, arrows): it updates the current history
+    /// entry instead of stacking one per thread.
+    func open(_ id: String?, record: Bool = true) {
+        if record, id != selectedThreadId { recordHistory() }
         selectedThreadId = id
         compose = nil
         guard let id, let client else { detail = nil; return }
@@ -391,7 +435,7 @@ final class AppModel {
         guard !order.isEmpty else { return }
         let idx = order.firstIndex { $0.id == selectedThreadId } ?? (delta > 0 ? -1 : order.count)
         let next = max(0, min(order.count - 1, idx + delta))
-        open(order[next].id)
+        open(order[next].id, record: false)
     }
 
     private func learnAddresses(from d: ThreadDetail) {
@@ -442,7 +486,7 @@ final class AppModel {
         // Keep the keyboard flow going: land on the next thread.
         if let idx {
             let rest = order.filter { $0.id != id }
-            open(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id)
+            open(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id, record: false)
         }
     }
 

@@ -28,6 +28,15 @@ struct MermozApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Message") { model.startNew() }.keyboardShortcut("n")
             }
+            CommandMenu("Go") {
+                // Disabled while composing or searching so ⌘← keeps moving the text cursor there.
+                Button("Back") { model.goBack() }
+                    .keyboardShortcut(.leftArrow, modifiers: .command)
+                    .disabled(!model.canGoBack || model.compose != nil || model.paletteMode != nil)
+                Button("Forward") { model.goForward() }
+                    .keyboardShortcut(.rightArrow, modifiers: .command)
+                    .disabled(!model.canGoForward || model.compose != nil || model.paletteMode != nil)
+            }
             CommandMenu("Thread") {
                 Button("Search or Ask…") { model.paletteMode = .search }.keyboardShortcut("k")
                 Button("Reply") { model.startReply() }.keyboardShortcut("r", modifiers: [.command])
