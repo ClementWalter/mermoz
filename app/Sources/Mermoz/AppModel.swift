@@ -84,6 +84,10 @@ final class AppModel {
     var threads: [ThreadSummary] = []
     var totalThreads = 0
     var selectedThreadId: String?
+    /// Threads selected together with ⇧ or ⌘; empty means only `selectedThreadId`.
+    var multiSelection: [String] = []
+    /// Where a ⇧-range starts.
+    private var anchorId: String?
     var detail: ThreadDetail?
     var compose: ComposeContext?
 
@@ -378,7 +382,7 @@ final class AppModel {
     }
 
     /// Arrow keys on the board: ←/→ change column (keeping the row), ↑/↓ move within it.
-    func moveBoard(dx: Int, dy: Int) {
+    func moveBoard(dx: Int, dy: Int, extend: Bool = false) {
         let cols = groups.map(\.all).filter { !$0.isEmpty }
         guard !cols.isEmpty else { return }
         guard let sel = selectedThreadId,
@@ -389,7 +393,13 @@ final class AppModel {
         }
         let nc = max(0, min(cols.count - 1, ci + dx))
         let nr = max(0, min(cols[nc].count - 1, dx != 0 ? ri : ri + dy))
-        open(cols[nc][nr].id, record: false)
+        let next = cols[nc][nr].id
+        if extend, let anchor = anchorId ?? selectedThreadId {
+            multiSelection = SelectionRange.between(orderIds, anchor: anchor, target: next)
+            open(next, record: false, keepSelection: true)
+        } else {
+            open(next, record: false)
+        }
     }
 
     private static func loadDisplay(_ key: String) -> DisplayOptions? {
@@ -455,8 +465,12 @@ final class AppModel {
 
     /// `record: false` for keyboard stepping (j/k, arrows): it updates the current history
     /// entry instead of stacking one per thread.
-    func open(_ id: String?, record: Bool = true) {
+    func open(_ id: String?, record: Bool = true, keepSelection: Bool = false) {
         if record, id != selectedThreadId { recordHistory() }
+        if !keepSelection {
+            multiSelection = []
+            anchorId = id
+        }
         selectedThreadId = id
         compose = nil
         guard let id, let client else { detail = nil; return }
@@ -499,8 +513,41 @@ final class AppModel {
     }
 
     func acceptSelected() {
-        guard let id = selectedThreadId else { return }
-        if threads.first(where: { $0.id == id })?.suggestion != nil { acceptSuggestions([id]) }
+        let ids = targetIds.filter { id in threads.first { $0.id == id }?.suggestion != nil }
+        acceptSuggestions(ids)
+    }
+
+    // MARK: multi-selection
+
+    /// The threads an action applies to: the ⇧/⌘ selection, else the open thread.
+    var targetIds: [String] {
+        multiSelection.isEmpty ? (selectedThreadId.map { [$0] } ?? []) : multiSelection
+    }
+
+    func isSelected(_ id: String) -> Bool { id == selectedThreadId || multiSelection.contains(id) }
+
+    /// Ids in on-screen order, a thread in two project groups counted once.
+    private var orderIds: [String] { (layout == .list ? displayOrder : threads).map(\.id) }
+
+    /// Click with Mail/Finder modifiers: ⇧ selects a range, ⌘ adds or removes one.
+    func click(_ id: String, shift: Bool, command: Bool) {
+        if shift, let anchor = anchorId ?? selectedThreadId {
+            multiSelection = SelectionRange.between(orderIds, anchor: anchor, target: id)
+            open(id, record: false, keepSelection: true)
+        } else if command {
+            var ids = targetIds
+            if let i = ids.firstIndex(of: id) { ids.remove(at: i) } else { ids.append(id) }
+            multiSelection = ids.count > 1 ? ids : []
+            anchorId = id
+            open(ids.contains(id) ? id : ids.last, record: false, keepSelection: true)
+        } else {
+            open(id)
+        }
+    }
+
+    /// What a drag carries: every selected id when dragging one of them.
+    func dragPayload(_ id: String) -> String {
+        multiSelection.count > 1 && multiSelection.contains(id) ? multiSelection.joined(separator: "\n") : id
     }
 
     /// Puts back what reading applied: To do, without the projects the AI added.
@@ -515,6 +562,9 @@ final class AppModel {
             showShortcuts = false
         } else if paletteMode != nil {
             paletteMode = nil
+        } else if !multiSelection.isEmpty {
+            multiSelection = []
+            anchorId = selectedThreadId
         } else if selectedThreadId != nil {
             open(nil)
         } else if isReview, selectedDraftId != nil {
@@ -522,12 +572,18 @@ final class AppModel {
         }
     }
 
-    func moveSelection(_ delta: Int) {
+    /// j/k and arrows; with ⇧ the selection grows from the anchor.
+    func moveSelection(_ delta: Int, extend: Bool = false) {
         let order = layout == .list ? displayOrder : threads
         guard !order.isEmpty else { return }
         let idx = order.firstIndex { $0.id == selectedThreadId } ?? (delta > 0 ? -1 : order.count)
-        let next = max(0, min(order.count - 1, idx + delta))
-        open(order[next].id, record: false)
+        let next = order[max(0, min(order.count - 1, idx + delta))].id
+        if extend, let anchor = anchorId ?? selectedThreadId {
+            multiSelection = SelectionRange.between(orderIds, anchor: anchor, target: next)
+            open(next, record: false, keepSelection: true)
+        } else {
+            open(next, record: false)
+        }
     }
 
     private func learnAddresses(from d: ThreadDetail) {
@@ -579,23 +635,28 @@ final class AppModel {
 
     /// Back to Unread, like Gmail's "mark unread": the thread waits for a fresh look.
     func markUnreadSelected() {
-        guard let id = selectedThreadId, let client else { return }
-        recordUndo("Mark Unread", [id])
-        setLocal(id) { $0.unread = true; $0.status = "unread" }
+        let ids = targetIds
+        guard !ids.isEmpty, let client else { return }
+        recordUndo("Mark Unread", ids)
+        for id in ids { setLocal(id) { $0.unread = true; $0.status = "unread" } }
         Task {
-            do { try await client.markRead(id, read: false); await refreshCounts() } catch { report(error) }
+            do {
+                for id in ids { try await client.markRead(id, read: false) }
+                await refreshCounts()
+            } catch { report(error) }
         }
     }
 
     /// Moves the selected thread to a status and lands on the next one.
     func moveSelected(to status: String) {
-        guard let id = selectedThreadId else { return }
+        let ids = targetIds
+        guard !ids.isEmpty else { return }
         let order = layout == .list ? displayOrder : threads
-        let idx = order.firstIndex { $0.id == id }
-        update([id], status: status)
-        // Keep the keyboard flow going: land on the next thread.
+        let idx = order.firstIndex { ids.contains($0.id) }
+        update(ids, status: status)
+        // Keep the keyboard flow going: land on the thread after the moved ones.
         if let idx {
-            let rest = order.filter { $0.id != id }
+            let rest = order.filter { !ids.contains($0.id) }
             open(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id, record: false)
         }
     }

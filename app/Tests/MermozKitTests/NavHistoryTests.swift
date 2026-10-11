@@ -67,3 +67,13 @@ private func snap(status: String = "todo", unread: Bool = false, priority: Int =
 @Test func undoingASetFollowUpClearsIt() {
     #expect(RestorePlan.between(before: snap(), now: snap(due: "2026-10-20")).due == .some(nil))
 }
+
+@Test(arguments: [
+    ("b", "d", ["b", "c", "d"]),
+    ("d", "b", ["b", "c", "d"]),
+    ("c", "c", ["c"]),
+    ("x", "c", ["c"]),
+])
+func shiftSelectionCoversTheRange(_ anchor: String, _ target: String, _ want: [String]) {
+    #expect(SelectionRange.between(["a", "b", "c", "d", "e"], anchor: anchor, target: target) == want)
+}

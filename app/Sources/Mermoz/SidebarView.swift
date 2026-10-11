@@ -214,7 +214,8 @@ struct StatusRow: View {
                 if item.hasPrefix("status:") {
                     model.moveStatus(String(item.dropFirst(7)), before: status.key)
                 } else {
-                    model.update([item], status: status.key)
+                    // A multi-selection drag carries its ids one per line.
+                    model.update(item.split(separator: "\n").map(String.init), status: status.key)
                 }
             }
             return !items.isEmpty

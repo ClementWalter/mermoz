@@ -60,8 +60,10 @@ struct ThreadListView: View {
             model.moveSelected(to: "deleted")
             return .handled
         }
-        .onKeyPress(.downArrow) { model.moveSelection(1); return .handled }
-        .onKeyPress(.upArrow) { model.moveSelection(-1); return .handled }
+        .onKeyPress(keys: [.downArrow, .upArrow]) { press in
+            model.moveSelection(press.key == .downArrow ? 1 : -1, extend: press.modifiers.contains(.shift))
+            return .handled
+        }
         .onKeyPress(.return) {
             if model.selectedThreadId == nil { model.moveSelection(1) }
             return .handled
@@ -72,9 +74,13 @@ struct ThreadListView: View {
 extension ThreadListView {
     private func rows(_ threads: [ThreadSummary]) -> some View {
         ForEach(threads) { t in
-            ThreadRow(thread: t, selected: model.selectedThreadId == t.id)
+            ThreadRow(thread: t, selected: model.isSelected(t.id))
                 .id(t.id)
-                .onTapGesture { model.open(t.id); focused = true }
+                .onTapGesture {
+                    let mods = NSEvent.modifierFlags
+                    model.click(t.id, shift: mods.contains(.shift), command: mods.contains(.command))
+                    focused = true
+                }
         }
     }
 }
@@ -117,6 +123,10 @@ struct ListHeader: View {
             title
             Text(model.isReview ? "\(model.reviewDrafts.count)" : model.totalThreads.formatted())
                 .font(.system(size: 12)).foregroundStyle(Theme.text3)
+            if model.multiSelection.count > 1 {
+                Chip(small: true) { Text("\(model.multiSelection.count) selected") }
+                    .help("Actions apply to all of them · Esc to clear")
+            }
             Spacer()
             if !model.isReview {
                 DisplayMenu()
@@ -334,6 +344,6 @@ struct ThreadRow: View {
         }
         .overlay(alignment: .top) { Rectangle().fill(Theme.line.opacity(0.8)).frame(height: 1) }
         .contentShape(Rectangle())
-        .draggable(thread.id)
+        .draggable(model.dragPayload(thread.id))
     }
 }

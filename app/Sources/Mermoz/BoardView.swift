@@ -57,8 +57,10 @@ struct BoardView: View {
         }
         .onKeyPress(.leftArrow) { model.moveBoard(dx: -1, dy: 0); return .handled }
         .onKeyPress(.rightArrow) { model.moveBoard(dx: 1, dy: 0); return .handled }
-        .onKeyPress(.upArrow) { model.moveBoard(dx: 0, dy: -1); return .handled }
-        .onKeyPress(.downArrow) { model.moveBoard(dx: 0, dy: 1); return .handled }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            model.moveBoard(dx: 0, dy: press.key == .downArrow ? 1 : -1, extend: press.modifiers.contains(.shift))
+            return .handled
+        }
     }
 
     private var title: String {
@@ -121,7 +123,9 @@ struct BoardColumn: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Color.white.opacity(targeted ? 0.6 : 0.32), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(targeted ? Theme.accent.opacity(0.5) : Color.white.opacity(0.8)))
-        .dropDestination(for: String.self) { ids, _ in
+        .dropDestination(for: String.self) { items, _ in
+            // A multi-selection drag carries its ids one per line.
+            let ids = items.flatMap { $0.split(separator: "\n").map(String.init) }
             // Dropping sets the column's value: status, priority, or adds the project.
             switch group.field {
             case .status: model.update(ids, status: group.key)
@@ -137,9 +141,12 @@ struct BoardColumn: View {
 
     private func cards(_ threads: [ThreadSummary]) -> some View {
         ForEach(threads) { t in
-            BoardCard(thread: t, selected: model.selectedThreadId == t.id)
+            BoardCard(thread: t, selected: model.isSelected(t.id))
                 .id(t.id)
-                .onTapGesture { model.open(t.id) }
+                .onTapGesture {
+                    let mods = NSEvent.modifierFlags
+                    model.click(t.id, shift: mods.contains(.shift), command: mods.contains(.command))
+                }
         }
     }
 }
@@ -185,7 +192,7 @@ struct BoardCard: View {
         .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(selected ? Theme.accent : Color.white, lineWidth: selected ? 2 : 1))
         .contentShape(Rectangle())
-        .draggable(thread.id)
+        .draggable(model.dragPayload(thread.id))
     }
 }
 
@@ -205,8 +212,8 @@ struct DoneStrip: View {
         .foregroundStyle(Theme.text2)
         .background(Color.white.opacity(targeted ? 0.6 : 0.32), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.8)))
-        .dropDestination(for: String.self) { ids, _ in
-            model.update(ids, status: "done")
+        .dropDestination(for: String.self) { items, _ in
+            model.update(items.flatMap { $0.split(separator: "\n").map(String.init) }, status: "done")
             return true
         } isTargeted: { targeted = $0 }
     }

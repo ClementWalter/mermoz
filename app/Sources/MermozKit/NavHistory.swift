@@ -52,3 +52,13 @@ public struct RestorePlan: Equatable, Sendable {
             due: before.due == now.due ? nil : .some(before.due))
     }
 }
+
+/// Shift-selection over the threads in display order.
+public enum SelectionRange {
+    /// Every id from `anchor` to `target` inclusive, in display order; just `target`
+    /// when either is not on screen.
+    public static func between(_ order: [String], anchor: String, target: String) -> [String] {
+        guard let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: target) else { return [target] }
+        return Array(order[min(a, b)...max(a, b)])
+    }
+}

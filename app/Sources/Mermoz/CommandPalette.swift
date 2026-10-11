@@ -110,17 +110,18 @@ struct CommandPalette: View {
     private var items: [PaletteItem] {
         let q = query.lowercased()
         let sel = model.selectedThreadId
+        let targets = model.targetIds
         switch model.paletteMode {
         case .status:
             return model.statuses.filter { q.isEmpty || $0.name.lowercased().contains(q) }.map { s in
                 PaletteItem(id: "s-\(s.key)", title: s.name, icon: AnyView(StatusIcon(key: s.key, color: Color(hex: s.color)))) {
-                    if let sel { model.update([sel], status: s.key) }
+                    if !targets.isEmpty { model.update(targets, status: s.key) }
                 }
             }
         case .priority:
             return [1, 2, 3, 4, 0].filter { q.isEmpty || (Theme.priorityNames[$0] ?? "").lowercased().contains(q) }.map { p in
                 PaletteItem(id: "p-\(p)", title: Theme.priorityNames[p] ?? "", icon: AnyView(PriorityIcon(priority: p))) {
-                    if let sel { model.update([sel], priority: p) }
+                    if !targets.isEmpty { model.update(targets, priority: p) }
                 }
             }
         case .project:
@@ -208,24 +209,27 @@ struct CommandPalette: View {
         return model.threads.first { $0.id == sel } ?? (model.detail?.thread.id == sel ? model.detail?.thread : nil)
     }
 
-    /// Toggle the selected thread in or out of projects; a new name creates the project.
+    /// Toggle the selected threads in or out of projects; a new name creates the project.
     private func projectItems(_ q: String) -> [PaletteItem] {
-        guard let t = currentThread else { return [] }
+        let targets = model.targetIds
+        let selected = targets.compactMap { id in model.threads.first { $0.id == id } ?? (model.detail?.thread.id == id ? model.detail?.thread : nil) }
+        guard !selected.isEmpty else { return [] }
         var out: [PaletteItem] = model.projects
             .map { ($0, CommandMatch.score(q, title: $0.name.replacingOccurrences(of: "/", with: " "))) }
             .filter { $0.1 > 0 }
             .sorted { q.isEmpty ? $0.0.name < $1.0.name : $0.1 > $1.1 }
             .map { p, _ in
-                let inIt = t.projects.contains(p.id)
+                // Checked only when every selected thread is in it.
+                let inIt = selected.allSatisfy { $0.projects.contains(p.id) }
                 return PaletteItem(id: "pr-\(p.id)", title: p.name, detail: inIt ? "✓ remove" : "",
                                    icon: AnyView(RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 10, height: 10))) {
-                    if inIt { model.update([t.id], removeProjects: [p.id]) } else { model.update([t.id], addProjects: [p.id]) }
+                    if inIt { model.update(targets, removeProjects: [p.id]) } else { model.update(targets, addProjects: [p.id]) }
                 }
             }
         let name = query.trimmingCharacters(in: .whitespaces)
         if !name.isEmpty, !model.projects.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             out.append(PaletteItem(id: "pr-new", title: "Create project “\(name)”", icon: AnyView(Image(systemName: "folder.badge.plus"))) {
-                model.update([t.id], addProjects: [name])
+                model.update(targets, addProjects: [name])
                 Task { await model.refreshAll() }
             })
         }
