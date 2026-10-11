@@ -94,9 +94,10 @@ public final class DaemonClient: Sendable {
     public func counts() async throws -> Counts { try await call("counts") }
 
     public func threads(status: [String]? = nil, projectId: String? = nil, accountId: String? = nil,
-                        labelId: String? = nil, priority: [Int]? = nil, limit: Int = 300, offset: Int = 0) async throws -> ThreadPage {
+                        labelId: String? = nil, priority: [Int]? = nil, order: String? = nil,
+                        limit: Int = 300, offset: Int = 0) async throws -> ThreadPage {
         try await call("threads.list", Params()
-            .with("status", status).with("project_id", projectId).with("account_id", accountId).with("label_id", labelId)
+            .with("status", status).with("project_id", projectId).with("account_id", accountId).with("label_id", labelId).with("order", order)
             .with("priority", priority).with("limit", limit).with("offset", offset))
     }
 
@@ -158,6 +159,12 @@ public final class DaemonClient: Sendable {
     public func saveProvider(id: String?, name: String, kind: String, baseUrl: String?, model: String, apiKey: String?) async throws -> Provider {
         try await call("providers.save", Params().with("id", id).with("name", name).with("kind", kind)
             .with("base_url", baseUrl).with("model", model).with("api_key", apiKey))
+    }
+
+    public func aiClean(thread id: String) async throws -> CleanResult { try await call("agent.clean", Params().with("id", id)) }
+
+    public func aiTriage(status: String, limit: Int = 40) async throws -> TriageResult {
+        try await call("agent.triage", Params().with("status", status).with("limit", limit))
     }
 
     public func loginAnthropic() async throws { try await callVoid("providers.login_anthropic") }

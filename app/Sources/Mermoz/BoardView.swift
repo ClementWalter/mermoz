@@ -13,6 +13,7 @@ struct BoardView: View {
                 Text(title).font(.system(size: 15, weight: .semibold))
                 Text(model.totalThreads.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
+                DisplayMenu()
                 Picker("", selection: $model.layout) {
                     ForEach(LayoutMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
@@ -23,16 +24,24 @@ struct BoardView: View {
             .frame(height: 50)
             .glassPanel()
 
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 10) {
-                    ForEach(model.openStatuses) { s in
-                        BoardColumn(status: s, threads: model.threads.filter { $0.status == s.key })
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(model.groups) { g in
+                            BoardColumn(group: g, total: model.groupTotal(g)).id(g.id)
+                        }
+                        if model.effectiveDisplay.grouping == .status { DoneStrip() }
                     }
-                    DoneStrip()
+                    .padding(.bottom, 2)
                 }
-                .padding(.bottom, 2)
+                .scrollIndicators(.automatic)
+                .onChange(of: model.selectedThreadId) { _, id in
+                    // Keep the selected card's column on screen while moving with the arrows.
+                    if let id, let g = model.groups.first(where: { $0.all.contains { $0.id == id } }) {
+                        withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(g.id) }
+                    }
+                }
             }
-            .scrollIndicators(.automatic)
         }
         .focusable()
         .focused($focused)
@@ -41,6 +50,10 @@ struct BoardView: View {
         .onKeyPress(characters: .init(charactersIn: "jkesprc?/"), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
+        .onKeyPress(.leftArrow) { model.moveBoard(dx: -1, dy: 0); return .handled }
+        .onKeyPress(.rightArrow) { model.moveBoard(dx: 1, dy: 0); return .handled }
+        .onKeyPress(.upArrow) { model.moveBoard(dx: 0, dy: -1); return .handled }
+        .onKeyPress(.downArrow) { model.moveBoard(dx: 0, dy: 1); return .handled }
     }
 
     private var title: String {
@@ -56,23 +69,37 @@ struct BoardView: View {
 
 struct BoardColumn: View {
     @Environment(AppModel.self) private var model
-    let status: Status
-    let threads: [ThreadSummary]
+    let group: ThreadGroup
+    let total: Int
     @State private var targeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                StatusIcon(key: status.key, color: Color(hex: status.color))
-                Text(status.name).font(.system(size: 12.5, weight: .semibold))
-                Text("\(threads.count)").font(.system(size: 12)).foregroundStyle(Theme.text3)
+                if group.field == .none {
+                    Text("All").font(.system(size: 12.5, weight: .semibold))
+                } else {
+                    GroupLabel(field: group.field, key: group.key).font(.system(size: 12.5, weight: .semibold))
+                }
+                Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
+                Spacer()
+                if group.field == .status { AITriageButton(status: group.key) }
             }
             .padding(.horizontal, 4).padding(.top, 2)
             ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(threads) { t in
-                        BoardCard(thread: t, selected: model.selectedThreadId == t.id)
-                            .onTapGesture { model.open(t.id) }
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if group.subgroups.isEmpty {
+                        cards(group.threads)
+                    } else {
+                        ForEach(group.subgroups) { sub in
+                            HStack(spacing: 6) {
+                                GroupLabel(field: sub.field, key: sub.key)
+                                Text("\(sub.threads.count)").foregroundStyle(Theme.text3)
+                            }
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.text2)
+                            .padding(.top, 4).padding(.horizontal, 4)
+                            cards(sub.threads)
+                        }
                     }
                 }
             }
@@ -84,9 +111,23 @@ struct BoardColumn: View {
         .background(Color.white.opacity(targeted ? 0.6 : 0.32), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(targeted ? Theme.accent.opacity(0.5) : Color.white.opacity(0.8)))
         .dropDestination(for: String.self) { ids, _ in
-            model.update(ids, status: status.key)
+            // Dropping sets the column's value: status, priority or project.
+            switch group.field {
+            case .status: model.update(ids, status: group.key)
+            case .priority: model.update(ids, priority: Int(group.key) ?? 0)
+            case .project: model.update(ids, project: group.key.isEmpty ? .clear : .set(group.key))
+            default: return false
+            }
             return true
         } isTargeted: { targeted = $0 }
+    }
+
+    private func cards(_ threads: [ThreadSummary]) -> some View {
+        ForEach(threads) { t in
+            BoardCard(thread: t, selected: model.selectedThreadId == t.id)
+                .id(t.id)
+                .onTapGesture { model.open(t.id) }
+        }
     }
 }
 

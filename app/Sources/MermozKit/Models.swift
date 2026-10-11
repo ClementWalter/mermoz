@@ -141,6 +141,25 @@ public struct AgentState: Codable, Sendable, Equatable {
     public var error: String?
 }
 
+/// Result of asking the AI to triage a status column.
+public struct TriageResult: Codable, Sendable, Equatable, Identifiable {
+    public struct Move: Codable, Sendable, Equatable, Identifiable {
+        public var number: String
+        public var subject: String
+        public var from: String
+        public var to: String
+        public var priority: Int
+        public var reason: String
+        public var id: String { number }
+    }
+    public var examined: Int
+    public var moved: Int
+    public var moves: [Move]
+    public var id: String { moves.map(\.number).joined(separator: ",") + "#\(examined)" }
+}
+
+public struct CleanResult: Codable, Sendable { public var cleaned: Int }
+
 public struct ProviderModel: Codable, Sendable, Equatable, Identifiable, Hashable {
     public var id: String
     public var name: String
@@ -172,6 +191,10 @@ public struct Contact: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var website: String
     public var socials: [String]
     public var lastSeen: Int64
+    /// Every address this person writes from (one entry per person).
+    public var emails: [String]?
+    /// Messages exchanged with them.
+    public var messages: Int?
     public var id: String { email }
 
     public var display: String { name.isEmpty ? email : name }
@@ -205,6 +228,8 @@ public struct Counts: Codable, Sendable, Equatable {
     public var status: [String: Int]
     public var project: [String: Int]
     public var account: [String: Int]
+    /// Open threads per priority ("0"…"4"); optional so older daemons still decode.
+    public var priority: [String: Int]?
 
     public init(status: [String: Int] = [:], project: [String: Int] = [:], account: [String: Int] = [:]) {
         self.status = status; self.project = project; self.account = account

@@ -119,6 +119,13 @@ struct IssueToolbar: View {
             }
 
             Spacer()
+            // ✦ re-cleans this thread with AI now (signatures, quotes, clutter; fills People).
+            Button { model.aiClean(thread.id) } label: {
+                if model.aiBusy.contains("clean:\(thread.id)") { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles") }
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .disabled(model.aiBusy.contains("clean:\(thread.id)"))
+            .help("Clean this thread with AI").accessibilityLabel("Clean with AI")
             Button { model.markDoneSelected() } label: { Image(systemName: "archivebox") }
                 .buttonStyle(.plain).foregroundStyle(Theme.text2)
                 .help("Done (e)").accessibilityLabel("Mark done")

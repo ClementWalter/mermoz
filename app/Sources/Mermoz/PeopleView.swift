@@ -30,7 +30,7 @@ struct PeopleListView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "person.crop.rectangle.stack").font(.system(size: 24, weight: .light))
                     Text("No one yet").font(.system(size: 13, weight: .semibold))
-                    Text("Turn on “Clean messages & build directory” in Settings › Agents. People appear as their signatures are read.")
+                    Text("People you write to appear here. Turn on “Clean messages & build directory” in Settings › Agents to add their titles, companies and phone numbers from signatures.")
                         .font(.system(size: 12)).multilineTextAlignment(.center).frame(maxWidth: 280)
                 }
                 .foregroundStyle(Theme.text3)
@@ -62,7 +62,10 @@ struct ContactRow: View {
                 Text(contact.role.isEmpty ? contact.email : contact.role).font(.system(size: 12)).foregroundStyle(Theme.text2).lineLimit(1)
             }
             Spacer(minLength: 4)
-            Text(Format.short(contact.lastSeen)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(Format.short(contact.lastSeen)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                if let n = contact.messages { Text("\(n) msg").font(.system(size: 10.5)).foregroundStyle(Theme.text3) }
+            }
         }
         .foregroundStyle(Theme.text)
         .padding(.horizontal, 16).padding(.vertical, 9)
@@ -89,7 +92,9 @@ struct ContactDetailPane: View {
                             }
                         }
                         VStack(alignment: .leading, spacing: 8) {
-                            field("envelope", d.contact.email, url: URL(string: "mailto:\(d.contact.email)"))
+                            ForEach(d.contact.emails ?? [d.contact.email], id: \.self) { e in
+                                field("envelope", e, url: URL(string: "mailto:\(e)"))
+                            }
                             ForEach(d.contact.phones, id: \.self) { field("phone", $0, url: URL(string: "tel:\($0.filter { !$0.isWhitespace })")) }
                             if !d.contact.address.isEmpty { field("mappin.and.ellipse", d.contact.address, url: nil) }
                             if !d.contact.website.isEmpty { field("globe", d.contact.website, url: URL(string: d.contact.website.hasPrefix("http") ? d.contact.website : "https://\(d.contact.website)")) }

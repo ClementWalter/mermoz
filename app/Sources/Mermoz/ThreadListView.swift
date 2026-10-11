@@ -1,4 +1,4 @@
-/// Middle pane in list mode: threads grouped by priority, keyboard-driven.
+/// Middle pane in list mode: threads grouped and ordered per the Display menu, keyboard-driven.
 import MermozKit
 import SwiftUI
 
@@ -21,15 +21,18 @@ struct ThreadListView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            ForEach(model.priorityGroups, id: \.priority) { g in
+                            ForEach(model.groups) { g in
                                 Section {
-                                    ForEach(g.threads) { t in
-                                        ThreadRow(thread: t, selected: model.selectedThreadId == t.id)
-                                            .id(t.id)
-                                            .onTapGesture { model.open(t.id); focused = true }
+                                    if g.subgroups.isEmpty {
+                                        rows(g.threads)
+                                    } else {
+                                        ForEach(g.subgroups) { sub in
+                                            SubGroupHeader(group: sub)
+                                            rows(sub.threads)
+                                        }
                                     }
                                 } header: {
-                                    if g.priority >= 0 { GroupHeader(priority: g.priority, count: g.threads.count) }
+                                    if g.field != .none { GroupHeaderView(group: g, total: model.groupTotal(g)) }
                                 }
                             }
                             if model.totalThreads > model.threads.count {
@@ -57,6 +60,16 @@ struct ThreadListView: View {
         .onKeyPress(.return) {
             if model.selectedThreadId == nil { model.moveSelection(1) }
             return .handled
+        }
+    }
+}
+
+extension ThreadListView {
+    private func rows(_ threads: [ThreadSummary]) -> some View {
+        ForEach(threads) { t in
+            ThreadRow(thread: t, selected: model.selectedThreadId == t.id)
+                .id(t.id)
+                .onTapGesture { model.open(t.id); focused = true }
         }
     }
 }
@@ -93,6 +106,7 @@ struct ListHeader: View {
                 .font(.system(size: 12)).foregroundStyle(Theme.text3)
             Spacer()
             if !model.isReview {
+                DisplayMenu()
                 Picker("", selection: $model.layout) {
                     ForEach(LayoutMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
@@ -132,20 +146,113 @@ struct ListHeader: View {
     }
 }
 
-struct GroupHeader: View {
-    let priority: Int
-    let count: Int
+/// Icon + name of a group value (a status, a priority, a project, an account).
+struct GroupLabel: View {
+    @Environment(AppModel.self) private var model
+    let field: Grouping
+    let key: String
 
     var body: some View {
         HStack(spacing: 8) {
-            PriorityIcon(priority: priority)
-            Text(Theme.priorityNames[priority] ?? "").font(.system(size: 12, weight: .semibold))
-            Text("\(count)").font(.system(size: 12)).foregroundStyle(Theme.text3)
+            switch field {
+            case .status:
+                StatusIcon(key: key, color: Color(hex: model.color(forStatus: key)))
+                Text(model.statuses.first { $0.key == key }?.name ?? key)
+            case .priority:
+                PriorityIcon(priority: Int(key) ?? 0)
+                Text(Theme.priorityNames[Int(key) ?? 0] ?? "")
+            case .project:
+                RoundedRectangle(cornerRadius: 3).fill(Color(hex: model.project(key)?.color ?? "#C6D7E6")).frame(width: 9, height: 9)
+                Text(model.project(key)?.name ?? "No project")
+            case .account:
+                Circle().fill(Theme.accountColor(key, among: model.accounts)).frame(width: 8, height: 8)
+                Text(model.accounts.first { $0.id == key }?.email ?? key).lineLimit(1)
+            case .none:
+                EmptyView()
+            }
+        }
+    }
+}
+
+struct GroupHeaderView: View {
+    @Environment(AppModel.self) private var model
+    let group: ThreadGroup
+    let total: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
+            Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
             Spacer()
+            if group.field == .status { AITriageButton(status: group.key) }
         }
         .foregroundStyle(Theme.text.opacity(0.85))
         .padding(.horizontal, 16).padding(.vertical, 7)
         .background(.ultraThinMaterial)
+    }
+}
+
+struct SubGroupHeader: View {
+    let group: ThreadGroup
+
+    var body: some View {
+        HStack(spacing: 6) {
+            GroupLabel(field: group.field, key: group.key)
+            Text("\(group.threads.count)").foregroundStyle(Theme.text3)
+            Spacer()
+        }
+        .font(.system(size: 11.5, weight: .medium))
+        .foregroundStyle(Theme.text2)
+        .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 4)
+    }
+}
+
+/// ✦ on a status: the AI sorts the newest threads of that status and moves them.
+struct AITriageButton: View {
+    @Environment(AppModel.self) private var model
+    let status: String
+
+    var body: some View {
+        let busy = model.aiBusy.contains("triage:\(status)")
+        Button { model.aiTriage(status) } label: {
+            if busy { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles") }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.accent)
+        .disabled(busy)
+        .help("Let AI triage this column and move threads where they belong")
+        .accessibilityLabel("AI triage")
+    }
+}
+
+/// Linear-style Display menu: grouping, sub-grouping and ordering.
+struct DisplayMenu: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Menu {
+            Picker("Grouping", selection: binding(\.grouping)) {
+                ForEach(Grouping.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            Picker("Sub-grouping", selection: binding(\.subGrouping)) {
+                ForEach(Grouping.allCases, id: \.self) { Text($0 == .none ? "None" : $0.label).tag($0) }
+            }
+            Picker("Ordering", selection: binding(\.ordering)) {
+                ForEach(Ordering.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+        } label: {
+            Label("Display", systemImage: "slider.horizontal.3").font(.system(size: 12))
+        }
+        .menuStyle(.button).fixedSize()
+        .help("Grouping, sub-grouping and ordering")
+    }
+
+    private func binding<T>(_ kp: WritableKeyPath<DisplayOptions, T>) -> Binding<T> {
+        Binding(get: { model.display[keyPath: kp] }, set: { v in
+            var d = model.display
+            d[keyPath: kp] = v
+            model.display = d
+        })
     }
 }
 

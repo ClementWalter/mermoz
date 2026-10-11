@@ -68,6 +68,12 @@ final class AppModel {
 
     var selection: SidebarSelection = .status("triage")
     var layout: LayoutMode = .list
+    /// Display options are kept per layout, like Linear's per-view settings.
+    var listDisplay: DisplayOptions = AppModel.loadDisplay("list") ?? DisplayOptions(grouping: .priority)
+    var boardDisplay: DisplayOptions = AppModel.loadDisplay("board") ?? DisplayOptions(grouping: .status)
+    var triageResult: TriageResult?
+    /// Keys of AI actions in flight ("clean:<thread>", "triage:<status>").
+    var aiBusy: Set<String> = []
     var threads: [ThreadSummary] = []
     var totalThreads = 0
     var selectedThreadId: String?
@@ -188,27 +194,47 @@ final class AppModel {
             } catch { report(error) }
             return
         }
+        let d = effectiveDisplay
+        let order = d.ordering.rawValue
+        let open = openStatuses.map(\.key)
+        var projectId: String?
+        var accountId: String?
+        var labelId: String?
+        var statuses: [String]? = open
+        switch selection {
+        case let .status(k): if layout == .list { statuses = [k] }
+        case let .project(id): projectId = id
+        case let .account(id): accountId = id
+        case let .label(acc, id): accountId = acc; labelId = id; statuses = nil
+        case .people: return
+        }
         do {
-            let page: ThreadPage
-            let open = openStatuses.map(\.key)
-            switch (selection, layout) {
-            case let (.status(k), .list):
-                page = try await client.threads(status: [k])
-            case (.status, .board):
-                page = try await client.threads(status: open)
-            case let (.project(id), _):
-                page = try await client.threads(status: open, projectId: id)
-            case let (.account(id), _):
-                page = try await client.threads(status: open, accountId: id)
-            case (.people, _):
-                return
-            case let (.label(acc, id), _):
-                // A label is a mailbox: show everything filed there, whatever its status.
-                page = try await client.threads(accountId: acc, labelId: id)
+            var fetched: [ThreadSummary] = []
+            var total = 0
+            if layout == .board, d.grouping == .status, let sts = statuses, labelId == nil {
+                // One page per column, so every status shows its own newest threads and real size.
+                try await withThrowingTaskGroup(of: (Int, ThreadPage).self) { group in
+                    for (i, k) in sts.enumerated() {
+                        group.addTask { [client, projectId, accountId, order] in
+                            (i, try await client.threads(status: [k], projectId: projectId, accountId: accountId, order: order, limit: 150))
+                        }
+                    }
+                    var pages: [(Int, ThreadPage)] = []
+                    for try await p in group { pages.append(p) }
+                    for (_, p) in pages.sorted(by: { $0.0 < $1.0 }) {
+                        fetched += p.threads
+                        total += p.total
+                    }
+                }
+            } else {
+                let page = try await client.threads(status: statuses, projectId: projectId, accountId: accountId, labelId: labelId,
+                                                    order: order, limit: layout == .board ? 600 : 300)
+                fetched = page.threads
+                total = page.total
             }
             // Unchanged pages must not re-render the list (sync streams change events).
-            if threads != page.threads { threads = page.threads }
-            if totalThreads != page.total { totalThreads = page.total }
+            if threads != fetched { threads = fetched }
+            if totalThreads != total { totalThreads = total }
             if let sel = selectedThreadId, !threads.contains(where: { $0.id == sel }) {
                 selectedThreadId = nil
                 detail = nil
@@ -216,17 +242,116 @@ final class AppModel {
         } catch { report(error) }
     }
 
-    /// Threads grouped for list mode: priority buckets in Linear order (urgent first, none last).
-    var priorityGroups: [(priority: Int, threads: [ThreadSummary])] {
-        // Mailboxes read chronologically; priority buckets are for the workflow views.
-        if case .label = selection { return threads.isEmpty ? [] : [(-1, threads)] }
-        let order = [1, 2, 3, 4, 0]
-        let byP = Dictionary(grouping: threads, by: \.priority)
-        return order.compactMap { p in byP[p].map { (p, $0) } }
+    // MARK: display
+
+    var display: DisplayOptions {
+        get { layout == .list ? listDisplay : boardDisplay }
+        set {
+            if layout == .list { listDisplay = newValue } else { boardDisplay = newValue }
+            AppModel.saveDisplay(newValue, layout == .list ? "list" : "board")
+            Task { await loadList() }
+        }
     }
 
-    /// Flat order matching what list mode displays, for j/k navigation.
-    var displayOrder: [ThreadSummary] { priorityGroups.flatMap(\.threads) }
+    /// Mailboxes read chronologically unless the user picked another grouping.
+    var effectiveDisplay: DisplayOptions {
+        if case .label = selection, layout == .list, listDisplay.grouping == .priority {
+            return DisplayOptions(grouping: .none, ordering: listDisplay.ordering)
+        }
+        return display
+    }
+
+    var groups: [ThreadGroup] {
+        let d = effectiveDisplay
+        return Grouper.group(threads, by: d.grouping, then: d.subGrouping) { [statuses, projects, accounts] field in
+            switch field {
+            case .status: statuses.map(\.key)
+            case .priority: ["1", "2", "3", "4", "0"]
+            case .project: projects.map(\.id)
+            case .account: accounts.map(\.id)
+            case .none: []
+            }
+        }
+    }
+
+    /// Flat order matching what's on screen, for keyboard navigation.
+    var displayOrder: [ThreadSummary] { groups.flatMap(\.all) }
+
+    /// Real size of a group when the server knows it (all-open views), else what's loaded.
+    func groupTotal(_ g: ThreadGroup) -> Int {
+        let allOpen: Bool = { if case .status = selection { return layout == .board } else { return false } }()
+        guard allOpen else { return g.all.count }
+        switch g.field {
+        case .status: return counts.status[g.key] ?? g.all.count
+        case .priority: return counts.priority?[g.key] ?? g.all.count
+        case .project: return counts.project[g.key] ?? g.all.count
+        case .account: return counts.account[g.key] ?? g.all.count
+        case .none: return g.all.count
+        }
+    }
+
+    /// Arrow keys on the board: ←/→ change column (keeping the row), ↑/↓ move within it.
+    func moveBoard(dx: Int, dy: Int) {
+        let cols = groups.map(\.all).filter { !$0.isEmpty }
+        guard !cols.isEmpty else { return }
+        guard let sel = selectedThreadId,
+              let ci = cols.firstIndex(where: { $0.contains { $0.id == sel } }),
+              let ri = cols[ci].firstIndex(where: { $0.id == sel }) else {
+            open(cols[0][0].id)
+            return
+        }
+        let nc = max(0, min(cols.count - 1, ci + dx))
+        let nr = max(0, min(cols[nc].count - 1, dx != 0 ? ri : ri + dy))
+        open(cols[nc][nr].id)
+    }
+
+    private static func loadDisplay(_ key: String) -> DisplayOptions? {
+        guard let d = UserDefaults.standard.data(forKey: "display.\(key)") else { return nil }
+        return try? JSONDecoder().decode(DisplayOptions.self, from: d)
+    }
+
+    private static func saveDisplay(_ v: DisplayOptions, _ key: String) {
+        if let d = try? JSONEncoder().encode(v) { UserDefaults.standard.set(d, forKey: "display.\(key)") }
+    }
+
+    // MARK: AI actions
+
+    /// Re-cleans every message of a thread now (the ✦ button in a thread).
+    func aiClean(_ threadId: String) {
+        guard let client else { return }
+        aiBusy.insert("clean:\(threadId)")
+        Task {
+            defer { aiBusy.remove("clean:\(threadId)") }
+            do {
+                let r = try await client.aiClean(thread: threadId)
+                toast = "Cleaned \(r.cleaned) message\(r.cleaned == 1 ? "" : "s")"
+                if selectedThreadId == threadId, let d = try? await client.thread(threadId) { detail = d }
+            } catch { report(error) }
+        }
+    }
+
+    /// Lets the AI sort the newest threads of a status column (the ✦ button on a column).
+    func aiTriage(_ status: String) {
+        guard let client else { return }
+        aiBusy.insert("triage:\(status)")
+        Task {
+            defer { aiBusy.remove("triage:\(status)") }
+            do {
+                let r = try await client.aiTriage(status: status)
+                triageResult = r
+                await refreshCounts()
+                await loadList()
+            } catch { report(error) }
+        }
+    }
+
+    /// Puts every thread the AI moved back where it was.
+    func undoTriage(_ r: TriageResult) {
+        for (from, moves) in Dictionary(grouping: r.moves, by: \.from) where !moves.isEmpty {
+            update(moves.map(\.number), status: from)
+        }
+        triageResult = nil
+    }
 
     // MARK: thread
 
