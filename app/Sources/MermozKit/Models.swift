@@ -127,6 +127,8 @@ public struct Provider: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var baseUrl: String?
     public var model: String
     public var hasKey: Bool?
+    /// "key" or "oauth" (signed in with Anthropic).
+    public var auth: String?
 }
 
 /// Built-in agent state for one account.
@@ -137,6 +139,15 @@ public struct AgentState: Codable, Sendable, Equatable {
     public var pending: Int
     public var failed: Int
     public var error: String?
+}
+
+public struct LoginState: Codable, Sendable, Equatable {
+    public var running: Bool
+    public var error: String?
+
+    public init(running: Bool, error: String?) {
+        self.running = running; self.error = error
+    }
 }
 
 public struct ProviderTest: Codable, Sendable, Equatable {
@@ -256,6 +267,7 @@ public enum DaemonEvent: Sendable, Equatable {
     case syncProgress(accountId: String, synced: Int, total: Int)
     case draftsChanged
     case contactsChanged
+    case providersChanged
     case unknown(kind: String)
 }
 

@@ -4,6 +4,7 @@
 //! JSON-RPC protocol described in `docs/protocol.md`.
 
 pub mod agent;
+pub mod ant;
 pub mod compose;
 pub mod error;
 pub mod gmail;

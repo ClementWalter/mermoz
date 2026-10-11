@@ -60,6 +60,7 @@ final class AppModel {
     var selectedContact: ContactDetail?
     var providers: [Provider] = []
     var agentStates: [String: AgentState] = [:]
+    var login = LoginState(running: false, error: nil)
     var counts = Counts()
     var agentsMaySend = false
     var feedback: [FeedbackEntry] = []
@@ -470,6 +471,16 @@ final class AppModel {
         } catch { report(error); return false }
     }
 
+    func signInWithAnthropic() {
+        guard let client else { return }
+        login = LoginState(running: true, error: nil)
+        Task {
+            do { try await client.loginAnthropic() } catch {
+                login = LoginState(running: false, error: (error as? RPCError)?.message ?? error.localizedDescription)
+            }
+        }
+    }
+
     func deleteProvider(_ id: String) {
         guard let client else { return }
         Task {
@@ -565,6 +576,11 @@ final class AppModel {
             Task { await refreshAll() }
         case let .syncProgress(acc, synced, total):
             syncProgress[acc] = (synced, total)
+        case .providersChanged:
+            Task {
+                if let l = try? await client?.loginStatus() { login = l }
+                await loadAgent()
+            }
         case .contactsChanged:
             if selection == .people { Task { await loadContacts() } }
         case .draftsChanged:

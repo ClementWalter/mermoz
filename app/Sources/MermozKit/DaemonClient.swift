@@ -160,6 +160,10 @@ public final class DaemonClient: Sendable {
             .with("base_url", baseUrl).with("model", model).with("api_key", apiKey))
     }
 
+    public func loginAnthropic() async throws { try await callVoid("providers.login_anthropic") }
+
+    public func loginStatus() async throws -> LoginState { try await call("providers.login_status") }
+
     public func deleteProvider(_ id: String) async throws { try await callVoid("providers.delete", Params().with("id", id)) }
 
     public func testProvider(_ id: String) async throws -> ProviderTest { try await call("providers.test", Params().with("id", id)) }

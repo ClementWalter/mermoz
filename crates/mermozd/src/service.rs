@@ -22,6 +22,8 @@ pub struct Worker {
 }
 
 pub struct Service {
+    /// Outcome of the last "Sign in with Anthropic".
+    pub login: Mutex<LoginState>,
     pub store: Arc<Store>,
     pub events: broadcast::Sender<Event>,
     workers: Mutex<HashMap<String, Arc<Worker>>>,
@@ -39,6 +41,7 @@ impl Service {
     pub fn new(store: Arc<Store>) -> Arc<Self> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Self {
+            login: Mutex::new(LoginState::default()),
             store,
             events,
             workers: Mutex::new(HashMap::new()),
@@ -166,6 +169,72 @@ impl Service {
     }
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct LoginState {
+    pub running: bool,
+    pub error: Option<String>,
+}
+
+/// The secret for a provider: a fresh OAuth access token, or the stored API key.
+pub async fn credential(p: &mermoz_core::agent::Provider) -> Result<String> {
+    if p.auth == "oauth" {
+        let profile = p
+            .profile
+            .as_deref()
+            .ok_or_else(|| Error::other("signed-in provider has no profile"))?;
+        mermoz_core::ant::access_token(profile).await
+    } else {
+        tokens::load_provider_key(&p.id)
+    }
+}
+
+impl Service {
+    /// Runs the browser sign-in; on success the provider appears in Settings.
+    pub fn login_anthropic(self: &Arc<Self>) -> Result<()> {
+        if mermoz_core::ant::binary().is_none() {
+            return Err(Error::other(
+                "Anthropic sign-in is not available in this build",
+            ));
+        }
+        {
+            let mut l = self.login.lock().unwrap();
+            if l.running {
+                return Ok(());
+            }
+            *l = LoginState {
+                running: true,
+                error: None,
+            };
+        }
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let id = mermoz_core::model::new_id("prv");
+            let result = async {
+                mermoz_core::ant::login(&id).await?;
+                // Proves the login yields a token before showing the provider as connected.
+                mermoz_core::ant::access_token(&id).await?;
+                svc.store.save_provider(&mermoz_core::agent::Provider {
+                    id: id.clone(),
+                    name: "Claude".into(),
+                    kind: "anthropic".into(),
+                    base_url: None,
+                    model: "claude-opus-5-5".into(),
+                    auth: "oauth".into(),
+                    profile: Some(id.clone()),
+                })
+            }
+            .await;
+            *svc.login.lock().unwrap() = LoginState {
+                running: false,
+                error: result.err().map(|e| e.to_string()),
+            };
+            let _ = svc.events.send(Event::ProvidersChanged);
+            svc.kick_agents();
+        });
+        Ok(())
+    }
+}
+
 /// Days of past mail the agent processes when switched on; new mail is always processed.
 pub fn backfill_since(store: &Store) -> i64 {
     let days: i64 = store
@@ -211,10 +280,8 @@ async fn digest_loop(svc: Arc<Service>, w: Arc<Worker>) {
             None
         };
         if let Some(p) = provider {
-            match tokens::load_provider_key(&p.id) {
-                Err(_) => {
-                    *w.agent_error.lock().unwrap() = Some(format!("{} has no API key", p.name))
-                }
+            match credential(&p).await {
+                Err(e) => *w.agent_error.lock().unwrap() = Some(format!("{}: {e}", p.name)),
                 Ok(key) => {
                     let batch = svc
                         .store

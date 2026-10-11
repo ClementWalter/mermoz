@@ -98,6 +98,13 @@ def assemble(app_exe: Path, extras: list[Path]) -> None:
     shutil.copy2(app_exe, macos / "Mermoz")
     for p in extras:
         shutil.copy2(p, res / p.name)
+    # Anthropic's `ant` CLI (MIT) performs "Sign in with Anthropic"; ship it with its license.
+    ant = shutil.which("ant")
+    if ant:
+        shutil.copy2(Path(ant).resolve(), res / "ant")
+        shutil.copy2(REPO / "third_party" / "ant-LICENSE", res / "ant-LICENSE.txt")
+    else:
+        log.warning("ant CLI not found (brew install anthropics/tap/ant): Sign in with Anthropic disabled")
     icon = APP_PKG / "Resources" / "AppIcon.icns"
     if icon.exists():
         shutil.copy2(icon, res / "AppIcon.icns")

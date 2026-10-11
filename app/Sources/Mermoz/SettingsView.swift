@@ -22,19 +22,20 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @State private var pane: SettingsPane = .accounts
+    @State private var pane: SettingsPane = .agents
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach([SettingsPane.general, .accounts, .agents]) { navButton($0) }
                 Spacer()
                 // Developer lives apart, at the bottom, so everyday users never stumble on it.
                 navButton(.developer).foregroundStyle(Theme.text3)
             }
-            .padding(10)
-            .frame(width: 200)
-            .glassPanel(radius: 0)
+            .padding(.horizontal, 10).padding(.vertical, 12)
+            .frame(width: 210)
+            .frame(maxHeight: .infinity)
+            .glassPanel()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -46,24 +47,31 @@ struct SettingsView: View {
                     case .developer: DeveloperPane()
                     }
                 }
-                .padding(26)
+                .padding(.horizontal, 26).padding(.vertical, 22)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Theme.paper)
+            .paperPanel()
         }
+        // Same chrome as the main window: traffic lights in their own strip, panels below.
+        .padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 36)
+        .ignoresSafeArea(edges: .top)
         .foregroundStyle(Theme.text)
-        .frame(width: 760, height: 520)
+        .frame(minWidth: 900, minHeight: 620)
         .background(Theme.ground)
     }
 
     private func navButton(_ p: SettingsPane) -> some View {
         Button { pane = p } label: {
-            Label(p.rawValue, systemImage: p.icon)
-                .font(.system(size: 13, weight: pane == p ? .semibold : .regular))
-                .padding(.horizontal, 8).frame(height: 30)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(pane == p ? Theme.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
-                .contentShape(Rectangle())
+            HStack(spacing: 9) {
+                // Fixed icon column so labels line up whatever the symbol's width.
+                Image(systemName: p.icon).font(.system(size: 13)).frame(width: 18, alignment: .center)
+                Text(p.rawValue)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 13, weight: pane == p ? .semibold : .regular))
+            .padding(.horizontal, 8).frame(height: 30)
+            .background(pane == p ? Theme.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -137,6 +145,12 @@ struct AgentsPane: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        ProvidersCard()
+        if !model.providers.isEmpty {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], alignment: .leading, spacing: 14) {
+                ForEach(model.accounts) { a in AccountAgentCard(account: a) }
+            }
+        }
         SettingsCard(title: "Sending") {
             Toggle(isOn: Binding(get: { model.agentsMaySend }, set: { model.setAgentsMaySend($0) })) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -152,56 +166,128 @@ struct AgentsPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(hex: "#FBEFF5"), in: RoundedRectangle(cornerRadius: 9))
         }
-        ProvidersCard()
-        ForEach(model.accounts) { a in AccountAgentCard(account: a) }
     }
 }
 
 /// Models offered for Anthropic providers; any other id can be typed.
-private let claudeModels: [(id: String, label: String)] = [
-    ("claude-opus-5-5", "Claude Opus 5.5 — best quality"),
-    ("claude-sonnet-5-5", "Claude Sonnet 5.5 — balanced"),
-    ("claude-haiku-5-5", "Claude Haiku 5.5 — fastest, about 40× cheaper"),
+private let claudeModels: [(id: String, label: String, short: String)] = [
+    ("claude-opus-5-5", "Claude Opus 5.5 — best quality", "Opus 5.5"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5 — balanced", "Sonnet 5.5"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5 — fastest, about 40× cheaper", "Haiku 5.5"),
 ]
 
 struct ProvidersCard: View {
     @Environment(AppModel.self) private var model
     @State private var editing: Provider?
-    @State private var adding = false
+    @State private var advanced = false
     @State private var testResult: [String: String] = [:]
 
     var body: some View {
-        SettingsCard(title: "AI providers", subtitle: "Keys stay in your Mac's Keychain. Mail only goes to a provider you allow for that account.") {
-            ForEach(model.providers) { p in
-                HStack(spacing: 10) {
-                    Image(systemName: "sparkle").foregroundStyle(Theme.accent)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(p.name).font(.system(size: 13, weight: .semibold))
-                        Text("\(claudeModels.first { $0.id == p.model }?.label ?? p.model)\(p.hasKey == true ? "" : " · no key")")
-                            .font(.system(size: 11.5)).foregroundStyle(p.hasKey == true ? Theme.text3 : Color(hex: "#9B2C2C"))
-                        if let r = testResult[p.id] { Text(r).font(.system(size: 11.5)).foregroundStyle(Theme.text2) }
-                    }
-                    Spacer()
-                    Button("Test") {
-                        testResult[p.id] = "Testing…"
-                        Task {
-                            let t = await model.testProvider(p.id)
-                            testResult[p.id] = t.map { $0.ok ? "Works" : ($0.error ?? "Failed") } ?? "Failed"
-                        }
-                    }.buttonStyle(.glass).controlSize(.small)
-                    Button("Edit") { editing = p }.buttonStyle(.glass).controlSize(.small)
-                    Button("Remove", role: .destructive) { model.deleteProvider(p.id) }.buttonStyle(.glass).controlSize(.small)
-                }
-                .padding(10)
-                .background(Color(hex: "#F6FAFE"), in: RoundedRectangle(cornerRadius: 10))
-            }
-            if adding || editing != nil {
-                ProviderForm(existing: editing) { adding = false; editing = nil }
+        SettingsCard(title: "AI", subtitle: "Mermoz uses AI to clean your messages and build your directory. Your mail only goes to the AI you allow for each account.") {
+            ForEach(model.providers) { p in providerRow(p) }
+            if !model.providers.contains(where: { $0.auth == "oauth" }) { signIn }
+            if let editing {
+                ProviderForm(existing: editing) { self.editing = nil }
+            } else if advanced {
+                ProviderForm(existing: nil) { advanced = false }
             } else {
-                Button { adding = true } label: { Label("Add provider", systemImage: "plus") }.buttonStyle(.glass)
+                Button("Use an API key or another provider instead") { advanced = true }
+                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.accent)
             }
         }
         .task { await model.loadAgent() }
+    }
+
+    private var signIn: some View {
+        HStack(spacing: 14) {
+            LogoTile()
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Connect Claude").font(.system(size: 14, weight: .semibold))
+                Text(model.login.running ? "Finish signing in in your browser…" : "Sign in with your Anthropic account. No key to copy.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.text2)
+                if let e = model.login.error {
+                    Text(e).font(.system(size: 11.5)).foregroundStyle(Color(hex: "#9B2C2C")).lineLimit(2)
+                }
+            }
+            Spacer()
+            if model.login.running { ProgressView().controlSize(.small) }
+            Button("Sign in with Anthropic") { model.signInWithAnthropic() }
+                .buttonStyle(.glassProminent).tint(Theme.accent).controlSize(.large)
+                .disabled(model.login.running)
+        }
+        .padding(14)
+        .background(Theme.accentSoft.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: "#D3E5F6")))
+    }
+
+    private func providerRow(_ p: Provider) -> some View {
+        HStack(spacing: 12) {
+            LogoTile(small: true)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(p.name).font(.system(size: 13, weight: .semibold))
+                    Pill(text: p.hasKey == true ? "Connected" : "Needs a key", ok: p.hasKey == true)
+                }
+                if let r = testResult[p.id] { Text(r).font(.system(size: 11.5)).foregroundStyle(Theme.text2) }
+            }
+            Spacer()
+            if p.kind == "anthropic" {
+                Menu {
+                    ForEach(claudeModels, id: \.id) { m in
+                        Button(m.label) {
+                            Task { _ = await model.saveProvider(id: p.id, name: p.name, kind: p.kind, baseUrl: p.baseUrl, model: m.id, apiKey: nil) }
+                        }
+                    }
+                } label: {
+                    Text(claudeModels.first { $0.id == p.model }?.short ?? p.model).font(.system(size: 12))
+                }
+                .menuStyle(.button).fixedSize()
+            }
+            Menu {
+                Button("Test connection") {
+                    testResult[p.id] = "Testing…"
+                    Task {
+                        let t = await model.testProvider(p.id)
+                        testResult[p.id] = t.map { $0.ok ? "Works ✓" : ($0.error ?? "Failed") } ?? "Failed"
+                    }
+                }
+                if p.auth != "oauth" { Button("Edit…") { editing = p } }
+                Divider()
+                Button(p.auth == "oauth" ? "Sign out" : "Remove", role: .destructive) { model.deleteProvider(p.id) }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.button).menuIndicator(.hidden).fixedSize()
+            .accessibilityLabel("More")
+        }
+        .padding(12)
+        .background(Color(hex: "#F6FAFE"), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.line))
+    }
+}
+
+struct LogoTile: View {
+    var small = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: small ? 8 : 10)
+            .fill(LinearGradient(colors: [Color(hex: "#D97757"), Color(hex: "#C2603F")], startPoint: .top, endPoint: .bottom))
+            .overlay(Image(systemName: "sparkle").font(.system(size: small ? 13 : 17, weight: .semibold)).foregroundStyle(.white))
+            .frame(width: small ? 30 : 40, height: small ? 30 : 40)
+            .accessibilityHidden(true)
+    }
+}
+
+struct Pill: View {
+    let text: String
+    let ok: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10.5, weight: .semibold))
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .foregroundStyle(ok ? Color(hex: "#1E6B49") : Color(hex: "#9B2C2C"))
+            .background(ok ? Color(hex: "#E3F4EC") : Color(hex: "#FDEEEE"), in: Capsule())
     }
 }
 

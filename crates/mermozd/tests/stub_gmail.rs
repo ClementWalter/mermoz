@@ -251,6 +251,7 @@ async fn llm(
 ) -> Json<Value> {
     let key = headers
         .get("x-api-key")
+        .or_else(|| headers.get("authorization"))
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();

@@ -79,7 +79,10 @@ type MsgAgg = (String, String, bool, bool, i64, String, String, i64);
 
 /// Ordered schema migrations; `PRAGMA user_version` records how many ran.
 /// Append new steps, never edit shipped ones.
-const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS, SYNC_FAILURES, AGENT];
+const MIGRATIONS: &[&str] = &[SCHEMA, THREAD_LABELS, SYNC_FAILURES, AGENT, PROVIDER_AUTH];
+
+/// Providers signed in through Anthropic's OAuth login instead of a pasted key.
+const PROVIDER_AUTH: &str = "ALTER TABLE providers ADD COLUMN auth TEXT NOT NULL DEFAULT 'key'; ALTER TABLE providers ADD COLUMN profile TEXT;";
 
 /// Built-in agent: providers, per-account routing, cleaned messages and the contact directory.
 const AGENT: &str = r#"
@@ -1744,7 +1747,7 @@ impl Store {
     pub fn providers(&self) -> Result<Vec<crate::agent::Provider>> {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(
-            "SELECT id, name, kind, base_url, model FROM providers ORDER BY created",
+            "SELECT id, name, kind, base_url, model, auth, profile FROM providers ORDER BY created",
         )?;
         Ok(st
             .query_map([], |r| {
@@ -1754,6 +1757,8 @@ impl Store {
                     kind: r.get(2)?,
                     base_url: r.get(3)?,
                     model: r.get(4)?,
+                    auth: r.get(5)?,
+                    profile: r.get(6)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)
@@ -1772,9 +1777,10 @@ impl Store {
             ));
         }
         self.w.lock().unwrap().execute(
-            "INSERT INTO providers (id, name, kind, base_url, model, created) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, base_url = excluded.base_url, model = excluded.model",
-            params![p.id, p.name, p.kind, p.base_url, p.model, now_ms()],
+            "INSERT INTO providers (id, name, kind, base_url, model, created, auth, profile) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, base_url = excluded.base_url,
+               model = excluded.model, auth = excluded.auth, profile = excluded.profile",
+            params![p.id, p.name, p.kind, p.base_url, p.model, now_ms(), p.auth, p.profile],
         )?;
         Ok(())
     }
@@ -2454,6 +2460,8 @@ mod tests {
             kind: "anthropic".into(),
             base_url: None,
             model: "claude-opus-5-5".into(),
+            auth: "key".into(),
+            profile: None,
         })
         .unwrap();
         s.set_account_providers(&env.acc, &["*".into()]).unwrap();
@@ -2469,6 +2477,8 @@ mod tests {
             kind: "anthropic".into(),
             base_url: None,
             model: "m".into(),
+            auth: "key".into(),
+            profile: None,
         })
         .unwrap();
         assert!(s.provider_for_account(&env.acc).unwrap().is_none());

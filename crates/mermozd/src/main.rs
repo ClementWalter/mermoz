@@ -30,6 +30,7 @@ fn event_json(e: &Event) -> Value {
         }
         Event::DraftsChanged => json!({ "kind": "drafts_changed" }),
         Event::ContactsChanged => json!({ "kind": "contacts_changed" }),
+        Event::ProvidersChanged => json!({ "kind": "providers_changed" }),
     };
     json!({ "jsonrpc": "2.0", "method": "event", "params": params })
 }

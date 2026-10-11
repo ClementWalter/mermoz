@@ -22,6 +22,9 @@ struct MermozApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                SettingsCommand()
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Message") { model.startNew() }.keyboardShortcut("n")
             }
@@ -38,10 +41,22 @@ struct MermozApp: App {
             }
         }
 
-        Settings {
+        // A regular window (not the Settings scene) so it can share the main window's chrome.
+        Window("Mermoz Settings", id: "settings") {
             SettingsView()
                 .environment(model)
                 .preferredColorScheme(.light)
         }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 980, height: 680)
+    }
+}
+
+/// ⌘, opens the Settings window.
+struct SettingsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Settings…") { openWindow(id: "settings") }.keyboardShortcut(",")
     }
 }

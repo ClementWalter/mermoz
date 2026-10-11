@@ -114,6 +114,8 @@ func decodeEvent(_ p: [String: Any]) -> DaemonEvent {
         return .draftsChanged
     case "contacts_changed":
         return .contactsChanged
+    case "providers_changed":
+        return .providersChanged
     default:
         return .unknown(kind: kind)
     }

@@ -218,7 +218,19 @@ fn world() -> World {
         json!({ "client_id": "cid", "client_secret": "secret", "auth_url": format!("http://127.0.0.1:{port}/auth"), "token_url": format!("http://127.0.0.1:{port}/token") }).to_string(),
     )
     .unwrap();
+    // Stand-in for Anthropic's `ant` CLI: login succeeds, credentials print a fixed token.
+    let fake_ant = home.path().join("fake-ant");
+    std::fs::write(
+        &fake_ant,
+        "#!/usr/bin/env python3\nimport sys\na = sys.argv[1:]\nif a[:2] == ['auth', 'print-credentials']:\n    print('oauth-tok')\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_ant, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let daemon = Command::new(env!("CARGO_BIN_EXE_mermozd"))
+        .env("MERMOZ_ANT", &fake_ant)
         .env("MERMOZ_HOME", home.path())
         .env("MERMOZ_TOKEN_STORE", "file")
         .env(
@@ -361,6 +373,62 @@ fn agent_uses_the_stored_key(synced: World) {
         !w.mailbox.lock().unwrap().llm_keys.is_empty()
     });
     assert_eq!(synced.mailbox.lock().unwrap().llm_keys[0], "sk-test");
+}
+
+#[rstest]
+fn anthropic_sign_in_adds_a_connected_provider(synced: World) {
+    synced.ok("providers.login_anthropic", json!({}));
+    synced.wait_until("provider", |w| {
+        w.ok("providers.list", json!({}))
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    assert_eq!(synced.ok("providers.list", json!({}))[0]["auth"], "oauth");
+}
+
+#[rstest]
+fn signed_in_provider_calls_with_bearer_token(synced: World) {
+    synced.ok("providers.login_anthropic", json!({}));
+    synced.wait_until("provider", |w| {
+        w.ok("providers.list", json!({}))
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    let pr = synced.ok("providers.list", json!({}))[0]["id"].clone();
+    // Point the signed-in provider at the stub instead of the real API.
+    synced.ok(
+        "providers.save",
+        json!({ "id": pr, "name": "Claude", "kind": "anthropic", "model": "claude-opus-5-5",
+        "base_url": format!("http://127.0.0.1:{}", synced.port) }),
+    );
+    let acc = synced.ok("accounts.list", json!({}))[0]["id"].clone();
+    synced.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": ["*"], "digest_enabled": true }),
+    );
+    synced.wait_until("llm call", |w| {
+        !w.mailbox.lock().unwrap().llm_keys.is_empty()
+    });
+    assert_eq!(
+        synced.mailbox.lock().unwrap().llm_keys[0],
+        "Bearer oauth-tok"
+    );
+}
+
+#[rstest]
+fn agents_cannot_start_a_sign_in(synced: World) {
+    let script = r#"
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": "providers.login_anthropic", "params": {}}) + "\n").encode())
+print(s.makefile().readline())
+"#;
+    let out = Command::new("python3")
+        .args(["-c", script, synced.sock().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], -32011);
 }
 
 #[rstest]

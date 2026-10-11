@@ -339,7 +339,8 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .providers()?
                 .into_iter()
                 .map(|pr| {
-                    let has_key = mermoz_core::tokens::load_provider_key(&pr.id).is_ok();
+                    let has_key = pr.auth == "oauth"
+                        || mermoz_core::tokens::load_provider_key(&pr.id).is_ok();
                     let mut v = serde_json::to_value(&pr).unwrap_or_default();
                     v["has_key"] = json!(has_key);
                     v
@@ -349,7 +350,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         }
         "providers.save" => {
             app_only(caller, method)?;
+            let existing =
+                opt_s(p, "id").and_then(|id| st.providers().ok()?.into_iter().find(|x| x.id == id));
             let pr = mermoz_core::agent::Provider {
+                auth: existing
+                    .as_ref()
+                    .map(|e| e.auth.clone())
+                    .unwrap_or_else(|| "key".into()),
+                profile: existing.as_ref().and_then(|e| e.profile.clone()),
                 id: opt_s(p, "id").unwrap_or_else(|| new_id("prv")),
                 name: s(p, "name")?,
                 kind: s(p, "kind")?,
@@ -366,6 +374,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "providers.delete" => {
             app_only(caller, method)?;
             let id = s(p, "id")?;
+            if let Some(profile) = st
+                .providers()?
+                .into_iter()
+                .find(|x| x.id == id)
+                .and_then(|x| x.profile)
+            {
+                mermoz_core::ant::logout(&profile).await?;
+            }
             st.delete_provider(&id)?;
             mermoz_core::tokens::delete_provider_key(&id)?;
             Ok(json!({}))
@@ -377,7 +393,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .into_iter()
                 .find(|x| x.id == id)
                 .ok_or_else(|| RpcError::from(Error::NotFound(format!("provider {id}"))))?;
-            let key = mermoz_core::tokens::load_provider_key(&id)?;
+            let key = crate::service::credential(&pr).await?;
             let sample = "Hi Marc,\n\nThanks, see you Thursday.\n\nBest,\nLéa\n--\nLéa Dubois · Head of Ops · Acme\n+33 6 12 34 56 78";
             match mermoz_core::agent::Client::new()
                 .digest(
@@ -392,6 +408,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 Ok(d) => Ok(json!({ "ok": true, "clean_body": d.clean_body, "card": d.card })),
                 Err(e) => Ok(json!({ "ok": false, "error": e.to_string() })),
             }
+        }
+        "providers.login_anthropic" => {
+            app_only(caller, method)?;
+            svc.login_anthropic()?;
+            Ok(json!({ "started": true }))
+        }
+        "providers.login_status" => {
+            Ok(serde_json::to_value(svc.login.lock().unwrap().clone()).unwrap_or_default())
         }
         "accounts.agent.get" => {
             let acc = st.account(&s(p, "account_id")?)?;

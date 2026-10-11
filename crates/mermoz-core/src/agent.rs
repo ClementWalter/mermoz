@@ -15,6 +15,16 @@ pub struct Provider {
     pub kind: String,
     pub base_url: Option<String>,
     pub model: String,
+    /// "key" (pasted API key) or "oauth" (signed in through Anthropic's login).
+    #[serde(default = "default_auth")]
+    pub auth: String,
+    /// Login profile for "oauth" providers.
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+fn default_auth() -> String {
+    "key".into()
 }
 
 /// Contact details found in a signature; every field optional, the model leaves unknowns empty.
@@ -167,12 +177,22 @@ impl Client {
         let mut req = self
             .http
             .post(format!("{}/v1/messages", base.trim_end_matches('/')))
-            .header("x-api-key", key)
             .header("anthropic-version", "2023-06-01");
+        let mut betas: Vec<&str> = vec![];
+        // OAuth logins send a bearer token plus the oauth beta; pasted keys use x-api-key.
+        if p.auth == "oauth" {
+            req = req.bearer_auth(key);
+            betas.push("oauth-2025-04-20");
+        } else {
+            req = req.header("x-api-key", key);
+        }
         // Server-side refusal fallback where the model family supports it (not Haiku).
         if !p.model.contains("haiku") {
             body["fallbacks"] = json!("default");
-            req = req.header("anthropic-beta", "server-side-fallback-2026-07-01");
+            betas.push("server-side-fallback-2026-07-01");
+        }
+        if !betas.is_empty() {
+            req = req.header("anthropic-beta", betas.join(","));
         }
         let resp = req.json(&body).send().await?;
         let status = resp.status();

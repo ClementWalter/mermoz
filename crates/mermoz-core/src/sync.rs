@@ -24,6 +24,7 @@ pub enum Event {
     },
     DraftsChanged,
     ContactsChanged,
+    ProvidersChanged,
 }
 
 pub struct AccountSync {
