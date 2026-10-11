@@ -84,6 +84,8 @@ app, the CLI and the MCP server are clients of this protocol.
 | `labels.list`        | `{}`                                                                                     | `[{"account_id","id","name","count"}]` user labels ("mailboxes"), nested with `/` |
 | `projects.list`      | `{}`                                                                                     | `[Project]`                              |
 | `projects.create`    | `{"name", "color"?}`                                                                     | `Project`                                |
+| `projects.update`    | `{"id", "name"?, "color"?}` — renames the Gmail label on its threads                     | `Project`                                |
+| `projects.delete`    | `{"id"}` — its threads leave the project                                                 | `{"threads": n}`                         |
 | `counts`             | `{}`                                                                                     | `{"status": {key: n}, "project": {id: n}, "account": {id: n}}` (open threads only, except `done`/`canceled` which are omitted) |
 | `threads.list`       | `{"status"?: [key], "project_id"?, "account_id"?, "label_id"?, "priority"?: [n], "limit"?: 200, "offset"?: 0}` | `{"threads": [ThreadSummary], "total": n}` ordered by `last_date` desc |
 | `threads.get`        | `{"id"}`                                                                                 | `{"thread": ThreadSummary, "messages": [Message]}` |

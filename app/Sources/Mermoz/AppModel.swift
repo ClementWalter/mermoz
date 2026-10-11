@@ -511,6 +511,38 @@ final class AppModel {
         } catch { report(error); return nil }
     }
 
+    func renameProject(_ id: String, to name: String) {
+        guard let client, !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        Task {
+            do {
+                let p = try await client.updateProject(id, name: name.trimmingCharacters(in: .whitespaces))
+                if let i = projects.firstIndex(where: { $0.id == id }) { projects[i] = p }
+            } catch { report(error) }
+        }
+    }
+
+    func recolorProject(_ id: String, to color: String) {
+        guard let client else { return }
+        Task {
+            do {
+                let p = try await client.updateProject(id, color: color)
+                if let i = projects.firstIndex(where: { $0.id == id }) { projects[i] = p }
+            } catch { report(error) }
+        }
+    }
+
+    func deleteProject(_ id: String) {
+        guard let client else { return }
+        Task {
+            do {
+                try await client.deleteProject(id)
+                projects.removeAll { $0.id == id }
+                if selection == .project(id) { select(.status("triage")) } else { await loadList() }
+                await refreshCounts()
+            } catch { report(error) }
+        }
+    }
+
     func openAttachment(_ a: Attachment) {
         guard let client else { return }
         Task {

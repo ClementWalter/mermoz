@@ -87,6 +87,12 @@ public final class DaemonClient: Sendable {
 
     public func labels() async throws -> [MailLabel] { try await call("labels.list") }
 
+    public func updateProject(_ id: String, name: String? = nil, color: String? = nil) async throws -> Project {
+        try await call("projects.update", Params().with("id", id).with("name", name).with("color", color))
+    }
+
+    public func deleteProject(_ id: String) async throws { try await callVoid("projects.delete", Params().with("id", id)) }
+
     public func createProject(name: String, color: String?) async throws -> Project {
         try await call("projects.create", Params().with("name", name).with("color", color))
     }

@@ -628,6 +628,31 @@ fn chatgpt_calls_send_the_access_token(synced: World) {
 }
 
 #[rstest]
+fn deleting_a_project_removes_its_gmail_label(synced: World) {
+    let pr = synced.ok("projects.create", json!({ "name": "test" }));
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "project_id": pr["id"] }),
+    );
+    synced.wait_until("label added", |w| {
+        w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("Mermoz/Project/test")
+    });
+    synced.ok("projects.delete", json!({ "id": pr["id"] }));
+    synced.wait_until("label removed", |w| {
+        !w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("Mermoz/Project/test")
+    });
+}
+
+#[rstest]
 fn inbox_mail_lands_in_triage(synced: World) {
     assert_eq!(
         synced.thread_by_subject("Audit report v2")["status"],

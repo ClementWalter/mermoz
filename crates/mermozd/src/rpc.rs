@@ -128,6 +128,22 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "statuses.list" => to_value(st.statuses()?),
         "labels.list" => to_value(st.user_labels()?),
         "projects.list" => to_value(st.projects()?),
+        "projects.update" => {
+            let pr = st.update_project(
+                &s(p, "id")?,
+                opt_s(p, "name").as_deref(),
+                opt_s(p, "color").as_deref(),
+            )?;
+            let _ = svc.events.send(Event::ThreadsChanged(vec![]));
+            svc.kick_all();
+            to_value(pr)
+        }
+        "projects.delete" => {
+            let n = st.delete_project(&s(p, "id")?)?;
+            let _ = svc.events.send(Event::ThreadsChanged(vec![]));
+            svc.kick_all();
+            Ok(json!({ "threads": n }))
+        }
         "projects.create" => {
             to_value(st.create_project(&s(p, "name")?, opt_s(p, "color").as_deref())?)
         }

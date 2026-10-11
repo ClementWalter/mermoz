@@ -21,6 +21,12 @@ enum Theme {
     ]
 
     static let accountPalette = ["#1F6FB5", "#8A6FD1", "#2E9A6B", "#E0782F", "#C2568C", "#2F8FCF"]
+    static let projectColors = ["#5B8DEF", "#2F8FCF", "#2E9A6B", "#E0782F", "#D9534F", "#C2568C", "#8A6FD1", "#5A7386"]
+
+    static func colorName(_ hex: String) -> String {
+        ["#5B8DEF": "Blue", "#2F8FCF": "Sky", "#2E9A6B": "Green", "#E0782F": "Orange", "#D9534F": "Red",
+         "#C2568C": "Pink", "#8A6FD1": "Purple", "#5A7386": "Slate"][hex] ?? hex
+    }
 
     static func accountColor(_ id: String, among accounts: [Account]) -> Color {
         let i = accounts.firstIndex { $0.id == id } ?? 0

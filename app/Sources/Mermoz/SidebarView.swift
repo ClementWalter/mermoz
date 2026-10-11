@@ -6,6 +6,9 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @State private var addingProject = false
     @State private var newProject = ""
+    @State private var renaming: String?
+    @State private var renameText = ""
+    @State private var deleting: Project?
     @AppStorage("sidebar.labelsOpen") private var labelsOpen = true
 
     var body: some View {
@@ -43,9 +46,27 @@ struct SidebarView: View {
                     }
                     section("Projects") {
                         ForEach(model.projects) { p in
-                            row(.project(p.id), count: model.counts.project[p.id]) {
-                                RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
-                                Text(p.name)
+                            if renaming == p.id {
+                                TextField("Project name", text: $renameText)
+                                    .textFieldStyle(.plain)
+                                    .padding(.horizontal, 8).frame(height: 28)
+                                    .onSubmit { model.renameProject(p.id, to: renameText); renaming = nil }
+                                    .onExitCommand { renaming = nil }
+                            } else {
+                                row(.project(p.id), count: model.counts.project[p.id]) {
+                                    RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
+                                    Text(p.name)
+                                }
+                                .contextMenu {
+                                    Button("Rename…") { renameText = p.name; renaming = p.id }
+                                    Menu("Color") {
+                                        ForEach(Theme.projectColors, id: \.self) { c in
+                                            Button(Theme.colorName(c)) { model.recolorProject(p.id, to: c) }
+                                        }
+                                    }
+                                    Divider()
+                                    Button("Delete project…", role: .destructive) { deleting = p }
+                                }
                             }
                         }
                         if addingProject {
@@ -121,6 +142,14 @@ struct SidebarView: View {
         .padding(.vertical, 12)
         .frame(maxHeight: .infinity)
         .glassPanel()
+        .confirmationDialog("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Delete project", role: .destructive) {
+                if let p = deleting { model.deleteProject(p.id) }
+                deleting = nil
+            }
+        } message: {
+            Text("Its threads stay where they are; they just leave the project.")
+        }
     }
 
     private func section<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {

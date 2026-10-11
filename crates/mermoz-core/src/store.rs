@@ -1649,6 +1649,104 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Renames and/or recolors a project; its threads get their Gmail label renamed.
+    pub fn update_project(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<Project> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        if tx
+            .query_row("SELECT 1 FROM projects WHERE id = ?1", [id], |_| Ok(()))
+            .optional()?
+            .is_none()
+        {
+            return Err(Error::NotFound(format!("project {id}")));
+        }
+        if let Some(n) = name {
+            let n = n.trim();
+            if n.is_empty() || n.contains('/') {
+                return Err(Error::InvalidParams(
+                    "project name must be non-empty and contain no '/'".into(),
+                ));
+            }
+            if tx
+                .query_row(
+                    "SELECT 1 FROM projects WHERE name = ?1 AND id != ?2",
+                    params![n, id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some()
+            {
+                return Err(Error::InvalidParams(format!(
+                    "a project named '{n}' already exists"
+                )));
+            }
+            tx.execute(
+                "UPDATE projects SET name = ?2 WHERE id = ?1",
+                params![id, n],
+            )?;
+            Self::relabel_project_threads(&tx, id)?;
+        }
+        if let Some(c) = color {
+            tx.execute(
+                "UPDATE projects SET color = ?2 WHERE id = ?1",
+                params![id, c],
+            )?;
+        }
+        let p = tx.query_row(
+            "SELECT id, name, color FROM projects WHERE id = ?1",
+            [id],
+            |r| {
+                Ok(Project {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    color: r.get(2)?,
+                })
+            },
+        )?;
+        tx.commit()?;
+        Ok(p)
+    }
+
+    /// Deletes a project: its threads leave it (and lose the Gmail label), nothing else changes.
+    pub fn delete_project(&self, id: &str) -> Result<usize> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let threads: Vec<(String, String)> = {
+            let mut st = tx.prepare("SELECT id, account_id FROM threads WHERE project_id = ?1")?;
+            st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        tx.execute(
+            "UPDATE threads SET project_id = NULL WHERE project_id = ?1",
+            [id],
+        )?;
+        if tx.execute("DELETE FROM projects WHERE id = ?1", [id])? == 0 {
+            return Err(Error::NotFound(format!("project {id}")));
+        }
+        for (t, acc) in &threads {
+            Self::enqueue_label_sync_tx(&tx, acc, t)?;
+        }
+        tx.commit()?;
+        Ok(threads.len())
+    }
+
+    fn relabel_project_threads(tx: &Connection, project_id: &str) -> Result<()> {
+        let threads: Vec<(String, String)> = {
+            let mut st = tx.prepare("SELECT id, account_id FROM threads WHERE project_id = ?1")?;
+            st.query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        for (t, acc) in &threads {
+            Self::enqueue_label_sync_tx(tx, acc, t)?;
+        }
+        Ok(())
+    }
+
     pub fn create_project(&self, name: &str, color: Option<&str>) -> Result<Project> {
         let name = name.trim();
         if name.is_empty() || name.contains('/') {
@@ -3099,6 +3197,50 @@ mod tests {
             .map(|p| p.card.name)
             .collect();
         assert_eq!(names, vec!["Adèle Lieber"]);
+    }
+
+    #[rstest]
+    fn deleting_a_project_frees_its_threads(env: Env) {
+        let s = &env.store;
+        let tid = s
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        let p = s.create_project("test", None).unwrap();
+        s.update_threads(
+            std::slice::from_ref(&tid),
+            &ThreadPatch {
+                project_id: Some(Some(p.id.clone())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.delete_project(&p.id).unwrap();
+        assert_eq!(s.thread(&tid).unwrap().project_id, None);
+    }
+
+    #[rstest]
+    fn renaming_to_an_existing_name_is_refused(env: Env) {
+        let s = &env.store;
+        s.create_project("Hiring", None).unwrap();
+        let p = s.create_project("test", None).unwrap();
+        assert!(s.update_project(&p.id, Some("Hiring"), None).is_err());
+    }
+
+    #[rstest]
+    fn renaming_updates_the_name(env: Env) {
+        let s = &env.store;
+        let p = s.create_project("test", None).unwrap();
+        assert_eq!(
+            s.update_project(&p.id, Some("Q4 audit"), None)
+                .unwrap()
+                .name,
+            "Q4 audit"
+        );
     }
 
     #[rstest]
