@@ -17,7 +17,9 @@ tracked as issues (Linear-style), not as a pile in an inbox.
    doesn't earn its place.
 6. **Plain language.** The app is for everyday users: the UI never shows
    terminals, CLI/MCP, model ids or endpoints. Agents are just "agents";
-   providers are "Work AI", "Personal AI". Developer surfaces live in docs.
+   providers are "Work AI", "Personal AI". Developer surfaces (CLI install,
+   MCP setup, agent permissions, agent feedback log) live only in a separate
+   Settings › Developer section.
 
 ## Target
 
