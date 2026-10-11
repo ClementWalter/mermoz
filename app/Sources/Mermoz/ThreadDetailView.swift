@@ -136,7 +136,7 @@ struct IssueToolbar: View {
                 .help("Archive (a)").accessibilityLabel("Archive")
             Button { model.moveSelected(to: "deleted") } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain).foregroundStyle(Theme.text2)
-                .help("Delete (#)").accessibilityLabel("Delete")
+                .help("Delete (⌫)").accessibilityLabel("Delete")
         }
         .padding(.horizontal, 12)
         .frame(height: 50)

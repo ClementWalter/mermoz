@@ -41,6 +41,10 @@ struct MermozApp: App {
                 Button("Search or Ask…") { model.paletteMode = .search }.keyboardShortcut("k")
                 Button("Reply") { model.startReply() }.keyboardShortcut("r", modifiers: [.command])
                 Button("Mark Done") { model.markDoneSelected() }.keyboardShortcut("e", modifiers: [.command])
+                // Disabled while writing or searching, so ⌘⌫ keeps deleting text in fields.
+                Button("Delete") { model.moveSelected(to: "deleted") }
+                    .keyboardShortcut(.delete, modifiers: [.command])
+                    .disabled(model.selectedThreadId == nil || model.compose != nil || model.paletteMode != nil)
                 Divider()
                 Button("Keyboard Shortcuts") { model.showShortcuts.toggle() }.keyboardShortcut("/")
                 Divider()

@@ -55,6 +55,11 @@ struct ThreadListView: View {
         .onKeyPress(characters: .init(charactersIn: ThreadKeys.characters), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in
+            guard model.selectedThreadId != nil else { return .ignored }
+            model.moveSelected(to: "deleted")
+            return .handled
+        }
         .onKeyPress(.downArrow) { model.moveSelection(1); return .handled }
         .onKeyPress(.upArrow) { model.moveSelection(-1); return .handled }
         .onKeyPress(.return) {

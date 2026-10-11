@@ -50,6 +50,11 @@ struct BoardView: View {
         .onKeyPress(characters: .init(charactersIn: ThreadKeys.characters), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in
+            guard model.selectedThreadId != nil else { return .ignored }
+            model.moveSelected(to: "deleted")
+            return .handled
+        }
         .onKeyPress(.leftArrow) { model.moveBoard(dx: -1, dy: 0); return .handled }
         .onKeyPress(.rightArrow) { model.moveBoard(dx: 1, dy: 0); return .handled }
         .onKeyPress(.upArrow) { model.moveBoard(dx: 0, dy: -1); return .handled }
