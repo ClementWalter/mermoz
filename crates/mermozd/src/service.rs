@@ -171,13 +171,18 @@ async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
     }
 }
 
+/// Anything short of a finished import ("idle") resumes, including after an error.
+fn import_needed(state: &str) -> bool {
+    state != "idle"
+}
+
 fn ensure_import(svc: &Arc<Service>, w: &Arc<Worker>) {
     let state = svc
         .store
         .account(&w.sync.account_id)
         .map(|a| a.sync.state)
         .unwrap_or_default();
-    if state != "initial" && state != "syncing" {
+    if !import_needed(&state) {
         return;
     }
     let mut running = w.importing.lock().unwrap();
@@ -210,4 +215,19 @@ fn ensure_import(svc: &Arc<Service>, w: &Arc<Worker>) {
         }
         *w.importing.lock().unwrap() = false;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_needed;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::fresh("initial", true)]
+    #[case::running("syncing", true)]
+    #[case::after_error("error", true)]
+    #[case::finished("idle", false)]
+    fn import_resumes_unless_finished(#[case] state: &str, #[case] want: bool) {
+        assert_eq!(import_needed(state), want);
+    }
 }
