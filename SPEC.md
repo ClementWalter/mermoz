@@ -15,6 +15,9 @@ tracked as issues (Linear-style), not as a pile in an inbox.
    flows through a workflow.
 5. **Minimal.** Three panes, keyboard-first, Liquid Glass. No chrome that
    doesn't earn its place.
+6. **Plain language.** The app is for everyday users: the UI never shows
+   terminals, CLI/MCP, model ids or endpoints. Agents are just "agents";
+   providers are "Work AI", "Personal AI". Developer surfaces live in docs.
 
 ## Target
 
