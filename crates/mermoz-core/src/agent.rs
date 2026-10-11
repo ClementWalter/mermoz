@@ -69,7 +69,7 @@ pub const MAX_INPUT_CHARS: usize = 40_000;
 const SYSTEM: &str = "You prepare emails for reading in a mail client.\n\n\
 Given one email, return:\n\
 1. clean_body: the message as its author meant it, in its original language, with every word of substance kept verbatim. \
-Remove: quoted earlier messages, signatures, legal disclaimers, confidentiality notices, \"sent from my phone\" footers, unsubscribe and tracking boilerplate, \
+A forwarded email is content, not quoted history: keep it. Remove: quoted earlier messages of a reply, signatures, legal disclaimers, confidentiality notices, \"sent from my phone\" footers, unsubscribe and tracking boilerplate, \
 and leftover formatting debris (stray symbols, repeated blank lines, broken line wraps). Keep greetings and sign-off names. \
 Format it with light Markdown so it reads well: paragraphs separated by one blank line, lists as \"- \" lines, \
 **bold** only for headings or labels the author used, links as [label](url) or the bare URL. Never summarize, translate, rephrase or add anything.\n\
@@ -96,7 +96,14 @@ fn schema() -> Value {
 }
 
 fn user_prompt(from: &str, subject: &str, body: &str) -> String {
-    format!("From: {from}\nSubject: {subject}\n\n<email>\n{body}\n</email>")
+    // A forward's header block looks like a quoted reply; say which it is.
+    let note = if crate::quote::is_forward(subject) {
+        "\nThis email FORWARDS another email: the forwarded email is the content. Keep it in full \
+         (after the sender's own note), introduced by one line \"Forwarded from <sender>, <date>:\".\n"
+    } else {
+        ""
+    };
+    format!("From: {from}\nSubject: {subject}\n{note}\n<email>\n{body}\n</email>")
 }
 
 pub struct Client {
@@ -475,5 +482,15 @@ mod tests {
     #[rstest]
     fn schema_requires_both_fields() {
         assert_eq!(schema()["required"], json!(["clean_body", "card"]));
+    }
+
+    #[rstest::rstest]
+    fn forwards_are_flagged_to_the_model() {
+        assert!(user_prompt("Aude", "TR: Event", "body").contains("FORWARDS another email"));
+    }
+
+    #[rstest::rstest]
+    fn replies_are_not_flagged_as_forwards() {
+        assert!(!user_prompt("Aude", "RE: Event", "body").contains("FORWARDS"));
     }
 }

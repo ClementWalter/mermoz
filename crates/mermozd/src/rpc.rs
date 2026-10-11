@@ -226,8 +226,11 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             Ok(json!({}))
         }
         "messages.html" => {
-            let html = st.message_html(&s(p, "id")?)?.unwrap_or_default();
-            let full = p.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let (html, subject) = st.message_html(&s(p, "id")?)?;
+            let html = html.unwrap_or_default();
+            // A forward is shown whole: its header block is content, not quoted history.
+            let full = p.get("full").and_then(|v| v.as_bool()).unwrap_or(false)
+                || mermoz_core::quote::is_forward(&subject);
             let (html, has_quoted) = if full {
                 (html, false)
             } else {

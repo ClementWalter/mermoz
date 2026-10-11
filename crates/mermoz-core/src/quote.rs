@@ -181,6 +181,14 @@ const HTML_MARKERS: &[&str] = &[
     "<hr id=\"stopspelling\"",
 ];
 
+/// Whether the subject marks a forward ("TR:", "Fwd:", "WG:"…): the forwarded email,
+/// though it looks like a quoted reply, is then the content.
+pub fn is_forward(subject: &str) -> bool {
+    let s = subject.trim_start().to_lowercase();
+    let head = s.split(':').next().unwrap_or("").trim();
+    s.contains(':') && ["tr", "fwd", "fw", "wg", "rv", "enc", "i"].contains(&head)
+}
+
 /// Cuts an HTML body at the first quote marker; the sanitizer repairs the open tags.
 pub fn split_html(html: &str) -> (String, bool) {
     // ASCII-only lowercasing keeps byte offsets identical to `html` (the markers are ASCII).
@@ -257,6 +265,19 @@ mod tests {
         let html =
             r#"<p>Merci</p><div id="appendonsend"></div><hr><div id="divRplyFwdMsg">From: x</div>"#;
         assert_eq!(split_html(html).0, "<p>Merci</p>");
+    }
+
+    #[rstest]
+    #[case::outlook_french("TR: Exceptional Event", true)]
+    #[case::gmail("Fwd: Statement", true)]
+    #[case::outlook("FW: report", true)]
+    #[case::german("WG: Termin", true)]
+    #[case::spaced_colon("TR : invitation", true)]
+    #[case::reply_to_a_forward("RE: TR: invitation", false)]
+    #[case::plain("Trip to Rome", false)]
+    #[case::no_colon("Fwd", false)]
+    fn forward_subjects(#[case] subject: &str, #[case] want: bool) {
+        assert_eq!(is_forward(subject), want);
     }
 
     #[rstest]

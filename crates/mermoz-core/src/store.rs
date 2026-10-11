@@ -1540,7 +1540,12 @@ impl Store {
             "SELECT id, filename, mime, size FROM attachments WHERE message_id = ?1",
         )?;
         for m in &mut msgs {
-            (m.body_new, m.has_quoted) = crate::quote::readable(&m.body_text);
+            // A forward's header looks like quoted history but is the content.
+            (m.body_new, m.has_quoted) = if crate::quote::is_forward(&m.subject) {
+                (m.body_text.trim().to_string(), false)
+            } else {
+                crate::quote::readable(&m.body_text)
+            };
             m.attachments = st
                 .query_map([&m.id], |r| {
                     Ok(AttachmentInfo {
@@ -1555,11 +1560,14 @@ impl Store {
         Ok(msgs)
     }
 
-    pub fn message_html(&self, id: &str) -> Result<Option<String>> {
+    /// (HTML body, subject) of a message.
+    pub fn message_html(&self, id: &str) -> Result<(Option<String>, String)> {
         let r = self.r.lock().unwrap();
-        r.query_row("SELECT body_html FROM messages WHERE id = ?1", [id], |r| {
-            r.get::<_, Option<String>>(0)
-        })
+        r.query_row(
+            "SELECT body_html, subject FROM messages WHERE id = ?1",
+            [id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get(1)?)),
+        )
         .optional()?
         .ok_or_else(|| Error::NotFound(format!("message {id}")))
     }
@@ -4850,5 +4858,27 @@ mod tests {
     #[rstest]
     fn reorder_must_list_every_status(env: Env) {
         assert!(env.store.reorder_statuses(&["todo".to_string()]).is_err());
+    }
+
+    #[rstest]
+    fn a_forward_shows_the_forwarded_email(env: Env) {
+        let mut m = incoming(
+            "m1",
+            "t1",
+            "aude@x.com",
+            &["INBOX"],
+            now_ms(),
+            "Cela t'intéresse ?\n\nAude\n\nDe : Hub Finance <hub@x.com>\nEnvoyé : mardi 6 octobre 2026\nÀ : Aude\nObjet : Event\n\nWe warmly invite you",
+        );
+        m.parsed.subject = "TR: Event".into();
+        let tid = env
+            .store
+            .ingest(&env.acc, "me@example.com", &m, SyncMode::Initial)
+            .unwrap();
+        assert!(
+            env.store.messages(&tid).unwrap()[0]
+                .body_new
+                .contains("We warmly invite you")
+        );
     }
 }
