@@ -332,7 +332,7 @@ pub fn person_key(name: &str) -> String {
 /// Address-book order: family name, then the rest. "(Airbnb)"-style suffixes are ignored,
 /// a leading ALL-CAPS word is the family name ("NAGEOTTE Pierre"), and entries that are
 /// just an address sort last.
-pub fn sort_key(name: &str) -> (bool, String, String) {
+pub fn sort_key(name: &str) -> (bool, bool, String, String) {
     let mut clean = String::new();
     let mut depth = 0;
     for c in name.chars() {
@@ -358,7 +358,9 @@ pub fn sort_key(name: &str) -> (bool, String, String) {
     .copied()
     .unwrap_or("")
     .to_string();
-    (name.contains('@'), family, key)
+    // Entries not starting with a letter ("09filali", "ICASP 12") follow the alphabet.
+    let not_alpha = !family.chars().next().is_some_and(|c| c.is_alphabetic());
+    (name.contains('@'), not_alpha, family, key)
 }
 
 /// Automated senders never belong in a people directory.
@@ -2861,8 +2863,14 @@ mod tests {
     #[case::caps_family_first("NAGEOTTE Pierre-Etienne (75)", "nageotte")]
     #[case::suffix_ignored("Amanda (Airbnb)", "amanda")]
     #[case::comma("Delobelle, Anne-Charlotte", "delobelle")]
+    #[case::digits_kept("ICASP 12", "12")]
     fn family_name_for_sorting(#[case] name: &str, #[case] want: &str) {
-        assert_eq!(sort_key(name).1, want);
+        assert_eq!(sort_key(name).2, want);
+    }
+
+    #[rstest]
+    fn digit_names_sort_after_letters() {
+        assert!(sort_key("09filali") > sort_key("Zoé Martin"));
     }
 
     #[rstest]
