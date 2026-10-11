@@ -2116,6 +2116,12 @@ impl Store {
                 .map(|c| c.card.name.clone())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| display_person(&name));
+            // Nameless correspondents show (and sort) as their address.
+            let display = if display.trim().is_empty() {
+                email.clone()
+            } else {
+                display
+            };
             let key = person_key(&display);
             let card_data = card.map(|c| c.card.clone()).unwrap_or_default();
             let merge_key = if key.split(' ').count() >= 2 {
