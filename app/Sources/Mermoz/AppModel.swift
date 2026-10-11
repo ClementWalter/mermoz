@@ -209,7 +209,8 @@ final class AppModel {
         var statuses: [String]? = open
         switch selection {
         case let .status(k): if layout == .list { statuses = [k] }
-        case let .project(id): project = id
+        // A project is a Gmail label: it shows everything filed there, archived mail included.
+        case let .project(id): project = id; statuses = nil
         case let .account(id): accountId = id
         case let .label(acc, id): accountId = acc; labelId = id; statuses = nil
         case .people: return
@@ -303,9 +304,13 @@ final class AppModel {
         }
     }
 
-    /// Mailboxes read chronologically unless the user picked another grouping.
+    /// Labels and projects read chronologically unless the user picked another grouping.
     var effectiveDisplay: DisplayOptions {
-        if case .label = selection, layout == .list, listDisplay.grouping == .priority {
+        let mailbox: Bool = switch selection {
+        case .label, .project: true
+        default: false
+        }
+        if mailbox, layout == .list, listDisplay.grouping == .priority {
             return DisplayOptions(grouping: .none, ordering: listDisplay.ordering)
         }
         return display
