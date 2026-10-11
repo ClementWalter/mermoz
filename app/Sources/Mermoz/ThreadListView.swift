@@ -52,6 +52,10 @@ struct ThreadListView: View {
         .focused($focused)
         .focusEffectDisabled()
         .onAppear { focused = true }
+        // Overlays (⌘K, help, compose) take the keyboard; give it back when they close.
+        .onChange(of: model.paletteMode) { _, m in if m == nil { focused = true } }
+        .onChange(of: model.showShortcuts) { _, on in if !on { focused = true } }
+        .onChange(of: model.compose == nil) { _, closed in if closed { focused = true } }
         .onKeyPress(characters: .init(charactersIn: ThreadKeys.characters), phases: .down) { press in
             ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
         }
