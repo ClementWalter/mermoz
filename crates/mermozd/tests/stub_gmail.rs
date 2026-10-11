@@ -251,8 +251,24 @@ async fn send(State(s): State<Shared>, Json(body): Json<Value>) -> Json<Value> {
 async fn llm(
     State(s): State<Shared>,
     headers: axum::http::HeaderMap,
-    Json(_body): Json<Value>,
+    Json(body): Json<Value>,
 ) -> Json<Value> {
+    // Triage requests (schema with "moves"): send every listed thread to Done.
+    if body["output_config"]["format"]["schema"]["required"][0] == "moves" {
+        let input: Value =
+            serde_json::from_str(body["messages"][0]["content"].as_str().unwrap_or("{}"))
+                .unwrap_or_default();
+        let moves: Vec<Value> = input["threads"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|t| json!({ "number": t["number"], "status": "done", "priority": 0, "reason": "nothing to do" }))
+            .collect();
+        let text = json!({ "moves": moves }).to_string();
+        return Json(
+            json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
+        );
+    }
     let key = headers
         .get("x-api-key")
         .or_else(|| headers.get("authorization"))

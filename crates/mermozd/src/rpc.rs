@@ -142,7 +142,8 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 project_id: opt_s(p, "project_id"),
                 account_id: opt_s(p, "account_id"),
                 label_id: opt_s(p, "label_id"),
-                participant: opt_s(p, "participant"),
+                participants: str_list(p, "participant")?,
+                order: opt_s(p, "order"),
                 priority,
                 limit: p
                     .get("limit")
@@ -476,18 +477,111 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let limit = p
                 .get("limit")
                 .and_then(|v| v.as_i64())
-                .unwrap_or(200)
-                .clamp(1, 5000);
-            to_value(st.contacts(opt_s(p, "query").as_deref(), limit)?)
+                .unwrap_or(500)
+                .clamp(1, 10000);
+            to_value(st.people(opt_s(p, "query").as_deref(), limit)?)
         }
         "contacts.get" => {
-            let c = st.contact(&s(p, "email")?)?;
+            let person = st.person(&s(p, "email")?)?;
             let (threads, _) = st.threads(&ThreadFilter {
-                participant: Some(c.email.clone()),
+                participants: Some(person.emails.clone()),
                 limit: 50,
                 ..Default::default()
             })?;
-            Ok(json!({ "contact": c, "threads": threads }))
+            Ok(json!({ "contact": person, "threads": threads }))
+        }
+        "agent.clean" => {
+            let id = st.resolve_thread_id(&s(p, "id")?)?;
+            let (account, _) = st.provider_thread_id(&id)?;
+            let pr = st.provider_for_account(&account)?.ok_or_else(|| {
+                RpcError::invalid("Allow an AI for this account in Settings › Agents first.")
+            })?;
+            let key = crate::service::credential(&pr).await?;
+            let client = mermoz_core::agent::Client::new();
+            let mut cleaned = 0;
+            for (mid, from_name, from_email, subject, body) in st.thread_digest_inputs(&id)? {
+                let from = if from_name.is_empty() {
+                    from_email
+                } else {
+                    format!("{from_name} <{from_email}>")
+                };
+                let outcome = client.digest(&pr, &key, &from, &subject, &body).await;
+                if let Err(e) = &outcome
+                    && matches!(e, Error::Http(_) | Error::Upstream { .. })
+                {
+                    return Err(RpcError::invalid(e.to_string()));
+                }
+                st.save_digest(&mid, &pr.id, &outcome)?;
+                cleaned += outcome.is_ok() as i64;
+            }
+            let _ = svc.events.send(Event::ThreadsChanged(vec![id]));
+            let _ = svc.events.send(Event::ContactsChanged);
+            Ok(json!({ "cleaned": cleaned }))
+        }
+        "agent.triage" => {
+            let status = s(p, "status")?;
+            let limit = p
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(40)
+                .clamp(1, 200);
+            let statuses: Vec<(String, String)> = st
+                .statuses()?
+                .into_iter()
+                .filter(|x| x.key != "review")
+                .map(|x| (x.key, x.name))
+                .collect();
+            let items = st.triage_items(&status, limit)?;
+            let mut by_account: std::collections::BTreeMap<
+                String,
+                Vec<(String, mermoz_core::agent::TriageItem)>,
+            > = Default::default();
+            for (tid, acc, item) in items {
+                by_account.entry(acc).or_default().push((tid, item));
+            }
+            let client = mermoz_core::agent::Client::new();
+            let (mut examined, mut moves_out, mut changed) = (0, vec![], vec![]);
+            let mut any_provider = false;
+            for (acc, group) in by_account {
+                let Some(pr) = st.provider_for_account(&acc)? else {
+                    continue;
+                };
+                any_provider = true;
+                let key = crate::service::credential(&pr).await?;
+                for chunk in group.chunks(20) {
+                    let items: Vec<_> = chunk.iter().map(|(_, i)| i.clone()).collect();
+                    let moves = client
+                        .triage(&pr, &key, &statuses, &items)
+                        .await
+                        .map_err(|e| RpcError::invalid(e.to_string()))?;
+                    examined += chunk.len();
+                    for m in moves {
+                        let Some((tid, item)) = chunk.iter().find(|(_, i)| i.number == m.number)
+                        else {
+                            continue;
+                        };
+                        if m.status == item.current_status && m.priority == 0 {
+                            continue;
+                        }
+                        let patch = ThreadPatch {
+                            status: (m.status != item.current_status).then(|| m.status.clone()),
+                            priority: (m.priority != 0 || m.status == "done").then_some(m.priority),
+                            ..Default::default()
+                        };
+                        st.update_threads(std::slice::from_ref(tid), &patch)?;
+                        changed.push(tid.clone());
+                        moves_out.push(json!({ "number": m.number, "subject": item.subject, "from": item.current_status, "to": m.status, "priority": m.priority, "reason": m.reason }));
+                    }
+                }
+                svc.kick(&acc);
+            }
+            if !any_provider {
+                return Err(RpcError::invalid(
+                    "Allow an AI for these accounts in Settings › Agents first.",
+                ));
+            }
+            let _ = svc.events.send(Event::ThreadsChanged(changed));
+            Ok(json!({ "examined": examined, "moved": moves_out.len(), "moves": moves_out }))
         }
         "settings.get" => Ok(
             json!({ "agents_may_send": st.setting("agents_may_send")?.as_deref() == Some("true") }),

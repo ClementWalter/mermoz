@@ -117,6 +117,55 @@ impl Client {
         Self { http }
     }
 
+    /// One structured call on any provider kind; returns the raw JSON text.
+    pub async fn complete(
+        &self,
+        p: &Provider,
+        key: &str,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> Result<String> {
+        match p.kind.as_str() {
+            "anthropic" => self.anthropic(p, key, system, user, schema).await,
+            "chatgpt" => crate::chatgpt::respond(key, &p.model, system, user, schema).await,
+            "openai" => self.openai(p, key, system, user, schema).await,
+            other => Err(Error::InvalidParams(format!(
+                "unknown provider kind '{other}'"
+            ))),
+        }
+    }
+
+    /// Asks the AI where each thread belongs; returns its proposed moves.
+    pub async fn triage(
+        &self,
+        p: &Provider,
+        key: &str,
+        statuses: &[(String, String)],
+        threads: &[TriageItem],
+    ) -> Result<Vec<TriageMove>> {
+        let keys: Vec<&str> = statuses.iter().map(|(k, _)| k.as_str()).collect();
+        let schema = json!({
+            "type": "object", "additionalProperties": false, "required": ["moves"],
+            "properties": { "moves": { "type": "array", "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["number", "status", "priority", "reason"],
+                "properties": {
+                    "number": { "type": "string" },
+                    "status": { "type": "string", "enum": keys },
+                    "priority": { "type": "integer", "enum": [0, 1, 2, 3, 4] },
+                    "reason": { "type": "string" }
+                } } } }
+        });
+        let user = serde_json::to_string_pretty(&json!({ "threads": threads }))?;
+        let raw = self
+            .complete(p, key, &triage_system(statuses), &user, &schema)
+            .await?;
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|_| Error::other("provider returned malformed JSON"))?;
+        Ok(serde_json::from_value(v["moves"].clone()).unwrap_or_default())
+    }
+
     /// One call per message; the stable system prompt is cached across calls.
     pub async fn digest(
         &self,
@@ -129,31 +178,15 @@ impl Client {
         if body.chars().count() > MAX_INPUT_CHARS {
             return Err(Error::InvalidParams("message too long to clean".into()));
         }
-        let raw = match p.kind.as_str() {
-            "anthropic" => {
-                self.anthropic(p, api_key, &user_prompt(from, subject, body))
-                    .await?
-            }
-            "chatgpt" => {
-                crate::chatgpt::respond(
-                    api_key,
-                    &p.model,
-                    SYSTEM,
-                    &user_prompt(from, subject, body),
-                    &schema(),
-                )
-                .await?
-            }
-            "openai" => {
-                self.openai(p, api_key, &user_prompt(from, subject, body))
-                    .await?
-            }
-            other => {
-                return Err(Error::InvalidParams(format!(
-                    "unknown provider kind '{other}'"
-                )));
-            }
-        };
+        let raw = self
+            .complete(
+                p,
+                api_key,
+                SYSTEM,
+                &user_prompt(from, subject, body),
+                &schema(),
+            )
+            .await?;
         let mut d: Digest = serde_json::from_str::<Value>(&raw)
             .ok()
             .and_then(|v| {
@@ -171,7 +204,14 @@ impl Client {
         Ok(d)
     }
 
-    async fn anthropic(&self, p: &Provider, key: &str, user: &str) -> Result<String> {
+    async fn anthropic(
+        &self,
+        p: &Provider,
+        key: &str,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> Result<String> {
         let base = p
             .base_url
             .clone()
@@ -179,10 +219,10 @@ impl Client {
         let mut body = json!({
             "model": p.model,
             "max_tokens": 16000,
-            "system": [{ "type": "text", "text": SYSTEM, "cache_control": { "type": "ephemeral" } }],
+            "system": [{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }],
             "messages": [{ "role": "user", "content": user }],
             // Mechanical rewrite + extraction: low effort keeps it fast and cheap.
-            "output_config": { "effort": "low", "format": { "type": "json_schema", "schema": schema() } }
+            "output_config": { "effort": "low", "format": { "type": "json_schema", "schema": schema } }
         });
         let mut req = self
             .http
@@ -226,14 +266,21 @@ impl Client {
             .ok_or_else(|| Error::other("no text in provider response"))
     }
 
-    async fn openai(&self, p: &Provider, key: &str, user: &str) -> Result<String> {
+    async fn openai(
+        &self,
+        p: &Provider,
+        key: &str,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> Result<String> {
         let base = p.base_url.clone().ok_or_else(|| {
             Error::InvalidParams("OpenAI-compatible provider needs a base URL".into())
         })?;
         let body = json!({
             "model": p.model,
-            "messages": [{ "role": "system", "content": SYSTEM }, { "role": "user", "content": user }],
-            "response_format": { "type": "json_schema", "json_schema": { "name": "digest", "strict": true, "schema": schema() } }
+            "messages": [{ "role": "system", "content": system }, { "role": "user", "content": user }],
+            "response_format": { "type": "json_schema", "json_schema": { "name": "result", "strict": true, "schema": schema } }
         });
         let resp = self
             .http
@@ -255,6 +302,44 @@ impl Client {
             .map(|s| s.to_string())
             .ok_or_else(|| Error::other("no content in provider response"))
     }
+}
+
+/// What the triage model sees about one thread.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TriageItem {
+    pub number: String,
+    pub subject: String,
+    pub from: String,
+    pub last_from_me: bool,
+    pub unread: bool,
+    pub messages: i64,
+    pub days_since_last: i64,
+    pub current_status: String,
+    pub excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TriageMove {
+    pub number: String,
+    pub status: String,
+    pub priority: i64,
+    pub reason: String,
+}
+
+fn triage_system(statuses: &[(String, String)]) -> String {
+    let list: Vec<String> = statuses.iter().map(|(k, n)| format!("{k} ({n})")).collect();
+    format!(
+        "You triage an email inbox organized like an issue tracker. For every thread, choose where it belongs now.\n\
+Statuses: {}.\n\
+- todo: the user must act (reply, decide, pay, sign, attend).\n\
+- waiting: the user wrote last and is waiting on someone else.\n\
+- done: nothing left to do: newsletters, notifications, receipts, confirmations, FYI, finished conversations, old threads nobody will act on.\n\
+- backlog: worth doing some day, not now.\n\
+- in_progress: the user is actively working on it.\n\
+Priority: 1 urgent, 2 high, 3 normal, 4 low, 0 none (use 0 for done).\n\
+Keep the current status when unsure. Return every thread once, by its number, with a reason of a few words in the email's language.",
+        list.join(", ")
+    )
 }
 
 /// Merges a newly seen card into the stored one: newer non-empty fields win, lists are unioned.

@@ -350,6 +350,48 @@ fn agent_builds_directory_from_signatures(synced: World) {
 }
 
 #[rstest]
+fn ai_triage_moves_a_column(synced: World) {
+    enable_agent(&synced);
+    let v = synced.ok("agent.triage", json!({ "status": "triage" }));
+    assert_eq!(v["moved"], 2);
+}
+
+#[rstest]
+fn ai_triage_applies_the_moves(synced: World) {
+    enable_agent(&synced);
+    synced.ok("agent.triage", json!({ "status": "triage" }));
+    assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "done");
+}
+
+#[rstest]
+fn ai_triage_needs_an_allowed_provider(synced: World) {
+    assert!(
+        synced
+            .call("agent.triage", json!({ "status": "triage" }))
+            .is_err()
+    );
+}
+
+#[rstest]
+fn forced_clean_runs_without_auto_cleaning(synced: World) {
+    let pr = synced.ok(
+        "providers.save",
+        json!({ "name": "Work AI", "kind": "anthropic", "model": "claude-opus-5-5",
+        "base_url": format!("http://127.0.0.1:{}", synced.port), "api_key": "sk-test" }),
+    );
+    let acc = synced.ok("accounts.list", json!({}))[0]["id"].clone();
+    synced.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": [pr["id"]] }),
+    );
+    let t = synced.thread_by_subject("Audit report v2");
+    assert_eq!(
+        synced.ok("agent.clean", json!({ "id": t["id"] }))["cleaned"],
+        1
+    );
+}
+
+#[rstest]
 fn agent_clean_body_is_served(synced: World) {
     enable_agent(&synced);
     let t = synced.thread_by_subject("Audit report v2");

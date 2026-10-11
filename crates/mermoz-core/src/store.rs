@@ -169,8 +169,10 @@ pub struct ThreadFilter {
     pub account_id: Option<String>,
     pub priority: Option<Vec<i64>>,
     pub label_id: Option<String>,
-    /// Threads with at least one message from this address.
-    pub participant: Option<String>,
+    /// Threads with at least one message from any of these addresses.
+    pub participants: Option<Vec<String>>,
+    /// "last_date" (default), "priority", "due" or "created".
+    pub order: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -288,6 +290,78 @@ pub fn safe_filename(name: &str) -> String {
     format!("{}{}", &stem[..end.min(stem.len())], ext)
 }
 
+/// ORDER BY for a thread list; unknown values fall back to most recent activity.
+pub fn order_clause(order: Option<&str>) -> &'static str {
+    match order {
+        // No priority sorts after Low, like Linear.
+        Some("priority") => "CASE t.priority WHEN 0 THEN 9 ELSE t.priority END, t.last_date DESC",
+        Some("due") => "t.due IS NULL, t.due, t.last_date DESC",
+        Some("created") => "t.number DESC",
+        _ => "t.last_date DESC",
+    }
+}
+
+/// Lowercase, accents folded, "Last, First" turned around: the key that spots one person
+/// writing from several addresses.
+pub fn person_key(name: &str) -> String {
+    let n = match name.split_once(',') {
+        Some((last, first)) if !first.trim().is_empty() => {
+            format!("{} {}", first.trim(), last.trim())
+        }
+        _ => name.to_string(),
+    };
+    let folded: String = n
+        .chars()
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => {
+                'a'
+            }
+            'ç' | 'Ç' => 'c',
+            'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' => 'i',
+            'ñ' | 'Ñ' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' | 'Ù' | 'Ú' | 'Û' | 'Ü' => 'u',
+            '-' | '_' | '.' | '\'' | '"' => ' ',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect();
+    folded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Automated senders never belong in a people directory.
+pub fn is_automated(email: &str) -> bool {
+    let local = email.split('@').next().unwrap_or("").to_lowercase();
+    [
+        "noreply",
+        "no-reply",
+        "no_reply",
+        "donotreply",
+        "do-not-reply",
+        "notification",
+        "mailer-daemon",
+        "bounce",
+        "postmaster",
+        "newsletter",
+        "news",
+        "alerts",
+        "digest",
+        "updates",
+    ]
+    .iter()
+    .any(|p| local.contains(p))
+}
+
+/// "Last, First" display names read as "First Last".
+fn display_person(name: &str) -> String {
+    match name.split_once(',') {
+        Some((last, first)) if !first.trim().is_empty() && !last.contains(' ') => {
+            format!("{} {}", first.trim(), last.trim())
+        }
+        _ => name.trim().to_string(),
+    }
+}
+
 /// Turns free text into a safe FTS5 query: every word is a quoted prefix term,
 /// `from:x` / `to:x` / `subject:x` restrict to a column.
 pub fn fts_query(q: &str) -> Option<String> {
@@ -386,6 +460,17 @@ fn draft_row(r: &Row) -> rusqlite::Result<Draft> {
 
 /// (message id, from name, from email, subject, body) awaiting the agent.
 pub type PendingDigest = (String, String, String, String, String);
+
+/// Someone the user corresponds with: every address they use, plus what signatures said.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct Person {
+    pub email: String,
+    pub emails: Vec<String>,
+    #[serde(flatten)]
+    pub card: crate::agent::Card,
+    pub messages: i64,
+    pub last_seen: i64,
+}
 
 /// A directory entry: what signatures taught us about one address.
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
@@ -1104,12 +1189,12 @@ impl Store {
             args.push(f.account_id.clone().into());
             args.push(f.account_id.clone().into());
         }
-        if let Some(e) = &f.participant {
-            clauses.push(
-                "t.id IN (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) = lower(?))"
-                    .into(),
-            );
-            args.push(e.clone().into());
+        if let Some(es) = f.participants.as_ref().filter(|e| !e.is_empty()) {
+            clauses.push(format!(
+                "t.id IN (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) IN ({}))",
+                vec!["lower(?)"; es.len()].join(",")
+            ));
+            args.extend(es.iter().map(|e| e.clone().into()));
         }
         if let Some(p) = &f.priority {
             clauses.push(format!("t.priority IN ({})", vec!["?"; p.len()].join(",")));
@@ -1128,7 +1213,8 @@ impl Store {
         )?;
         let limit = if f.limit <= 0 { 200 } else { f.limit };
         let sql = format!(
-            "SELECT {THREAD_COLS} FROM threads t {wh} ORDER BY t.last_date DESC LIMIT {limit} OFFSET {}",
+            "SELECT {THREAD_COLS} FROM threads t {wh} ORDER BY {} LIMIT {limit} OFFSET {}",
+            order_clause(f.order.as_deref()),
             f.offset.max(0)
         );
         let mut st = r.prepare_cached(&sql)?;
@@ -1428,7 +1514,17 @@ impl Store {
             let (k, n) = row?;
             account.insert(k, n.into());
         }
-        Ok(serde_json::json!({ "status": status, "project": project, "account": account }))
+        let mut priority = serde_json::Map::new();
+        let mut st = r.prepare_cached(&format!(
+            "SELECT t.priority, COUNT(*) FROM threads t WHERE {open} GROUP BY t.priority"
+        ))?;
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (k, n) = row?;
+            priority.insert(k.to_string(), n.into());
+        }
+        Ok(
+            serde_json::json!({ "status": status, "project": project, "account": account, "priority": priority }),
+        )
     }
 
     /// Full-text search, most recent matching threads first. FTS rowids are
@@ -1955,6 +2051,169 @@ impl Store {
         )?;
         Ok(st
             .query_map(params![like, limit], contact_row)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The directory: people the user has written to or whose signature was read, one entry
+    /// per person even when they use several addresses; most recent first.
+    pub fn people(&self, query: Option<&str>, limit: i64) -> Result<Vec<Person>> {
+        let r = self.r.lock().unwrap();
+        // (email, name, messages, last_seen, written_to)
+        let mut by_email: std::collections::HashMap<String, (String, i64, i64, bool)> =
+            Default::default();
+        let mut st = r.prepare_cached(
+            "SELECT lower(from_email), MAX(from_name), COUNT(*), MAX(date) FROM messages WHERE is_from_me = 0 AND from_email != '' GROUP BY lower(from_email)",
+        )?;
+        for row in st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })? {
+            let (e, n, c, d) = row?;
+            by_email.insert(e, (n, c, d, false));
+        }
+        let mut st = r.prepare_cached(
+            "SELECT lower(json_extract(j.value, '$.email')), MAX(json_extract(j.value, '$.name')), COUNT(*), MAX(m.date)
+             FROM messages m, json_each(m.to_json) j WHERE m.is_from_me = 1 GROUP BY 1",
+        )?;
+        for row in st.query_map([], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })? {
+            let (Some(e), n, c, d) = row? else { continue };
+            let entry = by_email.entry(e).or_insert((String::new(), 0, 0, false));
+            if entry.0.is_empty() {
+                entry.0 = n.unwrap_or_default();
+            }
+            entry.1 += c;
+            entry.2 = entry.2.max(d);
+            entry.3 = true;
+        }
+        let mut cards: std::collections::HashMap<String, Contact> = Default::default();
+        let mut st = r.prepare_cached("SELECT email, name, title, company, phones_json, address, website, socials_json, last_seen FROM contacts")?;
+        for c in st.query_map([], contact_row)? {
+            let c = c?;
+            cards.insert(c.email.clone(), c);
+        }
+        // People only: someone the user wrote to, or whose signature carried details.
+        let mut people: Vec<Person> = vec![];
+        let mut index: std::collections::HashMap<String, usize> = Default::default();
+        let mut emails: Vec<_> = by_email.into_iter().collect();
+        emails.sort_by(|a, b| b.1.2.cmp(&a.1.2));
+        for (email, (name, count, last, written)) in emails {
+            let card = cards.get(&email);
+            if is_automated(&email) || (!written && card.is_none()) {
+                continue;
+            }
+            let display = card
+                .map(|c| c.card.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| display_person(&name));
+            let key = person_key(&display);
+            let card_data = card.map(|c| c.card.clone()).unwrap_or_default();
+            let merge_key = if key.split(' ').count() >= 2 {
+                key
+            } else {
+                email.clone()
+            };
+            match index.get(&merge_key) {
+                Some(&i) => {
+                    let p = &mut people[i];
+                    p.emails.push(email.clone());
+                    p.messages += count;
+                    p.last_seen = p.last_seen.max(last);
+                    p.card = crate::agent::merge_card(&card_data, &p.card);
+                }
+                None => {
+                    let mut c = card_data;
+                    c.name = display;
+                    index.insert(merge_key, people.len());
+                    people.push(Person {
+                        email: email.clone(),
+                        emails: vec![email],
+                        card: c,
+                        messages: count,
+                        last_seen: last,
+                    });
+                }
+            }
+        }
+        let q = query.unwrap_or("").trim().to_lowercase();
+        Ok(people
+            .into_iter()
+            .filter(|p| {
+                q.is_empty()
+                    || p.card.name.to_lowercase().contains(&q)
+                    || p.card.company.to_lowercase().contains(&q)
+                    || p.emails.iter().any(|e| e.contains(&q))
+            })
+            .take(limit.max(0) as usize)
+            .collect())
+    }
+
+    /// The person behind an address (with all their addresses).
+    pub fn person(&self, email: &str) -> Result<Person> {
+        let e = email.trim().to_lowercase();
+        self.people(None, i64::MAX)?
+            .into_iter()
+            .find(|p| p.emails.contains(&e))
+            .ok_or_else(|| Error::NotFound(format!("person {email}")))
+    }
+
+    /// What the triage model sees for the newest threads in a status, per account.
+    pub fn triage_items(
+        &self,
+        status: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, String, crate::agent::TriageItem)>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(&format!(
+            "SELECT {THREAD_COLS}, (SELECT is_from_me FROM messages m WHERE m.thread_id = t.id ORDER BY date DESC LIMIT 1)
+             FROM threads t WHERE t.status = ?1 ORDER BY t.last_date DESC LIMIT ?2"
+        ))?;
+        let now = now_ms();
+        let rows = st
+            .query_map(params![status, limit], |r| {
+                Ok((
+                    thread_row(r)?,
+                    r.get::<_, Option<i64>>(17)?.unwrap_or(0) != 0,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(t, mine)| {
+                let item = crate::agent::TriageItem {
+                    number: t.number.clone(),
+                    subject: t.subject.clone(),
+                    from: t.last_from.clone(),
+                    last_from_me: mine,
+                    unread: t.unread,
+                    messages: t.message_count,
+                    days_since_last: (now - t.last_date) / 86_400_000,
+                    current_status: t.status.clone(),
+                    excerpt: t.snippet.chars().take(240).collect(),
+                };
+                (t.id, t.account_id, item)
+            })
+            .collect())
+    }
+
+    /// Every message of a thread for a forced re-clean, mine included.
+    pub fn thread_digest_inputs(&self, thread_id: &str) -> Result<Vec<PendingDigest>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached("SELECT id, from_name, from_email, subject, body_text FROM messages WHERE thread_id = ?1 AND length(body_text) > 0 ORDER BY date")?;
+        Ok(st
+            .query_map([thread_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
             .collect::<rusqlite::Result<_>>()?)
     }
 
@@ -2502,10 +2761,85 @@ mod tests {
         )
         .unwrap();
         let f = ThreadFilter {
-            participant: Some("MARC@x.com".into()),
+            participants: Some(vec!["MARC@x.com".into()]),
             ..Default::default()
         };
         assert_eq!(s.threads(&f).unwrap().1, 1);
+    }
+
+    #[rstest]
+    #[case::comma_order("Delobelle, Anne-Charlotte", "anne charlotte delobelle")]
+    #[case::accents("Léa Dubois", "lea dubois")]
+    #[case::spaces("  Marc   Petit ", "marc petit")]
+    fn person_keys(#[case] input: &str, #[case] want: &str) {
+        assert_eq!(person_key(input), want);
+    }
+
+    #[rstest]
+    #[case::noreply("no-reply@bank.example", true)]
+    #[case::notifications("notifications@github.com", true)]
+    #[case::person("marc@acme.example", false)]
+    fn automated_senders(#[case] email: &str, #[case] want: bool) {
+        assert_eq!(is_automated(email), want);
+    }
+
+    #[rstest]
+    fn same_person_two_addresses_is_one_entry(env: Env) {
+        let s = &env.store;
+        let mut a = incoming("m1", "t1", "marc@work.example", &["INBOX"], now_ms(), "hi");
+        a.parsed.from = Some(Address {
+            name: "Marc Petit".into(),
+            email: "marc@work.example".into(),
+        });
+        let mut b = incoming("m2", "t2", "marc@home.example", &["INBOX"], now_ms(), "hi");
+        b.parsed.from = Some(Address {
+            name: "Petit, Marc".into(),
+            email: "marc@home.example".into(),
+        });
+        // Replies make them correspondents (not just senders).
+        let mut r1 = incoming("m3", "t1", "me@example.com", &["SENT"], now_ms(), "re");
+        r1.parsed.to = vec![Address {
+            name: "Marc Petit".into(),
+            email: "marc@work.example".into(),
+        }];
+        let mut r2 = incoming("m4", "t2", "me@example.com", &["SENT"], now_ms(), "re");
+        r2.parsed.to = vec![Address {
+            name: "Marc".into(),
+            email: "marc@home.example".into(),
+        }];
+        for m in [a, b, r1, r2] {
+            s.ingest(&env.acc, "me@example.com", &m, SyncMode::Initial)
+                .unwrap();
+        }
+        assert_eq!(s.people(None, 50).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn senders_never_answered_are_not_people(env: Env) {
+        let s = &env.store;
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "m1",
+                "t1",
+                "promo@shop.example",
+                &["INBOX"],
+                now_ms(),
+                "sale",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        assert!(s.people(None, 50).unwrap().is_empty());
+    }
+
+    #[rstest]
+    #[case::default(None, "t.last_date DESC")]
+    #[case::unknown(Some("weird"), "t.last_date DESC")]
+    #[case::created(Some("created"), "t.number DESC")]
+    fn order_clauses(#[case] order: Option<&str>, #[case] want: &str) {
+        assert_eq!(order_clause(order), want);
     }
 
     #[rstest]
