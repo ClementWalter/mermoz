@@ -1289,3 +1289,28 @@ fn optimized_view_does_not_call_the_ai_again(synced: World) {
     );
     assert_eq!(synced.mailbox.lock().unwrap().llm_keys.len(), calls);
 }
+
+#[rstest]
+fn a_slow_ai_call_does_not_hold_back_other_requests(synced: World) {
+    allow_ai(&synced);
+    synced.mailbox.lock().unwrap().llm_delay_ms = 1500;
+    let t = synced.thread_by_subject("Audit report v2");
+    // Same connection, like the app: the quick list must answer before the slow clean.
+    let script = r#"
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile()
+s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": "agent.clean", "params": {"id": sys.argv[2]}}) + "\n").encode())
+s.sendall((json.dumps({"jsonrpc": "2.0", "id": 2, "method": "threads.list", "params": {}}) + "\n").encode())
+print(json.loads(f.readline())["id"])
+"#;
+    let out = Command::new("python3")
+        .args([
+            "-c",
+            script,
+            synced.sock().to_str().unwrap(),
+            t["id"].as_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2");
+}

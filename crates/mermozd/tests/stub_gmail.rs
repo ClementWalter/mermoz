@@ -36,6 +36,8 @@ pub struct Mailbox {
     pub fail_once: BTreeSet<String>,
     /// Authorization headers seen by the stub TypeSafe endpoint.
     pub jev_auth: Vec<String>,
+    /// How long the stub AI takes to answer, to exercise slow providers.
+    pub llm_delay_ms: u64,
     next_label: u64,
 }
 
@@ -325,6 +327,8 @@ async fn llm(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Json<Value> {
+    let delay = s.lock().unwrap().llm_delay_ms;
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     // People clean-up (schema with "groups"): merge everything into one tidy person.
     if body["output_config"]["format"]["schema"]["required"][0] == "groups" {
         let input: Value =

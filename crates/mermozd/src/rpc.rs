@@ -597,6 +597,8 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 }
                 st.save_digest(&mid, &pr.id, &outcome)?;
                 cleaned += outcome.is_ok() as i64;
+                // Each message shows up as soon as it is ready.
+                let _ = svc.events.send(Event::ThreadsChanged(vec![id.clone()]));
             }
             let _ = svc.events.send(Event::ThreadsChanged(vec![id]));
             let _ = svc.events.send(Event::ContactsChanged);
