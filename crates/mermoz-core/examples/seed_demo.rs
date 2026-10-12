@@ -229,6 +229,104 @@ fn main() {
             .ingest(&acc.id, &acc.email, &msg, SyncMode::Initial)
             .unwrap();
     }
+    // A conversation spread over three Gmail threads with Nora (the user wrote first),
+    // and two automated mails from one sender: grouping shows them as one chat and one feed.
+    let nora = addr("Nora Lind", "nora@agency.example");
+    let sale = [
+        (
+            "sale1",
+            you.clone(),
+            nora.clone(),
+            "Flat sale, next steps",
+            "Hi Nora,\n\nHere is the cellar plan. The cellar is lot 14, not 12 as in the draft.\n\nThanks!",
+            150,
+            vec!["SENT"],
+            Some(ParsedAttachment {
+                filename: "cellar-plan.pdf".into(),
+                mime: "application/pdf".into(),
+                data: b"%PDF-1.4 demo".to_vec(),
+            }),
+        ),
+        (
+            "sale2",
+            nora.clone(),
+            you.clone(),
+            "Signing postponed",
+            "Hello,\n\nThe signing moves to the 20th: the property description must be corrected first. You can pick a slot here: https://notary.example/booking\n\nNora",
+            96,
+            vec!["INBOX"],
+            None,
+        ),
+        (
+            "sale3",
+            nora.clone(),
+            you.clone(),
+            "Photo of the cellar door",
+            "As promised, the cellar door after the repair.",
+            20,
+            vec!["INBOX", "UNREAD"],
+            Some(ParsedAttachment {
+                filename: "cellar-door.png".into(),
+                mime: "image/png".into(),
+                data: b"\x89PNG demo".to_vec(),
+            }),
+        ),
+        (
+            "bank1",
+            addr("Demo Bank", "noreply@bank.example"),
+            you.clone(),
+            "Your October statement",
+            "Your statement is ready.",
+            70,
+            vec!["INBOX"],
+            None,
+        ),
+        (
+            "bank2",
+            addr("Demo Bank", "noreply@bank.example"),
+            you.clone(),
+            "Card payment of 42.00",
+            "A card payment was made.",
+            10,
+            vec!["INBOX", "UNREAD"],
+            None,
+        ),
+    ];
+    for (i, (tid, from, to, subject, body, hours, labels, file)) in sale.into_iter().enumerate() {
+        let msg = IncomingMessage {
+            provider_id: format!("conv{i}"),
+            provider_thread_id: tid.into(),
+            label_ids: labels.iter().map(|l| l.to_string()).collect(),
+            internal_date: now_ms() - hours * H,
+            parsed: ParsedMessage {
+                from: Some(from),
+                to: vec![to],
+                subject: subject.into(),
+                body_text: body.into(),
+                message_id: Some(format!("<conv{i}@demo.example>")),
+                attachments: file.into_iter().collect(),
+                ..Default::default()
+            },
+        };
+        store.ingest(&work.id, me, &msg, SyncMode::Initial).unwrap();
+    }
+    for t in store.threads_to_group("pending", 1000, false).unwrap() {
+        store.classify_for_grouping(&t).unwrap();
+    }
+    let sale_ids: Vec<String> = store
+        .threads(&Default::default())
+        .unwrap()
+        .0
+        .into_iter()
+        .filter(|t| {
+            ["Flat sale", "Signing postponed", "Photo of the cellar"]
+                .iter()
+                .any(|p| t.subject.starts_with(p))
+        })
+        .map(|t| t.id)
+        .collect();
+    store.merge_threads(&sale_ids).unwrap();
+
     let q4 = store.create_project("Q4 audit", Some("#5B8DEF")).unwrap();
     let hiring = store.create_project("Hiring", Some("#E0782F")).unwrap();
     let house = store.create_project("House", Some("#2E9A6B")).unwrap();

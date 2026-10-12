@@ -23,7 +23,8 @@ UPDATE threads SET conversation_id = id;
 CREATE INDEX IF NOT EXISTS threads_conversation ON threads(conversation_id, last_date DESC);
 CREATE INDEX IF NOT EXISTS threads_conv_state ON threads(conv_state, last_date DESC);
 CREATE INDEX IF NOT EXISTS threads_conv_key ON threads(conv_kind, conv_key);
-CREATE INDEX IF NOT EXISTS threads_conv_lead ON threads(conv_lead, status, last_date DESC);
+-- Covering index for one-row-per-conversation counts (status, account, priority, kind).
+CREATE INDEX IF NOT EXISTS threads_conv_lead ON threads(conv_lead, status, account_id, priority, conv_kind);
 ALTER TABLE messages ADD COLUMN list_id TEXT;
 CREATE TABLE IF NOT EXISTS correspondents (email TEXT PRIMARY KEY);
 INSERT OR IGNORE INTO correspondents
