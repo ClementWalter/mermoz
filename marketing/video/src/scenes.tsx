@@ -56,7 +56,7 @@ export const Intro: React.FC = () => {
           <Img src={staticFile("icon.png")} style={{ width: 260, height: 260, transform: `scale(${0.4 + 0.6 * icon}) rotate(${(1 - icon) * -12}deg)`, opacity: icon, position: "relative" }} />
         </div>
         <div style={{ fontSize: 150, fontWeight: 750, letterSpacing: -5, color: C.text, marginTop: 30, opacity: word, transform: `translateY(${(1 - word) * 30}px)` }}>Mermoz</div>
-        <div style={{ fontSize: 50, color: C.text2, marginTop: 6, opacity: tag, transform: `translateY(${(1 - tag) * 20}px)` }}>Email, finally light.</div>
+        <div style={{ fontSize: 50, color: C.text2, marginTop: 6, opacity: tag, transform: `translateY(${(1 - tag) * 20}px)` }}>The mail must go through.</div>
       </div>
     </AbsoluteFill>
   );
