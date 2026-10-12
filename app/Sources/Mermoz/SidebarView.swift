@@ -104,6 +104,7 @@ struct SidebarView: View {
                                         }
                                     }
                                     .padding(.leading, CGFloat(place.depth) * 14)
+                                    .modifier(DropIntoProject(project: p.id))
                                     .help(p.name)
                                     .contextMenu {
                                         Button("Rename…") { renameText = p.name; renaming = p.id }
@@ -253,6 +254,26 @@ struct StatusRow: View {
             }
             return !items.isEmpty
         } isTargeted: { targeted = $0 }
+    }
+}
+
+/// Dropping thread cards or rows on a project adds them to it (its Gmail label).
+struct DropIntoProject: ViewModifier {
+    @Environment(AppModel.self) private var model
+    let project: String
+    @State private var targeted = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(targeted ? Theme.accent.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .dropDestination(for: String.self) { items, _ in
+                // A multi-selection drag carries its ids one per line; statuses are not threads.
+                let ids = items.filter { !$0.hasPrefix("status:") }.flatMap { $0.split(separator: "\n").map(String.init) }
+                guard !ids.isEmpty else { return false }
+                model.update(ids, addProjects: [project])
+                model.toast = ids.count == 1 ? "Added to \(project)" : "Added \(ids.count) threads to \(project)"
+                return true
+            } isTargeted: { targeted = $0 }
     }
 }
 
