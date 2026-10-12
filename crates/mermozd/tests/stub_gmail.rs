@@ -44,6 +44,8 @@ pub struct Mailbox {
     pub chat_requests: Vec<Value>,
     /// The stub ChatGPT refuses requests carrying tools (web search) with a 400.
     pub reject_tools: bool,
+    /// How many of the next stub Claude chat answers stop with `pause_turn`.
+    pub pause_turns: usize,
     next_label: u64,
 }
 
@@ -481,16 +483,64 @@ async fn messages(
         return llm(State(s), headers, Json(body)).await.into_response();
     }
     let searched = body["tools"][0]["name"] == "web_search";
-    s.lock().unwrap().chat_requests.push(body);
-    let mut out = String::from("event: message_start\ndata: {\"type\":\"message_start\"}\n\n");
+    let pause = {
+        let mut m = s.lock().unwrap();
+        m.chat_requests.push(body);
+        let pause = m.pause_turns > 0;
+        m.pause_turns = m.pause_turns.saturating_sub(1);
+        pause
+    };
+    let sse = |ev: Value| {
+        format!(
+            "event: {}\ndata: {ev}\n\n",
+            ev["type"].as_str().unwrap_or("")
+        )
+    };
+    let mut out = sse(json!({ "type": "message_start", "message": {} }));
+    if pause {
+        // A long research turn the server paused: thinking, one search, a first sentence.
+        out += &sse(
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "thinking", "thinking": "" } }),
+        );
+        out += &sse(
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "signature_delta", "signature": "stub-sig" } }),
+        );
+        out += &sse(json!({ "type": "content_block_stop", "index": 0 }));
+        out += &sse(
+            json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "server_tool_use", "id": "srvtoolu_stub", "name": "web_search", "input": {} } }),
+        );
+        out += &sse(
+            json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "input_json_delta", "partial_json": "{\"query\":\"Acme audit\"}" } }),
+        );
+        out += &sse(json!({ "type": "content_block_stop", "index": 1 }));
+        out += &sse(
+            json!({ "type": "content_block_start", "index": 2, "content_block": { "type": "text", "text": "" } }),
+        );
+        out += &sse(
+            json!({ "type": "content_block_delta", "index": 2, "delta": { "type": "text_delta", "text": "Part one. " } }),
+        );
+        out += &sse(json!({ "type": "content_block_stop", "index": 2 }));
+        out += &sse(json!({ "type": "message_delta", "delta": { "stop_reason": "pause_turn" } }));
+        out += &sse(json!({ "type": "message_stop" }));
+        return ([("content-type", "text/event-stream")], out).into_response();
+    }
     if searched {
-        out.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"name\":\"web_search\"}}\n\n");
+        out += &sse(
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "server_tool_use", "id": "srvtoolu_stub2", "name": "web_search", "input": {} } }),
+        );
+        out += &sse(json!({ "type": "content_block_stop", "index": 0 }));
     }
+    out += &sse(
+        json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } }),
+    );
     for p in CHAT_PIECES {
-        let ev = json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": p } });
-        out.push_str(&format!("event: content_block_delta\ndata: {ev}\n\n"));
+        out += &sse(
+            json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": p } }),
+        );
     }
-    out.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+    out += &sse(json!({ "type": "content_block_stop", "index": 1 }));
+    out += &sse(json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } }));
+    out += &sse(json!({ "type": "message_stop" }));
     ([("content-type", "text/event-stream")], out).into_response()
 }
 

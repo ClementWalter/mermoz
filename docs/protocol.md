@@ -178,3 +178,5 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 
 `chat_delta` carries the whole visible answer so far (never the actions block), at
 most every 60 ms while `chat.send` streams; the final answer is `chat.send`'s result.
+A Claude turn paused by its web search loop (`pause_turn`) is resumed automatically, up
+to 3 times, into the same answer; past that, the answer so far is kept.

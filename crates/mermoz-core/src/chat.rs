@@ -454,6 +454,8 @@ pub struct Reply {
 pub enum Delta {
     Text(String),
     Searched,
+    /// Anthropic paused a long server-side tool loop (`pause_turn`); the turn can resume.
+    Paused,
     Done,
     Failed(String),
     Nothing,
@@ -473,6 +475,7 @@ pub fn anthropic_event(data: &str) -> Delta {
         }
         Some("message_delta") => match ev["delta"]["stop_reason"].as_str() {
             Some("refusal") => Delta::Failed("Your AI declined to answer this.".into()),
+            Some("pause_turn") => Delta::Paused,
             _ => Delta::Nothing,
         },
         Some("message_stop") => Delta::Done,
@@ -546,7 +549,81 @@ pub fn can_research(p: &Provider) -> bool {
     matches!(p.kind.as_str(), "anthropic" | "chatgpt")
 }
 
-/// Builds the HTTP request for one streamed answer.
+/// How many times a paused Anthropic turn is resumed before the answer so far is kept.
+pub const MAX_CONTINUATIONS: usize = 3;
+
+/// Rebuilds the content blocks of a streamed Anthropic response, so a paused turn can be
+/// sent back exactly as the API produced it: text, thinking (with its signature), server
+/// tool calls (input from `input_json_delta`), and whole blocks such as search results.
+#[derive(Default)]
+pub struct ContentBlocks {
+    blocks: Vec<Value>,
+    partial_json: std::collections::HashMap<usize, String>,
+}
+
+impl ContentBlocks {
+    pub fn apply(&mut self, data: &str) {
+        let Ok(ev) = serde_json::from_str::<Value>(data) else {
+            return;
+        };
+        let i = ev["index"].as_u64().unwrap_or(0) as usize;
+        match ev["type"].as_str() {
+            Some("content_block_start") => {
+                if self.blocks.len() <= i {
+                    self.blocks.resize(i + 1, Value::Null);
+                }
+                self.blocks[i] = ev["content_block"].clone();
+            }
+            Some("content_block_delta") => {
+                let Some(b) = self.blocks.get_mut(i) else {
+                    return;
+                };
+                let d = &ev["delta"];
+                let append = |b: &mut Value, field: &str, piece: &Value| {
+                    let s = format!(
+                        "{}{}",
+                        b[field].as_str().unwrap_or(""),
+                        piece.as_str().unwrap_or("")
+                    );
+                    b[field] = json!(s);
+                };
+                match d["type"].as_str() {
+                    Some("text_delta") => append(b, "text", &d["text"]),
+                    Some("thinking_delta") => append(b, "thinking", &d["thinking"]),
+                    Some("signature_delta") => append(b, "signature", &d["signature"]),
+                    Some("input_json_delta") => self
+                        .partial_json
+                        .entry(i)
+                        .or_default()
+                        .push_str(d["partial_json"].as_str().unwrap_or("")),
+                    Some("citations_delta") => {
+                        if !b["citations"].is_array() {
+                            b["citations"] = json!([]);
+                        }
+                        if let Some(c) = b["citations"].as_array_mut() {
+                            c.push(d["citation"].clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("content_block_stop") => {
+                if let (Some(raw), Some(b)) = (self.partial_json.remove(&i), self.blocks.get_mut(i))
+                {
+                    b["input"] = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn into_blocks(self) -> Vec<Value> {
+        self.blocks.into_iter().filter(|b| !b.is_null()).collect()
+    }
+}
+
+/// Builds the HTTP request for one streamed answer. `resume` holds the blocks of a paused
+/// Anthropic turn, sent back as the trailing assistant message.
 fn request(
     http: &reqwest::Client,
     p: &Provider,
@@ -554,11 +631,15 @@ fn request(
     system: &str,
     turns: &[Turn],
     research: bool,
+    resume: &[Value],
 ) -> Result<reqwest::RequestBuilder> {
-    let msgs: Vec<Value> = turns
+    let mut msgs: Vec<Value> = turns
         .iter()
         .map(|t| json!({ "role": t.role, "content": t.text }))
         .collect();
+    if !resume.is_empty() {
+        msgs.push(json!({ "role": "assistant", "content": resume }));
+    }
     match p.kind.as_str() {
         "anthropic" => {
             let base = p
@@ -642,44 +723,67 @@ pub async fn stream_reply(
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;
-    let mut resp = request(&http, p, key, system, turns, research)?
-        .send()
-        .await?;
+    let mut research = research;
     let mut reply = Reply {
         research_unavailable: wanted && !research,
         ..Default::default()
     };
-    if research && resp.status() == reqwest::StatusCode::BAD_REQUEST {
-        tracing::warn!(provider = %p.name, "web search refused; answering without it");
-        reply.research_unavailable = true;
-        resp = request(&http, p, key, system, turns, false)?.send().await?;
-    }
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(Error::Upstream {
-            status: status.as_u16(),
-            body: resp.text().await.unwrap_or_default(),
-        });
-    }
     let parse: fn(&str) -> Delta = match p.kind.as_str() {
         "anthropic" => anthropic_event,
         "chatgpt" => responses_event,
         _ => completions_event,
     };
-    let mut lines = SseLines::default();
-    'read: while let Some(chunk) = resp.chunk().await? {
-        for data in lines.push(&chunk) {
-            match parse(&data) {
-                Delta::Text(t) => {
-                    reply.text.push_str(&t);
-                    on_text(&reply.text);
+    // Blocks of the turn so far; non-empty only while resuming a paused turn.
+    let mut resume: Vec<Value> = vec![];
+    let mut continuations = 0;
+    loop {
+        let mut resp = request(&http, p, key, system, turns, research, &resume)?
+            .send()
+            .await?;
+        if research && resume.is_empty() && resp.status() == reqwest::StatusCode::BAD_REQUEST {
+            tracing::warn!(provider = %p.name, "web search refused; answering without it");
+            reply.research_unavailable = true;
+            research = false;
+            resp = request(&http, p, key, system, turns, false, &resume)?
+                .send()
+                .await?;
+        }
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Error::Upstream {
+                status: status.as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+        let mut lines = SseLines::default();
+        let mut blocks = ContentBlocks::default();
+        let mut paused = false;
+        'read: while let Some(chunk) = resp.chunk().await? {
+            for data in lines.push(&chunk) {
+                blocks.apply(&data);
+                match parse(&data) {
+                    Delta::Text(t) => {
+                        reply.text.push_str(&t);
+                        on_text(&reply.text);
+                    }
+                    Delta::Searched => reply.searched = true,
+                    Delta::Paused => paused = true,
+                    Delta::Done => break 'read,
+                    Delta::Failed(m) => return Err(Error::other(m)),
+                    Delta::Nothing => {}
                 }
-                Delta::Searched => reply.searched = true,
-                Delta::Done => break 'read,
-                Delta::Failed(m) => return Err(Error::other(m)),
-                Delta::Nothing => {}
             }
         }
+        if !paused {
+            break;
+        }
+        if continuations == MAX_CONTINUATIONS {
+            tracing::warn!(provider = %p.name, "turn still paused after {MAX_CONTINUATIONS} continuations; keeping the answer so far");
+            break;
+        }
+        // The paused turn goes back as the trailing assistant message; the server resumes it.
+        continuations += 1;
+        resume.extend(blocks.into_blocks());
     }
     if reply.text.trim().is_empty() {
         return Err(Error::other("Your AI returned an empty answer. Try again."));
@@ -1155,5 +1259,96 @@ mod tests {
             profile: None,
         };
         assert_eq!(can_research(&p), want);
+    }
+
+    #[rstest]
+    fn pause_turn_is_a_pause() {
+        assert_eq!(
+            anthropic_event(r#"{"type":"message_delta","delta":{"stop_reason":"pause_turn"}}"#),
+            Delta::Paused
+        );
+    }
+
+    /// A paused response as Anthropic streams it: thinking, a web search call, its
+    /// results (whole), and text with a citation.
+    const PAUSED: &[&str] = &[
+        r#"{"type":"message_start","message":{}}"#,
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the firm."}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}"#,
+        r#"{"type":"content_block_stop","index":0}"#,
+        r#"{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}"#,
+        r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}}"#,
+        r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"Acme audit\"}"}}"#,
+        r#"{"type":"content_block_stop","index":1}"#,
+        r#"{"type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://acme.example","title":"Acme"}]}}"#,
+        r#"{"type":"content_block_stop","index":2}"#,
+        r#"{"type":"content_block_start","index":3,"content_block":{"type":"text","text":""}}"#,
+        r#"{"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"Acme is "}}"#,
+        r#"{"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"an auditor."}}"#,
+        r#"{"type":"content_block_delta","index":3,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://acme.example"}}}"#,
+        r#"{"type":"content_block_stop","index":3}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"pause_turn"}}"#,
+        r#"{"type":"message_stop"}"#,
+    ];
+
+    #[fixture]
+    fn paused_blocks() -> Vec<Value> {
+        let mut b = ContentBlocks::default();
+        for ev in PAUSED {
+            b.apply(ev);
+        }
+        b.into_blocks()
+    }
+
+    #[rstest]
+    fn rebuilt_blocks_keep_their_order(paused_blocks: Vec<Value>) {
+        let kinds: Vec<&str> = paused_blocks
+            .iter()
+            .map(|b| b["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "thinking",
+                "server_tool_use",
+                "web_search_tool_result",
+                "text"
+            ]
+        );
+    }
+
+    #[rstest]
+    fn rebuilt_thinking_keeps_its_signature(paused_blocks: Vec<Value>) {
+        assert_eq!(
+            paused_blocks[0],
+            json!({ "type": "thinking", "thinking": "Check the firm.", "signature": "sig-1" })
+        );
+    }
+
+    #[rstest]
+    fn rebuilt_tool_call_has_its_parsed_input(paused_blocks: Vec<Value>) {
+        assert_eq!(paused_blocks[1]["input"], json!({ "query": "Acme audit" }));
+    }
+
+    #[rstest]
+    fn rebuilt_search_results_are_kept_whole(paused_blocks: Vec<Value>) {
+        assert_eq!(
+            paused_blocks[2]["content"][0]["url"],
+            "https://acme.example"
+        );
+    }
+
+    #[rstest]
+    fn rebuilt_text_joins_its_pieces(paused_blocks: Vec<Value>) {
+        assert_eq!(paused_blocks[3]["text"], "Acme is an auditor.");
+    }
+
+    #[rstest]
+    fn rebuilt_text_keeps_its_citations(paused_blocks: Vec<Value>) {
+        assert_eq!(
+            paused_blocks[3]["citations"][0]["url"],
+            "https://acme.example"
+        );
     }
 }

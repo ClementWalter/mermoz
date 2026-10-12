@@ -1781,6 +1781,82 @@ fn chat_streams_the_answer_as_it_comes(chatting: (World, String)) {
     assert_eq!(first["text"], "Marc wants your sign-off. ");
 }
 
+/// The chat after the stub Claude paused `pauses` times before answering.
+fn ask_after_pauses(w: &World, t: &str, pauses: usize) -> Value {
+    w.mailbox.lock().unwrap().pause_turns = pauses;
+    ask(w, t, "Who are they?")
+}
+
+#[rstest]
+fn paused_turn_resumes_into_one_answer(chatting: (World, String)) {
+    let (w, t) = chatting;
+    assert_eq!(
+        ask_after_pauses(&w, &t, 1)["text"],
+        "Part one. Marc wants your sign-off. I'd reply today."
+    );
+}
+
+#[rstest]
+fn paused_turn_is_stored_as_one_answer(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask_after_pauses(&w, &t, 1);
+    assert_eq!(
+        w.ok("chat.get", json!({ "thread_id": t }))["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[rstest]
+fn paused_turn_is_sent_back_as_the_assistant_message(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask_after_pauses(&w, &t, 1);
+    let m = w.mailbox.lock().unwrap();
+    let last = m.chat_requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        last,
+        json!({ "role": "assistant", "content": [
+            { "type": "thinking", "thinking": "", "signature": "stub-sig" },
+            { "type": "server_tool_use", "id": "srvtoolu_stub", "name": "web_search", "input": { "query": "Acme audit" } },
+            { "type": "text", "text": "Part one. " }
+        ] })
+    );
+}
+
+#[rstest]
+fn resuming_adds_no_user_message(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask_after_pauses(&w, &t, 1);
+    let m = w.mailbox.lock().unwrap();
+    assert_eq!(
+        m.chat_requests[1]["messages"].as_array().unwrap().len(),
+        m.chat_requests[0]["messages"].as_array().unwrap().len() + 1
+    );
+}
+
+#[rstest]
+fn resuming_stops_after_three_continuations(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask_after_pauses(&w, &t, 10);
+    assert_eq!(w.mailbox.lock().unwrap().chat_requests.len(), 4);
+}
+
+#[rstest]
+fn capped_turn_keeps_the_answer_so_far(chatting: (World, String)) {
+    let (w, t) = chatting;
+    assert_eq!(
+        ask_after_pauses(&w, &t, 10)["text"],
+        "Part one. Part one. Part one. Part one."
+    );
+}
+
 #[rstest]
 fn chatgpt_without_web_search_still_answers(synced: World) {
     chatgpt_sign_in(&synced);
