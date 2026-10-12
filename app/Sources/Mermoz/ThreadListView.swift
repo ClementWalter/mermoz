@@ -61,9 +61,6 @@ struct ThreadListView: View {
         .onChange(of: model.paletteMode) { _, m in if m == nil { focused = true } }
         .onChange(of: model.showShortcuts) { _, on in if !on { focused = true } }
         .onChange(of: model.compose == nil) { _, closed in if closed { focused = true } }
-        .onKeyPress(characters: .init(charactersIn: ThreadKeys.characters), phases: .down) { press in
-            ThreadKeys.handle(press.characters, model: model) ? .handled : .ignored
-        }
         .onKeyPress(keys: [.delete, .deleteForward]) { _ in
             guard model.selectedThreadId != nil else { return .ignored }
             model.moveSelected(to: "deleted")
@@ -96,9 +93,27 @@ extension ThreadListView {
     }
 }
 
-/// Single-key shortcuts shared by list and board.
+/// Single-key shortcuts, handled for the whole main window (see `install`) so they
+/// work wherever the focus is: list, board or a message being read.
 enum ThreadKeys {
     static let characters = "jkeay#usmprc?/"
+
+    /// Routes key presses to the shortcuts unless the user is typing in a field, a
+    /// draft is open, or another window (Settings) is in front.
+    @MainActor
+    static func install(model: AppModel) -> Any? {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let f = event.modifierFlags
+            guard let window = event.window, window.title != "Mermoz Settings",
+                  !(window.firstResponder is NSText),
+                  model.compose == nil, model.paletteMode == nil,
+                  let c = ShortcutKey.normalize(event.characters ?? "", command: f.contains(.command),
+                                                control: f.contains(.control), option: f.contains(.option), known: characters),
+                  handle(c, model: model)
+            else { return event }
+            return nil
+        }
+    }
 
     @MainActor
     static func handle(_ c: String, model: AppModel) -> Bool {
