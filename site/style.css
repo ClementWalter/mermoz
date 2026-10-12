@@ -189,6 +189,27 @@ h2 { font-family: var(--serif); font-weight: 700; font-size: clamp(36px, 5vw, 58
 .note-card h3 { font-family: var(--serif); font-size: 23px; margin: 0 0 8px; letter-spacing: -0.01em; }
 .note-card p { margin: 0; color: var(--ink-2); font-size: 16.5px; }
 
+/* Agent first: the command line as a first-class citizen. */
+.agents { padding: 40px 24px 130px; }
+.agents-inner { max-width: 1140px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1.1fr; gap: 56px; align-items: center; }
+.agents p { color: var(--ink-2); font-size: 19px; }
+code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.86em; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--ink); }
+.checks { list-style: none; padding: 0; margin: 22px 0 0; display: grid; gap: 12px; }
+.checks li { position: relative; padding-left: 34px; color: var(--ink-2); font-size: 17px; }
+.checks li::before { content: "✓"; position: absolute; left: 0; top: -1px; width: 24px; height: 24px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 14px; display: grid; place-items: center; }
+.terminal { position: relative; background: #0F2234; border-radius: 18px; box-shadow: 0 30px 80px rgba(13, 36, 54, 0.28); overflow: hidden; transform: rotate(0.6deg); }
+.terminal-bar { display: flex; align-items: center; gap: 8px; padding: 14px 16px; background: #15304A; }
+.terminal-bar span { width: 12px; height: 12px; border-radius: 6px; background: #FF5F57; }
+.terminal-bar span:nth-child(2) { background: #FEBC2E; }
+.terminal-bar span:nth-child(3) { background: #28C840; }
+.terminal-bar em { margin-left: 10px; font-style: normal; color: #7E9BB6; font-size: 13px; }
+.terminal pre { margin: 0; padding: 22px 24px 90px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 15px; line-height: 1.7; color: #E3EEF8; white-space: pre-wrap; }
+.terminal .c { color: #6FB1F0; }
+.terminal .o { color: #9FB6CB; }
+.terminal .w { color: #F5C66B; }
+.approve-card { position: absolute; right: 20px; bottom: 20px; display: flex; align-items: center; gap: 16px; padding: 12px 14px 12px 18px; border-radius: 14px; background: rgba(255, 255, 255, 0.92); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25); font-size: 15px; color: var(--ink); }
+.approve-card b { background: var(--accent); color: #fff; padding: 7px 14px; border-radius: 10px; font-weight: 600; }
+
 /* The story: Jean Mermoz and the Aéropostale. */
 .story { padding: 60px 24px 140px; }
 .story-inner {
@@ -219,6 +240,7 @@ h2 { font-family: var(--serif); font-weight: 700; font-size: clamp(36px, 5vw, 58
 
 @media (max-width: 900px) {
   .notes { grid-template-columns: 1fr 1fr; }
+  .agents-inner { grid-template-columns: 1fr; }
   .story-inner { grid-template-columns: 1fr; text-align: center; }
   .postmark { margin: 0 auto; width: 180px; height: 180px; }
   .note-hero { display: none; }

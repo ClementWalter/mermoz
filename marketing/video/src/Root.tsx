@@ -4,7 +4,7 @@
  */
 import React from "react";
 import { AbsoluteFill, Composition, Sequence } from "remotion";
-import { Board, Intro, Keys, Outro, Reading, Search, Sorting } from "./scenes";
+import { Agents, Board, Intro, Keys, Outro, Reading, Search, Sorting } from "./scenes";
 import { Ground, SceneFade } from "./ui";
 
 const SCENES: [React.FC, number][] = [
@@ -14,6 +14,7 @@ const SCENES: [React.FC, number][] = [
   [Board, 170],
   [Reading, 160],
   [Search, 160],
+  [Agents, 200],
   [Outro, 130],
 ];
 

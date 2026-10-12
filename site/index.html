@@ -41,7 +41,8 @@
     <nav>
       <a href="#film">Film</a>
       <a href="#features">Features</a>
-      <a href="#story">The name</a>
+      <a href="#agents">Agents</a>
+      <a href="#story">Spirit</a>
       <a class="nav-cta" href="#download">Download</a>
     </nav>
   </header>
@@ -61,7 +62,7 @@
         </div>
       </div>
       <div class="hero-copy">
-        <p class="eyebrow">Mail for macOS</p>
+        <p class="eyebrow">Mail for macOS · and for your agents</p>
         <h1 id="hero-title">The mail<br><em>must go through.</em></h1>
         <p class="lede">New mail is sorted before you read it. One key handles a thread. Your whole mailbox lives on your Mac, quiet and instant.</p>
         <div class="ctas">
@@ -71,7 +72,7 @@
           </a>
           <a class="btn ghost" href="#film">Watch the film <span aria-hidden="true">→</span></a>
         </div>
-        <p class="fine">Free &amp; open source · macOS 26 · Gmail</p>
+        <p class="fine">Free &amp; open source · macOS 26 · Gmail · Command line &amp; MCP built in</p>
         <p class="note note-hero" aria-hidden="true">sorted in 0.25 s ↓</p>
       </div>
     </section>
@@ -81,7 +82,7 @@
         <video id="film-video" controls playsinline preload="metadata" poster="assets/film-poster.jpg">
           <source src="assets/mermoz-film.mp4" type="video/mp4">
         </video>
-        <figcaption>36 seconds, no sound needed.</figcaption>
+        <figcaption>43 seconds, no sound needed.</figcaption>
       </figure>
     </section>
 
@@ -115,10 +116,38 @@
           <p>Every message lives on your Mac. Search, read and sort offline, with <kbd>⌘K</kbd> for anything else.</p>
         </article>
         <article class="note-card reveal">
-          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><path d="M10 20h44v28H10z"/><path d="M10 20l22 16 22-16"/><circle cx="50" cy="16" r="7" fill="#EAF3FB"/><path d="M47 16l2 2 4-4"/></g></svg>
-          <h3>Agents draft, you approve</h3>
-          <p>Scripts and AI agents work through a command line and MCP. Nothing they write leaves without your OK.</p>
+          <svg class="doodle" viewBox="0 0 64 64" aria-hidden="true"><g filter="url(#pencil)" fill="none" stroke="#1F6FB5" stroke-width="2.2" stroke-linecap="round"><path d="M10 14h44v36H10z"/><path d="M18 26l8 6-8 6M30 40h14"/></g></svg>
+          <h3>Agent first</h3>
+          <p>A first-class command line and MCP server. Your agents search, sort and draft; you approve what leaves.</p>
         </article>
+      </div>
+    </section>
+
+    <section class="agents" id="agents" aria-labelledby="agents-title">
+      <div class="agents-inner">
+        <div class="agents-copy reveal">
+          <p class="eyebrow">Agent first</p>
+          <h2 id="agents-title">Your agents fly it too.</h2>
+          <p>Everything the app does, the command line does: search, read, sort, draft. Every command speaks <code>--json</code>, and an MCP server plugs Mermoz into Claude, Codex and any agent you run.</p>
+          <ul class="checks">
+            <li>One command per action, scriptable end to end</li>
+            <li>MCP server built in: <code>mermoz mcp</code></li>
+            <li>Agents can draft anything. Nothing is sent until you approve it in Mermoz. There is no <code>--yes</code>.</li>
+            <li>Agents report friction with <code>mermoz feedback</code>, so the tool keeps improving</li>
+          </ul>
+        </div>
+        <div class="terminal reveal" aria-label="Example terminal session">
+          <div class="terminal-bar"><span></span><span></span><span></span><em>agent@mac — mermoz</em></div>
+          <pre><span class="c">$</span> mermoz list --status todo --json
+<span class="o">{ "threads": [{ "number": "M-1287",
+  "subject": "Q4 audit — sign by Friday?" }], "total": 1 }</span>
+<span class="c">$</span> mermoz draft reply M-1287 --file reply.md
+<span class="o">dft_42  [draft]</span>
+<span class="c">$</span> mermoz send dft_42
+<span class="w">error: approval_required: draft dft_42 is waiting for
+the user to approve it in Mermoz.</span>  <span class="o"># exit 3</span></pre>
+          <div class="approve-card"><span>Review · Reply to Marc Petit</span><b>Approve ✓</b></div>
+        </div>
       </div>
     </section>
 
@@ -135,8 +164,8 @@
           <text x="100" y="104" text-anchor="middle" font-family="Fraunces, serif" font-size="24" font-weight="700" fill="#1F6FB5">MERMOZ</text>
         </svg>
         <div>
-          <p class="eyebrow">Why “Mermoz”</p>
-          <h2 id="story-title">Named after a pilot who carried the mail.</h2>
+          <p class="eyebrow">The spirit of Mermoz</p>
+          <h2 id="story-title">A promise made in 1930.</h2>
           <p>In 1930, Jean Mermoz flew the Aéropostale mail across the South Atlantic, from Senegal to Brazil, in a little over twenty hours. Letters that used to take weeks by sea arrived in days.</p>
           <p>The Aéropostale pilots had a motto: <em>« Le courrier doit passer »</em>, the mail must go through. Mermoz keeps that spirit: mail that moves, light and fast, without the heavy machinery around it.</p>
           <p class="note" aria-hidden="true">pioneers travel light ✈</p>

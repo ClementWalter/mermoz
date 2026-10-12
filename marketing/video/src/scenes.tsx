@@ -341,3 +341,95 @@ export const Outro: React.FC = () => {
     </AbsoluteFill>
   );
 };
+
+/** Agent first: an agent drives the command line, the send waits for the user. */
+export const Agents: React.FC = () => {
+  const f = useCurrentFrame();
+  // Each line: [text, kind, frame it starts appearing]. Commands type, outputs pop.
+  const lines: [string, "cmd" | "out" | "warn", number][] = [
+    ["$ mermoz list --status todo --json", "cmd", 10],
+    ['{ "threads": [{ "number": "M-1287", "subject": "Q4 audit…" }], "total": 1 }', "out", 42],
+    ["$ mermoz draft reply M-1287 --file reply.md", "cmd", 56],
+    ["dft_42  [draft]", "out", 90],
+    ["$ mermoz send dft_42", "cmd", 102],
+    ["approval_required: waiting for you in Mermoz", "warn", 122],
+  ];
+  const card = useIn(136, 15);
+  const press = interpolate(f, [160, 164, 170], [0, 1, 0], clamp);
+  const approved = f >= 166;
+  return (
+    <Shot w={1500} h={820} ph={1150} headline={<Headline sub="A first-class command line and MCP server. Agents draft; you approve what leaves.">Your agents fly it too.</Headline>}>
+      <AgentsStage f={f} lines={lines} card={card} press={press} approved={approved} />
+    </Shot>
+  );
+};
+
+const AgentsStage: React.FC<{ f: number; lines: [string, "cmd" | "out" | "warn", number][]; card: number; press: number; approved: boolean }> = ({
+  f,
+  lines,
+  card,
+  press,
+  approved,
+}) => {
+  const { w, h, portrait } = useStage();
+  const color = { cmd: "#E3EEF8", out: "#9FB6CB", warn: "#F5C66B" };
+  return (
+    <div style={{ position: "relative", width: w, height: h }}>
+      <div style={{ position: "absolute", inset: 0, background: "#0F2234", borderRadius: 28, overflow: "hidden", boxShadow: "0 40px 100px rgba(13,36,54,0.30)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 24px", background: "#15304A" }}>
+          {["#FF5F57", "#FEBC2E", "#28C840"].map((c) => (
+            <span key={c} style={{ width: 16, height: 16, borderRadius: 8, background: c }} />
+          ))}
+          <span style={{ marginLeft: 14, color: "#7E9BB6", fontSize: 20 }}>agent@mac — mermoz</span>
+        </div>
+        <div style={{ padding: "30px 36px", fontFamily: "ui-monospace, Menlo, monospace", fontSize: portrait ? 26 : 34, lineHeight: 1.7 }}>
+          {lines.map(([text, kind, at], i) => {
+            if (f < at) return null;
+            const shown = kind === "cmd" ? text.slice(0, Math.floor((f - at) * 1.6) + 2) : text;
+            return (
+              <div key={i} style={{ color: color[kind], whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {kind === "cmd" ? <span style={{ color: "#6FB1F0" }}>{shown.slice(0, 1)}</span> : null}
+                {kind === "cmd" ? shown.slice(1) : shown}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          right: 40,
+          bottom: 40,
+          opacity: card,
+          transform: `translateY(${(1 - card) * 60}px)`,
+          display: "flex",
+          alignItems: "center",
+          gap: 24,
+          padding: "20px 22px 20px 30px",
+          borderRadius: 22,
+          background: "rgba(255,255,255,0.95)",
+          boxShadow: "0 24px 60px rgba(0,0,0,0.3)",
+          fontFamily: FONT,
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 17, color: C.text3, fontWeight: 600, letterSpacing: 1 }}>REVIEW IN MERMOZ</div>
+          <div style={{ fontSize: 26, color: C.text, fontWeight: 600 }}>Reply to Marc Petit</div>
+        </div>
+        <div
+          style={{
+            fontSize: 24,
+            fontWeight: 650,
+            color: "white",
+            background: approved ? C.ok : C.accent,
+            padding: "14px 26px",
+            borderRadius: 14,
+            transform: `scale(${1 - 0.06 * press})`,
+          }}
+        >
+          {approved ? "Sent ✓" : "Approve"}
+        </div>
+      </div>
+    </div>
+  );
+};
