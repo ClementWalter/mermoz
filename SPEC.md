@@ -193,6 +193,144 @@ Backlog); a daily allowance (default 20,000 calls, Settings › Developer) is a
 safety net, 429s honour Retry-After, outages back off exponentially, and token
 use is logged. This replaces the big-LLM column triage button.
 
+## Conversations (proposed 2026-10-12, awaiting decision)
+
+Email splits one exchange into many Gmail threads: a new subject, a reply started
+from a fresh email, a document sent separately. Mermoz reads them as one
+**conversation**, the way a messaging app would: same people, same matter, one chat.
+
+### Model
+
+- A **conversation** is one or more Gmail threads with the same people about the
+  same matter. Gmail threads stay the storage truth; a conversation is a local
+  grouping on top of them, never a change in Gmail.
+- Every Gmail thread belongs to exactly one conversation (alone by default).
+- Three kinds of streams, decided per thread before any grouping:
+  - **People**: threads with people the user has written to at least once, at most
+    5 counterparts, not bulk addresses (no-reply, newsletter, support, lists). Only
+    these are grouped by judgment.
+  - **Feeds**: automated senders (newsletters, banks, receipts, notifications),
+    grouped by sender in code, no judgment. Shown under Feeds, not in Conversations.
+  - **Lists**: mailing-list traffic, grouped by list in code (a channel).
+- The routing `automated` probability already computed on arrival decides between
+  People and Feeds.
+
+### Grouping
+
+1. **Candidates in code.** A new thread is compared with the latest (at most 2)
+   conversations that share a counterpart and were active in the last 30 days.
+   No candidate, no call: the thread starts its own conversation.
+2. **Jev judges each pair** in one call: a Noul "is `later` part of the same
+   conversation as `earlier`, so the user would read both as one chat?" (with
+   explicit true/false criteria: same matter continued vs. same people but another
+   matter), a 3-level Score (unrelated / same area / same matter) and the
+   `automated` Noul. State: the two threads' subjects, last two messages (quotes
+   stripped, 600 characters each), attachment names and days between.
+3. **Decision:** Jev ≥ 0.8 joins the conversation; below 0.5 stays apart; between,
+   the account's big AI model decides in the background (only ~10% of pairs).
+   The thread shows on its own until a decision arrives, then slides in.
+4. A thread joins the conversation of its best match; it is never compared with
+   older threads of that conversation again (chain on the latest thread).
+
+### Status, projects, Gmail
+
+- A conversation has **one status**, the status of its latest thread. Changing it
+  changes every open thread in it (one Gmail write per thread, as today).
+- The reopen rule works per conversation: a new message from someone else, in any
+  of its threads or in a thread that joins it, moves a Done/Waiting conversation
+  to To do.
+- **Projects:** a conversation shows the union of its threads' labels; adding a
+  project labels every thread; a joining thread inherits the conversation's
+  projects (as a suggestion, accepted by reading, like routing).
+- **Replying** goes to the latest Gmail thread of the conversation (shown above the
+  composer, switchable to any of its threads). Archive / delete apply to every
+  thread.
+- Search, the CLI and agents keep working on threads; they also get the
+  conversation id.
+
+### Manual control and learning
+
+- **Split** (from a conversation's menu, or on the "Joined from another email
+  thread" marker) moves a thread out; **Merge** (drag a conversation onto another,
+  or select two and press M) joins them. Both are instant and undoable.
+- A manual split or merge is final: the pair is never judged again.
+- Every split, merge and kept automatic merge is a labeled example. Per person,
+  a user who keeps splitting gets a stricter threshold (+0.1 per split, capped),
+  and recent examples ride along as few-shot context, like routing corrections.
+
+### Evaluation on the real mailbox (2026-10-12)
+
+27,006 Gmail threads (81% single-message), 9,590 with a known person, 13,572
+candidate pairs at 30 days (7,669 threads involved). 480 pairs judged by Jev, 12 in
+parallel: 7 s total, 142 ms p50, 232 ms p90, ~1,060 input + 50 output tokens per
+pair. Controls: positives = first and last message of one multi-message Gmail
+thread shown as two separate items, also with subjects hidden; negatives = same
+person, threads filed under different labels.
+
+| Merged when | positives | positives, no subject | negatives | candidates |
+| --- | --- | --- | --- | --- |
+| Jev ≥ 0.9 | 42% | 15% | 0% | 6% |
+| Jev ≥ 0.8 | 62% | 43% | 2% | 13% |
+| Jev ≥ 0.7 | 78% | 58% | 3% | 16% |
+| Jev ≥ 0.5 | 92% | 78% | 7% | 23% |
+| Jev ≥ 0.8, big model on 0.5–0.8 | 85% | 67% | 3% | ~21% |
+
+- The only negative merged at 0.8 is two travel bookings for one trip (arguably right).
+- The big model (99 uncertain pairs, ~5 s each, ~500 input tokens) is stricter than
+  Jev at 0.5: on the uncertain band it adds recall at no cost in false merges
+  versus Jev alone at 0.8, but it is not better than Jev at 0.5 overall. It earns
+  its place only on the 0.5–0.8 band.
+- Projected on the mailbox: ~1,800 (Jev ≥ 0.8) to ~2,800 (with the big model)
+  Gmail threads would join an earlier conversation, about a fifth to a quarter of
+  threads with people.
+- A third of candidates were mailing lists or bulk mail the user once wrote to
+  (school lists, events, receipts): grouping them as Feeds/Lists, not by judgment,
+  removes most of the doubtful merges.
+- Good merges: a classified-ad sale continued under "your name and address for
+  the cheque"; a recruiter's "time to chat" followed by the onsite-interview prep;
+  a term sheet followed by an urgent "docs and dates"; "lunch?" followed by "see
+  you Monday"; a thesis exchange resumed 29 days later; one legal case spread over
+  three threads. Kept apart rightly: a gift plan vs a car rental with the same
+  sibling, a travel report vs a book recommendation. Doubtful: a garden quote
+  joined to a home-automation thread (0.83), a shop confirmation joined to a wine
+  thread (0.67, automated).
+- Eval script: `mermoz_conversation_eval.py` (read-only on the store).
+
+### Layout and reading view
+
+- **The three panes stay as today.** Main sidebar | the existing list or board
+  (with its List/Board toggle) | the reading pane. Only two things change: each
+  list row and board card is a conversation (with an "n threads" count when it
+  holds more than one), and the reading pane shows the selected conversation as
+  a chat instead of one Gmail thread. No new column replaces the list or board.
+- **Chat layout:** messages as bubbles, the user's on the right; quoted history
+  folded to "··· earlier messages quoted", signatures and disclaimers hidden
+  (deterministic trimming, already shipped). Each bubble keeps its own
+  Original / Optimized toggle. Email threads inside a conversation are separated
+  by a date + subject marker; a joined thread carries "Joined from another email
+  thread · Not the same conversation" (one click splits). The composer says which
+  Gmail thread the reply goes to.
+- **Tabs inside the reading pane,** about the selected conversation: Messages
+  (default), People, Docs (attachments), Links (shared URLs) and Photos (images).
+- **Main sidebar:** statuses and projects as today, plus Feeds (automated senders,
+  mailing lists) and two Browse entries, People (the existing directory, each
+  person opening their conversations) and Docs (attachments across all
+  conversations). These open in the middle pane like any other sidebar entry.
+- **Board and statuses unchanged:** status lanes and project columns show
+  conversations; drag, single-key status changes and "Accept n" act on the whole
+  conversation.
+- Mockup (fictional data, list and board variants):
+  `docs/mockups/conversations.html`.
+
+### Open decisions
+
+- Thresholds: auto-join at 0.8 (recommended) or 0.7 (more joins, ~3% wrong).
+- Big model on the 0.5–0.8 band (recommended) or Jev alone.
+- Time window 30 days (recommended) or 90.
+- Status per conversation (recommended) or per thread.
+- One-time pass over the whole mailbox (~13.5k pairs, ~$0.6 Jev, ~4 min, plus
+  ~1.4k big-model calls) or new mail and the last 90 days only (recommended first).
+
 ## UI
 
 - **Sidebar:** statuses, projects, saved views (Linear-style); raw
