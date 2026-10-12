@@ -121,7 +121,21 @@ final class AppModel {
     var checker = RecipientChecker()
     private var seenAddresses: [Address] = []
 
-    private var client: DaemonClient?
+    private(set) var client: DaemonClient?
+
+    /// "Chat about this" (AppModel+Chat.swift): the panel beside the open thread.
+    var chatOpen = false
+    /// Each thread's conversation, loaded when its panel first shows.
+    var chats: [String: [ChatMessage]] = [:]
+    /// Answer streaming in, per thread; present while the AI is answering.
+    var chatStreaming: [String: String] = [:]
+    var chatErrors: [String: String] = [:]
+    /// Whether the thread's AI can search the web.
+    var chatResearchAvailable: [String: Bool] = [:]
+    /// Let the AI search the web (the panel's globe toggle).
+    var chatResearch = true
+    /// Proposals already applied ("<message id>#<index>"), shown checked.
+    var chatApplied: Set<String> = []
     private var events: Connection?
     private var refreshTask: Task<Void, Never>?
 
@@ -729,6 +743,8 @@ final class AppModel {
             showShortcuts = false
         } else if paletteMode != nil {
             paletteMode = nil
+        } else if chatOpen {
+            chatOpen = false
         } else if !multiSelection.isEmpty {
             multiSelection = []
             anchorId = selectedThreadId
@@ -1248,6 +1264,9 @@ final class AppModel {
             Task { await refreshCounts(); if isReview { await loadList() } }
         case .suggestionsChanged:
             scheduleSuggestionsRefresh()
+        case let .chatDelta(threadId, text):
+            // Late events after the answer landed must not reopen the streaming bubble.
+            if chatStreaming[threadId] != nil { chatStreaming[threadId] = text }
         case .unknown:
             break
         }

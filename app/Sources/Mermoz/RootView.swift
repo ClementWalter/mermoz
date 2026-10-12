@@ -130,7 +130,14 @@ struct DetailPane: View {
             } else if model.isReview, let d = model.selectedDraft {
                 ReviewDetailView(draft: d)
             } else if let d = model.detail {
-                ThreadDetailView(detail: d)
+                // The chat sits beside the thread so both stay readable while deciding.
+                HStack(spacing: 0) {
+                    ThreadDetailView(detail: d).frame(minWidth: 320)
+                    if model.chatOpen {
+                        Divider().overlay(Theme.line)
+                        ChatPanel(thread: d.thread).frame(minWidth: 260, idealWidth: 340, maxWidth: 380)
+                    }
+                }
             } else {
                 EmptyDetail()
             }

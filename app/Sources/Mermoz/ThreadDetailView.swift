@@ -121,6 +121,9 @@ struct IssueToolbar: View {
             }
 
             Spacer()
+            Button { model.toggleChat() } label: { Image(systemName: "bubble.left.and.text.bubble.right") }
+                .buttonStyle(.plain).foregroundStyle(model.chatOpen ? Theme.accent : Theme.text2)
+                .help("Chat about this (t)").accessibilityLabel("Chat about this")
             Button { model.markDoneSelected() } label: { Image(systemName: "checkmark.circle") }
                 .buttonStyle(.plain).foregroundStyle(Theme.text2)
                 .help("Done (e)").accessibilityLabel("Mark done")

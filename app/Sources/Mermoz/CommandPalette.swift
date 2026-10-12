@@ -167,6 +167,8 @@ struct CommandPalette: View {
         if let sel {
             out += [
                 command("c-reply", "Reply", "arrowshape.turn.up.left", detail: "R", keywords: ["answer", "respond"]) { model.startReply() },
+                command("c-chat", "Chat about this", "bubble.left.and.text.bubble.right", detail: "T",
+                        keywords: ["ask", "ai", "help", "decide", "advice", "talk", "think", "research", "chatgpt", "claude"]) { model.openChat() },
                 command("c-project", "Move to project…", "folder", keywords: ["label", "folder", "tag", "file", "add"]) { switchTo(.project) },
                 command("c-status", "Set status…", "circle.dashed", detail: "S", keywords: ["move", "state"]) { switchTo(.status) },
                 command("c-priority", "Set priority…", "chart.bar", detail: "P", keywords: ["urgent", "important"]) { switchTo(.priority) },

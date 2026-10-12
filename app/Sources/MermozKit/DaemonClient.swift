@@ -258,6 +258,15 @@ public final class DaemonClient: Sendable {
     }
 
     public func feedback() async throws -> [FeedbackEntry] { try await call("feedback.list") }
+
+    public func chat(thread id: String) async throws -> ChatHistory { try await call("chat.get", Params().with("thread_id", id)) }
+
+    /// Returns the AI's answer once complete; `chat_delta` events stream it meanwhile.
+    public func sendChat(thread id: String, text: String, research: Bool) async throws -> ChatMessage {
+        try await call("chat.send", Params().with("thread_id", id).with("text", text).with("research", research))
+    }
+
+    public func clearChat(thread id: String) async throws { try await callVoid("chat.clear", Params().with("thread_id", id)) }
     public func subscribe() async throws { try await callVoid("subscribe") }
 }
 

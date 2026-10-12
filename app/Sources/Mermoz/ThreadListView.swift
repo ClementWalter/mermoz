@@ -99,7 +99,7 @@ extension ThreadListView {
 /// Single-key shortcuts, handled for the whole main window (see `install`) so they
 /// work wherever the focus is: list, board or a message being read.
 enum ThreadKeys {
-    static let characters = "jkeay#usmprc?/"
+    static let characters = "jkeay#usmprct?/"
 
     /// Routes key presses to the shortcuts unless the user is typing in a field, a
     /// draft is open, or another window (Settings) is in front.
@@ -134,6 +134,7 @@ enum ThreadKeys {
         case "m": if model.selectedThreadId != nil { model.paletteMode = .project }
         case "r": model.startReply()
         case "c": model.startNew()
+        case "t": if model.selectedThreadId != nil { model.toggleChat() }
         // Matched by typed character, so it works on AZERTY (Shift+,) as on QWERTY.
         case "?": model.showShortcuts.toggle()
         case "/": model.paletteMode = .search
