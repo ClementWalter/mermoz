@@ -479,8 +479,9 @@ private extension String {
 }
 
 /// Green seal when Gmail verified the sender's domain sent this email; an orange
-/// warning when that check failed (a likely impersonation) or when the domain is a
-/// platform anyone can send from.
+/// warning when the domain says its genuine mail always passes and this one did not
+/// (a likely impersonation), or when the domain is a platform anyone can send from.
+/// Nothing when there is no proof either way, e.g. a copy relayed by a forwarder.
 struct SenderSeal: View {
     let message: Message
 
@@ -488,7 +489,7 @@ struct SenderSeal: View {
         switch message.auth {
         case "pass":
             Image(systemName: "checkmark.seal.fill").font(.system(size: 13)).foregroundStyle(Theme.ok)
-                .help("Verified sender: \(message.from.domain) confirmed it sent this email")
+                .help("Verified sender: \(message.from.domain) confirmed this email really comes from them")
                 .accessibilityLabel("Verified sender")
         case "shared":
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Color(hex: "#E0782F"))
@@ -496,8 +497,8 @@ struct SenderSeal: View {
                 .accessibilityLabel("Sender not verified")
         case "fail":
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Color(hex: "#E0782F"))
-                .help("Unverified sender: this email claims to come from \(message.from.domain) but failed the check. Be careful with links and attachments.")
-                .accessibilityLabel("Unverified sender")
+                .help("This email may not really be from \(message.from.email). \(message.from.domain) says its genuine emails can always be confirmed, and this one could not. Be careful with links and attachments.")
+                .accessibilityLabel("May not really be from this sender")
         default:
             EmptyView()
         }

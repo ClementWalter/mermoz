@@ -92,7 +92,12 @@ const MIGRATIONS: &[&str] = &[
     BCC,
     SUGGESTION_STATUS,
     CHAT,
+    RECHECK_SENDER_FAILS,
 ];
+
+/// Failures stored under an older, stricter rule are checked again when their
+/// thread is opened, so a forwarded copy stops reading as an impersonation.
+const RECHECK_SENDER_FAILS: &str = "UPDATE messages SET auth = NULL WHERE auth = 'fail';";
 
 /// The status a suggestion was made for: once the thread sits elsewhere, the
 /// suggestion is stale, hidden, and the thread is classified again.
@@ -5217,6 +5222,34 @@ mod tests {
             s.thread(&tid).unwrap().projects,
             vec!["Logement/Houlgate".to_string()]
         );
+    }
+
+    #[rstest]
+    fn stored_sender_failures_are_checked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let c = Connection::open(&path).unwrap();
+        let before = MIGRATIONS
+            .iter()
+            .position(|m| *m == RECHECK_SENDER_FAILS)
+            .unwrap();
+        for (i, step) in MIGRATIONS.iter().take(before).enumerate() {
+            c.execute_batch(&format!(
+                "BEGIN; {step}; PRAGMA user_version = {}; COMMIT;",
+                i + 1
+            ))
+            .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO accounts (id, email, provider, created) VALUES ('acc', 'me@example.com', 'gmail', 0);
+             INSERT INTO threads (id, account_id, provider_thread_id, number, status, unread) VALUES ('t1', 'acc', 'p1', 1, 'todo', 0);
+             INSERT INTO messages (id, account_id, provider_id, thread_id, from_name, from_email, to_json, cc_json, date, subject, body_text, labels_json, is_from_me, unread, auth)
+               VALUES ('m1', 'acc', 'g1', 't1', 'Ann', 'ann@mail.example', '[]', '[]', 0, 'Hi', '', '[]', 0, 0, 'fail');",
+        )
+        .unwrap();
+        drop(c);
+        let store = Store::open(&path, &dir.path().join("blobs")).unwrap();
+        assert_eq!(store.unverified_senders("t1").unwrap().len(), 1);
     }
 
     /// A store last opened before Workflow v2, with one thread per old status.

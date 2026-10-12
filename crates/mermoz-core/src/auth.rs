@@ -2,8 +2,12 @@
 //!
 //! Only Gmail's own header (authserv-id `mx.google.com`) is trusted: any other copy
 //! can be written by the sender. A message is "pass" when DMARC passes, or when DKIM
-//! or SPF pass for the From domain; "fail" when DMARC fails or both DKIM and SPF fail;
-//! "none" otherwise (nothing conclusive, e.g. old mail or forwarders). A pass from a
+//! or SPF pass for the From domain. It is "fail" only when the failure is explicit:
+//! DMARC fails for a domain whose policy asks receivers to quarantine or reject such
+//! mail, or, without DMARC, hard SPF and DKIM both fail for the From domain. Anything
+//! else is "none": no header, or a failure the domain itself says can be legitimate
+//! (policy `p=none`), which is what forwarding produces (a copy relayed by iCloud or
+//! a mailing list breaks the original signature). A pass from a
 //! subdomain of a platform where anyone can open an account (a Jira site, a shop, a
 //! hosted page) is "shared": the domain is real, but it vouches for nobody.
 
@@ -117,8 +121,8 @@ pub fn verdict(results: &[String], from_email: &str) -> &'static str {
         return "none";
     };
     let from = domain_of(from_email);
-    let (mut dmarc, mut dkim_pass, mut dkim_fail, mut spf_pass, mut spf_fail) =
-        (None, false, false, false, false);
+    let (mut dmarc, mut enforced, mut dkim_pass, mut dkim_fail, mut spf_pass, mut spf_fail) =
+        (None, false, false, false, false, false);
     for clause in r.split(';').skip(1) {
         let words: Vec<&str> = clause.split_whitespace().collect();
         let Some((method, result)) = words.first().and_then(|w| w.split_once('=')) else {
@@ -127,7 +131,8 @@ pub fn verdict(results: &[String], from_email: &str) -> &'static str {
         let prop = |key: &str| {
             words
                 .iter()
-                .find_map(|w| w.strip_prefix(key))
+                // Policy properties sit in a comment: "(p=REJECT sp=NONE dis=NONE)".
+                .find_map(|w| w.trim_start_matches('(').strip_prefix(key))
                 .map(|v| {
                     v.trim_start_matches('@')
                         .trim_matches(|c| c == '"' || c == ')' || c == '(')
@@ -137,7 +142,11 @@ pub fn verdict(results: &[String], from_email: &str) -> &'static str {
         };
         let result = result.to_lowercase();
         match method.to_lowercase().as_str() {
-            "dmarc" => dmarc = Some(result),
+            "dmarc" => {
+                let strict = |v: String| matches!(v.as_str(), "quarantine" | "reject");
+                enforced = strict(prop("p=")) || strict(prop("dis="));
+                dmarc = Some(result)
+            }
             "dkim" => {
                 let d = {
                     let i = prop("header.i=");
@@ -149,7 +158,7 @@ pub fn verdict(results: &[String], from_email: &str) -> &'static str {
                 };
                 if result == "pass" && aligned(&d, &from) {
                     dkim_pass = true;
-                } else if result == "fail" {
+                } else if result == "fail" && aligned(&d, &from) {
                     dkim_fail = true;
                 }
             }
@@ -157,7 +166,7 @@ pub fn verdict(results: &[String], from_email: &str) -> &'static str {
                 let d = domain_of(&prop("smtp.mailfrom="));
                 if result == "pass" && aligned(&d, &from) {
                     spf_pass = true;
-                } else if matches!(result.as_str(), "fail" | "softfail") {
+                } else if result == "fail" {
                     spf_fail = true;
                 }
             }
@@ -166,7 +175,8 @@ pub fn verdict(results: &[String], from_email: &str) -> &'static str {
     }
     match dmarc.as_deref() {
         Some("pass") => "pass",
-        Some("fail") => "fail",
+        Some("fail") if enforced => "fail",
+        Some("fail") => "none",
         _ if dkim_pass || spf_pass => "pass",
         _ if dkim_fail && spf_fail => "fail",
         _ => "none",
@@ -183,6 +193,22 @@ mod tests {
     const NO_DMARC_DKIM_ALIGNED: &str = "mx.google.com; dkim=pass header.i=@news.shop.example header.s=s1; spf=neutral smtp.mailfrom=b@bounce.esp.example";
     const NO_DMARC_FOREIGN_DKIM: &str =
         "mx.google.com; dkim=pass header.i=@esp.example; spf=neutral smtp.mailfrom=b@esp.example";
+    /// Ann's own provider signs her mail; Gmail got it straight from there.
+    const DIRECT: &str = "mx.google.com; dkim=pass header.i=@mail.example; spf=pass (google.com: domain of ann@mail.example designates 192.0.2.1 as permitted sender) smtp.mailfrom=ann@mail.example; dmarc=pass (p=NONE sp=QUARANTINE dis=NONE) header.from=mail.example";
+    /// The same mail sent to an old address that forwards to Gmail: the relay altered
+    /// the body and sends from its own servers.
+    const FORWARDED: &str = "mx.google.com; spf=softfail (google.com: domain of transitioning ann@mail.example does not designate 198.51.100.7 as permitted sender) smtp.mail=ann@mail.example; dkim=neutral (body hash did not verify) header.i=@; dmarc=fail (p=NONE dis=NONE) header.from=mail.example";
+    /// A forwarder that re-signs the copy with its own domain.
+    const FORWARDED_RESIGNED: &str = "mx.google.com; dkim=pass header.i=@relay.example; dkim=fail header.i=@mail.example; spf=softfail (google.com: domain of transitioning ann@mail.example does not designate 198.51.100.7 as permitted sender) smtp.mailfrom=ann@mail.example; dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=mail.example";
+    /// A charity mailing through a CRM it never aligned with its domain.
+    const UNALIGNED_ESP: &str = "mx.google.com; spf=pass (google.com: domain of bounce@crm.example designates 203.0.113.5 as permitted sender) smtp.mailfrom=bounce@crm.example; dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=charity.example";
+    const QUARANTINED: &str = "mx.google.com; spf=fail smtp.mailfrom=x@evil.example; dmarc=fail (p=QUARANTINE sp=QUARANTINE dis=QUARANTINE) header.from=bank.example";
+    const SUBDOMAIN_POLICY: &str = "mx.google.com; spf=softfail smtp.mailfrom=x@evil.example; dmarc=fail (p=NONE sp=REJECT dis=REJECT) header.from=alerts.bank.example";
+    const NO_DMARC_HARD_FAILS: &str =
+        "mx.google.com; dkim=fail header.i=@shop.example; spf=fail smtp.mailfrom=x@shop.example";
+    const NO_DMARC_SOFT_FAILS: &str = "mx.google.com; dkim=fail header.i=@shop.example; spf=softfail smtp.mailfrom=x@shop.example";
+    const NO_DMARC_FOREIGN_DKIM_FAIL: &str =
+        "mx.google.com; dkim=fail header.i=@relay.example; spf=fail smtp.mailfrom=x@shop.example";
 
     #[rstest]
     #[case::dmarc_pass(vec![AWS], "no-reply@amazonaws.com", "pass")]
@@ -192,6 +218,15 @@ mod tests {
     #[case::forged_header_is_ignored(vec!["evil.example; dmarc=pass header.from=paypal.com"], "service@paypal.com", "none")]
     #[case::gmail_header_wins_over_a_forged_one(vec!["evil.example; dmarc=pass", SPOOF], "service@paypal.com", "fail")]
     #[case::no_header(vec![], "a@b.example", "none")]
+    #[case::sender_mailing_directly(vec![DIRECT], "ann@mail.example", "pass")]
+    #[case::same_sender_forwarded(vec![FORWARDED], "ann@mail.example", "none")]
+    #[case::same_sender_forwarded_and_resigned(vec![FORWARDED_RESIGNED], "ann@mail.example", "none")]
+    #[case::unaligned_mailing_tool_without_policy(vec![UNALIGNED_ESP], "news@charity.example", "none")]
+    #[case::failure_under_quarantine_policy(vec![QUARANTINED], "alerts@bank.example", "fail")]
+    #[case::failure_under_subdomain_reject_policy(vec![SUBDOMAIN_POLICY], "x@alerts.bank.example", "fail")]
+    #[case::hard_failures_without_dmarc(vec![NO_DMARC_HARD_FAILS], "x@shop.example", "fail")]
+    #[case::soft_spf_failure_without_dmarc(vec![NO_DMARC_SOFT_FAILS], "x@shop.example", "none")]
+    #[case::foreign_signature_failure_without_dmarc(vec![NO_DMARC_FOREIGN_DKIM_FAIL], "x@shop.example", "none")]
     fn verdicts(#[case] results: Vec<&str>, #[case] from: &str, #[case] want: &str) {
         let r: Vec<String> = results.into_iter().map(String::from).collect();
         assert_eq!(verdict(&r, from), want);

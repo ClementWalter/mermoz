@@ -1392,6 +1392,41 @@ fn older_mail_gets_its_sender_checked_when_opened(synced: World) {
     });
 }
 
+/// Ann's mail as Gmail received it, given Gmail's verdict line.
+fn raw_from_ann(id: &str, results: &str) -> String {
+    format!(
+        "Authentication-Results: mx.google.com;\r\n       {results}\r\nFrom: Ann Example <ann@mail.example>\r\nTo: me@example.com\r\nSubject: Sunday lunch\r\nMessage-ID: <{id}@mail.example>\r\n\r\nSee you there.\r\n"
+    )
+}
+
+fn ann_auth(w: &World, results: &str) -> Value {
+    w.mailbox.lock().unwrap().add_message(
+        "m8a",
+        "t8a",
+        &["INBOX", "UNREAD"],
+        &raw_from_ann("m8a", results),
+        NOW + 8000,
+    );
+    w.wait_until("sync", |w| {
+        w.ok("search", json!({ "query": "Sunday lunch" }))["threads"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    first_message_auth(w, "Sunday lunch")
+}
+
+#[rstest]
+fn a_forwarded_copy_gets_no_warning(synced: World) {
+    let forwarded = "spf=softfail smtp.mailfrom=ann@mail.example;\r\n       dkim=neutral (body hash did not verify) header.i=@;\r\n       dmarc=fail (p=NONE dis=NONE) header.from=mail.example";
+    assert_eq!(ann_auth(&synced, forwarded), "none");
+}
+
+#[rstest]
+fn a_failure_the_domain_rejects_is_a_warning(synced: World) {
+    let spoofed = "spf=fail smtp.mailfrom=x@evil.example;\r\n       dmarc=fail (p=REJECT dis=QUARANTINE) header.from=mail.example";
+    assert_eq!(ann_auth(&synced, spoofed), "fail");
+}
+
 /// A newsletter whose logo is a remote image.
 fn raw_with_remote_image() -> String {
     "From: News <news@example.com>\r\nTo: me@example.com\r\nSubject: Weekly news\r\nMessage-ID: <img@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hello</p><img src=\"https://cdn.example/logo.png\">\r\n".into()
