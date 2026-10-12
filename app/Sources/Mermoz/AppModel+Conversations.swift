@@ -58,9 +58,9 @@ extension AppModel {
         }
     }
 
-    /// Files linked to the conversation from other sources than attachments. The source
-    /// plugs in here; none is connected yet.
-    func linkedDocs(for _: ThreadDetail) -> [DocEntry] { [] }
+    /// Files linked to the conversation from other sources than attachments: Google
+    /// Drive files linked in its mail or shared with its people.
+    func linkedDocs(for d: ThreadDetail) -> [DocEntry] { driveDocs(for: d) }
 
     /// Files shared anywhere, newest first, filtered by name.
     func loadFiles() async {

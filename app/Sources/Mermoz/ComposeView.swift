@@ -14,6 +14,8 @@ struct ComposeView: View {
     @State private var dropTargeted = false
     @State private var picking = false
     @State private var pasteMonitor: Any?
+    /// Drive files to share with the recipients, while the user is asked.
+    @State private var sharePlan: SharePlan?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,6 +80,7 @@ struct ComposeView: View {
                     .keyboardShortcut("a", modifiers: [.command, .shift])
                     .help("Attach files (⇧⌘A). You can also drop or paste them here.")
                     .accessibilityLabel("Attach files")
+                DriveAttachButton(attachments: $context.attachments, accountId: accountId)
                 if context.threadId != nil {
                     Toggle("Then set Waiting", isOn: $thenWaiting).toggleStyle(.checkbox).font(.system(size: 12.5))
                 }
@@ -106,10 +109,44 @@ struct ComposeView: View {
             pasteMonitor = nil
         }
         .confirmationDialog("Some recipients look suspicious", isPresented: $confirmSuspicious) {
-            Button("Send anyway", role: .destructive) { doSend() }
+            Button("Send anyway", role: .destructive) { askShareThenSend() }
             Button("Review recipients", role: .cancel) {}
         } message: {
             Text(suspicious.joined(separator: ", "))
+        }
+        // Drive files in the reply: sharing is asked, never done silently.
+        .confirmationDialog(sharePlan?.question ?? "", isPresented: Binding(get: { sharePlan != nil }, set: { if !$0 { sharePlan = nil } })) {
+            if let plan = sharePlan, let accountId {
+                Button("Let them view") { shareThenSend(plan, accountId: accountId, role: "reader") }
+                Button("Let them comment") { shareThenSend(plan, accountId: accountId, role: "commenter") }
+                Button("Send without sharing") { doSend() }
+                Button("Cancel", role: .cancel) {}
+            }
+        } message: {
+            Text(sharePlan?.detail ?? "")
+        }
+    }
+
+    /// The account the message goes out from.
+    private var accountId: String? {
+        context.accountId ?? model.detail.flatMap { d in context.threadId == d.thread.id ? d.thread.accountId : nil }
+            ?? model.accounts.first?.id
+    }
+
+    private func askShareThenSend() {
+        let me = model.accounts.first { $0.id == accountId }?.email
+        let plan = SharePlan(attachments: context.attachments.items, recipients: context.to + context.cc, me: me)
+        if plan.isNeeded { sharePlan = plan } else { doSend() }
+    }
+
+    private func shareThenSend(_ plan: SharePlan, accountId: String, role: String) {
+        sending = true
+        Task {
+            if await model.shareDriveFiles(plan, accountId: accountId, role: role) {
+                doSend()
+            } else {
+                sending = false
+            }
         }
     }
 
@@ -121,7 +158,7 @@ struct ComposeView: View {
     }
 
     private func trySend() {
-        if suspicious.isEmpty { doSend() } else { confirmSuspicious = true }
+        if suspicious.isEmpty { askShareThenSend() } else { confirmSuspicious = true }
     }
 
     private func doSend() {

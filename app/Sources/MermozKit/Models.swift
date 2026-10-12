@@ -368,6 +368,8 @@ public enum DaemonEvent: Sendable, Equatable {
     case suggestionsChanged
     /// The answer streaming into a thread's chat so far.
     case chatDelta(threadId: String, text: String)
+    /// An account's Drive connection, a file pick or a saved attachment changed.
+    case driveChanged(accountId: String)
     case unknown(kind: String)
 }
 

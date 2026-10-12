@@ -151,6 +151,8 @@ final class AppModel {
     private var seenAddresses: [Address] = []
 
     private(set) var client: DaemonClient?
+    /// Google Drive state (AppModel+Drive.swift).
+    let drive = DriveModel()
 
     /// "Chat about this" (AppModel+Chat.swift): the panel beside the open thread.
     var chatOpen = false
@@ -261,6 +263,7 @@ final class AppModel {
         }
         await refreshCounts()
         await loadList()
+        await refreshDriveStatus()
     }
 
     func refreshCounts() async {
@@ -1330,6 +1333,8 @@ final class AppModel {
         case let .chatDelta(threadId, text):
             // Late events after the answer landed must not reopen the streaming bubble.
             if chatStreaming[threadId] != nil { chatStreaming[threadId] = text }
+        case let .driveChanged(accountId):
+            driveChanged(accountId)
         case .unknown:
             break
         }

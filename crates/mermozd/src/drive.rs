@@ -249,10 +249,10 @@ fn remember(cache: &DriveCache, account_id: &str, files: &[FileMeta]) {
     }
 }
 
-/// Drive links in a thread, once each, with the message they first appear in.
+/// Drive links in a thread's conversation, once each, with the message they first appear in.
 fn thread_links(svc: &Service, thread_id: &str) -> Result<Vec<(String, DriveLink)>> {
     let mut out: Vec<(String, DriveLink)> = vec![];
-    for m in svc.store.messages(thread_id)? {
+    for m in svc.store.conversation_messages(thread_id)? {
         let html = svc.store.message_html(&m.id)?.0.unwrap_or_default();
         for text in [m.body_text.as_str(), html.as_str()] {
             for l in drive::find_links(text) {
@@ -686,10 +686,10 @@ fn status(svc: &Arc<Service>, account_id: &str) -> std::result::Result<Value, Rp
     }))
 }
 
-/// Participants' addresses of a thread, without the user.
+/// Participants' addresses of a thread's conversation, without the user.
 fn other_people(svc: &Service, thread_id: &str, me: &str) -> Result<Vec<String>> {
     let mut out: Vec<String> = vec![];
-    for m in svc.store.messages(thread_id)? {
+    for m in svc.store.conversation_messages(thread_id)? {
         for a in std::iter::once(&m.from).chain(&m.to).chain(&m.cc) {
             let e = a.email.to_lowercase();
             if !e.is_empty() && e != me.to_lowercase() && !out.contains(&e) {
@@ -927,7 +927,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
 fn saved_in_thread(svc: &Arc<Service>, account_id: &str, thread_id: &str) -> Result<Vec<Saved>> {
     let cache = svc.drive.cache(svc)?;
     let mut out = vec![];
-    for m in svc.store.messages(thread_id)? {
+    for m in svc.store.conversation_messages(thread_id)? {
         for a in &m.attachments {
             if let Some(s) = cache.saved(account_id, &a.id)? {
                 out.push(s);

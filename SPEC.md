@@ -372,6 +372,32 @@ plus `split_conversation`, `merge_conversations` and `list_files`.
 Not built yet: projects suggested to a joining thread and few-shot examples from
 past splits.
 
+## Google Drive (built 2026-10-12)
+
+Optional, per account: "Connect Google Drive" in Settings › Accounts, or the
+prompt the first time a Drive feature is used. It is a second, Drive-only Google
+consent with its own token (installed apps can't add scopes to an existing
+grant), so saying no, or disconnecting, never touches mail. Scopes:
+`drive.readonly` (restricted) and `drive.file` (non-sensitive); the user may
+untick either and the app adapts.
+
+- **Linked documents:** a card under each message linking to Docs, Sheets,
+  Slides or Drive files (title, type, owner, last edit, thumbnail). Their text
+  (Docs as Markdown, Sheets as CSV, Slides as text) is cached locally, capped at
+  50 MB (least recently used goes first), and given to "Chat about this". The
+  Optimized rewrite does not use it: it rewrites the message without changing it.
+- **Docs tab:** the conversation's Drive files (linked, or owned by / shared with
+  its people) next to its attachments.
+- **Save to Drive:** one click beside an attachment; it lands in
+  `Mermoz/<project>` (Gmail's `/` nesting becomes folders; `No project` otherwise),
+  folders created when missing; then "Open in Drive".
+- **Attach from Drive:** recent files and search in the composer, or Google's own
+  file picker; the file goes as a link. On send, Mermoz asks whether to let the
+  recipients view or comment (or send without sharing). Sharing is app-only and
+  never silent; a file Mermoz may not share yet is confirmed once in Google's picker.
+- Agents: `mermoz drive files|read|search|save` and matching MCP tools; connecting
+  and sharing stay in the app.
+
 ## UI
 
 - **Sidebar:** statuses, projects, saved views (Linear-style); raw

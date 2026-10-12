@@ -498,6 +498,20 @@ fn a_linked_doc_shows_when_it_changed(connected: World) {
 }
 
 #[rstest]
+fn a_linked_doc_shows_in_every_thread_of_its_conversation(connected: World) {
+    let (audit, scan) = (
+        connected.thread("Audit report v2"),
+        connected.thread("Scan"),
+    );
+    connected.ok(
+        "conversations.merge",
+        json!({ "ids": [audit["id"], scan["id"]] }),
+    );
+    let v = connected.ok("drive.links", json!({ "thread_id": scan["id"] }));
+    assert_eq!(v["links"][0]["file"]["name"], "Remediation plan");
+}
+
+#[rstest]
 fn a_linked_doc_is_out_of_reach_with_chosen_files_only(mail: World) {
     connect_drive(&mail, &[FILE_ONLY]);
     assert_eq!(links(&mail)["access"], "no_access");

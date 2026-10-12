@@ -28,6 +28,7 @@ struct ThreadDetailView: View {
             case .people:
                 ConversationPeopleTab(people: conversation.people)
             case .docs:
+                DriveDocsHint(threadId: detail.thread.id, accountId: detail.thread.accountId)
                 ConversationDocsTab(entries: DocEntry.merged(attachments: conversation.docs, linked: model.linkedDocs(for: detail)))
             case .links:
                 ConversationLinksTab(links: conversation.links)
@@ -36,6 +37,8 @@ struct ThreadDetailView: View {
             }
         }
         .foregroundStyle(Theme.text)
+        // Drive previews, the Docs tab's Drive files and saved attachments; again on new mail.
+        .task(id: "\(detail.thread.id)-\(detail.messages.count)") { await model.loadDrive(threadId: detail.thread.id) }
         .onAppear { expanded = Set(detail.messages.suffix(1).map(\.id)) }
         .onChange(of: detail.thread.id) { expanded = Set(detail.messages.suffix(1).map(\.id)) }
     }
@@ -608,11 +611,15 @@ struct MessageCard: View {
             } else {
                 original
             }
+            DriveLinkCards(messageId: message.id)
             if !message.attachments.isEmpty {
                 FlowRow(spacing: 8) {
                     ForEach(message.attachments) { a in
-                        Button { model.openAttachment(a) } label: { AttachmentChip(attachment: a) }.buttonStyle(.plain)
-                            .onDrag { model.dragProvider(for: a) }
+                        HStack(spacing: 2) {
+                            Button { model.openAttachment(a) } label: { AttachmentChip(attachment: a) }.buttonStyle(.plain)
+                                .onDrag { model.dragProvider(for: a) }
+                            SaveToDriveButton(attachment: a)
+                        }
                     }
                 }
             }

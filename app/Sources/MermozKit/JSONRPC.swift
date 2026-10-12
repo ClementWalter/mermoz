@@ -120,6 +120,8 @@ func decodeEvent(_ p: [String: Any]) -> DaemonEvent {
         return .suggestionsChanged
     case "chat_delta":
         return .chatDelta(threadId: p["thread_id"] as? String ?? "", text: p["text"] as? String ?? "")
+    case "drive_changed":
+        return .driveChanged(accountId: p["account_id"] as? String ?? "")
     default:
         return .unknown(kind: kind)
     }

@@ -109,6 +109,13 @@ struct AccountsPane: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        VStack(spacing: 14) {
+            mail
+            DriveSettingsCard()
+        }
+    }
+
+    private var mail: some View {
         SettingsCard(title: "Mail accounts") {
             ForEach(model.accounts) { a in
                 HStack(spacing: 10) {
