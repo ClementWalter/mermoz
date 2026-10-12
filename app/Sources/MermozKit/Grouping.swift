@@ -142,3 +142,23 @@ public enum ProjectTree {
         return (1..<max(parts.count, 1)).map { parts[0..<$0].joined(separator: "/") }.filter(names.contains)
     }
 }
+
+/// Which statuses a view lists.
+public enum ViewStatuses {
+    public enum Kind: Sendable {
+        /// One status (a single-status list; the board shows every open status).
+        case status(String)
+        /// A project or Gmail label: everything filed there except the Trash.
+        case mailbox
+        /// An account: its open threads.
+        case open
+    }
+
+    public static func visible(_ kind: Kind, all: [String], open: [String], board: Bool) -> [String] {
+        switch kind {
+        case let .status(k): board ? open : [k]
+        case .mailbox: all.filter { $0 != "deleted" }
+        case .open: open
+        }
+    }
+}

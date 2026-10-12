@@ -72,3 +72,18 @@ private let tree = ["Cato", "Cato/Caté", "Cato/EAQ", "Immo", "Immo/Poncelet", "
 @Test func onlyProjectsWithChildrenGetAnArrow() {
     #expect(ProjectTree.parents(among: tree) == ["Cato", "Immo", "Immo/Poncelet"])
 }
+
+private let allStatuses = ["unread", "todo", "done", "archive", "deleted"]
+private let openStatuses = ["unread", "todo"]
+
+@Test func aProjectHidesTheTrash() {
+    #expect(ViewStatuses.visible(.mailbox, all: allStatuses, open: openStatuses, board: false) == ["unread", "todo", "done", "archive"])
+}
+
+@Test func aStatusListShowsOnlyThatStatus() {
+    #expect(ViewStatuses.visible(.status("todo"), all: allStatuses, open: openStatuses, board: false) == ["todo"])
+}
+
+@Test func theBoardShowsEveryOpenStatus() {
+    #expect(ViewStatuses.visible(.status("todo"), all: allStatuses, open: openStatuses, board: true) == openStatuses)
+}

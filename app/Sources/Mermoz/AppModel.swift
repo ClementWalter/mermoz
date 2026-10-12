@@ -118,6 +118,18 @@ final class AppModel {
 
     var openStatuses: [Status] { statuses.filter { !closedStatusKeys.contains($0.key) } }
 
+    /// Statuses the current view lists (nil: People, which lists no threads).
+    var viewStatuses: [String]? {
+        let kind: ViewStatuses.Kind
+        switch selection {
+        case let .status(k): kind = .status(k)
+        case .project, .label: kind = .mailbox
+        case .account: kind = .open
+        case .people: return nil
+        }
+        return ViewStatuses.visible(kind, all: statuses.map(\.key), open: openStatuses.map(\.key), board: layout == .board)
+    }
+
     func color(forStatus key: String) -> String {
         statuses.first { $0.key == key }?.color ?? Theme.statusColors[key] ?? "#5A7386"
     }
@@ -235,17 +247,16 @@ final class AppModel {
         let d = effectiveDisplay
         let order = d.ordering.rawValue
         let reverse = d.reversed
-        let open = openStatuses.map(\.key)
         var project: String?
         var accountId: String?
         var labelId: String?
-        var statuses: [String]? = open
+        // A project or label shows everything filed there (archived included) except the Trash.
+        let statuses = viewStatuses
         switch selection {
-        case let .status(k): if layout == .list { statuses = [k] }
-        // A project is a Gmail label: it shows everything filed there, archived mail included.
-        case let .project(id): project = id; statuses = nil
+        case .status: break
+        case let .project(id): project = id
         case let .account(id): accountId = id
-        case let .label(acc, id): accountId = acc; labelId = id; statuses = nil
+        case let .label(acc, id): accountId = acc; labelId = id
         case .people: return
         }
         do {
@@ -635,8 +646,9 @@ final class AppModel {
             }
         }
         // A status change moves the thread out of a single-status list immediately.
-        if status != nil, case let .status(k) = selection, layout == .list {
-            threads.removeAll { ids.contains($0.id) && $0.status != k }
+        // A thread moved to a status this view doesn't show leaves it at once.
+        if let status, let visible = viewStatuses, !visible.contains(status) {
+            threads.removeAll { ids.contains($0.id) }
         }
         Task {
             do {
