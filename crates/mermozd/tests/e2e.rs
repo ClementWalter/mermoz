@@ -1375,3 +1375,18 @@ fn older_mail_gets_its_sender_checked_when_opened(synced: World) {
         first_message_auth(w, "Billing alert") == "pass"
     });
 }
+
+#[rstest]
+fn ai_triage_does_not_count_threads_it_leaves_as_they_are(synced: World) {
+    enable_agent(&synced);
+    let t = synced.thread_by_subject("Budget sheet");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "done" }),
+    );
+    // The stub AI sends everything to Done, where this thread already is.
+    assert_eq!(
+        synced.ok("agent.triage", json!({ "status": "done" }))["moved"],
+        0
+    );
+}

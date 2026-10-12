@@ -195,8 +195,13 @@ public struct TriageResult: Codable, Sendable, Equatable, Identifiable {
         public var from: String
         public var to: String
         public var priority: Int
+        /// Priority before the AI's change (absent from older daemons).
+        public var priorityFrom: Int?
         public var reason: String
         public var id: String { number }
+
+        /// The AI only changed the priority.
+        public var priorityOnly: Bool { from == to }
     }
     public var examined: Int
     public var moved: Int

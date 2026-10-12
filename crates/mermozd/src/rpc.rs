@@ -647,17 +647,24 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                         else {
                             continue;
                         };
-                        if m.status == item.current_status && m.priority == 0 {
+                        // Only real changes count: a kept status with the same (or no)
+                        // priority is not a move.
+                        let current_priority = st.thread(tid)?.priority;
+                        let new_status = m.status != item.current_status;
+                        let new_priority = (m.priority != 0 || m.status == "done")
+                            && m.priority != current_priority;
+                        if !new_status && !new_priority {
                             continue;
                         }
                         let patch = ThreadPatch {
-                            status: (m.status != item.current_status).then(|| m.status.clone()),
-                            priority: (m.priority != 0 || m.status == "done").then_some(m.priority),
+                            status: new_status.then(|| m.status.clone()),
+                            priority: new_priority.then_some(m.priority),
                             ..Default::default()
                         };
                         st.update_threads(std::slice::from_ref(tid), &patch)?;
                         changed.push(tid.clone());
-                        moves_out.push(json!({ "number": m.number, "subject": item.subject, "from": item.current_status, "to": m.status, "priority": m.priority, "reason": m.reason }));
+                        moves_out.push(json!({ "number": m.number, "subject": item.subject, "from": item.current_status, "to": m.status,
+                            "priority": m.priority, "priority_from": current_priority, "reason": m.reason }));
                     }
                 }
                 svc.kick(&acc);
