@@ -24,7 +24,8 @@ const TEXTS_PARALLEL: usize = 3;
 pub fn list(svc: &Service, scope: &ColumnScope) -> Result<Value> {
     let st = &svc.store;
     let units = st.feed_units(scope, feed::today(), now_ms())?;
-    let f = feed::assemble(units, feed::today(), &st.ai_accounts()?);
+    let mut f = feed::assemble(units, feed::today(), &st.ai_accounts()?);
+    st.complete_feed(&mut f)?;
     let sorting = jev::load_key().is_some() && f.judged < f.open;
     let mut v = serde_json::to_value(f)?;
     v["sorting"] = json!(sorting);

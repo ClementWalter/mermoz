@@ -478,7 +478,14 @@ pub struct FeedSection {
     pub key: Section,
     pub title: String,
     pub cards: Vec<Card>,
+    /// Cards left out past [`MAX_CARDS_PER_SECTION`]; the List shows them all.
+    pub more: usize,
 }
+
+/// A section shows its most pressing cards; past this the feed stops being a to-do list.
+pub const MAX_CARDS_PER_SECTION: usize = 40;
+/// A batch lists its most recent mails; archiving them brings the next ones.
+pub const MAX_BATCH_MEMBERS: usize = 50;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Feed {
@@ -531,6 +538,7 @@ fn single(u: FeedUnit, kind: Kind, section: Section, today: NaiveDate, ai: bool)
 
 fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
     units.sort_by_key(|u| std::cmp::Reverse(u.primary().last_date));
+    units.truncate(MAX_BATCH_MEMBERS);
     let members: Vec<ThreadSummary> = units.iter().map(|u| u.primary().clone()).collect();
     let n = members.len();
     let (id, title, reason) = match kind {
@@ -588,6 +596,9 @@ fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
     }
 }
 
+/// A unit with its section, sort key and kind, before its card is built.
+type Placed = (Section, (i64, i64, i64), Kind, FeedUnit);
+
 /// Builds the feed: kind and section per unit, batches for automated mail and
 /// newsletters, sections in order, cards in order within each. `ai_accounts` are the
 /// accounts whose mail may go to an AI.
@@ -598,7 +609,8 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
         .filter(|u| u.judgment.is_some())
         .map(|u| u.threads.len())
         .sum();
-    let mut singles: Vec<(Section, (i64, i64, i64), Card)> = vec![];
+    // Cards are built only for the units shown: ordering needs every unit, words don't.
+    let mut singles: Vec<Placed> = vec![];
     let (mut cleanup, mut reading) = (vec![], vec![]);
     for u in units {
         let kind = effective_kind(&u);
@@ -608,8 +620,7 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
             _ => {
                 let sec = section(&u, kind, today);
                 let key = order_key(&u, today);
-                let ai = ai_accounts.contains(&u.primary().account_id);
-                singles.push((sec, key, single(u, kind, sec, today, ai)));
+                singles.push((sec, key, kind, u));
             }
         }
     }
@@ -620,10 +631,17 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
             key: *s,
             title: s.title().into(),
             cards: vec![],
+            more: 0,
         })
         .collect();
-    for (sec, _, card) in singles {
-        sections[sec as usize].cards.push(card);
+    for (sec, _, kind, u) in singles {
+        let s = &mut sections[sec as usize];
+        if s.cards.len() == MAX_CARDS_PER_SECTION {
+            s.more += 1;
+            continue;
+        }
+        let ai = ai_accounts.contains(&u.primary().account_id);
+        s.cards.push(single(u, kind, sec, today, ai));
     }
     let later = &mut sections[Section::Later as usize].cards;
     if !cleanup.is_empty() {

@@ -268,12 +268,9 @@ impl Store {
                 Ok((t, j, texts, my_last, last_sender.unwrap_or_default()))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let mut threads: Vec<ThreadSummary> = rows.iter().map(|r| r.0.clone()).collect();
-        attach(&r, &mut threads)?;
         Ok(rows
             .drain(..)
-            .zip(threads)
-            .map(|((_, judgment, texts, my_last, sender), t)| {
+            .map(|(t, judgment, texts, my_last, sender)| {
                 let waiting_days = (t.status == "waiting")
                     .then(|| (now - my_last.unwrap_or(t.last_date)).max(0) / DAY_MS);
                 FeedUnit {
@@ -287,6 +284,32 @@ impl Store {
                 }
             })
             .collect())
+    }
+
+    /// Fills in projects and pending suggestions on the threads a feed shows; done after
+    /// assembly so a feed of thousands of open threads only pays for its visible cards.
+    pub fn complete_feed(&self, f: &mut feed::Feed) -> Result<()> {
+        let mut threads: Vec<ThreadSummary> = f
+            .sections
+            .iter()
+            .flat_map(|s| s.cards.iter())
+            .flat_map(|c| std::iter::once(c.thread.clone()).chain(c.members.iter().cloned()))
+            .collect();
+        {
+            let r = self.r.lock().unwrap();
+            attach(&r, &mut threads)?;
+        }
+        let full: std::collections::HashMap<String, ThreadSummary> =
+            threads.into_iter().map(|t| (t.id.clone(), t)).collect();
+        for c in f.sections.iter_mut().flat_map(|s| s.cards.iter_mut()) {
+            for t in std::iter::once(&mut c.thread).chain(c.members.iter_mut()) {
+                if let Some(x) = full.get(&t.id) {
+                    t.projects = x.projects.clone();
+                    t.suggestion = x.suggestion.clone();
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Threads among `ids` whose card words are missing or older than their latest

@@ -40,6 +40,10 @@ struct FeedView: View {
                                         .onAppear { model.cardAppeared(c.id) }
                                         .onDisappear { model.cardDisappeared(c.id) }
                                 }
+                                if s.more > 0 {
+                                    Text("\(s.more) more here · the List shows them all")
+                                        .font(.system(size: 12)).foregroundStyle(Theme.text3).padding(.horizontal, 4)
+                                }
                             }
                             if f.cards.isEmpty { AllClear() }
                         } else {

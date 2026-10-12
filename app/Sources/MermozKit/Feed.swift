@@ -24,10 +24,12 @@ public struct FeedSection: Codable, Sendable, Equatable, Identifiable {
     public var key: String
     public var title: String
     public var cards: [FeedCard]
+    /// Cards past the section's limit; the List shows them all.
+    public var more: Int
     public var id: String { key }
 
-    public init(key: String, title: String, cards: [FeedCard]) {
-        self.key = key; self.title = title; self.cards = cards
+    public init(key: String, title: String, cards: [FeedCard], more: Int = 0) {
+        self.key = key; self.title = title; self.cards = cards; self.more = more
     }
 }
 

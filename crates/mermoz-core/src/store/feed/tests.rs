@@ -269,6 +269,23 @@ fn waiting_counts_days_since_my_last_message(env: Env) {
 }
 
 #[rstest]
+fn shown_cards_get_their_projects(env: Env) {
+    let t = env.mail("m1", "t1", MARIE, 0, "hi");
+    env.store
+        .update_threads(
+            std::slice::from_ref(&t),
+            &ThreadPatch {
+                add_projects: vec!["Kitchen".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut f = feed::assemble(env.units(), today(), &Default::default());
+    env.store.complete_feed(&mut f).unwrap();
+    assert_eq!(f.sections[0].cards[0].thread.projects, vec!["Kitchen"]);
+}
+
+#[rstest]
 fn project_scope_keeps_only_its_threads(env: Env) {
     env.mail("m1", "t1", MARIE, 0, "hi");
     let scope = ColumnScope {

@@ -14,7 +14,7 @@ private let feedJSON = #"""
 "texts":{"title":"Choose the kitchen tiles","why":"Marie needs it Friday.","draft":"","summary":"s","points":[],
 "options":[{"label":"Gris","detail":"42 €","recommended":true,"reason":"sooner","reply":"On part sur le gris."},
 {"label":"Terre cuite","detail":"58 €","recommended":false,"reason":"","reply":"On part sur la terre cuite."}]},
-"texts_wanted":false}]}],"open":12,"judged":10,"sorting":true}
+"texts_wanted":false}],"more":2}],"open":12,"judged":10,"sorting":true}
 """#
 
 private func decodeFeed() throws -> Feed {
@@ -55,6 +55,10 @@ private var utcCalendar: Calendar {
 
 @Test func cardDecodesTheAIOptions() throws {
     #expect(try decodeFeed().cards[0].texts?.options.count == 2)
+}
+
+@Test func sectionDecodesWhatItLeftOut() throws {
+    #expect(try decodeFeed().sections[0].more == 2)
 }
 
 @Test func feedDecodesSorting() throws {

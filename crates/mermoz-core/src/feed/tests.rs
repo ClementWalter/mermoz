@@ -501,6 +501,33 @@ fn title_comes_from_the_ai_when_written() {
 }
 
 #[rstest]
+fn a_section_shows_its_most_pressing_cards() {
+    let units = (0..MAX_CARDS_PER_SECTION + 3)
+        .map(|i| unit(&format!("t{i}"), "todo", Some(due_in(Kind::Reply, 0))))
+        .collect();
+    assert_eq!(feed(units).sections[0].cards.len(), MAX_CARDS_PER_SECTION);
+}
+
+#[rstest]
+fn a_section_counts_the_cards_left_out() {
+    let units = (0..MAX_CARDS_PER_SECTION + 3)
+        .map(|i| unit(&format!("t{i}"), "todo", Some(due_in(Kind::Reply, 0))))
+        .collect();
+    assert_eq!(feed(units).sections[0].more, 3);
+}
+
+#[rstest]
+fn a_batch_lists_its_most_recent_mails() {
+    let units = (0..MAX_BATCH_MEMBERS + 5)
+        .map(|i| unit(&format!("t{i}"), "unread", Some(judged(Kind::Cleanup))))
+        .collect();
+    assert_eq!(
+        feed(units).sections[0].cards[0].members.len(),
+        MAX_BATCH_MEMBERS
+    );
+}
+
+#[rstest]
 fn texts_are_wanted_when_the_account_allows_an_ai() {
     assert!(feed(vec![unit("a", "todo", None)]).sections[0].cards[0].texts_wanted);
 }

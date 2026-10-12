@@ -174,7 +174,8 @@ fn main() {
         let units = store
             .feed_units(&Default::default(), today, mermoz_core::model::now_ms())
             .unwrap();
-        mermoz_core::feed::assemble(units, today, &Default::default());
+        let mut f = mermoz_core::feed::assemble(units, today, &Default::default());
+        store.complete_feed(&mut f).unwrap();
     });
     checks.push(Check {
         name: "feed.list",

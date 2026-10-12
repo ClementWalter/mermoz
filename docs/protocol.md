@@ -107,8 +107,9 @@ app, the CLI and the MCP server are clients of this protocol.
  "searched": false, "research_unavailable": false, "created": 1791700000000}
 
 // Feed: sections in order (now, today, week, waiting, later), empty ones left out.
-// `sorting` is true while Jev has open threads left to judge.
-{"sections": [{"key": "now", "title": "Now", "cards": [Card]}], "open": 23, "judged": 21, "sorting": true}
+// A section shows its 40 most pressing cards (`more` counts the rest; a batch lists
+// its 50 latest mails). `sorting` is true while Jev has open threads left to judge.
+{"sections": [{"key": "now", "title": "Now", "cards": [Card], "more": 0}], "open": 23, "judged": 21, "sorting": true}
 
 // Card: one thing to do. `kind`: reply | decision | sign | promise | event | payment |
 // intro | waiting | cleanup | reading | other. Batches (`id` "batch:cleanup" /
