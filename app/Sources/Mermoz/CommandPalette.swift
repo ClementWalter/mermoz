@@ -209,6 +209,10 @@ struct CommandPalette: View {
                 model.layout = model.layout == .list ? .board : .list
                 Task { await model.loadList() }
             },
+            command("c-feed", "Show the Feed", "text.line.first.and.arrowtriangle.forward", keywords: ["view", "layout", "cards", "todo", "stream"]) {
+                model.layout = .feed
+                Task { await model.loadList() }
+            },
             command("c-settings", "Settings", "gearshape", detail: "⌘,", keywords: ["preferences", "options", "typesafe", "ai"]) { openWindow(id: "settings") },
             command("c-shortcuts", "Keyboard shortcuts", "keyboard", detail: "?", keywords: ["help", "keys"]) { model.showShortcuts = true },
             command("c-account", "Add Gmail account", "person.crop.circle.badge.plus", keywords: ["sign", "login", "connect"]) { model.addGmail() },

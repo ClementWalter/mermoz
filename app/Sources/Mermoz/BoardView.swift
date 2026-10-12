@@ -17,7 +17,7 @@ struct BoardView: View {
                 Picker("", selection: $model.layout) {
                     ForEach(LayoutMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 120)
+                .pickerStyle(.segmented).labelsHidden().frame(width: 170)
                 .onChange(of: model.layout) { Task { await model.loadList() } }
             }
             .padding(.horizontal, 16)

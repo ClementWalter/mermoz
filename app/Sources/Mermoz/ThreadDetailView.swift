@@ -505,13 +505,15 @@ struct SummaryBox: View {
 struct Avatar: View {
     let name: String
     var me = false
+    var size: CGFloat = 28
 
     var body: some View {
         let initials = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
         Circle()
             .fill(me ? Theme.text.opacity(0.8) : Color(hex: Theme.accountPalette[stableHash % Theme.accountPalette.count]))
-            .overlay(Text(me ? "You" : (initials.isEmpty ? "?" : initials)).font(.system(size: me ? 9 : 11, weight: .bold)).foregroundStyle(.white))
-            .frame(width: 28, height: 28)
+            .overlay(Text(me ? "You" : (initials.isEmpty ? "?" : initials))
+                .font(.system(size: (me ? 9 : 11) * size / 28, weight: .bold)).foregroundStyle(.white))
+            .frame(width: size, height: size)
     }
 
     /// String.hashValue is seeded per launch; colors must stay the same across launches.

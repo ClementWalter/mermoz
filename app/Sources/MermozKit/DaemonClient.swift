@@ -315,6 +315,23 @@ public final class DaemonClient: Sendable {
     }
 
     public func clearChat(thread id: String) async throws { try await callVoid("chat.clear", Params().with("thread_id", id)) }
+
+    /// The Feed for a board scope (a project and/or an account).
+    public func feed(project: String?, accountId: String?) async throws -> Feed {
+        try await call("feed.list", Params().with("project", project).with("account_id", accountId))
+    }
+
+    /// Asks the AI to write these cards' words; they arrive with `feed_changed`.
+    public func feedTexts(_ ids: [String]) async throws {
+        try await callVoid("feed.texts", Params().with("ids", ids))
+    }
+
+    /// Later: hides threads from the feed until `until` (or new mail).
+    public func snooze(_ ids: [String], until: Date) async throws {
+        try await callVoid("feed.snooze", Params().with("ids", ids).with("until", FeedLater.millis(until)))
+    }
+
+    public func unsnooze(_ ids: [String]) async throws { try await callVoid("feed.unsnooze", Params().with("ids", ids)) }
     public func subscribe() async throws { try await callVoid("subscribe") }
 }
 

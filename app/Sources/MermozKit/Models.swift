@@ -366,6 +366,8 @@ public enum DaemonEvent: Sendable, Equatable {
     case providersChanged
     /// Background sorting progressed: column suggestions or progress changed.
     case suggestionsChanged
+    /// Feed judgments or card words changed.
+    case feedChanged
     /// The answer streaming into a thread's chat so far.
     case chatDelta(threadId: String, text: String)
     /// An account's Drive connection, a file pick or a saved attachment changed.

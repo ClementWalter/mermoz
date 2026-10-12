@@ -111,8 +111,9 @@ enum ThreadKeys {
                   !(window.firstResponder is NSText),
                   model.compose == nil, model.paletteMode == nil,
                   let c = ShortcutKey.normalize(event.characters ?? "", command: f.contains(.command),
-                                                control: f.contains(.control), option: f.contains(.option), known: characters),
-                  handle(c, model: model)
+                                                control: f.contains(.control), option: f.contains(.option),
+                                                known: characters + FeedKeys.characters),
+                  FeedKeys.handle(c, shift: f.contains(.shift), model: model) || handle(c, model: model)
             else { return event }
             return nil
         }
@@ -179,7 +180,7 @@ struct ListHeader: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 170)
                 .onChange(of: model.layout) { Task { await model.loadList() } }
             }
             Button { model.startNew() } label: { Image(systemName: "square.and.pencil") }

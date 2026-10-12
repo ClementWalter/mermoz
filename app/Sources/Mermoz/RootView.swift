@@ -72,6 +72,13 @@ struct MainLayout: View {
                 DocsListView().frame(width: listWidth)
                 ResizeHandle(width: $listWidth, range: 300...760)
                 DetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.showsFeed {
+                FeedView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .inspector(isPresented: Binding(get: { model.selectedThreadId != nil || model.compose != nil },
+                                                    set: { if !$0 { model.open(nil); model.compose = nil } })) {
+                        DetailPane().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
+                    }
             } else if model.layout == .board && !model.isReview {
                 BoardView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

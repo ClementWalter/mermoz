@@ -10,6 +10,8 @@ struct ShortcutsOverlay: View {
                   ("s", "Set status"), ("p", "Set priority"), ("m", "Move to project"), ("⇧M", "Join selected into one conversation")]),
         ("Write", [("r", "Reply"), ("c", "New message"), ("t", "Chat about this"), ("⌘↩", "Send / approve"), ("Esc", "Discard draft")]),
         ("Help", [("? or ⌘/", "Show this help")]),
+        ("Feed", [("↩", "Do what the card says"), ("1 2 3", "Pick an option"), ("l", "Later: tomorrow morning"),
+                  ("⇧L", "Later: pick a day"), ("o", "Open the mail"), ("t", "Ask about this")]),
     ]
 
     var body: some View {
@@ -25,6 +27,9 @@ struct ShortcutsOverlay: View {
                     }
                     GridRow {
                         group(groups[2]); group(groups[3])
+                    }
+                    GridRow {
+                        group(groups[4]); Color.clear.frame(height: 0)
                     }
                 }
             }

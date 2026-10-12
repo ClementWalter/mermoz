@@ -118,6 +118,8 @@ func decodeEvent(_ p: [String: Any]) -> DaemonEvent {
         return .providersChanged
     case "suggestions_changed":
         return .suggestionsChanged
+    case "feed_changed":
+        return .feedChanged
     case "chat_delta":
         return .chatDelta(threadId: p["thread_id"] as? String ?? "", text: p["text"] as? String ?? "")
     case "drive_changed":

@@ -36,6 +36,8 @@ enum ConversationTab: String, CaseIterable {
 enum LayoutMode: String, CaseIterable {
     case list = "List"
     case board = "Board"
+    /// Everything open as a stream of cards, one thing to do each (FeedView).
+    case feed = "Feed"
 }
 
 enum ConnectionState: Equatable {
@@ -92,7 +94,10 @@ final class AppModel {
     var syncProgress: [String: (synced: Int, total: Int)] = [:]
 
     var selection: SidebarSelection = .status("unread")
-    var layout: LayoutMode = .list
+    /// List, Board or Feed; the last one chosen comes back at launch.
+    var layout: LayoutMode = LayoutMode(rawValue: UserDefaults.standard.string(forKey: "layout.mode") ?? "") ?? .list {
+        didSet { UserDefaults.standard.set(layout.rawValue, forKey: "layout.mode") }
+    }
     /// Display options are kept per layout, like Linear's per-view settings.
     var listDisplay: DisplayOptions = AppModel.loadDisplay("list") ?? DisplayOptions(grouping: .priority)
     var boardDisplay: DisplayOptions = AppModel.loadDisplay("board") ?? DisplayOptions(grouping: .status)
@@ -140,6 +145,8 @@ final class AppModel {
         /// An answer in the Sort queue: undo takes it back and shows its card again.
         var sortUndo: SortUndoToken?
         var sortCard: SortCard?
+        /// A Later: undone by bringing these threads back into the feed.
+        var unsnooze: [String] = []
     }
 
     var paletteMode: PaletteMode?
@@ -167,6 +174,21 @@ final class AppModel {
     var chatResearch = true
     /// Proposals already applied ("<message id>#<index>"), shown checked.
     var chatApplied: Set<String> = []
+    /// The Feed (AppModel+Feed.swift): its cards and the one keys act on.
+    var feed: Feed?
+    var feedFocus: String?
+    /// Cards just handled, shown as a "Done · Undo" strip before they fold away.
+    var feedStrips: [String: String] = [:]
+    /// Threads whose card words were already asked for.
+    var feedAsked: Set<String> = []
+    /// Cards on screen; only those get AI words.
+    var feedVisible: Set<String> = []
+    /// Batch mails the user unticked, left out of "Archive all".
+    var feedKept: Set<String> = []
+    /// The card whose "Later until…" day picker is open (⇧L).
+    var feedLaterCard: String?
+    var feedRefreshTask: Task<Void, Never>?
+    var feedTextsTask: Task<Void, Never>?
     private var events: Connection?
     private var refreshTask: Task<Void, Never>?
 
@@ -302,7 +324,11 @@ final class AppModel {
             await loadSortQueue()
             return
         }
-        if isReview && layout == .list {
+        if showsFeed {
+            await loadFeed()
+            return
+        }
+        if isReview && layout != .board {
             do {
                 reviewDrafts = try await client.drafts(state: "review")
                 if selectedDraftId == nil { selectedDraftId = reviewDrafts.first?.id }
@@ -753,6 +779,8 @@ final class AppModel {
     func escape() {
         if showShortcuts {
             showShortcuts = false
+        } else if feedLaterCard != nil {
+            feedLaterCard = nil
         } else if paletteMode != nil {
             paletteMode = nil
         } else if chatOpen {
@@ -873,7 +901,9 @@ final class AppModel {
     // MARK: undo (⌘Z)
 
     private func recordUndo(_ label: String, _ ids: [String]) {
-        let before = ids.compactMap { id in threads.first { $0.id == id } ?? (detail?.thread.id == id ? detail?.thread : nil) }
+        let before = ids.compactMap { id in
+            threads.first { $0.id == id } ?? (detail?.thread.id == id ? detail?.thread : nil) ?? feedThread(id)
+        }
         guard !before.isEmpty else { return }
         undoStack.append(UndoEntry(label: label, before: before))
         if undoStack.count > 100 { undoStack.removeFirst() }
@@ -896,6 +926,7 @@ final class AppModel {
                     return
                 }
                 if !entry.rejected.isEmpty { try await client.reopenSuggestions(entry.rejected) }
+                if !entry.unsnooze.isEmpty { try await client.unsnooze(entry.unsnooze) }
                 for t in entry.before {
                     let plan = RestorePlan.between(before: t, now: try await client.thread(t.id).thread)
                     // Read state first: marking unread moves the thread to Unread, the
@@ -1330,6 +1361,8 @@ final class AppModel {
             Task { await refreshCounts(); if isReview { await loadList() } }
         case .suggestionsChanged:
             Task { await refreshSortInfo() }
+        case .feedChanged:
+            if showsFeed { scheduleFeedRefresh() }
         case let .chatDelta(threadId, text):
             // Late events after the answer landed must not reopen the streaming bubble.
             if chatStreaming[threadId] != nil { chatStreaming[threadId] = text }
