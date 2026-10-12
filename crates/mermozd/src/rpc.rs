@@ -51,7 +51,7 @@ impl From<Error> for RpcError {
     }
 }
 
-type R = Result<Value, RpcError>;
+pub(crate) type R = Result<Value, RpcError>;
 
 /// Who is calling: the app is trusted to send and to change the send gate.
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +59,7 @@ pub struct Caller {
     pub is_app: bool,
 }
 
-fn s(p: &Value, k: &str) -> Result<String, RpcError> {
+pub(crate) fn s(p: &Value, k: &str) -> Result<String, RpcError> {
     p.get(k)
         .and_then(|v| v.as_str())
         .map(|v| v.to_string())
@@ -71,11 +71,11 @@ fn flag(p: &Value, k: &str) -> bool {
     p.get(k).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
-fn opt_s(p: &Value, k: &str) -> Option<String> {
+pub(crate) fn opt_s(p: &Value, k: &str) -> Option<String> {
     p.get(k).and_then(|v| v.as_str()).map(|v| v.to_string())
 }
 
-fn str_list(p: &Value, k: &str) -> Result<Option<Vec<String>>, RpcError> {
+pub(crate) fn str_list(p: &Value, k: &str) -> Result<Option<Vec<String>>, RpcError> {
     match p.get(k) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Array(a)) => Ok(Some(
@@ -149,7 +149,7 @@ fn nullable_s(p: &Value, k: &str) -> Option<Option<String>> {
     }
 }
 
-fn app_only(c: Caller, method: &str) -> Result<(), RpcError> {
+pub(crate) fn app_only(c: Caller, method: &str) -> Result<(), RpcError> {
     if c.is_app {
         Ok(())
     } else {
@@ -160,7 +160,7 @@ fn app_only(c: Caller, method: &str) -> Result<(), RpcError> {
     }
 }
 
-fn to_value<T: serde::Serialize>(v: T) -> R {
+pub(crate) fn to_value<T: serde::Serialize>(v: T) -> R {
     serde_json::to_value(v).map_err(|e| RpcError::new(-32000, e.to_string()))
 }
 
@@ -175,6 +175,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             svc.stop_account(&acc.id);
             st.remove_account(&acc.id)?;
             mermoz_core::tokens::delete(&acc.email)?;
+            mermoz_core::tokens::delete_drive_grant(&acc.email)?;
             let _ = svc.events.send(Event::AccountsChanged);
             Ok(json!({}))
         }
@@ -916,6 +917,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             svc.kick_all();
             Ok(json!({}))
         }
+        m if m.starts_with("drive.") => crate::drive::dispatch(svc, caller, m, p).await,
         _ => Err(RpcError::new(-32601, format!("method not found: {method}"))),
     }
 }

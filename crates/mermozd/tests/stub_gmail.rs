@@ -54,6 +54,8 @@ pub struct Mailbox {
     pub reject_tools: bool,
     /// How many of the next stub Claude chat answers stop with `pause_turn`.
     pub pause_turns: usize,
+    /// Space-separated scopes the stub token endpoint says were granted.
+    pub granted_scope: Option<String>,
     next_label: u64,
 }
 
@@ -137,10 +139,13 @@ fn b64url(s: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes())
 }
 
-async fn token() -> Json<Value> {
-    Json(
-        json!({ "access_token": "stub-access", "expires_in": 3600, "refresh_token": "stub-refresh", "token_type": "Bearer" }),
-    )
+async fn token(State(s): State<Shared>) -> Json<Value> {
+    let mut v = json!({ "access_token": "stub-access", "expires_in": 3600, "refresh_token": "stub-refresh", "token_type": "Bearer" });
+    // Like Google: the scopes this consent granted, which a test sets per flow.
+    if let Some(scope) = s.lock().unwrap().granted_scope.clone() {
+        v["scope"] = json!(scope);
+    }
+    Json(v)
 }
 
 async fn profile(State(s): State<Shared>) -> Json<Value> {

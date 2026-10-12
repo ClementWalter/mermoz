@@ -25,6 +25,9 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    /// The user said no on a consent screen (Google's `error=` on the redirect).
+    #[error("authorization declined: {0}")]
+    Declined(String),
     #[error("{0}")]
     Other(String),
 }

@@ -194,6 +194,10 @@ enum Cmd {
     /// Create and manage drafts.
     #[command(subcommand)]
     Draft(DraftCmd),
+    /// Google Drive files of a thread, their text, search, saving attachments.
+    /// Connecting Drive and sharing files happen in the app only.
+    #[command(subcommand)]
+    Drive(DriveCmd),
     /// Ask to send a draft. Unless enabled by the user, it waits for approval in Mermoz (exit 3).
     Send { draft: String },
     /// Workflow statuses.
@@ -237,6 +241,28 @@ enum ConversationCmd {
         #[arg(required = true, num_args = 2..)]
         threads: Vec<String>,
     },
+}
+#[derive(Subcommand)]
+enum DriveCmd {
+    /// Drive files linked in a thread, shared with its people, and attachments saved.
+    Files { thread: String },
+    /// A Drive file's text (Docs as Markdown, Sheets as CSV, Slides as text).
+    Read {
+        file_id: String,
+        /// Account id or email (default: the first account).
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Search Drive by name and content; no words lists recently opened files.
+    Search {
+        words: Vec<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+    /// Save an attachment to Drive, in Mermoz/<thread's project>.
+    Save { attachment: String },
 }
 
 #[derive(Subcommand)]
@@ -559,6 +585,59 @@ fn resolve_account(c: &mut Client, a: &str) -> Result<String, RpcError> {
         message: format!("no account '{a}'; connected: {}", emails.join(", ")),
         data: None,
     })
+}
+
+/// One Drive file per line: id, type, name, link.
+fn drive_line(f: &Value) -> String {
+    format!(
+        "{}  {:<13} {}  {}",
+        f["id"].as_str().unwrap_or(""),
+        f["kind"].as_str().unwrap_or(""),
+        f["name"].as_str().unwrap_or(""),
+        f["web_link"].as_str().unwrap_or("")
+    )
+}
+
+/// Human output for every `drive` command: whichever parts the answer has.
+fn print_drive(out: &Out, v: &Value) {
+    if let Some(t) = v.get("text") {
+        out.line(
+            t.as_str()
+                .unwrap_or("(this file has no text Mermoz can read)"),
+        );
+        return;
+    }
+    if let Some(folder) = v["folder"].as_str() {
+        out.line(format!(
+            "saved in {folder}: {}",
+            v["web_link"].as_str().unwrap_or("")
+        ));
+        return;
+    }
+    for l in v["linked"].as_array().into_iter().flatten() {
+        match l["file"].as_object() {
+            Some(_) => out.line(format!("linked  {}", drive_line(&l["file"]))),
+            None => out.line(format!(
+                "linked  {}  ({})",
+                l["url"].as_str().unwrap_or(""),
+                l["access"].as_str().unwrap_or("")
+            )),
+        }
+    }
+    for f in v["shared"].as_array().into_iter().flatten() {
+        out.line(format!("shared  {}", drive_line(f)));
+    }
+    for s in v["saved"].as_array().into_iter().flatten() {
+        out.line(format!(
+            "saved   {}  {}  {}",
+            s["name"].as_str().unwrap_or(""),
+            s["folder"].as_str().unwrap_or(""),
+            s["web_link"].as_str().unwrap_or("")
+        ));
+    }
+    for f in v["files"].as_array().into_iter().flatten() {
+        out.line(drive_line(f));
+    }
 }
 
 fn print_draft(out: &Out, d: &Value) {
@@ -1395,6 +1474,56 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             } else {
                 print_chat(&out, &v);
             }
+        }
+        Cmd::Drive(d) => {
+            let account = |c: &mut Client, a: Option<String>| -> Result<String, RpcError> {
+                match a {
+                    Some(a) => resolve_account(c, &a),
+                    None => c.call("accounts.list", json!({}))?[0]["id"]
+                        .as_str()
+                        .map(String::from)
+                        .ok_or_else(|| RpcError {
+                            code: -32004,
+                            message: "no account connected".into(),
+                            data: None,
+                        }),
+                }
+            };
+            let v = match d {
+                DriveCmd::Files { thread } => {
+                    c.call("drive.files_for_thread", json!({ "thread_id": thread }))?
+                }
+                DriveCmd::Read {
+                    file_id,
+                    account: a,
+                } => {
+                    let acc = account(&mut c, a)?;
+                    c.call(
+                        "drive.content",
+                        json!({ "account_id": acc, "file_id": file_id }),
+                    )?
+                }
+                DriveCmd::Search {
+                    words,
+                    account: a,
+                    limit,
+                } => {
+                    let acc = account(&mut c, a)?;
+                    c.call(
+                        "drive.search",
+                        json!({ "account_id": acc, "query": words.join(" "), "limit": limit }),
+                    )?
+                }
+                DriveCmd::Save { attachment } => c.call(
+                    "drive.save_attachment",
+                    json!({ "attachment_id": attachment }),
+                )?,
+            };
+            if out.json {
+                out.json(&v);
+                return Ok(());
+            }
+            print_drive(&out, &v);
         }
         Cmd::Sync => {
             let v = c.call("sync.now", json!({}))?;

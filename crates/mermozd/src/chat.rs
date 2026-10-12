@@ -44,7 +44,8 @@ pub async fn send(
         .collect();
     let projects: Vec<String> = st.projects()?.into_iter().map(|p| p.name).collect();
     let today = chat::today();
-    let system = chat::system_prompt(&chat::ThreadContext {
+    let docs = crate::drive::documents_for_chat(svc, thread_id).await;
+    let mut system = chat::system_prompt(&chat::ThreadContext {
         today: &today,
         me: &me,
         thread: &thread,
@@ -53,6 +54,7 @@ pub async fn send(
         statuses: &statuses,
         projects: &projects,
     });
+    system.push_str(&chat::render_documents(&docs));
     let past = st.chat_messages(thread_id)?;
     let turns = chat::provider_turns(&past, question);
     // The question is kept even if the AI fails, so the user sees what they asked.

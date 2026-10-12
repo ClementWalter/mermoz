@@ -51,7 +51,44 @@ pub fn load_grant(account: &str) -> Result<GoogleGrant> {
     Ok(GoogleGrant::parse(&load(account)?))
 }
 
+/// A Google Drive authorisation, kept apart from the Gmail one so connecting,
+/// declining or disconnecting Drive never touches mail access.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DriveGrant {
+    pub refresh_token: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub token_url: String,
+    /// Scopes Google actually granted (the user may untick some).
+    pub scopes: Vec<String>,
+}
+
+impl DriveGrant {
+    pub fn client(&self) -> ClientConfig {
+        let mut c = ClientConfig::with_ids(self.client_id.clone(), self.client_secret.clone());
+        c.token_url = self.token_url.clone();
+        c
+    }
+
+    pub fn has(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope)
+    }
+}
+
+pub fn save_drive_grant(account: &str, g: &DriveGrant) -> Result<()> {
+    secret_set(DRIVE_SERVICE, account, &serde_json::to_string(g)?)
+}
+
+pub fn load_drive_grant(account: &str) -> Result<DriveGrant> {
+    Ok(serde_json::from_str(&secret_get(DRIVE_SERVICE, account)?)?)
+}
+
+pub fn delete_drive_grant(account: &str) -> Result<()> {
+    secret_delete(DRIVE_SERVICE, account)
+}
+
 const SERVICE: &str = "ai.mermoz.oauth";
+const DRIVE_SERVICE: &str = "ai.mermoz.drive";
 const PROVIDER_SERVICE: &str = "ai.mermoz.provider";
 
 /// Where secrets live. Signed release builds (compiled with MERMOZ_USE_KEYCHAIN) use the

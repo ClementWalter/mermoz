@@ -170,6 +170,53 @@ app, the CLI and the MCP server are clients of this protocol.
 | `feedback.list`      | `{}`                                                                                     | `[{"id","text","command","agent","created"}]` |
 | `subscribe`          | `{}`                                                                                     | `{}` then notifications                  |
 
+## Google Drive
+
+Drive has its own consent and refresh token per account (stored apart from the
+Gmail one), so declining or disconnecting Drive never affects mail. Asked scopes:
+`drive.readonly` (read any file the user can open: previews, files shared with a
+thread's people, search) and `drive.file` (files Mermoz created or the user picked:
+saving attachments, sharing a picked file). Google lets the user untick either;
+`drive.status` says what was granted.
+
+```jsonc
+// DriveFile
+{"id": "1Abc…", "name": "Remediation plan", "mime": "application/vnd.google-apps.document",
+ "kind": "Google Doc", "modified": 1791648000000, "owner": {"name": "Marc", "email": "marc@…"} | null,
+ "web_link": "https://docs.google.com/…" | null, "icon_link": "…" | null, "has_thumbnail": true}
+
+// DriveLink: a Drive link found in a thread's messages
+{"file_id": "1Abc…", "url": "https://docs.google.com/document/d/1Abc…/edit", "link_kind": "document",
+ "message_id": "msg_…", "access": "ok|no_access|not_connected|error", "file": DriveFile | null}
+
+// SavedAttachment
+{"attachment_id": "att_…", "file_id": "…", "name": "report.pdf", "web_link": "…",
+ "folder": "Mermoz/Clients/Acme", "created": 1791700000000}
+```
+
+| method | params | result |
+| --- | --- | --- |
+| `drive.status` | `{"account_id"?}` (all accounts without it) | `{"account_id", "email", "connected", "can_read_all", "can_save", "attempt": {"state": "waiting\|connected\|declined\|error", "error"} \| null}` |
+| `drive.connect` | `{"account_id"}` — app only; completes in background, emits `drive_changed` | `{"auth_url"}` |
+| `drive.disconnect` | `{"account_id"}` — app only; forgets the token and the cache (does not call Google's revoke, which would end Gmail access too) | `{}` |
+| `drive.links` | `{"thread_id"}` | `{"account_id", "connected", "links": [DriveLink]}` |
+| `drive.files_for_thread` | `{"thread_id", "limit"?: 20}` — for the thread's Docs tab | `{"account_id", "connected", "can_read_all", "linked": [DriveLink], "shared": [DriveFile] (owned by or shared with its participants, linked ones left out), "saved": [SavedAttachment]}` |
+| `drive.files_for_people` | `{"account_id", "emails": [email], "limit"?: 20}` | `{"files": [DriveFile]}` newest first |
+| `drive.search` | `{"account_id", "query"?, "limit"?: 20}` — no query: recently opened files | `{"files": [DriveFile]}` |
+| `drive.content` | `{"account_id", "file_id"}` — Docs as Markdown, Sheets as CSV (first sheet), Slides and text files as text; cached by version | `{"file": DriveFile, "text": "…" \| null}` |
+| `drive.thumbnail` | `{"account_id", "file_id"}` | `{"mime", "data": base64}` or `null` |
+| `drive.pick` | `{"account_id", "file_ids"?: [id]}` — app only; opens Google's file picker (`drive.file` only); without a Drive connection the pick connects Drive with `drive.file` alone | `{"pick_id", "auth_url"}` |
+| `drive.pick_result` | `{"pick_id"}` | `{"account_id", "state": "waiting\|done\|declined\|error", "files": [DriveFile], "error"}` |
+| `drive.save_attachment` | `{"attachment_id"}` — into `Mermoz/<first project, split on "/">` or `Mermoz/No project`, folders created when missing; saving again returns the first save | `SavedAttachment` |
+| `drive.saved` | `{"thread_id"}` | `[SavedAttachment]` |
+| `drive.share` | `{"account_id", "file_id", "emails": [email], "role": "reader"\|"commenter"}` — app only, after the user confirms; Drive sends no email of its own | `{"shared": [email], "failed": [{"email", "reason"}]}` |
+
+Drive errors: `-32030` `drive_not_connected` (`data: {account_id}`): show "Connect
+Google Drive". `-32031` `drive_needs_access` (`data: {account_id, reason}`):
+`read_all` (the read permission was unticked), `save` (the "files you use with
+Mermoz" permission was unticked) or `pick` (choose the file in Google's picker
+first, then retry).
+
 ## Send gate
 
 `Attach` is an absolute file path, or `{"path" | "from_attachment" | "url", "filename"?, "inline"?}`:
@@ -202,6 +249,7 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "drafts_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "contacts_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "suggestions_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "drive_changed", "account_id": "acc_1"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "chat_delta", "thread_id": "thr_…", "text": "the answer so far"}}
 ```
 

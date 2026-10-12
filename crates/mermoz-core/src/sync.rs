@@ -27,6 +27,10 @@ pub enum Event {
     ProvidersChanged,
     /// Background sorting progressed: column suggestions or counts changed.
     SuggestionsChanged,
+    /// An account's Drive connection, a file pick or a saved attachment changed.
+    DriveChanged {
+        account_id: String,
+    },
     /// The answer streaming into a thread's chat so far (whole text, actions block hidden).
     ChatDelta {
         thread_id: String,

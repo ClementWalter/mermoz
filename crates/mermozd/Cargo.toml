@@ -12,6 +12,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 libc.workspace = true
+base64.workspace = true
 mermoz-core.workspace = true
 
 [dev-dependencies]
@@ -21,3 +22,4 @@ axum.workspace = true
 base64.workspace = true
 jsonwebtoken.workspace = true
 mail-parser.workspace = true
+url.workspace = true

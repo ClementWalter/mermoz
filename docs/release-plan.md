@@ -78,6 +78,21 @@ Goal: anyone with a Gmail account can sign in, without the 7-day expiry.
    links, authorized domain mermoz.xyz.
 4. **Scopes:** request only what the app uses and justify each one. Gmail read and
    modify scopes are **restricted** scopes.
+   Google Drive adds two more, asked only when the user clicks "Connect Google
+   Drive" (a separate consent; mail access never depends on it):
+   - `drive.readonly` — **restricted**. Justification: previews and AI context for
+     documents linked in mail, files shared with a thread's people, search when
+     attaching. It joins the same CASA assessment the Gmail scopes already need.
+   - `drive.file` — non-sensitive. Saving attachments into Mermoz folders, and
+     sharing a file the user picked in Google's file picker.
+   Fallback if Google refuses `drive.readonly`: ship `drive.file` alone. Saving and
+   attach-by-picker keep working; linked-document previews need one "Allow" click per
+   document (Google's picker filtered to it), and the "shared with these people"
+   list disappears. The app already handles a `drive.file`-only grant.
+   **Before the first Drive sign-in** (Clément, Cloud console › `mermoz-mail`):
+   APIs & Services › Library › enable **Google Drive API** and **Google Picker API**;
+   Google Auth Platform › Data Access › Add or remove scopes › add
+   `…/auth/drive.readonly` and `…/auth/drive.file` › Save.
 5. **Demo video:** the OAuth consent flow and every feature that uses each scope.
 6. **Security assessment (CASA):** restricted Gmail scopes normally require an
    annual third-party assessment by a Google-approved lab (paid). To confirm with

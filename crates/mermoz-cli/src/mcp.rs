@@ -46,6 +46,14 @@ fn tools() -> Value {
         { "name": "list_projects", "description": "Projects: the user's Gmail labels. A thread can be in several.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "chat_about_thread", "description": "Ask the user's own AI (the one allowed for the thread's account in Mermoz) about a thread; it sees the thread, its people, status and the user's earlier mail with them, and may search the web. The conversation is kept with the thread and shown in the app. Returns the answer and proposed actions (status, project, follow_up date, draft_reply body); nothing is applied: use update_thread or create_draft to act. Without a question, returns the conversation so far.",
           "inputSchema": { "type": "object", "properties": { "id": s("thread id or number"), "question": s("what to ask"), "research": { "type": "boolean", "default": true, "description": "allow web search" } }, "required": ["id"] } },
+        { "name": "thread_drive_files", "description": "Google Drive files of a thread: those linked in its messages (with access: ok, no_access or not_connected), files shared by or with its participants, and its attachments already saved to Drive. Needs the account's Drive connected in Mermoz.",
+          "inputSchema": { "type": "object", "properties": { "id": s("thread id or number") }, "required": ["id"] } },
+        { "name": "read_drive_file", "description": "A Google Drive file's text: Docs as Markdown, Sheets as CSV (first sheet), Slides as text, plain-text files as they are. Cached locally.",
+          "inputSchema": { "type": "object", "properties": { "account_id": s("account id"), "file_id": s("Drive file id") }, "required": ["account_id", "file_id"] } },
+        { "name": "search_drive", "description": "Search the account's Google Drive by name and content; without a query, the files the user opened most recently.",
+          "inputSchema": { "type": "object", "properties": { "account_id": s("account id"), "query": s("words to find"), "limit": { "type": "integer", "default": 20 } }, "required": ["account_id"] } },
+        { "name": "save_attachment_to_drive", "description": "Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing). Returns the folder and an Open in Drive link; saving again returns the same file. Sharing files stays with the user in the app.",
+          "inputSchema": { "type": "object", "properties": { "id": s("attachment id from get_thread") }, "required": ["id"] } },
         { "name": "submit_feedback", "description": "Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.",
           "inputSchema": { "type": "object", "properties": { "text": s("what went wrong or is missing"), "tool": s("tool name") }, "required": ["text"] } }
     ])
@@ -159,6 +167,19 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
             )),
             _ => r(c.call("chat.get", json!({ "thread_id": a["id"] }))),
         },
+        "thread_drive_files" => r(c.call("drive.files_for_thread", json!({ "thread_id": a["id"] }))),
+        "read_drive_file" => r(c.call(
+            "drive.content",
+            json!({ "account_id": a["account_id"], "file_id": a["file_id"] }),
+        )),
+        "search_drive" => r(c.call(
+            "drive.search",
+            json!({ "account_id": a["account_id"], "query": a.get("query"), "limit": a.get("limit").cloned().unwrap_or(json!(20)) }),
+        )),
+        "save_attachment_to_drive" => r(c.call(
+            "drive.save_attachment",
+            json!({ "attachment_id": a["id"] }),
+        )),
         "submit_feedback" => r(c.call(
             "feedback.submit",
             json!({ "text": a["text"], "command": a.get("tool"), "agent": "mcp" }),

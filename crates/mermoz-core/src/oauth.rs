@@ -88,6 +88,48 @@ struct TokenResponse {
     access_token: String,
     expires_in: Option<u64>,
     refresh_token: Option<String>,
+    /// Space-separated scopes actually granted: with granular consent the user may
+    /// untick some of those asked for.
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// What a consent screen asks for.
+#[derive(Debug, Clone)]
+pub struct AuthRequest {
+    pub scopes: Vec<String>,
+    /// Preselects the Google account, so the user approves for the right one.
+    pub login_hint: Option<String>,
+    /// Asks for a refresh token. Google keeps at most 100 per account and client and
+    /// silently drops the oldest beyond that, so one-off grants (the file picker) don't.
+    pub offline: bool,
+    /// More query parameters, e.g. `trigger_onepick=true` for the Drive file picker.
+    pub extra: Vec<(String, String)>,
+    /// The sentence the browser tab shows once Mermoz has the answer.
+    pub done_message: String,
+}
+
+impl AuthRequest {
+    pub fn gmail() -> Self {
+        Self {
+            scopes: vec![SCOPE.into()],
+            login_hint: None,
+            offline: true,
+            extra: vec![],
+            done_message: "Mermoz is syncing your mail. You can close this tab.".into(),
+        }
+    }
+}
+
+/// The outcome of a consent: the tokens, what was granted, and (file picker) the
+/// files the user chose.
+#[derive(Debug, Clone)]
+pub struct Granted {
+    pub access_token: String,
+    pub expires_in: Option<u64>,
+    pub refresh_token: Option<String>,
+    pub scopes: Vec<String>,
+    pub picked: Vec<String>,
 }
 
 pub struct PendingAuth {
@@ -97,14 +139,20 @@ pub struct PendingAuth {
     state: String,
     redirect: String,
     cfg: ClientConfig,
+    done_message: String,
 }
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Opens the loopback listener and builds the consent URL.
+/// Opens the loopback listener and builds the Gmail consent URL.
 pub async fn start(cfg: ClientConfig) -> Result<PendingAuth> {
+    start_request(cfg, AuthRequest::gmail()).await
+}
+
+/// Opens the loopback listener and builds the consent URL for `req`.
+pub async fn start_request(cfg: ClientConfig, req: AuthRequest) -> Result<PendingAuth> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let redirect = format!("http://127.0.0.1:{port}");
@@ -112,16 +160,27 @@ pub async fn start(cfg: ClientConfig) -> Result<PendingAuth> {
     let challenge = b64(&sha2::Sha256::digest(verifier.as_bytes()));
     let state = b64(&rand::random::<[u8; 16]>());
     let mut url = url::Url::parse(&cfg.auth_url).map_err(|e| Error::other(e.to_string()))?;
-    url.query_pairs_mut()
-        .append_pair("client_id", &cfg.client_id)
-        .append_pair("redirect_uri", &redirect)
-        .append_pair("response_type", "code")
-        .append_pair("scope", SCOPE)
-        .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent")
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("state", &state);
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("client_id", &cfg.client_id)
+            .append_pair("redirect_uri", &redirect)
+            .append_pair("response_type", "code")
+            .append_pair("scope", &req.scopes.join(" "))
+            .append_pair(
+                "access_type",
+                if req.offline { "offline" } else { "online" },
+            )
+            .append_pair("prompt", "consent")
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", &state);
+        if let Some(h) = &req.login_hint {
+            q.append_pair("login_hint", h);
+        }
+        for (k, v) in &req.extra {
+            q.append_pair(k, v);
+        }
+    }
     Ok(PendingAuth {
         auth_url: url.to_string(),
         listener,
@@ -129,14 +188,34 @@ pub async fn start(cfg: ClientConfig) -> Result<PendingAuth> {
         state,
         redirect,
         cfg,
+        done_message: req.done_message,
     })
 }
 
-const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Mermoz</title><body style=\"font-family:-apple-system,system-ui;background:#EAF3FB;color:#0D2436;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"background:#fff;padding:32px 40px;border-radius:16px;box-shadow:0 10px 30px rgba(31,111,181,.1)\"><h2 style=\"margin:0 0 8px\">You're all set</h2><p style=\"margin:0;color:#4B6477\">Mermoz is syncing your mail. You can close this tab.</p></div>";
+fn done_page(message: &str) -> String {
+    format!(
+        "<!doctype html><meta charset=utf-8><title>Mermoz</title><body style=\"font-family:-apple-system,system-ui;background:#EAF3FB;color:#0D2436;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"background:#fff;padding:32px 40px;border-radius:16px;box-shadow:0 10px 30px rgba(31,111,181,.1)\"><h2 style=\"margin:0 0 8px\">You're all set</h2><p style=\"margin:0;color:#4B6477\">{message}</p></div>"
+    )
+}
+
+/// What the browser brought back: an authorization code and any picked files.
+struct Redirect {
+    code: String,
+    picked: Vec<String>,
+}
 
 impl PendingAuth {
     /// Waits for Google's redirect, exchanges the code; returns the refresh token.
     pub async fn finish(self, timeout: Duration) -> Result<String> {
+        self.finish_grant(timeout)
+            .await?
+            .refresh_token
+            .ok_or_else(|| Error::other("Google returned no refresh token"))
+    }
+
+    /// Waits for Google's redirect and exchanges the code. A refusal on the consent
+    /// screen is [`Error::Declined`].
+    pub async fn finish_grant(self, timeout: Duration) -> Result<Granted> {
         let accept = async {
             loop {
                 let (mut sock, _) = self.listener.accept().await?;
@@ -167,9 +246,9 @@ impl PendingAuth {
                     continue;
                 }
                 let body = if get("error").is_some() {
-                    "Sign-in was cancelled. You can close this tab."
+                    "Nothing was changed. You can close this tab.".to_string()
                 } else {
-                    DONE_PAGE
+                    done_page(&self.done_message)
                 };
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -177,22 +256,33 @@ impl PendingAuth {
                 );
                 let _ = sock.write_all(resp.as_bytes()).await;
                 if let Some(e) = get("error") {
-                    return Err(Error::other(format!("authorization denied: {e}")));
+                    return Err(Error::Declined(e));
                 }
                 if get("state").as_deref() != Some(self.state.as_str()) {
                     return Err(Error::other("oauth state mismatch"));
                 }
-                return Ok::<String, Error>(get("code").unwrap());
+                let picked = get("picked_file_ids")
+                    .map(|ids| {
+                        ids.split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return Ok::<Redirect, Error>(Redirect {
+                    code: get("code").unwrap(),
+                    picked,
+                });
             }
         };
-        let code = tokio::time::timeout(timeout, accept)
+        let redirect = tokio::time::timeout(timeout, accept)
             .await
             .map_err(|_| Error::other("sign-in timed out"))??;
         let http = reqwest::Client::new();
         let resp = http
             .post(&self.cfg.token_url)
             .form(&[
-                ("code", code.as_str()),
+                ("code", redirect.code.as_str()),
                 ("client_id", &self.cfg.client_id),
                 ("client_secret", &self.cfg.client_secret),
                 ("redirect_uri", &self.redirect),
@@ -209,8 +299,18 @@ impl PendingAuth {
             });
         }
         let tok: TokenResponse = resp.json().await?;
-        tok.refresh_token
-            .ok_or_else(|| Error::other("Google returned no refresh token"))
+        Ok(Granted {
+            access_token: tok.access_token,
+            expires_in: tok.expires_in,
+            refresh_token: tok.refresh_token,
+            scopes: tok
+                .scope
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(String::from)
+                .collect(),
+            picked: redirect.picked,
+        })
     }
 }
 
@@ -229,6 +329,20 @@ impl TokenSource {
             refresh_token,
             http: reqwest::Client::new(),
             cache: Mutex::new(None),
+        }
+    }
+
+    /// A one-off access token with no refresh token behind it (an online grant).
+    pub fn fixed(cfg: ClientConfig, access_token: String, expires_in: Option<u64>) -> Self {
+        let ttl = expires_in.unwrap_or(3600).saturating_sub(120);
+        Self {
+            cfg,
+            refresh_token: String::new(),
+            http: reqwest::Client::new(),
+            cache: Mutex::new(Some((
+                access_token,
+                Instant::now() + Duration::from_secs(ttl),
+            ))),
         }
     }
 

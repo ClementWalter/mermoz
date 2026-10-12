@@ -2,6 +2,7 @@
 //! serves the app, CLI and MCP clients over a Unix socket.
 
 mod chat;
+mod drive;
 mod grouping;
 mod peer;
 mod rpc;
@@ -34,6 +35,9 @@ fn event_json(e: &Event) -> Value {
         Event::ContactsChanged => json!({ "kind": "contacts_changed" }),
         Event::ProvidersChanged => json!({ "kind": "providers_changed" }),
         Event::SuggestionsChanged => json!({ "kind": "suggestions_changed" }),
+        Event::DriveChanged { account_id } => {
+            json!({ "kind": "drive_changed", "account_id": account_id })
+        }
         Event::ChatDelta { thread_id, text } => {
             json!({ "kind": "chat_delta", "thread_id": thread_id, "text": text })
         }

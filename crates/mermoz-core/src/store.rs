@@ -1863,6 +1863,18 @@ impl Store {
         .ok_or_else(|| Error::NotFound(format!("attachment {id}")))
     }
 
+    /// (account id, thread id) an attachment arrived in.
+    pub fn attachment_thread(&self, id: &str) -> Result<(String, String)> {
+        let r = self.r.lock().unwrap();
+        r.query_row(
+            "SELECT m.account_id, m.thread_id FROM attachments a JOIN messages m ON m.id = a.message_id WHERE a.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("attachment {id}")))
+    }
+
     /// Applies an issue edit locally right away and queues the Gmail label push.
     pub fn update_threads(&self, ids: &[String], patch: &ThreadPatch) -> Result<usize> {
         let mut w = self.w.lock().unwrap();

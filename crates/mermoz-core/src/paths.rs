@@ -36,3 +36,8 @@ pub fn oauth_client_path() -> PathBuf {
 pub fn tokens_dir() -> PathBuf {
     home().join("tokens")
 }
+
+/// Drive metadata, document text and thumbnails: a cache, safe to delete.
+pub fn drive_cache_path() -> PathBuf {
+    home().join("drive.sqlite")
+}

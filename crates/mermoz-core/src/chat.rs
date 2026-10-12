@@ -231,6 +231,44 @@ pub fn render_context(c: &ThreadContext) -> String {
     out
 }
 
+/// A Google Drive document the thread links to, as text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkedDoc {
+    pub title: String,
+    /// "Google Doc", "Google Sheet"…
+    pub kind: String,
+    pub text: String,
+}
+
+/// One linked document longer than this is cut, with a visible note.
+const MAX_DOC_CHARS: usize = 20_000;
+/// All linked documents together; later ones are left out past it, and the AI is told.
+const MAX_DOCS_CHARS: usize = 40_000;
+
+/// The linked documents section appended to the system prompt; empty without any.
+pub fn render_documents(docs: &[LinkedDoc]) -> String {
+    if docs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\nDocuments linked in this conversation (from the user's Google Drive, as text):\n",
+    );
+    let mut used = 0;
+    for (i, d) in docs.iter().enumerate() {
+        let body = cut(d.text.trim(), MAX_DOC_CHARS);
+        if used + body.len() > MAX_DOCS_CHARS && i > 0 {
+            out.push_str(&format!(
+                "[{} more linked documents left out for length]\n",
+                docs.len() - i
+            ));
+            break;
+        }
+        used += body.len();
+        out.push_str(&format!("--- {} \"{}\"\n{body}\n", d.kind, d.title));
+    }
+    out
+}
+
 fn priority_name(p: i64) -> &'static str {
     match p {
         1 => "Urgent",
@@ -918,6 +956,42 @@ mod tests {
     #[rstest]
     fn context_offers_the_projects_to_propose(context_text: String) {
         assert!(context_text.contains("Projects you may propose: Clients/Acme, Finance"));
+    }
+
+    fn doc(title: &str, text: &str) -> LinkedDoc {
+        LinkedDoc {
+            title: title.into(),
+            kind: "Google Doc".into(),
+            text: text.into(),
+        }
+    }
+
+    #[rstest]
+    fn no_documents_adds_nothing() {
+        assert_eq!(render_documents(&[]), "");
+    }
+
+    #[rstest]
+    fn documents_carry_title_and_text() {
+        assert!(
+            render_documents(&[doc("Remediation plan", "Phase 1 ends Oct 30")])
+                .contains("--- Google Doc \"Remediation plan\"\nPhase 1 ends Oct 30")
+        );
+    }
+
+    #[rstest]
+    fn a_long_document_is_cut() {
+        assert!(
+            render_documents(&[doc("Big", &"x".repeat(MAX_DOC_CHARS + 10))])
+                .contains("[… message cut, too long]")
+        );
+    }
+
+    #[rstest]
+    fn documents_past_the_budget_are_counted() {
+        let big = "x".repeat(MAX_DOC_CHARS);
+        let docs = vec![doc("A", &big), doc("B", &big), doc("C", &big)];
+        assert!(render_documents(&docs).contains("[1 more linked documents left out for length]"));
     }
 
     #[rstest]

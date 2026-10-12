@@ -50,6 +50,8 @@ pub struct Service {
     focus: Mutex<Vec<String>>,
     /// Wakes conversation grouping (new mail routed, key or AI changed).
     pub grouping_kick: Arc<Notify>,
+    /// Google Drive connections, picks and the local Drive cache.
+    pub drive: crate::drive::Hub,
 }
 
 pub(crate) fn poll_interval() -> Duration {
@@ -78,6 +80,7 @@ impl Service {
             column: Mutex::new(ColumnState::default()),
             focus: Mutex::new(vec![]),
             grouping_kick: Arc::new(Notify::new()),
+            drive: Default::default(),
         })
     }
 
