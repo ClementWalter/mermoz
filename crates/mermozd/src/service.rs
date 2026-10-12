@@ -48,9 +48,11 @@ pub struct Service {
     pub column: Mutex<ColumnState>,
     /// Statuses of the columns on screen.
     focus: Mutex<Vec<String>>,
+    /// Wakes conversation grouping (new mail routed, key or AI changed).
+    pub grouping_kick: Arc<Notify>,
 }
 
-fn poll_interval() -> Duration {
+pub(crate) fn poll_interval() -> Duration {
     let secs = std::env::var("MERMOZ_POLL_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -75,6 +77,7 @@ impl Service {
             column_kick: Arc::new(Notify::new()),
             column: Mutex::new(ColumnState::default()),
             focus: Mutex::new(vec![]),
+            grouping_kick: Arc::new(Notify::new()),
         })
     }
 
@@ -618,6 +621,7 @@ impl Service {
     pub fn start_router(self: &Arc<Self>) {
         tokio::spawn(router_loop(self.clone()));
         tokio::spawn(column_loop(self.clone()));
+        tokio::spawn(crate::grouping::grouping_loop(self.clone()));
     }
 
     /// The columns on screen; the background pass sorts them first.
@@ -767,6 +771,8 @@ async fn route_pending(svc: &Arc<Service>, key: &str) -> Result<usize> {
     }
     let n = routed.len();
     let _ = svc.events.send(Event::ThreadsChanged(routed));
+    // Routed mail knows whether it is automated: grouping can take it now.
+    svc.grouping_kick.notify_one();
     match stop {
         Some(Error::InvalidParams(m)) => Err(Error::InvalidParams(m)),
         Some(Error::Http(e)) => Err(Error::Http(e)),

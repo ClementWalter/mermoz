@@ -40,6 +40,8 @@ pub struct Mailbox {
     pub jev_rate_limited: usize,
     /// Status the stub Jev picks; "archive" when unset.
     pub jev_status: Option<String>,
+    /// Conversation questions the AI answered.
+    pub grouping_asks: usize,
     /// How long the stub AI takes to answer, to exercise slow providers.
     pub llm_delay_ms: u64,
     /// Bodies of the streamed chat requests the stub AI received.
@@ -263,8 +265,10 @@ async fn modify_thread(
     Json(json!({ "id": tid }))
 }
 
-/// Stub Jev: files everything under "Receipts" when that folder is offered, as
-/// automated mail to archive (or `jev_status`); yes/no questions answer 0.96.
+/// Stub Jev: files everything under "Receipts" when that folder is offered, to archive (or `jev_status`).
+/// "Automated" is likely only for no-reply senders. "Same conversation" is likely,
+/// unsure when the later subject says "Maybe", unlikely when it says "Unrelated";
+/// other yes/no questions answer 0.96.
 async fn jev_systemone(
     State(s): State<Shared>,
     headers: axum::http::HeaderMap,
@@ -290,10 +294,29 @@ async fn jev_systemone(
         }
         m.jev_status.clone().unwrap_or("archive".into())
     };
+    let state = body["state"].to_string();
+    let later = body["state"]["later"]["subject"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let mut answers = serde_json::Map::new();
     for (id, q) in body["questions"].as_object().into_iter().flatten() {
         let a = match (q["type"].as_str(), id.as_str()) {
+            (Some("noul"), "automated") => {
+                json!({ "type": "noul", "noul": if state.contains("noreply") { 0.96 } else { 0.05 } })
+            }
+            (Some("noul"), "same") => {
+                let p = if later.contains("Maybe") {
+                    0.6
+                } else if later.contains("Unrelated") {
+                    0.1
+                } else {
+                    0.96
+                };
+                json!({ "type": "noul", "noul": p })
+            }
             (Some("noul"), _) => json!({ "type": "noul", "noul": 0.96 }),
+            (_, "relation") => json!({ "type": "score", "score": 1.5, "confidence": 0.5 }),
             (_, "project") if q["criteria"].get("Receipts").is_some() => {
                 json!({ "type": "choice", "choice": "Receipts", "confidence": 0.92 })
             }
@@ -371,6 +394,17 @@ async fn llm(
     let delay = s.lock().unwrap().llm_delay_ms;
     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     // People clean-up (schema with "groups"): merge everything into one tidy person.
+    // Conversation grouping: the later thread continues the earlier one unless it says otherwise.
+    if body["output_config"]["format"]["schema"]["required"][0] == "same_conversation" {
+        let input = body["messages"][0]["content"].as_str().unwrap_or("");
+        let text =
+            json!({ "same_conversation": !input.contains("Not the same"), "reason": "stub" })
+                .to_string();
+        s.lock().unwrap().grouping_asks += 1;
+        return Json(
+            json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
+        );
+    }
     if body["output_config"]["format"]["schema"]["required"][0] == "groups" {
         let input: Value =
             serde_json::from_str(body["messages"][0]["content"].as_str().unwrap_or("{}"))

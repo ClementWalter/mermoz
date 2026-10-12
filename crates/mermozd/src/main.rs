@@ -2,6 +2,7 @@
 //! serves the app, CLI and MCP clients over a Unix socket.
 
 mod chat;
+mod grouping;
 mod peer;
 mod rpc;
 mod service;

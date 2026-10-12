@@ -65,6 +65,11 @@ fn s(p: &Value, k: &str) -> Result<String, RpcError> {
         .ok_or_else(|| RpcError::invalid(format!("missing string param '{k}'")))
 }
 
+/// A boolean parameter, false when absent.
+fn flag(p: &Value, k: &str) -> bool {
+    p.get(k).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 fn opt_s(p: &Value, k: &str) -> Option<String> {
     p.get(k).and_then(|v| v.as_str()).map(|v| v.to_string())
 }
@@ -150,7 +155,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "projects.create" => {
             to_value(st.create_project(&s(p, "name")?, opt_s(p, "color").as_deref())?)
         }
-        "counts" => Ok(st.counts()?),
+        "counts" => Ok(st.counts(flag(p, "conversations"))?),
         "threads.list" => {
             let priority = match p.get("priority") {
                 Some(Value::Array(a)) => Some(a.iter().filter_map(|v| v.as_i64()).collect()),
@@ -172,6 +177,8 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                     .unwrap_or(200)
                     .min(2000),
                 offset: p.get("offset").and_then(|v| v.as_i64()).unwrap_or(0),
+                conversations: flag(p, "conversations"),
+                kinds: str_list(p, "kind")?,
             };
             let (threads, total) = st.threads(&f)?;
             Ok(json!({ "threads": threads, "total": total }))
@@ -179,7 +186,48 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "threads.get" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;
             svc.verify_thread_senders(&id);
-            Ok(json!({ "thread": st.thread(&id)?, "messages": st.messages(&id)? }))
+            if !flag(p, "conversation") {
+                return Ok(json!({ "thread": st.thread(&id)?, "messages": st.messages(&id)? }));
+            }
+            let messages = st.conversation_messages(&id)?;
+            for t in st.conversation_thread_ids(&id)? {
+                if t != id {
+                    svc.verify_thread_senders(&t);
+                }
+            }
+            let conversation = st.conversation(&id, &messages)?;
+            Ok(
+                json!({ "thread": st.thread(&id)?, "messages": messages, "conversation": conversation }),
+            )
+        }
+        "conversations.split" => {
+            let id = st.resolve_thread_id(&s(p, "id")?)?;
+            let touched = st.split_thread(&id)?;
+            let _ = svc.events.send(Event::ThreadsChanged(touched));
+            Ok(json!({ "conversation_id": st.thread(&id)?.conversation_id }))
+        }
+        "conversations.merge" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            let ids: Vec<String> = ids
+                .iter()
+                .map(|i| st.resolve_thread_id(i))
+                .collect::<Result<_, _>>()?;
+            let (conversation, members) = st.merge_threads(&ids)?;
+            let _ = svc.events.send(Event::ThreadsChanged(members.clone()));
+            Ok(json!({ "conversation_id": conversation, "threads": members.len() }))
+        }
+        "conversations.progress" => {
+            let b = st.grouping_backlog()?;
+            let n = |k: &str| b.get(k).copied().unwrap_or(0);
+            Ok(json!({ "pending": n("pending") + n("judge"), "waiting_for_ai": n("ai") }))
+        }
+        "files.list" => {
+            let limit = p
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(200)
+                .clamp(1, 2000);
+            to_value(st.shared_files(opt_s(p, "query").as_deref(), limit)?)
         }
         "threads.update" => {
             let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
@@ -244,7 +292,17 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let id = st.resolve_thread_id(&s(p, "id")?)?;
             let read = p.get("read").and_then(|v| v.as_bool()).unwrap_or(true);
             st.mark_read(&id, read)?;
-            let _ = svc.events.send(Event::ThreadsChanged(vec![id.clone()]));
+            // Reading a conversation reads every thread in it.
+            let mut ids = vec![id.clone()];
+            if read {
+                for t in st.conversation_thread_ids(&id)? {
+                    if t != id && st.thread(&t)?.unread {
+                        st.mark_read(&t, true)?;
+                        ids.push(t);
+                    }
+                }
+            }
+            let _ = svc.events.send(Event::ThreadsChanged(ids));
             if let Ok((acc, _)) = st.provider_thread_id(&id) {
                 svc.kick(&acc);
             }

@@ -193,7 +193,7 @@ Backlog); a daily allowance (default 20,000 calls, Settings › Developer) is a
 safety net, 429s honour Retry-After, outages back off exponentially, and token
 use is logged. This replaces the big-LLM column triage button.
 
-## Conversations (proposed 2026-10-12, awaiting decision)
+## Conversations (decided 2026-10-12)
 
 Email splits one exchange into many Gmail threads: a new subject, a reply started
 from a fresh email, a document sent separately. Mermoz reads them as one
@@ -209,9 +209,11 @@ from a fresh email, a document sent separately. Mermoz reads them as one
   - **People**: threads with people the user has written to at least once, at most
     5 counterparts, not bulk addresses (no-reply, newsletter, support, lists). Only
     these are grouped by judgment.
-  - **Feeds**: automated senders (newsletters, banks, receipts, notifications),
-    grouped by sender in code, no judgment. Shown under Feeds, not in Conversations.
-  - **Lists**: mailing-list traffic, grouped by list in code (a channel).
+  - **Feeds**: automated senders (newsletters, banks, receipts, notifications)
+    the user never wrote to, grouped by sender in code, no judgment.
+  - **Lists**: mail carrying a `List-Id`, grouped by list in code (a channel).
+  - Feeds and lists are gathered under Feeds in the sidebar; they keep a status
+    like any conversation, so a bill to pay still shows in To do.
 - The routing `automated` probability already computed on arrival decides between
   People and Feeds.
 
@@ -228,20 +230,22 @@ from a fresh email, a document sent separately. Mermoz reads them as one
    stripped, 600 characters each), attachment names and days between.
 3. **Decision:** Jev ≥ 0.8 joins the conversation; below 0.5 stays apart; between,
    the account's big AI model decides in the background (only ~10% of pairs).
+   Without an AI allowed for the account, an uncertain pair stays apart.
    The thread shows on its own until a decision arrives, then slides in.
+   Each person's past splits raise their join bar by 0.1 (up to 0.95).
 4. A thread joins the conversation of its best match; it is never compared with
    older threads of that conversation again (chain on the latest thread).
 
 ### Status, projects, Gmail
 
-- A conversation has **one status**, the status of its latest thread. Changing it
-  changes every open thread in it (one Gmail write per thread, as today).
+- A conversation has **one status**, the status of its lead thread: the latest
+  open thread, else the latest one, so an open thread never hides behind a filed
+  one. Changing it changes every open thread in it (one Gmail write per thread, as
+  today); reading it reads every thread.
 - The reopen rule works per conversation: a new message from someone else, in any
   of its threads or in a thread that joins it, moves a Done/Waiting conversation
   to To do.
-- **Projects:** a conversation shows the union of its threads' labels; adding a
-  project labels every thread; a joining thread inherits the conversation's
-  projects (as a suggestion, accepted by reading, like routing).
+- **Projects:** adding or removing a project changes every open thread.
 - **Replying** goes to the latest Gmail thread of the conversation (shown above the
   composer, switchable to any of its threads). Archive / delete apply to every
   thread.
@@ -254,9 +258,8 @@ from a fresh email, a document sent separately. Mermoz reads them as one
   thread" marker) moves a thread out; **Merge** (drag a conversation onto another,
   or select two and press M) joins them. Both are instant and undoable.
 - A manual split or merge is final: the pair is never judged again.
-- Every split, merge and kept automatic merge is a labeled example. Per person,
-  a user who keeps splitting gets a stricter threshold (+0.1 per split, capped),
-  and recent examples ride along as few-shot context, like routing corrections.
+- Every Jev, AI and user verdict is kept per pair (the learning record). Per
+  person, each manual split raises the join bar by 0.1, capped at 0.95.
 
 ### Evaluation on the real mailbox (2026-10-12)
 
@@ -322,14 +325,22 @@ person, threads filed under different labels.
 - Mockup (fictional data, list and board variants):
   `docs/mockups/conversations.html`.
 
-### Open decisions
+### Decisions (2026-10-12)
 
-- Thresholds: auto-join at 0.8 (recommended) or 0.7 (more joins, ~3% wrong).
-- Big model on the 0.5–0.8 band (recommended) or Jev alone.
-- Time window 30 days (recommended) or 90.
-- Status per conversation (recommended) or per thread.
-- One-time pass over the whole mailbox (~13.5k pairs, ~$0.6 Jev, ~4 min, plus
-  ~1.4k big-model calls) or new mail and the last 90 days only (recommended first).
+Join at Jev ≥ 0.8, the account's AI on 0.5–0.8, a 30-day window, one status per
+conversation, automated mail to Feeds and lists without AI. Grouping runs in the
+background: new mail and the last 90 days first at full speed, older mail after
+at a slower pace, within the daily allowance shared with background sorting.
+
+### Built (2026-10-12)
+
+Daemon: the grouping worker (streams, candidates, Jev pair judgment, the AI on the
+uncertain band), lead threads kept current by the store, one row per conversation
+in lists and counts, status / project / read changes across a conversation,
+split and merge, conversation reading (messages, people, files, links), a files
+list across the mailbox, and "Chat about this" over the whole conversation
+(`docs/protocol.md`). Not built yet: projects suggested to a joining thread and
+few-shot examples from past splits.
 
 ## UI
 

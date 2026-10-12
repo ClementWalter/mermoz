@@ -26,6 +26,8 @@ pub struct ParsedMessage {
     pub attachments: Vec<ParsedAttachment>,
     /// `Authentication-Results` header values, topmost first (see `auth`).
     pub auth_results: Vec<String>,
+    /// The mailing list's identifier (`List-Id`), lowercase, without its display name.
+    pub list_id: Option<String>,
 }
 
 fn addrs(a: Option<&mail_parser::Address>) -> Vec<Address> {
@@ -97,7 +99,19 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
         references,
         attachments,
         auth_results: crate::auth::results_from_raw(raw),
+        list_id: msg.header_raw("List-Id").and_then(list_id),
     })
+}
+
+/// "Runners <runners.club.example>" → "runners.club.example".
+fn list_id(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    let id = match (v.rfind('<'), v.rfind('>')) {
+        (Some(a), Some(b)) if a < b => &v[a + 1..b],
+        _ => v,
+    };
+    let id = id.trim().to_lowercase();
+    (!id.is_empty()).then_some(id)
 }
 
 #[cfg(test)]
@@ -158,5 +172,22 @@ mod tests {
     fn blind_copies_are_read() {
         let raw = b"From: me@example.com\r\nTo: a@x.com\r\nBcc: Boss <boss@x.com>\r\nSubject: s\r\n\r\nhi\r\n";
         assert_eq!(parse(raw).unwrap().bcc[0].email, "boss@x.com");
+    }
+
+    #[rstest]
+    #[case::named("Runners <Runners.Club.example>", Some("runners.club.example"))]
+    #[case::bare("announce.club.example", Some("announce.club.example"))]
+    #[case::empty("  ", None)]
+    fn list_ids_keep_the_identifier(#[case] raw: &str, #[case] want: Option<&str>) {
+        assert_eq!(list_id(raw).as_deref(), want);
+    }
+
+    #[rstest]
+    fn list_id_header_is_read() {
+        let raw = b"From: ada@club.example\r\nTo: runners@club.example\r\nList-Id: Runners <runners.club.example>\r\nSubject: s\r\n\r\nhi\r\n";
+        assert_eq!(
+            parse(raw).unwrap().list_id.as_deref(),
+            Some("runners.club.example")
+        );
     }
 }

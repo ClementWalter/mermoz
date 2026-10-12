@@ -33,7 +33,8 @@ pub async fn send(
         })?;
     let key = crate::service::credential(&pr).await?;
     let me = st.account(&thread.account_id)?.email;
-    let messages = st.messages(thread_id)?;
+    // The chat covers the whole conversation the thread belongs to.
+    let messages = st.conversation_messages(thread_id)?;
     let history = st.my_past_messages(thread_id, HISTORY)?;
     let statuses: Vec<(String, String)> = st
         .statuses()?

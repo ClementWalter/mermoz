@@ -817,12 +817,16 @@ mod tests {
             summary: None,
             next_action: None,
             suggestion: None,
+            conversation_id: "thr_1".into(),
+            conversation_kind: "person".into(),
+            conversation_threads: 1,
         }
     }
 
     fn message(from: &str, body: &str, mine: bool) -> Message {
         Message {
             id: "m".into(),
+            thread_id: "thr_1".into(),
             from: Address {
                 name: "Marc Petit".into(),
                 email: from.into(),

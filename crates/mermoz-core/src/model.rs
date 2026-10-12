@@ -40,6 +40,15 @@ pub struct ThreadSummary {
     pub next_action: Option<String>,
     /// The router's pending prediction, until the thread is read or the user decides.
     pub suggestion: Option<Suggestion>,
+    /// The conversation this Gmail thread belongs to (its own id while alone).
+    #[serde(default)]
+    pub conversation_id: String,
+    /// "person", "feed" (automated sender) or "list" (mailing list).
+    #[serde(default)]
+    pub conversation_kind: String,
+    /// Gmail threads in the conversation, this one included.
+    #[serde(default)]
+    pub conversation_threads: i64,
 }
 
 /// The fields of a thread a group accept can change, as they were before it: what
@@ -96,6 +105,9 @@ pub struct AttachmentInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     pub id: String,
+    /// The Gmail thread it belongs to, inside a conversation of several.
+    #[serde(default)]
+    pub thread_id: String,
     pub from: Address,
     pub to: Vec<Address>,
     pub cc: Vec<Address>,
@@ -209,4 +221,49 @@ pub fn new_id(prefix: &str) -> String {
     use rand::Rng;
     let n: u64 = rand::rng().random();
     format!("{prefix}_{n:016x}")
+}
+
+/// Someone in a conversation, with what the directory knows about them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConversationPerson {
+    pub name: String,
+    pub email: String,
+    pub title: String,
+    pub company: String,
+    /// Messages they wrote in the conversation.
+    pub messages: i64,
+}
+
+/// A web link shared in a conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedLink {
+    pub url: String,
+    pub message_id: String,
+    pub from: String,
+    pub date: i64,
+}
+
+/// A file shared in a conversation (or anywhere, for the Docs list).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedFile {
+    pub id: String,
+    pub filename: String,
+    pub mime: String,
+    pub size: i64,
+    pub message_id: String,
+    pub thread_id: String,
+    pub from: String,
+    pub date: i64,
+}
+
+/// Everything the reading pane shows about one conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Conversation {
+    pub id: String,
+    pub kind: String,
+    /// Its Gmail threads, oldest first.
+    pub threads: Vec<ThreadSummary>,
+    pub people: Vec<ConversationPerson>,
+    pub files: Vec<SharedFile>,
+    pub links: Vec<SharedLink>,
 }

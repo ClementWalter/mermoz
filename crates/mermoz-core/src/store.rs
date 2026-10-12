@@ -10,6 +10,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod conversations;
+pub use conversations::{GroupingPlan, PairCandidate};
+
 const PRAGMAS: &str =
     "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";
 
@@ -93,6 +96,7 @@ const MIGRATIONS: &[&str] = &[
     SUGGESTION_STATUS,
     CHAT,
     RECHECK_SENDER_FAILS,
+    conversations::MIGRATION,
 ];
 
 /// Failures stored under an older, stricter rule are checked again when their
@@ -425,6 +429,10 @@ pub struct ThreadFilter {
     pub reverse: bool,
     pub limit: i64,
     pub offset: i64,
+    /// One row per conversation: only the thread leading each one.
+    pub conversations: bool,
+    /// Only these streams: "person", "feed", "list".
+    pub kinds: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -751,7 +759,8 @@ pub struct Store {
 }
 
 const THREAD_COLS: &str = "t.id, t.number, t.account_id, t.subject, t.snippet, t.participants, t.last_from, t.last_date, \
-    t.unread, t.message_count, t.has_attachments, t.status, t.priority, t.due, t.summary, t.next_action";
+    t.unread, t.message_count, t.has_attachments, t.status, t.priority, t.due, t.summary, t.next_action, \
+    COALESCE(t.conversation_id, t.id), t.conv_kind";
 
 fn thread_row(r: &Row) -> rusqlite::Result<ThreadSummary> {
     let participants: String = r.get(5)?;
@@ -774,6 +783,9 @@ fn thread_row(r: &Row) -> rusqlite::Result<ThreadSummary> {
         summary: r.get(14)?,
         next_action: r.get(15)?,
         suggestion: None,
+        conversation_id: r.get(16)?,
+        conversation_kind: r.get(17)?,
+        conversation_threads: 1,
     })
 }
 
@@ -816,9 +828,11 @@ fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
         let (t, sg) = row?;
         suggestions.insert(t, sg);
     }
+    let sizes = conversations::sizes(conn, rows)?;
     for t in rows.iter_mut() {
         t.projects = projects.remove(&t.id).unwrap_or_default();
         t.suggestion = suggestions.remove(&t.id);
+        t.conversation_threads = sizes.get(&t.conversation_id).copied().unwrap_or(1);
     }
     Ok(())
 }
@@ -1274,7 +1288,7 @@ impl Store {
                     [(number + 1).to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO threads (id, account_id, provider_thread_id, number, status) VALUES (?1, ?2, ?3, ?4, 'unread')",
+                    "INSERT INTO threads (id, account_id, provider_thread_id, number, status, conversation_id) VALUES (?1, ?2, ?3, ?4, 'unread', ?1)",
                     params![tid, account_id, msg.provider_thread_id, number],
                 )?;
                 (tid, true)
@@ -1284,8 +1298,8 @@ impl Store {
         let mid = new_id("msg");
         tx.execute(
             "INSERT INTO messages (id, account_id, provider_id, thread_id, from_name, from_email, to_json, cc_json, date, subject,
-               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth, bcc_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth, bcc_json, list_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 mid,
                 account_id,
@@ -1306,6 +1320,7 @@ impl Store {
                 serde_json::to_string(&p.references)?,
                 if is_from_me { "self" } else { crate::auth::verdict(&p.auth_results, &from.email) },
                 serde_json::to_string(&p.bcc)?,
+                p.list_id,
             ],
         )?;
         let fts_rowid = fts_rowid(date, tx.last_insert_rowid());
@@ -1318,6 +1333,9 @@ impl Store {
             "INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![fts_rowid, p.subject, fmt_addr(&from), recipients.join(", "), p.body_text],
         )?;
+        if is_from_me {
+            conversations::note_correspondents(tx, p.to.iter().chain(&p.cc).chain(&p.bcc))?;
+        }
         for a in &p.attachments {
             let aid = new_id("att");
             let dir = blobs.join(&aid);
@@ -1665,6 +1683,13 @@ impl Store {
             c.push(')');
             clauses.push(c);
         }
+        if f.conversations {
+            clauses.push("t.conv_lead = 1".into());
+        }
+        if let Some(k) = &f.kinds {
+            clauses.push(format!("t.conv_kind IN ({})", vec!["?"; k.len()].join(",")));
+            args.extend(k.iter().map(|x| x.clone().into()));
+        }
         let wh = if clauses.is_empty() {
             String::new()
         } else {
@@ -1719,6 +1744,7 @@ impl Store {
                 let cc: String = r.get(4)?;
                 Ok(Message {
                     id: r.get(0)?,
+                    thread_id: thread_id.to_string(),
                     from: Address {
                         name: r.get(1)?,
                         email: r.get(2)?,
@@ -1819,8 +1845,20 @@ impl Store {
                 "priority must be 0..4, got {p}"
             )));
         }
-        let mut n = 0;
+        // One status per conversation: the other open threads of each conversation follow.
+        let mut all: Vec<String> = vec![];
         for id in ids {
+            if !all.contains(id) {
+                all.push(id.clone());
+            }
+            for sib in conversations::open_siblings(&tx, id).unwrap_or_default() {
+                if !all.contains(&sib) {
+                    all.push(sib);
+                }
+            }
+        }
+        let mut n = 0;
+        for id in &all {
             let acc: Option<String> = tx
                 .query_row("SELECT account_id FROM threads WHERE id = ?1", [id], |r| {
                     r.get(0)
@@ -2203,9 +2241,15 @@ impl Store {
         .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))
     }
 
-    pub fn counts(&self) -> Result<serde_json::Value> {
+    /// Open threads per status, project, account and priority; with `conversations`,
+    /// open conversations instead (one per lead thread), plus feeds and lists by kind.
+    pub fn counts(&self, conversations: bool) -> Result<serde_json::Value> {
         let r = self.r.lock().unwrap();
-        let open = "t.status IN (SELECT key FROM statuses WHERE archived = 0)";
+        let open = if conversations {
+            "t.conv_lead = 1 AND t.status IN (SELECT key FROM statuses WHERE archived = 0)"
+        } else {
+            "t.status IN (SELECT key FROM statuses WHERE archived = 0)"
+        };
         let mut status = serde_json::Map::new();
         let mut st = r.prepare_cached(&format!(
             "SELECT t.status, COUNT(*) FROM threads t WHERE {open} GROUP BY t.status"
@@ -2238,8 +2282,18 @@ impl Store {
             let (k, n) = row?;
             priority.insert(k.to_string(), n.into());
         }
+        let mut kind = serde_json::Map::new();
+        if conversations {
+            let mut st = r.prepare_cached(&format!(
+                "SELECT t.conv_kind, COUNT(*) FROM threads t WHERE {open} AND t.conv_kind != 'person' GROUP BY t.conv_kind"
+            ))?;
+            for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+                let (k, n) = row?;
+                kind.insert(k, n.into());
+            }
+        }
         Ok(
-            serde_json::json!({ "status": status, "project": project, "account": account, "priority": priority }),
+            serde_json::json!({ "status": status, "project": project, "account": account, "priority": priority, "kind": kind }),
         )
     }
 
@@ -5108,7 +5162,7 @@ mod tests {
             SyncMode::Initial,
         )
         .unwrap();
-        assert_eq!(s.counts().unwrap()["status"].get("archive"), None);
+        assert_eq!(s.counts(false).unwrap()["status"].get("archive"), None);
     }
 
     fn unread_thread(env: &Env) -> String {

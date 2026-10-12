@@ -128,6 +128,7 @@ fn main() {
             .threads(&ThreadFilter {
                 status: Some(vec!["backlog".into()]),
                 limit: 300,
+                conversations: true,
                 ..Default::default()
             })
             .unwrap();
@@ -142,7 +143,8 @@ fn main() {
         let id = &ids[i % ids.len()];
         i += 1;
         store.thread(id).unwrap();
-        store.messages(id).unwrap();
+        let msgs = store.conversation_messages(id).unwrap();
+        store.conversation(id, &msgs).unwrap();
     });
     checks.push(Check {
         name: "open thread",
@@ -150,7 +152,7 @@ fn main() {
         budget: Duration::from_millis(16),
     });
     let mut counts = time(50, || {
-        store.counts().unwrap();
+        store.counts(true).unwrap();
     });
     checks.push(Check {
         name: "sidebar counts",

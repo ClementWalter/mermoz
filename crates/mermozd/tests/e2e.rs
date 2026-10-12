@@ -2224,3 +2224,249 @@ fn cli_rejects_a_suggestion(synced: World) {
     synced.cli(&["reject", t["number"].as_str().unwrap()]);
     assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
 }
+
+// ---- conversations ---------------------------------------------------------
+
+const DAY_MS: i64 = 86_400_000;
+
+fn sent_raw(to: &str, subject: &str, body: &str, msg_id: &str) -> String {
+    format!(
+        "From: Me <me@example.com>\r\nTo: {to}\r\nSubject: {subject}\r\nMessage-ID: <{msg_id}@example.com>\r\nDate: Sun, 4 Oct 2026 08:12:00 +0000\r\n\r\n{body}\r\n"
+    )
+}
+
+/// The user wrote to Nora about the flat five days ago; she now starts a new thread.
+fn with_nora(world: World, later_subject: &str) -> World {
+    {
+        let mut m = world.mailbox.lock().unwrap();
+        m.add_message(
+            "n1",
+            "ga",
+            &["SENT"],
+            &sent_raw(
+                "Nora Lind <nora@agency.example>",
+                "Flat sale, next steps",
+                "Here is the cellar plan, see https://notary.example/rdv",
+                "n1",
+            ),
+            NOW - 5 * DAY_MS,
+        );
+        m.add_message(
+            "n2",
+            "gb",
+            &["INBOX"],
+            &raw(
+                "Nora Lind <nora@agency.example>",
+                later_subject,
+                "The signing moves to the 20th.",
+                "n2",
+            ),
+            NOW - DAY_MS,
+        );
+    }
+    sign_in(&world);
+    world.wait_until("import with Nora's threads", |w| {
+        w.ok("threads.list", json!({}))["total"] == 5
+    });
+    world
+}
+
+fn conversation_of(w: &World, subject: &str) -> Value {
+    w.thread_by_subject(subject)["conversation_id"].clone()
+}
+
+fn wait_joined(w: &World, later: &str) {
+    w.wait_until("the threads to join", |w| {
+        conversation_of(w, later) == conversation_of(w, "Flat sale, next steps")
+    });
+}
+
+/// Waits until grouping has settled every thread.
+fn wait_grouped(w: &World) {
+    w.wait_until("grouping to finish", |w| {
+        let p = w.ok("conversations.progress", json!({}));
+        p["pending"] == 0 && p["waiting_for_ai"] == 0
+    });
+}
+
+#[fixture]
+fn nora(world: World) -> World {
+    let w = with_nora(world, "Signing postponed");
+    w.ok("router.set", json!({ "api_key": "jev-test" }));
+    wait_joined(&w, "Signing postponed");
+    w
+}
+
+#[rstest]
+fn a_continuation_joins_the_earlier_conversation(nora: World) {
+    assert_eq!(
+        conversation_of(&nora, "Signing postponed"),
+        conversation_of(&nora, "Flat sale, next steps")
+    );
+}
+
+#[rstest]
+fn conversation_lists_show_one_row(nora: World) {
+    let v = nora.ok(
+        "threads.list",
+        json!({ "conversations": true, "participant": ["nora@agency.example"] }),
+    );
+    assert_eq!(v["total"], 1);
+}
+
+#[rstest]
+fn the_row_counts_its_threads(nora: World) {
+    assert_eq!(
+        nora.thread_by_subject("Signing postponed")["conversation_threads"],
+        2
+    );
+}
+
+#[rstest]
+fn opening_a_conversation_reads_every_thread(nora: World) {
+    let id = nora.thread_by_subject("Signing postponed")["id"].clone();
+    let v = nora.ok("threads.get", json!({ "id": id, "conversation": true }));
+    assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+}
+
+#[rstest]
+fn the_conversation_lists_its_links(nora: World) {
+    let id = nora.thread_by_subject("Signing postponed")["id"].clone();
+    let v = nora.ok("threads.get", json!({ "id": id, "conversation": true }));
+    assert_eq!(
+        v["conversation"]["links"][0]["url"],
+        "https://notary.example/rdv"
+    );
+}
+
+#[rstest]
+fn the_conversation_lists_its_people(nora: World) {
+    let id = nora.thread_by_subject("Signing postponed")["id"].clone();
+    let v = nora.ok("threads.get", json!({ "id": id, "conversation": true }));
+    assert_eq!(
+        v["conversation"]["people"][0]["email"],
+        "nora@agency.example"
+    );
+}
+
+#[rstest]
+fn a_status_change_moves_the_whole_conversation(nora: World) {
+    // The earlier thread is filed (sent mail); the new one is open and follows.
+    let id = nora.thread_by_subject("Flat sale, next steps")["id"].clone();
+    nora.ok("threads.update", json!({ "ids": [id], "status": "todo" }));
+    assert_eq!(
+        nora.thread_by_subject("Signing postponed")["status"],
+        "todo"
+    );
+}
+
+#[rstest]
+fn reading_a_conversation_reads_every_thread(nora: World) {
+    let id = nora.thread_by_subject("Signing postponed")["id"].clone();
+    nora.ok("threads.mark_read", json!({ "id": id }));
+    assert_eq!(nora.thread_by_subject("Signing postponed")["unread"], false);
+}
+
+#[rstest]
+fn splitting_takes_a_thread_out(nora: World) {
+    let id = nora.thread_by_subject("Signing postponed")["id"].clone();
+    nora.ok("conversations.split", json!({ "id": id }));
+    assert_ne!(
+        conversation_of(&nora, "Signing postponed"),
+        conversation_of(&nora, "Flat sale, next steps")
+    );
+}
+
+#[rstest]
+fn merging_joins_conversations_by_hand(nora: World) {
+    let a = nora.thread_by_subject("Audit report v2")["id"].clone();
+    let b = nora.thread_by_subject("Budget sheet")["id"].clone();
+    nora.ok("conversations.merge", json!({ "ids": [a, b] }));
+    assert_eq!(
+        conversation_of(&nora, "Audit report v2"),
+        conversation_of(&nora, "Budget sheet")
+    );
+}
+
+#[rstest]
+fn chat_about_a_conversation_reads_every_thread(nora: World) {
+    allow_ai(&nora);
+    let id = nora.thread_by_subject("Signing postponed")["id"].clone();
+    nora.ok(
+        "chat.send",
+        json!({ "thread_id": id, "text": "What's next?" }),
+    );
+    let asked = nora.mailbox.lock().unwrap().chat_requests[0].to_string();
+    assert!(asked.contains("cellar plan"));
+}
+
+#[rstest]
+fn an_unrelated_thread_stays_apart(world: World) {
+    let w = with_nora(world, "Unrelated party");
+    w.ok("router.set", json!({ "api_key": "jev-test" }));
+    wait_grouped(&w);
+    assert_ne!(
+        conversation_of(&w, "Unrelated party"),
+        conversation_of(&w, "Flat sale, next steps")
+    );
+}
+
+#[rstest]
+fn the_ai_settles_an_uncertain_pair(world: World) {
+    let w = with_nora(world, "Maybe the signing");
+    allow_ai(&w);
+    w.ok("router.set", json!({ "api_key": "jev-test" }));
+    wait_joined(&w, "Maybe the signing");
+    assert_eq!(w.mailbox.lock().unwrap().grouping_asks, 1);
+}
+
+#[rstest]
+fn without_an_ai_an_uncertain_pair_stays_apart(world: World) {
+    let w = with_nora(world, "Maybe the signing");
+    w.ok("router.set", json!({ "api_key": "jev-test" }));
+    wait_grouped(&w);
+    assert_ne!(
+        conversation_of(&w, "Maybe the signing"),
+        conversation_of(&w, "Flat sale, next steps")
+    );
+}
+
+#[rstest]
+fn automated_mail_from_one_sender_is_one_feed(synced: World) {
+    synced.mailbox.lock().unwrap().add_message(
+        "b2",
+        "tb2",
+        &["INBOX"],
+        &raw(
+            "Bank <noreply@bank.example>",
+            "Card payment",
+            "A payment was made",
+            "b2",
+        ),
+        NOW + 1000,
+    );
+    synced.wait_until("the second bank mail to join the feed", |w| {
+        let listed = w.ok("threads.list", json!({}))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Card payment");
+        listed && conversation_of(w, "Card payment") == conversation_of(w, "Your statement")
+    });
+}
+
+#[rstest]
+fn feeds_can_be_listed_alone(synced: World) {
+    wait_grouped(&synced);
+    let v = synced.ok(
+        "threads.list",
+        json!({ "conversations": true, "kind": ["feed", "list"] }),
+    );
+    assert_eq!(v["threads"][0]["subject"], "Your statement");
+}
+
+#[rstest]
+fn shared_files_are_listed(synced: World) {
+    let v = synced.ok("files.list", json!({}));
+    assert_eq!(v[0]["filename"], "report.pdf");
+}

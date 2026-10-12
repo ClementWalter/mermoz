@@ -53,7 +53,19 @@ app, the CLI and the MCP server are clients of this protocol.
  "unread": true, "message_count": 3, "has_attachments": true,
  "status": "todo", "priority": 2, "projects": ["Clients/Acme"],
  "due": "2026-10-16" | null, "summary": "…" | null, "next_action": "…" | null,
- "suggestion": Suggestion | null}
+ "suggestion": Suggestion | null,
+ "conversation_id": "thr_…", "conversation_kind": "person|feed|list", "conversation_threads": 2}
+
+// Conversation (threads.get with "conversation": true): Gmail threads with the same
+// people about the same matter, read as one chat. Its id is a thread id; a thread
+// alone is its own conversation. Feeds group an automated sender, lists a mailing list.
+{"id": "thr_…", "kind": "person|feed|list", "threads": [ThreadSummary],
+ "people": [{"name": "Nora Lind", "email": "nora@…", "title": "", "company": "", "messages": 3}],
+ "files": [SharedFile], "links": [{"url": "https://…", "message_id": "msg_…", "from": "Nora Lind", "date": 1791700000000}]}
+
+// SharedFile (newest first)
+{"id": "att_…", "filename": "cellar-plan.pdf", "mime": "application/pdf", "size": 2400,
+ "message_id": "msg_…", "thread_id": "thr_…", "from": "You", "date": 1791700000000}
 
 // Suggestion: the router's pending prediction (absent once read or decided).
 // Fields under the confidence bar are null / empty. On already-read threads in
@@ -63,8 +75,8 @@ app, the CLI and the MCP server are clients of this protocol.
  "projects": ["Receipts"], "project_confidence": 0.88 | null,
  "priority": 0 | null, "automated": 0.97 | null}
 
-// Message
-{"id": "msg_…", "from": {"name": "Marc Petit", "email": "marc@…"},
+// Message (thread_id: its Gmail thread, inside a conversation of several)
+{"id": "msg_…", "thread_id": "thr_…", "from": {"name": "Marc Petit", "email": "marc@…"},
  "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
  "subject": "…", "body_text": "… full text …", "body_new": "… without quoted history, signature or boilerplate …",
  "has_quoted": true, "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
@@ -109,10 +121,14 @@ app, the CLI and the MCP server are clients of this protocol.
 | `projects.create`    | `{"name", "color"?}` — the Gmail label is created when a thread first gets it            | `Project`                                |
 | `projects.update`    | `{"id", "name"?, "color"?}` — renames the Gmail label (and its sub-labels) on every account | `Project`                             |
 | `projects.delete`    | `{"id"}` — deletes the Gmail label on every account; the mail stays                       | `{"threads": n}`                         |
-| `counts`             | `{}`                                                                                     | `{"status": {key: n}, "project": {name: n}, "account": {id: n}}` (open threads only: `done`/`archive`/`deleted` are omitted) |
-| `threads.list`       | `{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "order"?: "last_date"\|"priority"\|"due"\|"created", "reverse"?: false, "limit"?: 200, "offset"?: 0, "suggested"?: true \| {"status": key \| null, "projects"?: [name]}}` — `suggested`: only threads with a pending suggestion, or with one going to that destination | `{"threads": [ThreadSummary], "total": n}`; newest / most urgent / soonest first unless `reverse` (no priority / no due date stay last) |
-| `threads.get`        | `{"id"}`                                                                                 | `{"thread": ThreadSummary, "messages": [Message]}` |
-| `threads.update`     | `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
+| `counts`             | `{"conversations"?: false}` — with `conversations`, one per conversation, plus a `kind` map of open feeds and lists                                                                                    | `{"status": {key: n}, "project": {name: n}, "account": {id: n}}` (open threads only: `done`/`archive`/`deleted` are omitted) |
+| `threads.list`       | `{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "order"?: "last_date"\|"priority"\|"due"\|"created", "reverse"?: false, "limit"?: 200, "offset"?: 0, "conversations"?: false, "kind"?: ["person"\|"feed"\|"list"], "suggested"?: true \| {"status": key \| null, "projects"?: [name]}}` — `suggested`: only threads with a pending suggestion, or with one going to that destination; `conversations` lists only the thread leading each conversation (its latest open thread, else its latest) | `{"threads": [ThreadSummary], "total": n}`; newest / most urgent / soonest first unless `reverse` (no priority / no due date stay last) |
+| `threads.get`        | `{"id", "conversation"?: false}` — with `conversation`, every message of the thread's conversation | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation}` |
+| `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
+| `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's                | `{"conversation_id", "threads": n}`      |
+| `conversations.progress` | `{}` — background grouping                                                           | `{"pending": n, "waiting_for_ai": n}`    |
+| `files.list`         | `{"query"?, "limit"?: 200}` — files shared anywhere, newest first                        | `[SharedFile]`                           |
+| `threads.update`     | the other open threads of each conversation follow · `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
 | `threads.accept_suggestions` | `{"ids": [id]}` — applies each pending suggestion and marks the thread read     | `{"accepted": n}`                        |
 | `suggestions.summary` | `{"statuses": [key], "project"?, "account_id"?, "focus"?: false}` — pending suggestions per column, grouped by target; `focus` makes background sorting take these columns first | `{"columns": [{"status", "pending": n, "groups": [{"status": key \| null, "projects": [name], "count": n}], "classified": n, "total": n, "sorted": bool}], "sorting": bool, "paused": "limit" \| "unavailable" \| null, "calls_today": n, "daily_cap": n, "resort": Resort \| null}` |
 | `suggestions.resort` | `{"statuses"?: [key]}` (default: every routable status, Done and Archive included) — sorts those columns again in the background: verdicts made before now no longer count, except rejections and threads moved by hand since their suggestion; the run ignores the daily cap up to 1.2 calls per thread | `{"resort": {"since", "statuses", "total", "ceiling", "calls", "input_tokens"}, "due": n}` |
@@ -123,7 +139,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | `router.get`         | `{}` — instant routing with TypeSafe Jev (Settings › Developer)                         | `{"configured": bool, "error": "…" \| null, "model": "jev-latest", "daily_cap": n, "calls_today": n, "resort": Resort \| null}` |
 | `router.set`         | `{"api_key"?: "…" \| null, "daily_cap"?: n}` — app only; null removes the key and stops routing; `daily_cap` bounds background sorting calls per day (default 20,000) | same as `router.get`                     |
 | `router.test`        | `{"api_key"?}` — one tiny call with the given or stored key                              | `{"ok": true, "ms": n}`                  |
-| `threads.mark_read`  | `{"id", "read"?: true}`                                                                  | `{}`                                     |
+| `threads.mark_read`  | `{"id", "read"?: true}` — reading marks the whole conversation read                                                                  | `{}`                                     |
 | `messages.html`      | `{"id", "full"?: false}` — quoted history removed unless `full`                         | `{"html": "…", "has_quoted": bool}` sanitized, remote content stripped |
 | `search`             | `{"query", "limit"?: 50}`                                                                | `{"threads": [ThreadSummary]}` full-text, most recent first |
 | `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |
