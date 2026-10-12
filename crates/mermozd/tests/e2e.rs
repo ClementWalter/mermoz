@@ -1573,3 +1573,295 @@ fn cli_lists_column_suggestions(synced: World) {
     let out = synced.cli(&["suggestions", "todo"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("→ archive +Receipts"));
 }
+
+// ---- chat about a thread ---------------------------------------------------
+
+/// A thread with an AI allowed for its account, ready to chat about.
+#[fixture]
+fn chatting(synced: World) -> (World, String) {
+    allow_ai(&synced);
+    let id = synced.thread_by_subject("Audit report v2")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (synced, id)
+}
+
+fn ask(w: &World, thread: &str, text: &str) -> Value {
+    w.ok("chat.send", json!({ "thread_id": thread, "text": text }))
+}
+
+fn chat_system(w: &World) -> String {
+    let m = w.mailbox.lock().unwrap();
+    m.chat_requests[0]["system"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+}
+
+#[rstest]
+fn chat_answer_hides_the_actions_block(chatting: (World, String)) {
+    let (w, t) = chatting;
+    assert_eq!(
+        ask(&w, &t, "What should I do?")["text"],
+        "Marc wants your sign-off. I'd reply today."
+    );
+}
+
+#[rstest]
+fn chat_keeps_only_applicable_proposals(chatting: (World, String)) {
+    let (w, t) = chatting;
+    let kinds: Vec<Value> = ask(&w, &t, "What should I do?")["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["kind"].clone())
+        .collect();
+    assert_eq!(kinds, vec![json!("status"), json!("draft_reply")]);
+}
+
+#[rstest]
+fn chat_never_creates_a_draft_by_itself(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "Write him back");
+    assert_eq!(w.ok("drafts.list", json!({})), json!([]));
+}
+
+#[rstest]
+fn chat_is_kept_with_the_thread(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    assert_eq!(
+        w.ok("chat.get", json!({ "thread_id": t }))["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[rstest]
+fn chat_accepts_the_thread_number(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    let number = w.ok("threads.get", json!({ "id": t }))["thread"]["number"].clone();
+    assert_eq!(
+        w.ok("chat.get", json!({ "thread_id": number }))["messages"][0]["text"],
+        "What should I do?"
+    );
+}
+
+#[rstest]
+fn follow_up_question_carries_the_conversation(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    ask(&w, &t, "And if I say no?");
+    let roles: Vec<Value> = w.mailbox.lock().unwrap().chat_requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["role"].clone())
+        .collect();
+    assert_eq!(
+        roles,
+        vec![json!("user"), json!("assistant"), json!("user")]
+    );
+}
+
+#[rstest]
+fn chat_context_carries_the_thread_body(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    assert!(chat_system(&w).contains("Please sign off the remediation timeline"));
+}
+
+#[rstest]
+fn chat_context_states_today(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    assert!(chat_system(&w).contains("Today: 20"));
+}
+
+#[rstest]
+fn chat_context_names_the_participants(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    assert!(chat_system(&w).contains("Participants: Marc Petit <marc@example.com>"));
+}
+
+#[rstest]
+fn chat_lets_the_ai_search_the_web(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "Who is Marc?");
+    assert_eq!(
+        w.mailbox.lock().unwrap().chat_requests[0]["tools"][0]["type"],
+        "web_search_20260209"
+    );
+}
+
+#[rstest]
+fn chat_answer_says_when_the_ai_searched(chatting: (World, String)) {
+    let (w, t) = chatting;
+    assert_eq!(ask(&w, &t, "Who is Marc?")["searched"], true);
+}
+
+#[rstest]
+fn chat_without_research_sends_no_tools(chatting: (World, String)) {
+    let (w, t) = chatting;
+    w.ok(
+        "chat.send",
+        json!({ "thread_id": t, "text": "Quick one", "research": false }),
+    );
+    assert!(
+        w.mailbox.lock().unwrap().chat_requests[0]
+            .get("tools")
+            .is_none()
+    );
+}
+
+#[rstest]
+fn chat_reports_research_is_available(chatting: (World, String)) {
+    let (w, t) = chatting;
+    assert_eq!(
+        w.ok("chat.get", json!({ "thread_id": t }))["research_available"],
+        true
+    );
+}
+
+#[rstest]
+fn chat_clear_forgets_the_conversation(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    w.ok("chat.clear", json!({ "thread_id": t }));
+    assert_eq!(
+        w.ok("chat.get", json!({ "thread_id": t }))["messages"],
+        json!([])
+    );
+}
+
+#[rstest]
+fn chat_needs_an_allowed_ai(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    let e = synced
+        .call(
+            "chat.send",
+            json!({ "thread_id": t["id"], "text": "What should I do?" }),
+        )
+        .unwrap_err();
+    assert!(e["message"].as_str().unwrap().contains("Settings"));
+}
+
+#[rstest]
+fn chat_streams_the_answer_as_it_comes(chatting: (World, String)) {
+    let (w, t) = chatting;
+    let s = UnixStream::connect(w.sock()).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut events = BufReader::new(s.try_clone().unwrap());
+    writeln!(
+        &s,
+        "{}",
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "subscribe", "params": {} })
+    )
+    .unwrap();
+    let mut line = String::new();
+    events.read_line(&mut line).unwrap();
+    ask(&w, &t, "What should I do?");
+    let mut first = Value::Null;
+    loop {
+        line.clear();
+        if events.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let v: Value = serde_json::from_str(&line).unwrap();
+        if v["params"]["kind"] == "chat_delta" {
+            first = v["params"].clone();
+            break;
+        }
+    }
+    assert_eq!(first["text"], "Marc wants your sign-off. ");
+}
+
+#[rstest]
+fn chatgpt_without_web_search_still_answers(synced: World) {
+    chatgpt_sign_in(&synced);
+    synced.mailbox.lock().unwrap().reject_tools = true;
+    let acc = synced.ok("accounts.list", json!({}))[0]["id"].clone();
+    synced.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": ["*"] }),
+    );
+    let t = synced.thread_by_subject("Audit report v2");
+    assert_eq!(
+        ask(&synced, t["id"].as_str().unwrap(), "What should I do?")["research_unavailable"],
+        true
+    );
+}
+
+#[rstest]
+fn chatgpt_chat_asks_for_web_search(synced: World) {
+    chatgpt_sign_in(&synced);
+    let acc = synced.ok("accounts.list", json!({}))[0]["id"].clone();
+    synced.ok(
+        "accounts.agent.set",
+        json!({ "account_id": acc, "provider_ids": ["*"] }),
+    );
+    let t = synced.thread_by_subject("Audit report v2");
+    ask(&synced, t["id"].as_str().unwrap(), "Who is Marc?");
+    assert_eq!(
+        synced.mailbox.lock().unwrap().chat_requests[0]["tools"][0]["type"],
+        "web_search"
+    );
+}
+
+#[rstest]
+fn cli_chat_prints_the_answer(chatting: (World, String)) {
+    let (w, t) = chatting;
+    let out = w.cli(&["chat", &t, "What", "should", "I", "do?"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("I'd reply today."));
+}
+
+#[rstest]
+fn cli_chat_shows_proposals_as_commands(chatting: (World, String)) {
+    let (w, t) = chatting;
+    let out = w.cli(&["chat", &t, "What", "should", "I", "do?"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("mermoz status <thread> waiting"));
+}
+
+#[rstest]
+fn cli_chat_json_lists_the_conversation(chatting: (World, String)) {
+    let (w, t) = chatting;
+    ask(&w, &t, "What should I do?");
+    let out = w.cli(&["--json", "chat", &t]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["messages"][1]["role"], "assistant");
+}
+
+#[rstest]
+fn mcp_chat_answers(chatting: (World, String)) {
+    let (w, t) = chatting;
+    let mut child = Command::new(bin_dir().join("mermoz"))
+        .arg("mcp")
+        .env("MERMOZ_HOME", w.home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "{}", json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "chat_about_thread", "arguments": { "id": t, "question": "What should I do?" } } })).unwrap();
+    drop(stdin);
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    let _ = child.wait();
+    let v: Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    assert!(
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Move to Waiting")
+    );
+}

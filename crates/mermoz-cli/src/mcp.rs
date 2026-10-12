@@ -32,6 +32,8 @@ fn tools() -> Value {
         { "name": "list_labels", "description": "The user's Gmail labels (mailboxes) with ids, accounts and thread counts.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_statuses", "description": "Workflow statuses.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_projects", "description": "Projects: the user's Gmail labels. A thread can be in several.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "chat_about_thread", "description": "Ask the user's own AI (the one allowed for the thread's account in Mermoz) about a thread; it sees the thread, its people, status and the user's earlier mail with them, and may search the web. The conversation is kept with the thread and shown in the app. Returns the answer and proposed actions (status, project, follow_up date, draft_reply body); nothing is applied: use update_thread or create_draft to act. Without a question, returns the conversation so far.",
+          "inputSchema": { "type": "object", "properties": { "id": s("thread id or number"), "question": s("what to ask"), "research": { "type": "boolean", "default": true, "description": "allow web search" } }, "required": ["id"] } },
         { "name": "submit_feedback", "description": "Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.",
           "inputSchema": { "type": "object", "properties": { "text": s("what went wrong or is missing"), "tool": s("tool name") }, "required": ["text"] } }
     ])
@@ -105,6 +107,13 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
             }
         },
         "column_suggestions" => r(c.call("suggestions.summary", a.clone())),
+        "chat_about_thread" => match a.get("question").and_then(|q| q.as_str()) {
+            Some(q) if !q.trim().is_empty() => r(c.call(
+                "chat.send",
+                json!({ "thread_id": a["id"], "text": q, "research": a.get("research").cloned().unwrap_or(json!(true)) }),
+            )),
+            _ => r(c.call("chat.get", json!({ "thread_id": a["id"] }))),
+        },
         "submit_feedback" => r(c.call(
             "feedback.submit",
             json!({ "text": a["text"], "command": a.get("tool"), "agent": "mcp" }),

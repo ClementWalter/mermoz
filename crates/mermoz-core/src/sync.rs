@@ -27,6 +27,11 @@ pub enum Event {
     ProvidersChanged,
     /// Background sorting progressed: column suggestions or counts changed.
     SuggestionsChanged,
+    /// The answer streaming into a thread's chat so far (whole text, actions block hidden).
+    ChatDelta {
+        thread_id: String,
+        text: String,
+    },
 }
 
 pub struct AccountSync {

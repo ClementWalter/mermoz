@@ -85,6 +85,14 @@ app, the CLI and the MCP server are clients of this protocol.
  "to": ["a@b.c"], "cc": [], "subject": "…", "body": "…",
  "state": "draft|review|sent|rejected", "origin": "app|agent",
  "created": 1791700000000, "updated": 1791700000000}
+
+// ChatMessage: one turn of "Chat about this". Actions are proposals; nothing is applied.
+{"id": "cht_…", "thread_id": "thr_…", "role": "user|assistant", "text": "light Markdown",
+ "actions": [{"kind": "draft_reply", "label": "Draft a reply", "body": "…"},
+             {"kind": "status", "label": "Move to Waiting", "status": "waiting"},
+             {"kind": "project", "label": "File in Finance", "project": "Finance"},
+             {"kind": "follow_up", "label": "Remind me on Oct 20", "due": "2026-10-20"}],
+ "searched": false, "research_unavailable": false, "created": 1791700000000}
 ```
 
 ## Methods
@@ -134,6 +142,9 @@ app, the CLI and the MCP server are clients of this protocol.
 | `contacts.get`       | `{"email"}`                                                                              | `{"contact": Contact, "threads": [ThreadSummary]}` |
 | `settings.get`       | `{}`                                                                                     | `{"agents_may_send": false}`             |
 | `settings.set`       | `{"agents_may_send"}` — app only                                                         | `{}`                                     |
+| `chat.get`           | `{"thread_id"}`                                                                          | `{"messages": [ChatMessage], "research_available": bool}` |
+| `chat.send`          | `{"thread_id", "text", "research"?: true}` — asks the account's allowed AI; streams `chat_delta` | `ChatMessage` (the answer)       |
+| `chat.clear`         | `{"thread_id"}`                                                                          | `{"deleted": n}`                         |
 | `feedback.submit`    | `{"text", "command"?, "agent"?}`                                                         | `{"id"}`                                 |
 | `feedback.list`      | `{}`                                                                                     | `[{"id","text","command","agent","created"}]` |
 | `subscribe`          | `{}`                                                                                     | `{}` then notifications                  |
@@ -162,4 +173,8 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "drafts_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "contacts_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "suggestions_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "chat_delta", "thread_id": "thr_…", "text": "the answer so far"}}
 ```
+
+`chat_delta` carries the whole visible answer so far (never the actions block), at
+most every 60 ms while `chat.send` streams; the final answer is `chat.send`'s result.

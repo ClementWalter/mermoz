@@ -25,6 +25,7 @@ Examples:
   mermoz status M-1287 waiting              Change a thread's status
   mermoz draft reply M-1287 --file r.txt    Draft a reply (never sends)
   mermoz send dft_8f2c                      Ask to send; the user approves in Mermoz
+  mermoz chat M-1287 \"should I accept?\"     Ask the AI about a thread (proposals only)
 
 Exit codes: 0 ok · 1 error · 2 usage · 3 approval required (tell the user) · 4 not found · 5 Mermoz not running";
 
@@ -147,6 +148,18 @@ enum Cmd {
         /// Who is reporting (e.g. claude-code).
         #[arg(long)]
         agent: Option<String>,
+    },
+    /// Ask the account's AI about a thread (kept with the thread, like in the app). Without
+    /// a question, shows the conversation so far. Proposals are listed, never applied.
+    Chat {
+        thread: String,
+        question: Vec<String>,
+        /// Don't let the AI search the web for this answer.
+        #[arg(long)]
+        no_research: bool,
+        /// Forget this thread's conversation.
+        #[arg(long, conflicts_with = "question")]
+        clear: bool,
     },
     /// Trigger an immediate sync.
     Sync,
@@ -276,6 +289,42 @@ fn truncate(s: &str, n: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", s.chars().take(n - 1).collect::<String>())
+    }
+}
+
+/// One chat turn; proposals print as the command that would apply them.
+fn print_chat(out: &Out, m: &Value) {
+    let who = if m["role"] == "assistant" {
+        "AI"
+    } else {
+        "You"
+    };
+    out.line(format!("── {who}"));
+    out.line(m["text"].as_str().unwrap_or("").trim_end());
+    if m["searched"] == true {
+        out.line("(searched the web)");
+    }
+    for a in m["actions"].as_array().into_iter().flatten() {
+        let hint = match a["kind"].as_str().unwrap_or("") {
+            "status" => format!(
+                "mermoz status <thread> {}",
+                a["status"].as_str().unwrap_or("")
+            ),
+            "project" => format!(
+                "mermoz project <thread> \"{}\"",
+                a["project"].as_str().unwrap_or("")
+            ),
+            "follow_up" => format!("mermoz due <thread> {}", a["due"].as_str().unwrap_or("")),
+            "draft_reply" => format!(
+                "mermoz draft reply <thread> --body \"{}\"",
+                a["body"].as_str().unwrap_or("").replace('"', "\\\"")
+            ),
+            _ => String::new(),
+        };
+        out.line(format!(
+            "  → {}  ({hint})",
+            a["label"].as_str().unwrap_or("")
+        ));
     }
 }
 
@@ -1025,6 +1074,38 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 };
             }
             out.line("thanks, feedback recorded");
+        }
+        Cmd::Chat {
+            thread,
+            question,
+            no_research,
+            clear,
+        } => {
+            let v = if clear {
+                c.call("chat.clear", json!({ "thread_id": thread }))?
+            } else if question.is_empty() {
+                c.call("chat.get", json!({ "thread_id": thread }))?
+            } else {
+                c.call(
+                    "chat.send",
+                    json!({ "thread_id": thread, "text": question.join(" "), "research": !no_research }),
+                )?
+            };
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            if clear {
+                out.line("conversation cleared");
+            } else if question.is_empty() {
+                for m in v["messages"].as_array().into_iter().flatten() {
+                    print_chat(&out, m);
+                }
+            } else {
+                print_chat(&out, &v);
+            }
         }
         Cmd::Sync => {
             let v = c.call("sync.now", json!({}))?;

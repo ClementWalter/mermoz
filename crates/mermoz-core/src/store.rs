@@ -91,6 +91,7 @@ const MIGRATIONS: &[&str] = &[
     SENDER_AUTH,
     BCC,
     SUGGESTION_STATUS,
+    CHAT,
 ];
 
 /// The status a suggestion was made for: once the thread sits elsewhere, the
@@ -110,6 +111,16 @@ const UPSERT_SUGGESTION: &str = "INSERT INTO suggestions (thread_id, status, sta
 /// current status (alias `s` for suggestions, `t` for threads).
 const PENDING_SUGGESTION: &str =
     "s.decision IS NULL AND (s.for_status IS NULL OR s.for_status = t.status)";
+
+/// "Chat about this": each thread's conversation with the AI, kept to show it again.
+const CHAT: &str = r#"
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  role TEXT NOT NULL, text TEXT NOT NULL, actions_json TEXT NOT NULL DEFAULT '[]',
+  searched INTEGER NOT NULL DEFAULT 0, research_unavailable INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS chat_messages_thread ON chat_messages(thread_id, created);
+"#;
 
 /// Blind copies of messages the user sent (their own copy carries the Bcc header).
 const BCC: &str = "ALTER TABLE messages ADD COLUMN bcc_json TEXT NOT NULL DEFAULT '[]';";
@@ -3575,6 +3586,85 @@ impl Store {
         )?)
     }
 
+    // ---- chat about a thread -----------------------------------------------
+
+    /// A thread's conversation with the AI, oldest first.
+    pub fn chat_messages(&self, thread_id: &str) -> Result<Vec<crate::chat::ChatMessage>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT id, thread_id, role, text, actions_json, searched, research_unavailable, created
+             FROM chat_messages WHERE thread_id = ?1 ORDER BY created, rowid",
+        )?;
+        Ok(st
+            .query_map([thread_id], |r| {
+                Ok(crate::chat::ChatMessage {
+                    id: r.get(0)?,
+                    thread_id: r.get(1)?,
+                    role: r.get(2)?,
+                    text: r.get(3)?,
+                    actions: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+                    searched: r.get::<_, i64>(5)? != 0,
+                    research_unavailable: r.get::<_, i64>(6)? != 0,
+                    created: r.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn add_chat_message(&self, m: &crate::chat::ChatMessage) -> Result<()> {
+        self.w.lock().unwrap().execute(
+            "INSERT INTO chat_messages (id, thread_id, role, text, actions_json, searched, research_unavailable, created)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                m.id,
+                m.thread_id,
+                m.role,
+                m.text,
+                serde_json::to_string(&m.actions)?,
+                m.searched as i64,
+                m.research_unavailable as i64,
+                m.created
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets a thread's conversation (the panel's "Start over").
+    pub fn clear_chat(&self, thread_id: &str) -> Result<usize> {
+        Ok(self.w.lock().unwrap().execute(
+            "DELETE FROM chat_messages WHERE thread_id = ?1",
+            [thread_id],
+        )?)
+    }
+
+    /// The user's own latest messages in other threads where this thread's correspondents
+    /// wrote too, newest first (indexed on the sender, like the router's history).
+    pub fn my_past_messages(
+        &self,
+        thread_id: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::chat::PastMessage>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "WITH people AS (
+               SELECT DISTINCT lower(from_email) e FROM messages WHERE thread_id = ?1 AND is_from_me = 0),
+             peers AS (
+               SELECT DISTINCT m.thread_id FROM people p JOIN messages m ON lower(m.from_email) = p.e WHERE m.thread_id != ?1)
+             SELECT m.date, m.subject, m.body_text FROM peers JOIN messages m ON m.thread_id = peers.thread_id
+             WHERE m.is_from_me = 1 ORDER BY m.date DESC LIMIT ?2",
+        )?;
+        Ok(st
+            .query_map(params![thread_id, limit], |r| {
+                let body: String = r.get(2)?;
+                Ok(crate::chat::PastMessage {
+                    date: r.get(0)?,
+                    subject: r.get(1)?,
+                    body: crate::quote::readable(&body).0.chars().take(600).collect(),
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     // ---- settings / feedback ---------------------------------------------
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
@@ -5593,5 +5683,137 @@ mod tests {
             env.store.background_daily_cap().unwrap(),
             crate::jev::DEFAULT_DAILY_CAP
         );
+    }
+
+    fn chat_line(tid: &str, role: &str, text: &str, created: i64) -> crate::chat::ChatMessage {
+        crate::chat::ChatMessage {
+            id: new_id("cht"),
+            thread_id: tid.into(),
+            role: role.into(),
+            text: text.into(),
+            actions: vec![crate::chat::ChatAction {
+                kind: "status".into(),
+                label: "Move to Waiting".into(),
+                status: Some("waiting".into()),
+                ..Default::default()
+            }],
+            searched: true,
+            research_unavailable: false,
+            created,
+        }
+    }
+
+    fn one_thread(env: &Env) -> String {
+        env.store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap()
+    }
+
+    #[rstest]
+    fn chat_is_kept_in_order(env: Env) {
+        let tid = one_thread(&env);
+        env.store
+            .add_chat_message(&chat_line(&tid, "user", "What now?", 5))
+            .unwrap();
+        env.store
+            .add_chat_message(&chat_line(&tid, "assistant", "Wait.", 5))
+            .unwrap();
+        let roles: Vec<String> = env
+            .store
+            .chat_messages(&tid)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.role)
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant"]);
+    }
+
+    #[rstest]
+    fn chat_keeps_the_proposals(env: Env) {
+        let tid = one_thread(&env);
+        let m = chat_line(&tid, "assistant", "Wait.", 1);
+        env.store.add_chat_message(&m).unwrap();
+        assert_eq!(env.store.chat_messages(&tid).unwrap()[0], m);
+    }
+
+    #[rstest]
+    fn clearing_forgets_the_chat(env: Env) {
+        let tid = one_thread(&env);
+        env.store
+            .add_chat_message(&chat_line(&tid, "user", "Q", 1))
+            .unwrap();
+        env.store.clear_chat(&tid).unwrap();
+        assert!(env.store.chat_messages(&tid).unwrap().is_empty());
+    }
+
+    #[rstest]
+    fn past_messages_come_from_threads_with_the_same_person(env: Env) {
+        let s = &env.store;
+        let tid = one_thread(&env);
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "o1",
+                "t2",
+                "marc@x.com",
+                &["INBOX"],
+                now_ms() - DAY,
+                "older ask",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "o2",
+                "t2",
+                "me@example.com",
+                &["SENT"],
+                now_ms() - DAY + 1,
+                "My earlier answer",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        assert_eq!(
+            s.my_past_messages(&tid, 5).unwrap()[0].body,
+            "My earlier answer"
+        );
+    }
+
+    #[rstest]
+    fn past_messages_ignore_other_people(env: Env) {
+        let s = &env.store;
+        let tid = one_thread(&env);
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming("o1", "t2", "zoe@y.com", &["INBOX"], now_ms() - DAY, "ask"),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        s.ingest(
+            &env.acc,
+            "me@example.com",
+            &incoming(
+                "o2",
+                "t2",
+                "me@example.com",
+                &["SENT"],
+                now_ms() - DAY + 1,
+                "to Zoe",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        assert!(s.my_past_messages(&tid, 5).unwrap().is_empty());
     }
 }

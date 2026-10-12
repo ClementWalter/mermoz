@@ -1,6 +1,7 @@
 //! mermozd: the Mermoz background daemon. Owns sync and the local store and
 //! serves the app, CLI and MCP clients over a Unix socket.
 
+mod chat;
 mod peer;
 mod rpc;
 mod service;
@@ -32,6 +33,9 @@ fn event_json(e: &Event) -> Value {
         Event::ContactsChanged => json!({ "kind": "contacts_changed" }),
         Event::ProvidersChanged => json!({ "kind": "providers_changed" }),
         Event::SuggestionsChanged => json!({ "kind": "suggestions_changed" }),
+        Event::ChatDelta { thread_id, text } => {
+            json!({ "kind": "chat_delta", "thread_id": thread_id, "text": text })
+        }
     };
     json!({ "jsonrpc": "2.0", "method": "event", "params": params })
 }

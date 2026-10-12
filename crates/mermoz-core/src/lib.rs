@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod ant;
 pub mod auth;
+pub mod chat;
 pub mod chatgpt;
 pub mod compose;
 pub mod error;

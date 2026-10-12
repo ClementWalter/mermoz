@@ -676,6 +676,38 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             svc.kick_all();
             Ok(json!({ "restored": n }))
         }
+        "chat.get" => {
+            let id = st.resolve_thread_id(&s(p, "thread_id")?)?;
+            let (account, _) = st.provider_thread_id(&id)?;
+            let research = st
+                .provider_for_account(&account)?
+                .is_some_and(|pr| mermoz_core::chat::can_research(&pr));
+            Ok(json!({ "messages": st.chat_messages(&id)?, "research_available": research }))
+        }
+        "chat.send" => {
+            let id = st.resolve_thread_id(&s(p, "thread_id")?)?;
+            let research = p.get("research").and_then(|v| v.as_bool()).unwrap_or(true);
+            match crate::chat::send(svc, &id, &s(p, "text")?, research).await {
+                Ok(m) => to_value(m),
+                Err(Error::Upstream {
+                    status: 401 | 403, ..
+                }) => Err(RpcError::invalid(
+                    "Your AI sign-in expired. Sign in again in Settings › Agents.",
+                )),
+                // A provider failure reads as one plain sentence in the chat panel.
+                Err(e @ (Error::Http(_) | Error::Upstream { .. })) => {
+                    tracing::warn!(thread = %id, "chat failed: {e}");
+                    Err(RpcError::invalid(
+                        "Your AI couldn't answer right now. Try again in a moment.",
+                    ))
+                }
+                Err(e) => Err(e.into()),
+            }
+        }
+        "chat.clear" => {
+            let id = st.resolve_thread_id(&s(p, "thread_id")?)?;
+            Ok(json!({ "deleted": st.clear_chat(&id)? }))
+        }
         "settings.get" => Ok(
             json!({ "agents_may_send": st.setting("agents_may_send")?.as_deref() == Some("true") }),
         ),

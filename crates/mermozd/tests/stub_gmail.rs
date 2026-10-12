@@ -40,6 +40,10 @@ pub struct Mailbox {
     pub jev_rate_limited: usize,
     /// How long the stub AI takes to answer, to exercise slow providers.
     pub llm_delay_ms: u64,
+    /// Bodies of the streamed chat requests the stub AI received.
+    pub chat_requests: Vec<Value>,
+    /// The stub ChatGPT refuses requests carrying tools (web search) with a 400.
+    pub reject_tools: bool,
     next_label: u64,
 }
 
@@ -456,6 +460,72 @@ async fn oa_responses(State(s): State<Shared>, headers: axum::http::HeaderMap) -
     format!("event: response.completed\ndata: {ev}\n\n")
 }
 
+/// What the stub AI answers in a chat: advice, then an actions block split mid-tag across
+/// pieces, with one proposal the daemon must drop (unknown status).
+const CHAT_PIECES: &[&str] = &[
+    "Marc wants your sign-off. ",
+    "I'd reply today.\n\n<act",
+    "ions>[{\"kind\":\"status\",\"status\":\"waiting\",\"label\":\"Move to Waiting\"},\
+     {\"kind\":\"draft_reply\",\"label\":\"Draft a reply\",\"body\":\"Hi Marc, signed off.\"},\
+     {\"kind\":\"status\",\"status\":\"someday\"}]</actions>",
+];
+
+/// Anthropic Messages API: streamed requests are chats, the rest structured calls.
+async fn messages(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if body["stream"] != true {
+        return llm(State(s), headers, Json(body)).await.into_response();
+    }
+    let searched = body["tools"][0]["name"] == "web_search";
+    s.lock().unwrap().chat_requests.push(body);
+    let mut out = String::from("event: message_start\ndata: {\"type\":\"message_start\"}\n\n");
+    if searched {
+        out.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"name\":\"web_search\"}}\n\n");
+    }
+    for p in CHAT_PIECES {
+        let ev = json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": p } });
+        out.push_str(&format!("event: content_block_delta\ndata: {ev}\n\n"));
+    }
+    out.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+    ([("content-type", "text/event-stream")], out).into_response()
+}
+
+/// Responses API: chats (no structured format) stream text; the rest go to the digest stub.
+async fn oa_responses_any(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if body["text"]["format"].is_object() {
+        return oa_responses(State(s), headers).await.into_response();
+    }
+    let reject = s.lock().unwrap().reject_tools && body.get("tools").is_some();
+    s.lock().unwrap().chat_requests.push(body);
+    if reject {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            "{\"error\":{\"message\":\"tools are not supported\"}}",
+        )
+            .into_response();
+    }
+    let mut out = String::new();
+    for p in CHAT_PIECES {
+        let ev = json!({ "type": "response.output_text.delta", "delta": p });
+        out.push_str(&format!(
+            "event: response.output_text.delta\ndata: {ev}\n\n"
+        ));
+    }
+    out.push_str(
+        "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n",
+    );
+    ([("content-type", "text/event-stream")], out).into_response()
+}
+
 /// Serves the stub on an ephemeral port in a background runtime.
 pub fn start(mailbox: Shared) -> u16 {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -467,12 +537,12 @@ pub fn start(mailbox: Shared) -> u16 {
         rt.block_on(async move {
             let app = Router::new()
                 .route("/token", post(token))
-                .route("/v1/messages", post(llm))
+                .route("/v1/messages", post(messages))
                 .route("/oa/.well-known/openid-configuration", get(oidc_config))
                 .route("/oa/.well-known/jwks.json", get(jwks))
                 .route("/oa/api/accounts/oauth/token", post(oa_token))
                 .route("/oa/v1/models", get(oa_models))
-                .route("/oa/v1/responses", post(oa_responses))
+                .route("/oa/v1/responses", post(oa_responses_any))
                 .route("/gmail/profile", get(profile))
                 .route("/gmail/messages", get(list))
                 .route("/gmail/messages/send", post(send))
