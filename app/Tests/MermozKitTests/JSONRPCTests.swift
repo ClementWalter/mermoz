@@ -97,3 +97,12 @@ func eventsDecode(_ raw: String, _ expected: DaemonEvent) {
     let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     #expect(obj?.isEmpty == true)
 }
+
+@Test func messageDecodesBlindCopies() throws {
+    let json = Data(#"""
+    {"id":"msg_1","from":{"name":"Me","email":"me@x.com"},"to":[],"cc":[],"bcc":[{"name":"Boss","email":"boss@x.com"}],
+     "date":1,"subject":"s","body_text":"b","has_html":false,"is_from_me":true,"attachments":[],"auth":null}
+    """#.utf8)
+    #expect(try RPCCoding.decoder().decode(Message.self, from: json).bcc?.first?.email == "boss@x.com")
+}
+

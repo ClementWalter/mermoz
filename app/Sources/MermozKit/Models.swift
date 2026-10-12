@@ -125,6 +125,8 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var from: Address
     public var to: [Address]
     public var cc: [Address]
+    /// Blind copies, known only on messages the user sent.
+    public var bcc: [Address]?
     public var date: Int64
     public var subject: String
     public var bodyText: String

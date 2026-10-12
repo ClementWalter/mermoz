@@ -89,7 +89,11 @@ const MIGRATIONS: &[&str] = &[
     WORKFLOW_V2,
     FIRST_DATE,
     SENDER_AUTH,
+    BCC,
 ];
+
+/// Blind copies of messages the user sent (their own copy carries the Bcc header).
+const BCC: &str = "ALTER TABLE messages ADD COLUMN bcc_json TEXT NOT NULL DEFAULT '[]';";
 
 /// Sender verification verdict per message (null until checked; "self" for mine).
 const SENDER_AUTH: &str = "ALTER TABLE messages ADD COLUMN auth TEXT;";
@@ -1132,8 +1136,8 @@ impl Store {
         let mid = new_id("msg");
         tx.execute(
             "INSERT INTO messages (id, account_id, provider_id, thread_id, from_name, from_email, to_json, cc_json, date, subject,
-               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth, bcc_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 mid,
                 account_id,
@@ -1153,6 +1157,7 @@ impl Store {
                 p.message_id,
                 serde_json::to_string(&p.references)?,
                 if is_from_me { "self" } else { crate::auth::verdict(&p.auth_results, &from.email) },
+                serde_json::to_string(&p.bcc)?,
             ],
         )?;
         let fts_rowid = fts_rowid(date, tx.last_insert_rowid());
@@ -1544,7 +1549,7 @@ impl Store {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(
             "SELECT m.id, from_name, from_email, to_json, cc_json, date, subject, body_text, body_html IS NOT NULL, is_from_me,
-               (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth
+               (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json
              FROM messages m WHERE thread_id = ?1 ORDER BY date",
         )?;
         let mut msgs = st
@@ -1559,6 +1564,7 @@ impl Store {
                     },
                     to: serde_json::from_str(&to).unwrap_or_default(),
                     cc: serde_json::from_str(&cc).unwrap_or_default(),
+                    bcc: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
                     date: r.get(5)?,
                     subject: r.get(6)?,
                     body_new: String::new(),
@@ -4939,6 +4945,23 @@ mod tests {
             env.store.messages(&tid).unwrap()[0]
                 .body_new
                 .contains("We warmly invite you")
+        );
+    }
+
+    #[rstest]
+    fn my_sent_copy_keeps_its_blind_copies(env: Env) {
+        let mut m = incoming("m1", "t1", "me@example.com", &["SENT"], now_ms(), "hi");
+        m.parsed.bcc = vec![Address {
+            name: "Boss".into(),
+            email: "boss@x.com".into(),
+        }];
+        let tid = env
+            .store
+            .ingest(&env.acc, "me@example.com", &m, SyncMode::Incremental)
+            .unwrap();
+        assert_eq!(
+            env.store.messages(&tid).unwrap()[0].bcc[0].email,
+            "boss@x.com"
         );
     }
 }

@@ -15,6 +15,8 @@ pub struct ParsedMessage {
     pub from: Option<Address>,
     pub to: Vec<Address>,
     pub cc: Vec<Address>,
+    /// Only present on the sender's own copy of a message.
+    pub bcc: Vec<Address>,
     pub subject: String,
     pub date: Option<i64>,
     pub body_text: String,
@@ -86,6 +88,7 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
         from: addrs(msg.from()).into_iter().next(),
         to: addrs(msg.to()),
         cc: addrs(msg.cc()),
+        bcc: addrs(msg.bcc()),
         subject: msg.subject().unwrap_or("").to_string(),
         date: msg.date().map(|d| d.to_timestamp() * 1000),
         body_text: msg.body_text(0).map(|s| s.into_owned()).unwrap_or_default(),
@@ -149,5 +152,11 @@ mod tests {
     #[rstest]
     fn attachment_bytes_are_decoded(multipart: ParsedMessage) {
         assert_eq!(multipart.attachments[0].data, b"%PDF-");
+    }
+
+    #[rstest]
+    fn blind_copies_are_read() {
+        let raw = b"From: me@example.com\r\nTo: a@x.com\r\nBcc: Boss <boss@x.com>\r\nSubject: s\r\n\r\nhi\r\n";
+        assert_eq!(parse(raw).unwrap().bcc[0].email, "boss@x.com");
     }
 }

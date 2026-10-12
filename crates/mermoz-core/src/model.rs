@@ -74,6 +74,8 @@ pub struct Message {
     pub from: Address,
     pub to: Vec<Address>,
     pub cc: Vec<Address>,
+    /// Blind copies: only known on messages the user sent.
+    pub bcc: Vec<Address>,
     pub date: i64,
     pub subject: String,
     pub body_text: String,

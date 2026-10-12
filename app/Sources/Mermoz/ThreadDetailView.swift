@@ -252,6 +252,8 @@ struct MessageCard: View {
     @State private var showQuoted = false
     @State private var html: String?
     @State private var height: CGFloat = 200
+    /// Full From / To / Cc / Bcc / date, opened by clicking the recipients line.
+    @State private var showDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -265,7 +267,16 @@ struct MessageCard: View {
                             Text(message.from.email).font(.system(size: 12)).foregroundStyle(Theme.text3).textSelection(.enabled).lineLimit(1)
                         }
                     }
-                    Text(recipientsLine).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
+                    Button { withAnimation(.easeOut(duration: 0.15)) { showDetails.toggle() } } label: {
+                        HStack(spacing: 4) {
+                            Text(recipientsLine).lineLimit(1)
+                            Image(systemName: showDetails ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+                        }
+                        .font(.system(size: 12)).foregroundStyle(Theme.text3)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(showDetails ? "Hide details" : "Show everyone on this email")
                 }
                 Spacer()
                 Picker("", selection: $mode) {
@@ -278,6 +289,7 @@ struct MessageCard: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { onFold() }
+            if showDetails { MessageDetails(message: message) }
             if mode == .optimized {
                 optimized
             } else {
@@ -353,6 +365,7 @@ struct MessageCard: View {
     private var recipientsLine: String {
         var s = "to " + message.to.map(\.display).joined(separator: ", ")
         if !message.cc.isEmpty { s += ", cc " + message.cc.map(\.display).joined(separator: ", ") }
+        if let bcc = message.bcc, !bcc.isEmpty { s += ", bcc " + bcc.map(\.display).joined(separator: ", ") }
         return s
     }
 }
@@ -467,6 +480,46 @@ struct SenderSeal: View {
                 .accessibilityLabel("Unverified sender")
         default:
             EmptyView()
+        }
+    }
+}
+
+/// Everyone on a message, in full, like the header details of other mail clients.
+struct MessageDetails: View {
+    let message: Message
+
+    var body: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 6) {
+            row("From", [message.from])
+            row("To", message.to)
+            row("Cc", message.cc)
+            row("Bcc", message.bcc ?? [])
+            GridRow {
+                Text("Date").foregroundStyle(Theme.text3).gridColumnAlignment(.trailing)
+                Text(Format.long(message.date))
+            }
+        }
+        .font(.system(size: 12.5))
+        .foregroundStyle(Theme.text)
+        .textSelection(.enabled)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.accentSoft.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder private func row(_ label: String, _ people: [Address]) -> some View {
+        if !people.isEmpty {
+            GridRow {
+                Text(label).foregroundStyle(Theme.text3).gridColumnAlignment(.trailing)
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(people, id: \.email) { a in
+                        HStack(spacing: 6) {
+                            if !a.name.isEmpty { Text(a.name).fontWeight(.medium) }
+                            Text(a.name.isEmpty ? a.email : "<\(a.email)>").foregroundStyle(Theme.text2)
+                        }
+                    }
+                }
+            }
         }
     }
 }
