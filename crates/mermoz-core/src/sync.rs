@@ -25,6 +25,8 @@ pub enum Event {
     DraftsChanged,
     ContactsChanged,
     ProvidersChanged,
+    /// Background sorting progressed: column suggestions or counts changed.
+    SuggestionsChanged,
 }
 
 pub struct AccountSync {

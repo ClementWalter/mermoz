@@ -36,6 +36,8 @@ pub struct Mailbox {
     pub fail_once: BTreeSet<String>,
     /// Authorization headers seen by the stub TypeSafe endpoint.
     pub jev_auth: Vec<String>,
+    /// Jev answers 429 (Retry-After 100 ms) to this many calls first.
+    pub jev_rate_limited: usize,
     /// How long the stub AI takes to answer, to exercise slow providers.
     pub llm_delay_ms: u64,
     next_label: u64,
@@ -259,13 +261,26 @@ async fn jev_systemone(
     State(s): State<Shared>,
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
-) -> Json<Value> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    s.lock().unwrap().jev_auth.push(auth);
+    {
+        let mut m = s.lock().unwrap();
+        m.jev_auth.push(auth);
+        if m.jev_rate_limited > 0 {
+            m.jev_rate_limited -= 1;
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", "100")],
+                "slow down",
+            )
+                .into_response();
+        }
+    }
     let mut answers = serde_json::Map::new();
     for (id, q) in body["questions"].as_object().into_iter().flatten() {
         let a = match (q["type"].as_str(), id.as_str()) {
@@ -279,7 +294,8 @@ async fn jev_systemone(
         };
         answers.insert(id.clone(), a);
     }
-    Json(json!({ "answers": answers }))
+    Json(json!({ "answers": answers, "usage": { "input_tokens": 7500, "output_tokens": 900 } }))
+        .into_response()
 }
 
 /// Like Gmail, a POST without a Content-Length is refused with 411.
@@ -358,22 +374,6 @@ async fn llm(
             .collect();
         let text = json!({ "groups": [{ "ids": ids, "name": "Tidy Name", "kind": "person" }] })
             .to_string();
-        return Json(
-            json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
-        );
-    }
-    // Triage requests (schema with "moves"): send every listed thread to Done.
-    if body["output_config"]["format"]["schema"]["required"][0] == "moves" {
-        let input: Value =
-            serde_json::from_str(body["messages"][0]["content"].as_str().unwrap_or("{}"))
-                .unwrap_or_default();
-        let moves: Vec<Value> = input["threads"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|t| json!({ "number": t["number"], "status": "done", "priority": 0, "reason": "nothing to do" }))
-            .collect();
-        let text = json!({ "moves": moves }).to_string();
         return Json(
             json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
         );

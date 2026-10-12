@@ -90,7 +90,26 @@ const MIGRATIONS: &[&str] = &[
     FIRST_DATE,
     SENDER_AUTH,
     BCC,
+    SUGGESTION_STATUS,
 ];
+
+/// The status a suggestion was made for: once the thread sits elsewhere, the
+/// suggestion is stale, hidden, and the thread is classified again.
+const SUGGESTION_STATUS: &str = "ALTER TABLE suggestions ADD COLUMN for_status TEXT;";
+
+/// Inserts or replaces a thread's suggestion; ?11 is the decision (null = pending).
+/// `for_status` is the thread's status at save time.
+const UPSERT_SUGGESTION: &str = "INSERT INTO suggestions (thread_id, status, status_confidence, projects_json, project_confidence, priority, automated, model, for_date, created, decision, decided, for_status)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CASE WHEN ?11 IS NULL THEN NULL ELSE ?10 END, (SELECT status FROM threads WHERE id = ?1))
+     ON CONFLICT(thread_id) DO UPDATE SET status = excluded.status, status_confidence = excluded.status_confidence,
+       projects_json = excluded.projects_json, project_confidence = excluded.project_confidence, priority = excluded.priority,
+       automated = excluded.automated, model = excluded.model, for_date = excluded.for_date, created = excluded.created,
+       decision = excluded.decision, decided = excluded.decided, for_status = excluded.for_status";
+
+/// A suggestion still waiting for the user: undecided and made for the thread's
+/// current status (alias `s` for suggestions, `t` for threads).
+const PENDING_SUGGESTION: &str =
+    "s.decision IS NULL AND (s.for_status IS NULL OR s.for_status = t.status)";
 
 /// Blind copies of messages the user sent (their own copy carries the Bcc header).
 const BCC: &str = "ALTER TABLE messages ADD COLUMN bcc_json TEXT NOT NULL DEFAULT '[]';";
@@ -269,6 +288,57 @@ pub struct IncomingMessage {
     pub label_ids: Vec<String>,
     pub internal_date: i64,
     pub parsed: ParsedMessage,
+}
+
+/// Settings key counting today's background router calls.
+fn background_calls_key() -> String {
+    format!("jev_calls:{}", chrono::Utc::now().format("%Y-%m-%d"))
+}
+
+/// Restricts a column to the board or list on screen: one project and/or one account.
+#[derive(Debug, Clone, Default)]
+pub struct ColumnScope {
+    pub project: Option<String>,
+    pub account_id: Option<String>,
+}
+
+impl ColumnScope {
+    /// Extra `AND …` conditions on `t`, and their arguments.
+    fn clause(&self) -> (String, Vec<rusqlite::types::Value>) {
+        let mut sql = String::new();
+        let mut args: Vec<rusqlite::types::Value> = vec![];
+        if let Some(p) = &self.project {
+            sql.push_str(
+                " AND t.id IN (SELECT tp.thread_id FROM thread_projects tp WHERE tp.name = ?)",
+            );
+            args.push(p.clone().into());
+        }
+        if let Some(a) = &self.account_id {
+            sql.push_str(" AND t.account_id = ?");
+            args.push(a.clone().into());
+        }
+        (sql, args)
+    }
+}
+
+/// Threads a column's suggestions would send to the same place.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SuggestionGroup {
+    pub status: Option<String>,
+    pub projects: Vec<String>,
+    #[serde(default)]
+    pub count: i64,
+}
+
+/// A column's pending suggestions and classification progress.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ColumnSuggestions {
+    pub status: String,
+    pub pending: i64,
+    pub groups: Vec<SuggestionGroup>,
+    /// Threads with an up-to-date verdict (a suggestion or "no change").
+    pub classified: i64,
+    pub total: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -607,6 +677,8 @@ fn display_name(name: &str, email: &str) -> String {
 pub struct Store {
     w: Mutex<Connection>,
     r: Mutex<Connection>,
+    /// Reads for the background router, so its history scans never queue the UI's reads.
+    bg: Mutex<Connection>,
     blobs: PathBuf,
 }
 
@@ -656,8 +728,8 @@ fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
     }
     let mut suggestions: std::collections::HashMap<String, Suggestion> = Default::default();
     let mut st = conn.prepare(&format!(
-        "SELECT thread_id, status, status_confidence, projects_json, project_confidence, priority, automated
-         FROM suggestions WHERE decision IS NULL AND thread_id IN ({marks})"
+        "SELECT s.thread_id, s.status, s.status_confidence, s.projects_json, s.project_confidence, s.priority, s.automated
+         FROM suggestions s JOIN threads t ON t.id = s.thread_id WHERE {PENDING_SUGGESTION} AND s.thread_id IN ({marks})"
     ))?;
     for row in st.query_map(params_from_iter(ids.iter()), |r| {
         let pj: String = r.get(3)?;
@@ -758,12 +830,16 @@ impl Store {
         w.execute_batch(PRAGMAS)?;
         migrate(&w)?;
         w.busy_timeout(std::time::Duration::from_secs(5))?;
-        let r = Connection::open(path)?;
-        r.execute_batch("PRAGMA foreign_keys = ON;")?;
-        r.busy_timeout(std::time::Duration::from_secs(5))?;
+        let reader = || -> Result<Connection> {
+            let r = Connection::open(path)?;
+            r.execute_batch("PRAGMA foreign_keys = ON;")?;
+            r.busy_timeout(std::time::Duration::from_secs(5))?;
+            Ok(r)
+        };
         let store = Store {
             w: Mutex::new(w),
-            r: Mutex::new(r),
+            r: Mutex::new(reader()?),
+            bg: Mutex::new(reader()?),
             blobs: blobs.to_path_buf(),
         };
         store.seed()?;
@@ -2349,12 +2425,7 @@ impl Store {
     ) -> Result<()> {
         let w = self.w.lock().unwrap();
         w.execute(
-            "INSERT INTO suggestions (thread_id, status, status_confidence, projects_json, project_confidence, priority, automated, model, for_date, created)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(thread_id) DO UPDATE SET status = excluded.status, status_confidence = excluded.status_confidence,
-               projects_json = excluded.projects_json, project_confidence = excluded.project_confidence, priority = excluded.priority,
-               automated = excluded.automated, model = excluded.model, for_date = excluded.for_date, created = excluded.created,
-               decision = NULL, decided = NULL",
+            UPSERT_SUGGESTION,
             params![
                 thread_id,
                 sg.status,
@@ -2365,7 +2436,8 @@ impl Store {
                 sg.automated,
                 model,
                 for_date,
-                now_ms()
+                now_ms(),
+                None::<String>,
             ],
         )?;
         Ok(())
@@ -2387,7 +2459,7 @@ impl Store {
     /// What the router tells Jev about a thread: the last three messages without quoted
     /// history, and where earlier threads with the same people were filed.
     pub fn route_input(&self, thread_id: &str) -> Result<crate::jev::RouteInput> {
-        let r = self.r.lock().unwrap();
+        let r = self.bg.lock().unwrap();
         let rows: Vec<(String, String, bool, i64, String, String)> = {
             let mut st = r.prepare_cached(
                 "SELECT from_name, from_email, is_from_me, date, subject, body_text FROM messages WHERE thread_id = ?1 ORDER BY date",
@@ -2514,8 +2586,8 @@ impl Store {
         for id in ids {
             let row: Option<(String, Option<String>, String, Option<i64>)> = tx
                 .query_row(
-                    "SELECT t.account_id, s.status, s.projects_json, s.priority FROM suggestions s JOIN threads t ON t.id = s.thread_id
-                     WHERE s.thread_id = ?1 AND s.decision IS NULL",
+                    &format!("SELECT t.account_id, s.status, s.projects_json, s.priority FROM suggestions s JOIN threads t ON t.id = s.thread_id
+                     WHERE s.thread_id = ?1 AND {PENDING_SUGGESTION}"),
                     [id],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
@@ -2557,6 +2629,236 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// Already-read threads in open columns that need a (fresh) classification: never
+    /// classified, new mail since, or a pending suggestion made for another status.
+    /// `focus` statuses come first (the column on screen), then every open one, newest first.
+    /// Threads the user decided on since their last suggestion are left alone.
+    pub fn threads_to_classify(&self, focus: &[String], limit: i64) -> Result<Vec<(String, i64)>> {
+        let r = self.bg.lock().unwrap();
+        let mut out: Vec<(String, i64)> = vec![];
+        let focus: Vec<&str> = focus
+            .iter()
+            .map(String::as_str)
+            .filter(|s| RESUMABLE.contains(s))
+            .collect();
+        for statuses in [focus.as_slice(), RESUMABLE] {
+            let want = limit - out.len() as i64;
+            if statuses.is_empty() || want <= 0 {
+                continue;
+            }
+            let marks = vec!["?"; statuses.len()].join(",");
+            // Rows already taken may come back, so ask for that many more.
+            let mut st = r.prepare_cached(&format!(
+                "SELECT t.id, t.last_date FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
+                 WHERE t.status IN ({marks}) AND (s.thread_id IS NULL OR s.for_date < t.last_date
+                   OR (s.decision IS NULL AND s.for_status IS NOT t.status))
+                 ORDER BY t.last_date DESC LIMIT {}",
+                limit
+            ))?;
+            let rows = st
+                .query_map(params_from_iter(statuses.iter()), |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for row in rows {
+                if (out.len() as i64) < limit && !out.iter().any(|(id, _)| *id == row.0) {
+                    out.push(row);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Stores a background prediction for an already-read thread, reduced to what would
+    /// change (see [`crate::jev::column_suggestion`]) against the thread as it is now.
+    /// "No change", or a thread that left the open columns meanwhile, is recorded as
+    /// decided so it is not asked again. Returns whether a suggestion is now shown.
+    pub fn save_column_suggestion(
+        &self,
+        thread_id: &str,
+        sg: &Suggestion,
+        model: &str,
+        for_date: i64,
+    ) -> Result<bool> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM threads WHERE id = ?1",
+                [thread_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(status) = status else {
+            return Ok(false);
+        };
+        let current: Vec<String> = Self::thread_projects_tx(&tx, thread_id)?
+            .into_iter()
+            .collect();
+        let (kept, decision) = match crate::jev::column_suggestion(sg, &status, &current) {
+            Some(k) if RESUMABLE.contains(&status.as_str()) => (k, None),
+            Some(k) => (k, Some("moved")),
+            None => (Suggestion::default(), Some("unchanged")),
+        };
+        tx.execute(
+            UPSERT_SUGGESTION,
+            params![
+                thread_id,
+                kept.status,
+                kept.status_confidence,
+                serde_json::to_string(&kept.projects)?,
+                kept.project_confidence,
+                kept.priority,
+                kept.automated,
+                model,
+                for_date,
+                now_ms(),
+                decision,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(decision.is_none())
+    }
+
+    /// Pending suggestions of one column, grouped by where they would send threads
+    /// (largest group first), and how far classification of the column has got.
+    pub fn column_suggestions(
+        &self,
+        status: &str,
+        scope: &ColumnScope,
+    ) -> Result<ColumnSuggestions> {
+        let (scope_sql, scope_args) = scope.clause();
+        let r = self.r.lock().unwrap();
+        let mut args: Vec<rusqlite::types::Value> = vec![status.to_string().into()];
+        args.extend(scope_args);
+        let mut st = r.prepare_cached(&format!(
+            "SELECT s.status, s.projects_json, COUNT(*) FROM threads t JOIN suggestions s ON s.thread_id = t.id
+             WHERE t.status = ?1 AND {PENDING_SUGGESTION} AND (s.status IS NOT NULL OR s.projects_json != '[]'){scope_sql}
+             GROUP BY s.status, s.projects_json ORDER BY COUNT(*) DESC, s.status"
+        ))?;
+        let groups: Vec<SuggestionGroup> = st
+            .query_map(params_from_iter(args.iter()), |r| {
+                let pj: String = r.get(1)?;
+                Ok(SuggestionGroup {
+                    status: r.get(0)?,
+                    projects: serde_json::from_str(&pj).unwrap_or_default(),
+                    count: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let (total, classified): (i64, i64) = r.query_row(
+            &format!(
+                "SELECT COUNT(*), COALESCE(SUM(s.thread_id IS NOT NULL AND s.for_date >= t.last_date
+                   AND (s.decision IS NOT NULL OR s.for_status IS t.status)), 0)
+                 FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id WHERE t.status = ?1{scope_sql}"
+            ),
+            params_from_iter(args.iter()),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(ColumnSuggestions {
+            status: status.to_string(),
+            pending: groups.iter().map(|g| g.count).sum(),
+            groups,
+            classified,
+            total,
+        })
+    }
+
+    /// Accepts every pending suggestion of a column, or only those sending threads to
+    /// `target`. Returns the threads as they were before, for undo.
+    pub fn accept_column(
+        &self,
+        status: &str,
+        scope: &ColumnScope,
+        target: Option<&SuggestionGroup>,
+    ) -> Result<Vec<ThreadSummary>> {
+        let (scope_sql, scope_args) = scope.clause();
+        let ids: Vec<String> = {
+            let r = self.r.lock().unwrap();
+            let mut args: Vec<rusqlite::types::Value> = vec![status.to_string().into()];
+            args.extend(scope_args);
+            let target_sql = match target {
+                Some(g) => {
+                    args.push(g.status.clone().into());
+                    args.push(serde_json::to_string(&g.projects)?.into());
+                    " AND s.status IS ? AND s.projects_json = ?"
+                }
+                None => " AND (s.status IS NOT NULL OR s.projects_json != '[]')",
+            };
+            let mut st = r.prepare(&format!(
+                "SELECT t.id FROM threads t JOIN suggestions s ON s.thread_id = t.id
+                 WHERE t.status = ?1 AND {PENDING_SUGGESTION}{scope_sql}{target_sql}"
+            ))?;
+            st.query_map(params_from_iter(args.iter()), |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let before = ids
+            .iter()
+            .map(|id| self.thread(id))
+            .collect::<Result<Vec<_>>>()?;
+        self.accept_suggestions(&ids)?;
+        Ok(before)
+    }
+
+    /// Puts threads back exactly as in the snapshots: read state, status, priority,
+    /// projects and follow-up date (the undo of a group accept).
+    pub fn restore_threads(&self, before: &[ThreadSummary]) -> Result<usize> {
+        type Shape = (String, i64, Vec<String>, Option<String>);
+        let mut same: std::collections::BTreeMap<Shape, Vec<String>> = Default::default();
+        for t in before {
+            let now = self.thread(&t.id)?;
+            if now.unread != t.unread {
+                self.mark_read(&t.id, !t.unread)?;
+            }
+            let mut projects = t.projects.clone();
+            projects.sort();
+            same.entry((t.status.clone(), t.priority, projects, t.due.clone()))
+                .or_default()
+                .push(t.id.clone());
+        }
+        let mut n = 0;
+        for ((status, priority, projects, due), ids) in same {
+            n += self.update_threads(
+                &ids,
+                &ThreadPatch {
+                    status: Some(status),
+                    priority: Some(priority),
+                    projects: Some(projects),
+                    due: Some(due),
+                    ..Default::default()
+                },
+            )?;
+        }
+        Ok(n)
+    }
+
+    /// Background router calls made today (UTC), for the daily cap.
+    pub fn background_calls_today(&self) -> Result<i64> {
+        Ok(self
+            .setting(&background_calls_key())?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
+    }
+
+    /// Adds to today's background call count; returns the new total.
+    pub fn add_background_calls(&self, n: i64) -> Result<i64> {
+        let w = self.w.lock().unwrap();
+        Ok(w.query_row(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + ?2 RETURNING CAST(value AS INTEGER)",
+            params![background_calls_key(), n],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The daily cap on background router calls.
+    pub fn background_daily_cap(&self) -> Result<i64> {
+        Ok(self
+            .setting("jev_daily_cap")?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(crate::jev::DEFAULT_DAILY_CAP))
     }
 
     /// (message id, provider id, sender) of a thread's messages whose sender is not
@@ -3237,45 +3539,6 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
-    }
-
-    /// What the triage model sees for the newest threads in a status, per account.
-    pub fn triage_items(
-        &self,
-        status: &str,
-        limit: i64,
-    ) -> Result<Vec<(String, String, crate::agent::TriageItem)>> {
-        let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached(&format!(
-            "SELECT {THREAD_COLS}, (SELECT is_from_me FROM messages m WHERE m.thread_id = t.id ORDER BY date DESC LIMIT 1)
-             FROM threads t WHERE t.status = ?1 ORDER BY t.last_date DESC LIMIT ?2"
-        ))?;
-        let now = now_ms();
-        let rows = st
-            .query_map(params![status, limit], |r| {
-                Ok((
-                    thread_row(r)?,
-                    r.get::<_, Option<i64>>(16)?.unwrap_or(0) != 0,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows
-            .into_iter()
-            .map(|(t, mine)| {
-                let item = crate::agent::TriageItem {
-                    number: t.number.clone(),
-                    subject: t.subject.clone(),
-                    from: t.last_from.clone(),
-                    last_from_me: mine,
-                    unread: t.unread,
-                    messages: t.message_count,
-                    days_since_last: (now - t.last_date) / 86_400_000,
-                    current_status: t.status.clone(),
-                    excerpt: t.snippet.chars().take(240).collect(),
-                };
-                (t.id, t.account_id, item)
-            })
-            .collect())
     }
 
     /// A thread's messages to clean, mine included: every one for a forced re-clean, or
@@ -4962,6 +5225,367 @@ mod tests {
         assert_eq!(
             env.store.messages(&tid).unwrap()[0].bcc[0].email,
             "boss@x.com"
+        );
+    }
+
+    // ---- background column classification ------------------------------
+
+    /// A read thread filed in `status`, last message `age_ms` ago.
+    fn open_thread(env: &Env, n: &str, status: &str, age_ms: i64) -> String {
+        let tid = env
+            .store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming(
+                    &format!("m{n}"),
+                    &format!("t{n}"),
+                    "marc@x.com",
+                    &["INBOX"],
+                    now_ms() - age_ms,
+                    "hi",
+                ),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        env.store
+            .update_threads(
+                std::slice::from_ref(&tid),
+                &ThreadPatch {
+                    status: Some(status.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        tid
+    }
+
+    fn jev_archive() -> Suggestion {
+        Suggestion {
+            status: Some("archive".into()),
+            status_confidence: Some(0.9),
+            projects: vec!["Receipts".into()],
+            project_confidence: Some(0.9),
+            ..Default::default()
+        }
+    }
+
+    fn classify(env: &Env, tid: &str, sg: &Suggestion) -> bool {
+        let last = env.store.thread(tid).unwrap().last_date;
+        env.store
+            .save_column_suggestion(tid, sg, "jev", last)
+            .unwrap()
+    }
+
+    fn to_classify(env: &Env, focus: &[&str]) -> Vec<String> {
+        let focus: Vec<String> = focus.iter().map(|s| s.to_string()).collect();
+        env.store
+            .threads_to_classify(&focus, 10)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[rstest]
+    fn unclassified_backlog_thread_is_classified(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        assert_eq!(to_classify(&env, &[]), vec![tid]);
+    }
+
+    #[rstest]
+    #[case::unread_is_the_new_mail_router_s_job("unread")]
+    #[case::archive_is_terminal("archive")]
+    #[case::done_is_terminal("done")]
+    fn closed_and_unread_columns_are_not_classified(env: Env, #[case] status: &str) {
+        open_thread(&env, "1", status, 0);
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn classified_thread_is_not_asked_again(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        classify(&env, &tid, &jev_archive());
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn no_change_verdict_is_not_asked_again(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        let same = Suggestion {
+            status: Some("backlog".into()),
+            status_confidence: Some(0.9),
+            ..Default::default()
+        };
+        classify(&env, &tid, &same);
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn new_mail_makes_the_classification_stale(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        let last = env.store.thread(&tid).unwrap().last_date;
+        env.store
+            .save_column_suggestion(&tid, &jev_archive(), "jev", last - 1)
+            .unwrap();
+        assert_eq!(to_classify(&env, &[]), vec![tid]);
+    }
+
+    #[rstest]
+    fn thread_the_user_moved_after_its_suggestion_is_left_alone(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        classify(&env, &tid, &jev_archive());
+        env.store
+            .update_threads(
+                std::slice::from_ref(&tid),
+                &ThreadPatch {
+                    status: Some("todo".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    /// The thread moves without the user deciding (e.g. a label set on another device).
+    fn move_silently(env: &Env, tid: &str, status: &str) {
+        env.store
+            .w
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE threads SET status = ?2 WHERE id = ?1",
+                params![tid, status],
+            )
+            .unwrap();
+    }
+
+    #[rstest]
+    fn suggestion_for_another_column_is_reclassified(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        classify(&env, &tid, &jev_archive());
+        move_silently(&env, &tid, "waiting");
+        assert_eq!(to_classify(&env, &[]), vec![tid]);
+    }
+
+    #[rstest]
+    fn suggestion_for_another_column_is_hidden(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        classify(&env, &tid, &jev_archive());
+        move_silently(&env, &tid, "waiting");
+        assert_eq!(env.store.thread(&tid).unwrap().suggestion, None);
+    }
+
+    #[rstest]
+    fn newest_thread_is_classified_first(env: Env) {
+        open_thread(&env, "1", "backlog", 5_000);
+        let newer = open_thread(&env, "2", "waiting", 0);
+        assert_eq!(to_classify(&env, &[])[0], newer);
+    }
+
+    #[rstest]
+    fn column_on_screen_is_classified_first(env: Env) {
+        let older = open_thread(&env, "1", "backlog", 5_000);
+        open_thread(&env, "2", "waiting", 0);
+        assert_eq!(to_classify(&env, &["backlog"])[0], older);
+    }
+
+    #[rstest]
+    fn focused_column_is_not_listed_twice(env: Env) {
+        open_thread(&env, "1", "backlog", 0);
+        assert_eq!(to_classify(&env, &["backlog"]).len(), 1);
+    }
+
+    #[rstest]
+    fn confident_move_is_shown(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        assert!(classify(&env, &tid, &jev_archive()));
+    }
+
+    #[rstest]
+    fn no_change_is_not_shown(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        let same = Suggestion {
+            status: Some("backlog".into()),
+            status_confidence: Some(0.9),
+            ..Default::default()
+        };
+        classify(&env, &tid, &same);
+        assert_eq!(env.store.thread(&tid).unwrap().suggestion, None);
+    }
+
+    #[rstest]
+    fn shown_suggestion_keeps_only_the_change(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        classify(&env, &tid, &jev_archive());
+        assert_eq!(
+            env.store.thread(&tid).unwrap().suggestion.unwrap().status,
+            Some("archive".into())
+        );
+    }
+
+    #[rstest]
+    fn thread_closed_meanwhile_gets_no_suggestion(env: Env) {
+        let tid = open_thread(&env, "1", "done", 0);
+        assert!(!classify(&env, &tid, &jev_archive()));
+    }
+
+    fn two_archive_one_todo(env: &Env) -> (String, String, String) {
+        let a = open_thread(env, "1", "backlog", 0);
+        let b = open_thread(env, "2", "backlog", 1_000);
+        let c = open_thread(env, "3", "backlog", 2_000);
+        classify(env, &a, &jev_archive());
+        classify(env, &b, &jev_archive());
+        let todo = Suggestion {
+            status: Some("todo".into()),
+            status_confidence: Some(0.8),
+            ..Default::default()
+        };
+        classify(env, &c, &todo);
+        (a, b, c)
+    }
+
+    #[rstest]
+    fn column_groups_suggestions_by_target(env: Env) {
+        two_archive_one_todo(&env);
+        let col = env
+            .store
+            .column_suggestions("backlog", &ColumnScope::default())
+            .unwrap();
+        assert_eq!(
+            col.groups,
+            vec![
+                SuggestionGroup {
+                    status: Some("archive".into()),
+                    projects: vec!["Receipts".into()],
+                    count: 2
+                },
+                SuggestionGroup {
+                    status: Some("todo".into()),
+                    projects: vec![],
+                    count: 1
+                },
+            ]
+        );
+    }
+
+    #[rstest]
+    fn column_counts_pending_suggestions(env: Env) {
+        two_archive_one_todo(&env);
+        let col = env
+            .store
+            .column_suggestions("backlog", &ColumnScope::default())
+            .unwrap();
+        assert_eq!(col.pending, 3);
+    }
+
+    #[rstest]
+    fn column_progress_counts_classified_threads(env: Env) {
+        let a = open_thread(&env, "1", "backlog", 0);
+        open_thread(&env, "2", "backlog", 1_000);
+        classify(&env, &a, &jev_archive());
+        let col = env
+            .store
+            .column_suggestions("backlog", &ColumnScope::default())
+            .unwrap();
+        assert_eq!((col.classified, col.total), (1, 2));
+    }
+
+    #[rstest]
+    fn column_scope_limits_to_a_project(env: Env) {
+        two_archive_one_todo(&env);
+        let scope = ColumnScope {
+            project: Some("Elsewhere".into()),
+            account_id: None,
+        };
+        let col = env.store.column_suggestions("backlog", &scope).unwrap();
+        assert_eq!(col.pending, 0);
+    }
+
+    #[rstest]
+    fn accepting_a_group_moves_only_that_group(env: Env) {
+        let (_, _, c) = two_archive_one_todo(&env);
+        let target = SuggestionGroup {
+            status: Some("archive".into()),
+            projects: vec!["Receipts".into()],
+            count: 0,
+        };
+        env.store
+            .accept_column("backlog", &ColumnScope::default(), Some(&target))
+            .unwrap();
+        assert_eq!(env.store.thread(&c).unwrap().status, "backlog");
+    }
+
+    #[rstest]
+    fn accepting_a_group_applies_its_target(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        let target = SuggestionGroup {
+            status: Some("archive".into()),
+            projects: vec!["Receipts".into()],
+            count: 0,
+        };
+        env.store
+            .accept_column("backlog", &ColumnScope::default(), Some(&target))
+            .unwrap();
+        assert_eq!(env.store.thread(&a).unwrap().status, "archive");
+    }
+
+    #[rstest]
+    fn accepting_all_returns_every_thread_as_it_was(env: Env) {
+        two_archive_one_todo(&env);
+        let before = env
+            .store
+            .accept_column("backlog", &ColumnScope::default(), None)
+            .unwrap();
+        let statuses: Vec<&str> = before.iter().map(|t| t.status.as_str()).collect();
+        assert_eq!(statuses, vec!["backlog"; 3]);
+    }
+
+    #[rstest]
+    fn restoring_puts_the_status_back(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        let before = env
+            .store
+            .accept_column("backlog", &ColumnScope::default(), None)
+            .unwrap();
+        env.store.restore_threads(&before).unwrap();
+        assert_eq!(env.store.thread(&a).unwrap().status, "backlog");
+    }
+
+    #[rstest]
+    fn restoring_removes_the_accepted_project(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        let before = env
+            .store
+            .accept_column("backlog", &ColumnScope::default(), None)
+            .unwrap();
+        env.store.restore_threads(&before).unwrap();
+        assert!(env.store.thread(&a).unwrap().projects.is_empty());
+    }
+
+    #[rstest]
+    fn restored_thread_does_not_get_the_suggestion_again(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        let before = env
+            .store
+            .accept_column("backlog", &ColumnScope::default(), None)
+            .unwrap();
+        env.store.restore_threads(&before).unwrap();
+        assert!(!to_classify(&env, &[]).contains(&a));
+    }
+
+    #[rstest]
+    fn background_calls_add_up_over_the_day(env: Env) {
+        env.store.add_background_calls(3).unwrap();
+        env.store.add_background_calls(4).unwrap();
+        assert_eq!(env.store.background_calls_today().unwrap(), 7);
+    }
+
+    #[rstest]
+    fn daily_cap_defaults_to_a_safety_net(env: Env) {
+        assert_eq!(
+            env.store.background_daily_cap().unwrap(),
+            crate::jev::DEFAULT_DAILY_CAP
         );
     }
 }

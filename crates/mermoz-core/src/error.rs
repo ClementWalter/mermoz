@@ -12,6 +12,11 @@ pub enum Error {
     InvalidParams(String),
     #[error("upstream error {status}: {body}")]
     Upstream { status: u16, body: String },
+    /// HTTP 429; `retry_after` is the wait the server asked for, when it said.
+    #[error("rate limited")]
+    RateLimited {
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
     #[error("http error: {}", chain(.0))]

@@ -1,5 +1,5 @@
 //! End-to-end: real mermozd + real `mermoz` CLI against a stub Gmail. Covers
-//! sign-in, import, triage, label write-back, reopen rule and the send gate.
+//! sign-in, import, routing, label write-back, reopen rule and the send gate.
 
 mod stub_gmail;
 
@@ -350,29 +350,6 @@ fn agent_builds_directory_from_signatures(synced: World) {
     assert_eq!(
         synced.ok("contacts.get", json!({ "email": "marc@example.com" }))["contact"]["title"],
         "CFO"
-    );
-}
-
-#[rstest]
-fn ai_triage_moves_a_column(synced: World) {
-    enable_agent(&synced);
-    let v = synced.ok("agent.triage", json!({ "status": "todo" }));
-    assert_eq!(v["moved"], 1);
-}
-
-#[rstest]
-fn ai_triage_applies_the_moves(synced: World) {
-    enable_agent(&synced);
-    synced.ok("agent.triage", json!({ "status": "todo" }));
-    assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "done");
-}
-
-#[rstest]
-fn ai_triage_needs_an_allowed_provider(synced: World) {
-    assert!(
-        synced
-            .call("agent.triage", json!({ "status": "unread" }))
-            .is_err()
     );
 }
 
@@ -1415,21 +1392,6 @@ fn older_mail_gets_its_sender_checked_when_opened(synced: World) {
     });
 }
 
-#[rstest]
-fn ai_triage_does_not_count_threads_it_leaves_as_they_are(synced: World) {
-    enable_agent(&synced);
-    let t = synced.thread_by_subject("Budget sheet");
-    synced.ok(
-        "threads.update",
-        json!({ "ids": [t["id"]], "status": "done" }),
-    );
-    // The stub AI sends everything to Done, where this thread already is.
-    assert_eq!(
-        synced.ok("agent.triage", json!({ "status": "done" }))["moved"],
-        0
-    );
-}
-
 /// A newsletter whose logo is a remote image.
 fn raw_with_remote_image() -> String {
     "From: News <news@example.com>\r\nTo: me@example.com\r\nSubject: Weekly news\r\nMessage-ID: <img@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hello</p><img src=\"https://cdn.example/logo.png\">\r\n".into()
@@ -1476,4 +1438,138 @@ fn remote_images_load_when_asked(synced: World) {
             .unwrap()
             .contains("logo.png")
     );
+}
+
+// ---- background sorting of open columns ---------------------------------
+
+/// Turns the router on and waits until the read "Budget sheet" (To do) has its
+/// background suggestion: the stub files everything in Receipts, to archive.
+fn sorted_todo(w: &World) {
+    enable_router(w);
+    w.wait_until("background sorting", |w| {
+        !w.thread_by_subject("Budget sheet")["suggestion"].is_null()
+    });
+}
+
+fn todo_column(w: &World) -> Value {
+    w.ok("suggestions.summary", json!({ "statuses": ["todo"] }))["columns"][0].clone()
+}
+
+#[rstest]
+fn background_sorting_suggests_for_an_open_column(synced: World) {
+    sorted_todo(&synced);
+    assert_eq!(
+        synced.thread_by_subject("Budget sheet")["suggestion"]["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+fn background_sorting_leaves_the_thread_in_place(synced: World) {
+    sorted_todo(&synced);
+    assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "todo");
+}
+
+#[rstest]
+fn column_summary_groups_by_target(synced: World) {
+    sorted_todo(&synced);
+    assert_eq!(
+        todo_column(&synced)["groups"],
+        json!([{ "status": "archive", "projects": ["Receipts"], "count": 1 }])
+    );
+}
+
+#[rstest]
+fn column_summary_reports_sorting_progress(synced: World) {
+    sorted_todo(&synced);
+    let col = todo_column(&synced);
+    assert_eq!(
+        (col["classified"].clone(), col["total"].clone()),
+        (json!(1), json!(1))
+    );
+}
+
+#[rstest]
+fn background_calls_are_counted(synced: World) {
+    sorted_todo(&synced);
+    assert!(
+        synced.ok("suggestions.summary", json!({ "statuses": ["todo"] }))["calls_today"]
+            .as_i64()
+            .unwrap()
+            >= 1
+    );
+}
+
+#[rstest]
+fn accepting_a_column_moves_its_threads(synced: World) {
+    sorted_todo(&synced);
+    synced.ok("suggestions.accept", json!({ "status": "todo" }));
+    assert_eq!(
+        synced.thread_by_subject("Budget sheet")["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+fn accepting_another_group_moves_nothing(synced: World) {
+    sorted_todo(&synced);
+    let v = synced.ok(
+        "suggestions.accept",
+        json!({ "status": "todo", "target": { "status": "done", "projects": [] } }),
+    );
+    assert_eq!(v["accepted"], 0);
+}
+
+#[rstest]
+fn accepting_a_column_files_in_gmail(synced: World) {
+    sorted_todo(&synced);
+    synced.ok("suggestions.accept", json!({ "status": "todo" }));
+    synced.wait_until("label push", |w| {
+        w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t3")
+            .contains("Receipts")
+    });
+}
+
+#[rstest]
+fn restoring_undoes_a_column_accept(synced: World) {
+    sorted_todo(&synced);
+    let v = synced.ok("suggestions.accept", json!({ "status": "todo" }));
+    synced.ok("threads.restore", json!({ "threads": v["before"] }));
+    assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "todo");
+}
+
+#[rstest]
+fn background_sorting_stops_at_the_daily_cap(synced: World) {
+    synced.ok("router.set", json!({ "daily_cap": 0 }));
+    enable_router(&synced);
+    synced.wait_until("cap reached", |w| {
+        w.ok("suggestions.summary", json!({ "statuses": ["todo"] }))["paused"] == "limit"
+    });
+    assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
+}
+
+#[rstest]
+fn background_sorting_recovers_from_rate_limits(synced: World) {
+    synced.mailbox.lock().unwrap().jev_rate_limited = 3;
+    sorted_todo(&synced);
+}
+
+#[rstest]
+fn cli_accepts_a_column(synced: World) {
+    sorted_todo(&synced);
+    synced.cli(&["accept", "--column", "todo"]);
+    assert_eq!(
+        synced.thread_by_subject("Budget sheet")["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+fn cli_lists_column_suggestions(synced: World) {
+    sorted_todo(&synced);
+    let out = synced.cli(&["suggestions", "todo"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("→ archive +Receipts"));
 }

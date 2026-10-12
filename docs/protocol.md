@@ -56,7 +56,9 @@ app, the CLI and the MCP server are clients of this protocol.
  "suggestion": Suggestion | null}
 
 // Suggestion: the router's pending prediction (absent once read or decided).
-// Fields under the confidence bar are null / empty.
+// Fields under the confidence bar are null / empty. On already-read threads in
+// open columns (background sorting) it holds only what would change, at
+// confidence ≥ 0.7, and never a priority.
 {"status": "archive" | null, "status_confidence": 0.93 | null,
  "projects": ["Receipts"], "project_confidence": 0.88 | null,
  "priority": 0 | null, "automated": 0.97 | null}
@@ -104,8 +106,11 @@ app, the CLI and the MCP server are clients of this protocol.
 | `threads.get`        | `{"id"}`                                                                                 | `{"thread": ThreadSummary, "messages": [Message]}` |
 | `threads.update`     | `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
 | `threads.accept_suggestions` | `{"ids": [id]}` — applies each pending suggestion and marks the thread read     | `{"accepted": n}`                        |
-| `router.get`         | `{}` — instant routing with TypeSafe Jev (Settings › Developer)                         | `{"configured": bool, "error": "…" \| null, "model": "jev-latest"}` |
-| `router.set`         | `{"api_key": "…" \| null}` — app only; null removes the key and stops routing           | same as `router.get`                     |
+| `suggestions.summary` | `{"statuses": [key], "project"?, "account_id"?, "focus"?: false}` — pending suggestions per column, grouped by target; `focus` makes background sorting take these columns first | `{"columns": [{"status", "pending": n, "groups": [{"status": key \| null, "projects": [name], "count": n}], "classified": n, "total": n}], "sorting": bool, "paused": "limit" \| "unavailable" \| null, "calls_today": n, "daily_cap": n}` |
+| `suggestions.accept` | `{"status", "project"?, "account_id"?, "target"?: {"status": key \| null, "projects": [name]}}` — accepts the column's pending suggestions, or one group | `{"accepted": n, "before": [ThreadSummary]}` (snapshots for `threads.restore`) |
+| `threads.restore`    | `{"threads": [ThreadSummary]}` — puts threads back as in the snapshots (read state, status, priority, projects, due) | `{"restored": n}` |
+| `router.get`         | `{}` — instant routing with TypeSafe Jev (Settings › Developer)                         | `{"configured": bool, "error": "…" \| null, "model": "jev-latest", "daily_cap": n, "calls_today": n}` |
+| `router.set`         | `{"api_key"?: "…" \| null, "daily_cap"?: n}` — app only; null removes the key and stops routing; `daily_cap` bounds background sorting calls per day (default 20,000) | same as `router.get`                     |
 | `router.test`        | `{"api_key"?}` — one tiny call with the given or stored key                              | `{"ok": true, "ms": n}`                  |
 | `threads.mark_read`  | `{"id", "read"?: true}`                                                                  | `{}`                                     |
 | `messages.html`      | `{"id", "full"?: false}` — quoted history removed unless `full`                         | `{"html": "…", "has_quoted": bool}` sanitized, remote content stripped |
@@ -156,4 +161,5 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "sync_progress", "account_id": "acc_1", "synced": 1200, "total": 5400}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "drafts_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "contacts_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "suggestions_changed"}}
 ```

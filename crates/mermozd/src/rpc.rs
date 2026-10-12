@@ -2,9 +2,10 @@
 
 use crate::service::Service;
 use mermoz_core::Error;
+use mermoz_core::model::ThreadSummary;
 use mermoz_core::model::{Draft, new_id, now_ms};
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
-use mermoz_core::store::{ThreadFilter, ThreadPatch};
+use mermoz_core::store::{ColumnScope, SuggestionGroup, ThreadFilter, ThreadPatch};
 use mermoz_core::sync::Event;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -402,6 +403,17 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "router.set" => {
             // The key pays for every routed thread: only the app may change it.
             app_only(caller, method)?;
+            if let Some(cap) = p.get("daily_cap") {
+                let cap = cap
+                    .as_i64()
+                    .filter(|c| *c >= 0)
+                    .ok_or_else(|| RpcError::invalid("'daily_cap' must be a number ≥ 0"))?;
+                st.set_setting("jev_daily_cap", &cap.to_string())?;
+                svc.column_kick.notify_one();
+                if p.get("api_key").is_none() {
+                    return Ok(router_state(svc));
+                }
+            }
             match p.get("api_key") {
                 Some(Value::String(k)) if !k.trim().is_empty() => mermoz_core::jev::save_key(k)?,
                 Some(Value::Null) | Some(Value::String(_)) => {
@@ -415,6 +427,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 }
             }
             svc.router_kick.notify_one();
+            svc.column_kick.notify_one();
             Ok(router_state(svc))
         }
         "router.test" => {
@@ -614,77 +627,54 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let _ = svc.events.send(Event::ContactsChanged);
             Ok(json!({ "cleaned": cleaned }))
         }
-        "agent.triage" => {
+        "suggestions.summary" => {
+            let statuses =
+                str_list(p, "statuses")?.ok_or_else(|| RpcError::invalid("missing 'statuses'"))?;
+            let scope = column_scope(p);
+            if p.get("focus").and_then(|v| v.as_bool()).unwrap_or(false) {
+                svc.set_focus(statuses.clone());
+            }
+            let columns = statuses
+                .iter()
+                .map(|s| st.column_suggestions(s, &scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            let state = svc.column.lock().unwrap().clone();
+            Ok(json!({
+                "columns": columns,
+                "sorting": state.sorting,
+                "paused": state.paused,
+                "calls_today": st.background_calls_today()?,
+                "daily_cap": st.background_daily_cap()?,
+            }))
+        }
+        "suggestions.accept" => {
             let status = s(p, "status")?;
-            let limit = p
-                .get("limit")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(40)
-                .clamp(1, 200);
-            let statuses: Vec<(String, String)> = st
-                .statuses()?
-                .into_iter()
-                .filter(|x| x.key != "review")
-                .map(|x| (x.key, x.name))
-                .collect();
-            let items = st.triage_items(&status, limit)?;
-            let mut by_account: std::collections::BTreeMap<
-                String,
-                Vec<(String, mermoz_core::agent::TriageItem)>,
-            > = Default::default();
-            for (tid, acc, item) in items {
-                by_account.entry(acc).or_default().push((tid, item));
-            }
-            let client = mermoz_core::agent::Client::new();
-            let (mut examined, mut moves_out, mut changed) = (0, vec![], vec![]);
-            let mut any_provider = false;
-            for (acc, group) in by_account {
-                let Some(pr) = st.provider_for_account(&acc)? else {
-                    continue;
-                };
-                any_provider = true;
-                let key = crate::service::credential(&pr).await?;
-                for chunk in group.chunks(20) {
-                    let items: Vec<_> = chunk.iter().map(|(_, i)| i.clone()).collect();
-                    let moves = client
-                        .triage(&pr, &key, &statuses, &items)
-                        .await
-                        .map_err(|e| RpcError::invalid(e.to_string()))?;
-                    examined += chunk.len();
-                    for m in moves {
-                        let Some((tid, item)) = chunk.iter().find(|(_, i)| i.number == m.number)
-                        else {
-                            continue;
-                        };
-                        // Only real changes count: a kept status with the same (or no)
-                        // priority is not a move.
-                        let current_priority = st.thread(tid)?.priority;
-                        let new_status = m.status != item.current_status;
-                        let new_priority = (m.priority != 0 || m.status == "done")
-                            && m.priority != current_priority;
-                        if !new_status && !new_priority {
-                            continue;
-                        }
-                        let patch = ThreadPatch {
-                            status: new_status.then(|| m.status.clone()),
-                            priority: new_priority.then_some(m.priority),
-                            ..Default::default()
-                        };
-                        st.update_threads(std::slice::from_ref(tid), &patch)?;
-                        changed.push(tid.clone());
-                        moves_out.push(json!({ "number": m.number, "subject": item.subject, "from": item.current_status, "to": m.status,
-                            "priority": m.priority, "priority_from": current_priority, "reason": m.reason }));
-                    }
-                }
-                svc.kick(&acc);
-            }
-            if !any_provider {
-                return Err(RpcError::invalid(
-                    "Allow an AI for these accounts in Settings › Agents first.",
-                ));
-            }
-            let _ = svc.events.send(Event::ThreadsChanged(changed));
-            Ok(json!({ "examined": examined, "moved": moves_out.len(), "moves": moves_out }))
+            let target: Option<SuggestionGroup> = match p.get("target") {
+                None | Some(Value::Null) => None,
+                Some(t) => Some(
+                    serde_json::from_value(t.clone())
+                        .map_err(|e| RpcError::invalid(format!("bad 'target': {e}")))?,
+                ),
+            };
+            let before = st.accept_column(&status, &column_scope(p), target.as_ref())?;
+            let ids: Vec<String> = before.iter().map(|t| t.id.clone()).collect();
+            let _ = svc.events.send(Event::ThreadsChanged(ids));
+            let _ = svc.events.send(Event::SuggestionsChanged);
+            svc.kick_all();
+            Ok(json!({ "accepted": before.len(), "before": before }))
+        }
+        "threads.restore" => {
+            let before: Vec<ThreadSummary> = serde_json::from_value(
+                p.get("threads").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|e| RpcError::invalid(format!("'threads' must be thread snapshots: {e}")))?;
+            let n = st.restore_threads(&before)?;
+            let _ = svc.events.send(Event::ThreadsChanged(
+                before.iter().map(|t| t.id.clone()).collect(),
+            ));
+            let _ = svc.events.send(Event::SuggestionsChanged);
+            svc.kick_all();
+            Ok(json!({ "restored": n }))
         }
         "settings.get" => Ok(
             json!({ "agents_may_send": st.setting("agents_may_send")?.as_deref() == Some("true") }),
@@ -716,10 +706,20 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
     }
 }
 
+/// The board or list a column belongs to: an optional project and account.
+fn column_scope(p: &Value) -> ColumnScope {
+    ColumnScope {
+        project: opt_s(p, "project"),
+        account_id: opt_s(p, "account_id"),
+    }
+}
+
 fn router_state(svc: &Service) -> Value {
     json!({
         "configured": mermoz_core::jev::load_key().is_some(),
         "error": *svc.router_error.lock().unwrap(),
         "model": "jev-latest",
+        "daily_cap": svc.store.background_daily_cap().unwrap_or(mermoz_core::jev::DEFAULT_DAILY_CAP),
+        "calls_today": svc.store.background_calls_today().unwrap_or(0),
     })
 }

@@ -144,36 +144,6 @@ impl Client {
         }
     }
 
-    /// Asks the AI where each thread belongs; returns its proposed moves.
-    pub async fn triage(
-        &self,
-        p: &Provider,
-        key: &str,
-        statuses: &[(String, String)],
-        threads: &[TriageItem],
-    ) -> Result<Vec<TriageMove>> {
-        let keys: Vec<&str> = statuses.iter().map(|(k, _)| k.as_str()).collect();
-        let schema = json!({
-            "type": "object", "additionalProperties": false, "required": ["moves"],
-            "properties": { "moves": { "type": "array", "items": {
-                "type": "object", "additionalProperties": false,
-                "required": ["number", "status", "priority", "reason"],
-                "properties": {
-                    "number": { "type": "string" },
-                    "status": { "type": "string", "enum": keys },
-                    "priority": { "type": "integer", "enum": [0, 1, 2, 3, 4] },
-                    "reason": { "type": "string" }
-                } } } }
-        });
-        let user = serde_json::to_string_pretty(&json!({ "threads": threads }))?;
-        let raw = self
-            .complete(p, key, &triage_system(statuses), &user, &schema)
-            .await?;
-        let v: Value = serde_json::from_str(&raw)
-            .map_err(|_| Error::other("provider returned malformed JSON"))?;
-        Ok(serde_json::from_value(v["moves"].clone()).unwrap_or_default())
-    }
-
     /// Groups and renames a batch of directory entries.
     pub async fn people_groups(
         &self,
@@ -362,44 +332,6 @@ or the same name written differently: order, case, accents, initials, nicknames)
 (\"NAGEOTTE Pierre-Etienne (75)\" -> \"Pierre-Etienne Nageotte\", \"lieber adele\" -> \"Adèle Lieber\", \"Delobelle, Anne-Charlotte\" -> \"Anne-Charlotte Delobelle\"). \
 Drop noise like \"(Airbnb)\" unless it is the only identifying part. If only an address is known, infer the name from it only when obvious (jean.dupont@ -> Jean Dupont), else keep the address.\n\
 - kind: person, organization (companies, services, shops) or list (mailing lists, groups, shared inboxes).";
-
-/// What the triage model sees about one thread.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TriageItem {
-    pub number: String,
-    pub subject: String,
-    pub from: String,
-    pub last_from_me: bool,
-    pub unread: bool,
-    pub messages: i64,
-    pub days_since_last: i64,
-    pub current_status: String,
-    pub excerpt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TriageMove {
-    pub number: String,
-    pub status: String,
-    pub priority: i64,
-    pub reason: String,
-}
-
-fn triage_system(statuses: &[(String, String)]) -> String {
-    let list: Vec<String> = statuses.iter().map(|(k, n)| format!("{k} ({n})")).collect();
-    format!(
-        "You triage an email inbox organized like an issue tracker. For every thread, choose where it belongs now.\n\
-Statuses: {}.\n\
-- todo: the user must act (reply, decide, pay, sign, attend).\n\
-- waiting: the user wrote last and is waiting on someone else.\n\
-- done: nothing left to do: newsletters, notifications, receipts, confirmations, FYI, finished conversations, old threads nobody will act on.\n\
-- backlog: worth doing some day, not now.\n\
-- in_progress: the user is actively working on it.\n\
-Priority: 1 urgent, 2 high, 3 normal, 4 low, 0 none (use 0 for done).\n\
-Keep the current status when unsure. Return every thread once, by its number, with a reason of a few words in the email's language.",
-        list.join(", ")
-    )
-}
 
 /// Merges a newly seen card into the stored one: newer non-empty fields win, lists are unioned.
 pub fn merge_card(old: &Card, new: &Card) -> Card {

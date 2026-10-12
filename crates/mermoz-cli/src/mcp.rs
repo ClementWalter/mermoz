@@ -17,8 +17,10 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "id": s("thread id or number like M-1287") }, "required": ["id"] } },
         { "name": "update_thread", "description": "Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), projects (Gmail labels: add_projects/remove_projects, or projects to replace) or due date (YYYY-MM-DD, null clears). 'deleted' moves the thread to Gmail Trash.",
           "inputSchema": { "type": "object", "properties": { "id": s("thread id or number"), "status": s("status key"), "priority": { "type": "integer" }, "add_projects": { "type": "array", "items": { "type": "string" } }, "remove_projects": { "type": "array", "items": { "type": "string" } }, "projects": { "type": "array", "items": { "type": "string" } }, "due": { "type": ["string", "null"] } }, "required": ["id"] } },
-        { "name": "accept_suggestions", "description": "Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read.",
-          "inputSchema": { "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "string" } } }, "required": ["ids"] } },
+        { "name": "accept_suggestions", "description": "Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read. Pass `ids`, or `column` (a status) to accept that column's pending suggestions — all of them, or only the group given by `to_status`/`to_projects` as listed by column_suggestions.",
+          "inputSchema": { "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "string" } }, "column": s("status key of the column"), "to_status": { "type": ["string", "null"], "description": "group's target status (null: groups that only add projects)" }, "to_projects": { "type": "array", "items": { "type": "string" } } } } },
+        { "name": "column_suggestions", "description": "The AI's pending suggestions in status columns, grouped by target (status + projects) with counts, and how far background sorting has got (classified of total). Nothing moves until accepted.",
+          "inputSchema": { "type": "object", "properties": { "statuses": { "type": "array", "items": { "type": "string" } }, "project": s("limit to a project"), "account_id": s("limit to an account") }, "required": ["statuses"] } },
         { "name": "get_attachment", "description": "Get an attachment's local file path (readable offline); text attachments also return their content.",
           "inputSchema": { "type": "object", "properties": { "id": s("attachment id from get_thread") }, "required": ["id"] } },
         { "name": "create_draft", "description": "Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves.",
@@ -85,7 +87,24 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
         "search_contacts" => r(c.call("contacts.list", json!({ "query": a.get("query"), "limit": a.get("limit").cloned().unwrap_or(json!(20)) }))),
         "list_statuses" => r(c.call("statuses.list", json!({}))),
         "list_projects" => r(c.call("projects.list", json!({}))),
-        "accept_suggestions" => r(c.call("threads.accept_suggestions", json!({ "ids": a["ids"] }))),
+        "accept_suggestions" => match a.get("column").and_then(|v| v.as_str()) {
+            None => r(c.call("threads.accept_suggestions", json!({ "ids": a["ids"] }))),
+            Some(col) => {
+                let target = if a.get("to_status").is_some() || a.get("to_projects").is_some() {
+                    json!({ "status": a.get("to_status").cloned().unwrap_or(Value::Null),
+                            "projects": a.get("to_projects").cloned().unwrap_or(json!([])) })
+                } else {
+                    Value::Null
+                };
+                let mut v = r(c.call("suggestions.accept", json!({ "status": col, "target": target })))?;
+                // Snapshots serve the app's undo; they would only flood an agent's context.
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("before");
+                }
+                Ok(v)
+            }
+        },
+        "column_suggestions" => r(c.call("suggestions.summary", a.clone())),
         "submit_feedback" => r(c.call(
             "feedback.submit",
             json!({ "text": a["text"], "command": a.get("tool"), "agent": "mcp" }),

@@ -172,6 +172,56 @@ pub fn suggestion(answers: &Value, known_projects: &[String]) -> Suggestion {
     s
 }
 
+/// Bar for suggestions on threads already sorted into a column: below it the thread
+/// keeps its place silently, so the user only reviews moves Jev is sure about.
+pub const COLUMN_MIN_CONFIDENCE: f64 = 0.7;
+
+/// Safety net on background calls per day (~$6 at measured prices), not a pacing tool.
+pub const DEFAULT_DAILY_CAP: i64 = 20_000;
+
+/// Keeps what a column suggestion would actually change: a confident status other than
+/// the current one, and confident projects the thread is not in yet. Priority is left
+/// out: chips and groups show status and projects, and accepting applies only what is
+/// shown. `None` means "no change".
+pub fn column_suggestion(
+    sg: &Suggestion,
+    current_status: &str,
+    current_projects: &[String],
+) -> Option<Suggestion> {
+    let status = sg
+        .status
+        .clone()
+        .filter(|s| s != current_status)
+        .filter(|_| sg.status_confidence.unwrap_or(0.0) >= COLUMN_MIN_CONFIDENCE);
+    let projects: Vec<String> = if sg.project_confidence.unwrap_or(0.0) >= COLUMN_MIN_CONFIDENCE {
+        sg.projects
+            .iter()
+            .filter(|p| !current_projects.contains(p))
+            .cloned()
+            .collect()
+    } else {
+        vec![]
+    };
+    if status.is_none() && projects.is_empty() {
+        return None;
+    }
+    Some(Suggestion {
+        status_confidence: status.as_ref().and(sg.status_confidence),
+        project_confidence: (!projects.is_empty())
+            .then_some(sg.project_confidence)
+            .flatten(),
+        status,
+        projects,
+        priority: None,
+        automated: sg.automated,
+    })
+}
+
+/// How many more background calls fit today's cap.
+pub fn calls_left(used_today: i64, cap: i64) -> i64 {
+    (cap - used_today).max(0)
+}
+
 /// One-line project description built from the mail already filed there.
 pub fn describe(name: &str, correspondents: &[String], subjects: &[String]) -> String {
     let who = if correspondents.is_empty() {
@@ -210,6 +260,11 @@ impl Client {
 
     /// Raw `systemone` call; returns the `answers` object.
     pub async fn ask(&self, state: &Value, questions: &Value) -> Result<Value> {
+        Ok(self.ask_metered(state, questions).await?.0)
+    }
+
+    /// `systemone` call returning the answers and the input tokens billed, when reported.
+    async fn ask_metered(&self, state: &Value, questions: &Value) -> Result<(Value, Option<i64>)> {
         let resp = self
             .http
             .post(format!("{}/v1/systemone", self.base))
@@ -219,16 +274,22 @@ impl Client {
             .await?;
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
+            let retry = retry_after(
+                resp.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok()),
+            );
             let body = resp.text().await.unwrap_or_default();
             return Err(match status {
                 401 | 403 => Error::InvalidParams(
                     "The TypeSafe key was refused. Check it in Settings › Developer.".into(),
                 ),
+                429 => Error::RateLimited { retry_after: retry },
                 _ => Error::Upstream { status, body },
             });
         }
         let v: Value = resp.json().await?;
-        Ok(v["answers"].clone())
+        Ok((v["answers"].clone(), v["usage"]["input_tokens"].as_i64()))
     }
 
     pub async fn route(
@@ -236,10 +297,39 @@ impl Client {
         input: &RouteInput,
         questions: &Value,
         known: &[String],
-    ) -> Result<Suggestion> {
-        let answers = self.ask(&input.state(), questions).await?;
-        Ok(suggestion(&answers, known))
+    ) -> Result<Routed> {
+        let (answers, input_tokens) = self.ask_metered(&input.state(), questions).await?;
+        Ok(Routed {
+            suggestion: suggestion(&answers, known),
+            input_tokens,
+        })
     }
+}
+
+/// A routed thread and what the call cost, for the logs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Routed {
+    pub suggestion: Suggestion,
+    pub input_tokens: Option<i64>,
+}
+
+/// TypeSafe's `Retry-After` is in milliseconds; anything unreadable means "not said".
+pub fn retry_after(header: Option<&str>) -> Option<Duration> {
+    header?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_millis)
+}
+
+/// Wait after a rate limit or outage: what the server asked for, else double the last
+/// wait (from 2 s, up to 5 min) so a struggling service is not hammered.
+pub fn backoff(asked: Option<Duration>, previous: Option<Duration>) -> Duration {
+    const FIRST: Duration = Duration::from_secs(2);
+    const MAX: Duration = Duration::from_secs(300);
+    asked
+        .unwrap_or_else(|| previous.map_or(FIRST, |p| p * 2))
+        .min(MAX)
 }
 
 #[cfg(test)]
@@ -324,6 +414,100 @@ mod tests {
             sender_history: vec![],
         };
         assert!(input.state().get("sender_history").is_none());
+    }
+
+    fn column(status: (&str, f64), project: (&str, f64)) -> Suggestion {
+        Suggestion {
+            status: Some(status.0.into()),
+            status_confidence: Some(status.1),
+            projects: vec![project.0.into()],
+            project_confidence: Some(project.1),
+            priority: Some(2),
+            automated: Some(0.9),
+        }
+    }
+
+    #[rstest]
+    fn same_status_and_project_is_no_change() {
+        let sg = column(("backlog", 0.9), ("Immo", 0.9));
+        assert_eq!(column_suggestion(&sg, "backlog", &["Immo".into()]), None);
+    }
+
+    #[rstest]
+    #[case::new_status("backlog", Some("archive"))]
+    #[case::same_status("archive", None)]
+    fn column_status_is_kept_only_when_it_moves(#[case] current: &str, #[case] want: Option<&str>) {
+        let sg = column(("archive", 0.9), ("Immo", 0.9));
+        let got = column_suggestion(&sg, current, &[]).unwrap();
+        assert_eq!(got.status.as_deref(), want);
+    }
+
+    #[rstest]
+    #[case::not_filed_yet(vec![], vec!["Immo"])]
+    #[case::already_filed(vec!["Immo"], vec![])]
+    fn column_projects_are_only_new_ones(#[case] current: Vec<&str>, #[case] want: Vec<&str>) {
+        let sg = column(("archive", 0.9), ("Immo", 0.9));
+        let current: Vec<String> = current.into_iter().map(String::from).collect();
+        let got = column_suggestion(&sg, "backlog", &current).unwrap();
+        assert_eq!(got.projects, want);
+    }
+
+    #[rstest]
+    #[case::confident(0.7, Some("archive"))]
+    #[case::unsure(0.69, None)]
+    fn column_status_needs_the_column_bar(#[case] confidence: f64, #[case] want: Option<&str>) {
+        let sg = column(("archive", confidence), ("Immo", 0.9));
+        let got = column_suggestion(&sg, "backlog", &[]).unwrap();
+        assert_eq!(got.status.as_deref(), want);
+    }
+
+    #[rstest]
+    fn unsure_status_alone_is_no_change() {
+        let sg = column(("archive", 0.6), ("Immo", 0.9));
+        assert_eq!(column_suggestion(&sg, "backlog", &["Immo".into()]), None);
+    }
+
+    #[rstest]
+    fn column_suggestion_never_carries_priority() {
+        let sg = column(("archive", 0.9), ("Immo", 0.9));
+        assert_eq!(
+            column_suggestion(&sg, "backlog", &[]).unwrap().priority,
+            None
+        );
+    }
+
+    #[rstest]
+    #[case::millis(Some("1500"), Some(Duration::from_millis(1500)))]
+    #[case::missing(None, None)]
+    #[case::garbage(Some("soon"), None)]
+    fn retry_after_reads_milliseconds(#[case] h: Option<&str>, #[case] want: Option<Duration>) {
+        assert_eq!(retry_after(h), want);
+    }
+
+    #[rstest]
+    #[case::server_asked(
+        Some(Duration::from_millis(800)),
+        Some(Duration::from_secs(8)),
+        Duration::from_millis(800)
+    )]
+    #[case::first_failure(None, None, Duration::from_secs(2))]
+    #[case::doubles(None, Some(Duration::from_secs(4)), Duration::from_secs(8))]
+    #[case::capped(None, Some(Duration::from_secs(250)), Duration::from_secs(300))]
+    fn backoff_honours_the_server_then_doubles(
+        #[case] asked: Option<Duration>,
+        #[case] previous: Option<Duration>,
+        #[case] want: Duration,
+    ) {
+        assert_eq!(backoff(asked, previous), want);
+    }
+
+    #[rstest]
+    #[case::fresh_day(0, 2000, 2000)]
+    #[case::partly_used(1500, 2000, 500)]
+    #[case::at_cap(2000, 2000, 0)]
+    #[case::cap_lowered_below_use(2500, 2000, 0)]
+    fn calls_left_never_goes_negative(#[case] used: i64, #[case] cap: i64, #[case] want: i64) {
+        assert_eq!(calls_left(used, cap), want);
     }
 
     #[rstest]

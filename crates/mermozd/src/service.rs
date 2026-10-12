@@ -21,6 +21,9 @@ pub struct Worker {
     pub agent_error: Arc<Mutex<Option<String>>>,
 }
 
+/// Project descriptions and when they were built.
+type Descriptions = (std::time::Instant, Vec<(String, String)>);
+
 pub struct Service {
     /// Outcome of the last "Sign in with Anthropic".
     pub login: Mutex<LoginState>,
@@ -37,6 +40,14 @@ pub struct Service {
     pub router_error: Mutex<Option<String>>,
     /// Threads whose senders are being verified, so reopening one doesn't refetch.
     verifying: Mutex<std::collections::HashSet<String>>,
+    /// Project descriptions for the router, rebuilt every [`DESCRIPTIONS_TTL`].
+    descriptions: Mutex<Option<Descriptions>>,
+    /// Wakes the background column sorter (key set, focus changed).
+    pub column_kick: Arc<Notify>,
+    /// Background column sorting state, shown in column headers.
+    pub column: Mutex<ColumnState>,
+    /// Statuses of the columns on screen.
+    focus: Mutex<Vec<String>>,
 }
 
 fn poll_interval() -> Duration {
@@ -60,6 +71,10 @@ impl Service {
             router_kick: Arc::new(Notify::new()),
             router_error: Mutex::new(None),
             verifying: Mutex::new(Default::default()),
+            descriptions: Mutex::new(None),
+            column_kick: Arc::new(Notify::new()),
+            column: Mutex::new(ColumnState::default()),
+            focus: Mutex::new(vec![]),
         })
     }
 
@@ -89,10 +104,6 @@ impl Service {
             }
             svc.verifying.lock().unwrap().remove(&tid);
         });
-    }
-
-    pub fn start_router(self: &Arc<Self>) {
-        tokio::spawn(router_loop(self.clone()));
     }
 
     /// Starts workers for every stored account; accounts without a token show an error.
@@ -580,12 +591,125 @@ fn ensure_import(svc: &Arc<Service>, w: &Arc<Worker>) {
 /// Project descriptions change slowly; rebuilding them costs a scan of filed mail.
 const DESCRIPTIONS_TTL: Duration = Duration::from_secs(600);
 
+/// Requests in flight for the background pass (12 ran clean against the live API).
+const COLUMN_PARALLEL: usize = 12;
+
+/// Threads taken per background round; small enough that a focus change or new
+/// mail is picked up within a couple of seconds.
+const COLUMN_BATCH: i64 = 48;
+
+/// What a routing call needs besides the thread: the client and the questions.
+struct RouteKit {
+    client: Arc<jev::Client>,
+    questions: Arc<serde_json::Value>,
+    known: Arc<Vec<String>>,
+}
+
+/// Background sorting of the open columns, as the app shows it.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ColumnState {
+    /// Working through threads right now.
+    pub sorting: bool,
+    /// Why sorting is on hold: "limit" (daily cap reached) or "unavailable" (backing off).
+    pub paused: Option<String>,
+}
+
+impl Service {
+    pub fn start_router(self: &Arc<Self>) {
+        tokio::spawn(router_loop(self.clone()));
+        tokio::spawn(column_loop(self.clone()));
+    }
+
+    /// The columns on screen; the background pass sorts them first.
+    pub fn set_focus(&self, statuses: Vec<String>) {
+        let mut f = self.focus.lock().unwrap();
+        if *f != statuses {
+            *f = statuses;
+            self.column_kick.notify_one();
+        }
+    }
+
+    fn route_kit(&self, key: &str) -> Result<RouteKit> {
+        let mut cache = self.descriptions.lock().unwrap();
+        if cache
+            .as_ref()
+            .is_none_or(|(at, _)| at.elapsed() > DESCRIPTIONS_TTL)
+        {
+            *cache = Some((
+                std::time::Instant::now(),
+                self.store.project_descriptions()?,
+            ));
+        }
+        let descs = &cache.as_ref().unwrap().1;
+        Ok(RouteKit {
+            client: Arc::new(jev::Client::new(key.to_string())),
+            questions: Arc::new(jev::questions(descs)),
+            known: Arc::new(descs.iter().map(|(n, _)| n.clone()).collect()),
+        })
+    }
+}
+
+type Outcome = (String, i64, Result<jev::Routed>);
+
+/// Routes threads through Jev with at most `parallel` requests in flight.
+async fn route_many(
+    svc: &Arc<Service>,
+    kit: &RouteKit,
+    items: &[(String, i64)],
+    parallel: usize,
+) -> Vec<Outcome> {
+    let mut set = tokio::task::JoinSet::new();
+    let mut out = vec![];
+    for (tid, last_date) in items.iter().cloned() {
+        if set.len() >= parallel
+            && let Some(Ok(done)) = set.join_next().await
+        {
+            out.push(done);
+        }
+        let input = match svc.store.route_input(&tid) {
+            Ok(i) => i,
+            Err(e) => {
+                out.push((tid, last_date, Err(e)));
+                continue;
+            }
+        };
+        let (client, questions, known) =
+            (kit.client.clone(), kit.questions.clone(), kit.known.clone());
+        set.spawn(async move {
+            let res = client.route(&input, &questions, &known).await;
+            (tid, last_date, res)
+        });
+    }
+    while let Some(joined) = set.join_next().await {
+        if let Ok(done) = joined {
+            out.push(done);
+        }
+    }
+    out
+}
+
+/// A refused key, a rate limit or an outage: stop and retry later, never a verdict.
+fn pause_reason(e: &Error) -> Option<Option<Duration>> {
+    match e {
+        Error::RateLimited { retry_after } => Some(*retry_after),
+        Error::InvalidParams(_) | Error::Http(_) => Some(None),
+        Error::Upstream { status, .. } if *status == 429 || *status >= 500 => Some(None),
+        _ => None,
+    }
+}
+
+fn input_tokens(outcomes: &[Outcome]) -> i64 {
+    outcomes
+        .iter()
+        .filter_map(|(_, _, r)| r.as_ref().ok().and_then(|r| r.input_tokens))
+        .sum()
+}
+
 /// Routes every new Unread thread through Jev while a TypeSafe key is set.
 async fn router_loop(svc: Arc<Service>) {
-    let mut descriptions: Option<(std::time::Instant, Vec<(String, String)>)> = None;
     loop {
         if let Some(key) = jev::load_key() {
-            match route_pending(&svc, &key, &mut descriptions).await {
+            match route_pending(&svc, &key).await {
                 Ok(n) => {
                     if n > 0 {
                         info!(routed = n, "routed new mail");
@@ -605,72 +729,185 @@ async fn router_loop(svc: Arc<Service>) {
     }
 }
 
-/// Routes up to one batch of pending threads, eight requests in flight.
-async fn route_pending(
-    svc: &Arc<Service>,
-    key: &str,
-    descriptions: &mut Option<(std::time::Instant, Vec<(String, String)>)>,
-) -> Result<usize> {
+/// Routes up to one batch of pending Unread threads, eight requests in flight.
+async fn route_pending(svc: &Arc<Service>, key: &str) -> Result<usize> {
     let pending = svc.store.threads_to_route(32)?;
     if pending.is_empty() {
         return Ok(0);
     }
-    if descriptions
-        .as_ref()
-        .is_none_or(|(at, _)| at.elapsed() > DESCRIPTIONS_TTL)
-    {
-        *descriptions = Some((std::time::Instant::now(), svc.store.project_descriptions()?));
-    }
-    let descs = &descriptions.as_ref().unwrap().1;
-    let known: Arc<Vec<String>> = Arc::new(descs.iter().map(|(n, _)| n.clone()).collect());
-    let questions = Arc::new(jev::questions(descs));
-    let client = Arc::new(jev::Client::new(key.to_string()));
+    let kit = svc.route_kit(key)?;
+    let outcomes = route_many(svc, &kit, &pending, 8).await;
+    let tokens = input_tokens(&outcomes);
     let mut routed = vec![];
-    for chunk in pending.chunks(8) {
-        let mut set = tokio::task::JoinSet::new();
-        for (tid, last_date) in chunk.iter().cloned() {
-            let input = svc.store.route_input(&tid)?;
-            let (client, questions, known) = (client.clone(), questions.clone(), known.clone());
-            set.spawn(async move {
-                (
-                    tid,
-                    last_date,
-                    client.route(&input, &questions, &known).await,
-                )
-            });
+    let mut stop = None;
+    for (tid, last_date, res) in outcomes {
+        match res {
+            Ok(r) => {
+                svc.store
+                    .save_suggestion(&tid, &r.suggestion, "jev-latest", last_date)?;
+                routed.push(tid);
+            }
+            // A refused key or an outage stops the round; it retries on the next tick.
+            Err(e) if pause_reason(&e).is_some() => stop = Some(e),
+            // Anything else is specific to this thread: record "no suggestion" so it
+            // is not retried forever.
+            Err(e) => {
+                warn!(thread = %tid, "router skipped thread: {e}");
+                svc.store
+                    .save_suggestion(&tid, &Default::default(), "jev-latest", last_date)?;
+            }
         }
-        while let Some(joined) = set.join_next().await {
-            let Ok((tid, last_date, res)) = joined else {
-                continue;
-            };
-            match res {
-                Ok(sg) => {
-                    svc.store
-                        .save_suggestion(&tid, &sg, "jev-latest", last_date)?;
-                    routed.push(tid);
+    }
+    if tokens > 0 {
+        info!(
+            threads = routed.len(),
+            input_tokens = tokens,
+            "routed new mail"
+        );
+    }
+    let n = routed.len();
+    let _ = svc.events.send(Event::ThreadsChanged(routed));
+    match stop {
+        Some(Error::InvalidParams(m)) => Err(Error::InvalidParams(m)),
+        Some(Error::Http(e)) => Err(Error::Http(e)),
+        Some(_) => Err(Error::other("TypeSafe is unavailable right now")),
+        None => Ok(n),
+    }
+}
+
+/// How a background round ended.
+#[derive(Debug, PartialEq)]
+enum Round {
+    /// Threads were classified; more may be waiting.
+    Worked,
+    /// Nothing left to classify.
+    Idle,
+    /// New Unread mail goes first.
+    Yield,
+    /// Today's cap is spent.
+    Capped,
+    /// TypeSafe refused or is overloaded; wait (as asked, if it said) before retrying.
+    Pause(Option<Duration>),
+}
+
+/// Sorts the open columns in the background: every already-read thread without a
+/// current verdict gets one Jev call, the column on screen first. Suggestions only;
+/// nothing moves until the user accepts.
+async fn column_loop(svc: Arc<Service>) {
+    let mut last_backoff: Option<Duration> = None;
+    loop {
+        let round = match jev::load_key() {
+            None => Round::Idle,
+            Some(key) => column_round(&svc, &key).await.unwrap_or_else(|e| {
+                warn!("background sorting: {e}");
+                Round::Pause(None)
+            }),
+        };
+        let (sorting, paused, wait) = match round {
+            Round::Worked => (true, None, Duration::from_millis(20)),
+            Round::Yield => (true, None, Duration::from_millis(500)),
+            Round::Idle => (false, None, Duration::from_secs(30)),
+            Round::Capped => (false, Some("limit"), Duration::from_secs(600)),
+            Round::Pause(asked) => {
+                let d = jev::backoff(asked, last_backoff);
+                warn!(wait_ms = d.as_millis() as u64, "background sorting paused");
+                (false, Some("unavailable"), d)
+            }
+        };
+        last_backoff = match round {
+            Round::Pause(asked) => Some(jev::backoff(asked, last_backoff)),
+            _ => None,
+        };
+        let state = ColumnState {
+            sorting,
+            paused: paused.map(String::from),
+        };
+        let changed = {
+            let mut s = svc.column.lock().unwrap();
+            let changed = s.sorting != state.sorting || s.paused != state.paused;
+            *s = state;
+            changed
+        };
+        if changed {
+            let _ = svc.events.send(Event::SuggestionsChanged);
+        }
+        if paused.is_some() {
+            // A kick must not cut a backoff short.
+            tokio::time::sleep(wait).await;
+        } else {
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = svc.column_kick.notified() => {}
+            }
+        }
+    }
+}
+
+async fn column_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
+    if !svc.store.threads_to_route(1)?.is_empty() {
+        return Ok(Round::Yield);
+    }
+    let used = svc.store.background_calls_today()?;
+    let cap = svc.store.background_daily_cap()?;
+    let left = jev::calls_left(used, cap);
+    if left == 0 {
+        info!(
+            calls_today = used,
+            cap, "background sorting reached today's limit"
+        );
+        return Ok(Round::Capped);
+    }
+    let focus = svc.focus.lock().unwrap().clone();
+    let batch = svc
+        .store
+        .threads_to_classify(&focus, left.min(COLUMN_BATCH))?;
+    if batch.is_empty() {
+        return Ok(Round::Idle);
+    }
+    let kit = svc.route_kit(key)?;
+    let outcomes = route_many(svc, &kit, &batch, COLUMN_PARALLEL).await;
+    let calls_today = svc.store.add_background_calls(outcomes.len() as i64)?;
+    let tokens = input_tokens(&outcomes);
+    let (mut classified, mut shown) = (0, vec![]);
+    let mut pause = None;
+    for (tid, last_date, res) in outcomes {
+        match res {
+            Ok(r) => {
+                classified += 1;
+                if svc
+                    .store
+                    .save_column_suggestion(&tid, &r.suggestion, "jev-latest", last_date)?
+                {
+                    shown.push(tid);
                 }
-                // A refused key or an outage stops the round; it retries on the next tick.
-                Err(e @ (Error::InvalidParams(_) | Error::Http(_))) => return Err(e),
-                Err(Error::Upstream { status, .. }) if status == 429 || status >= 500 => {
-                    return Err(Error::other(format!("TypeSafe is unavailable ({status})")));
-                }
-                // Anything else is specific to this thread: record "no suggestion" so it
-                // is not retried forever.
-                Err(e) => {
-                    warn!(thread = %tid, "router skipped thread: {e}");
-                    svc.store.save_suggestion(
+            }
+            Err(e) => match pause_reason(&e) {
+                Some(asked) => pause = Some(asked.or(pause.flatten())),
+                None => {
+                    warn!(thread = %tid, "background sorting skipped thread: {e}");
+                    svc.store.save_column_suggestion(
                         &tid,
                         &Default::default(),
                         "jev-latest",
                         last_date,
                     )?;
                 }
-            }
+            },
         }
     }
-    let n = routed.len();
-    let _ = svc.events.send(Event::ThreadsChanged(routed));
-    Ok(n)
+    info!(
+        classified,
+        suggested = shown.len(),
+        input_tokens = tokens,
+        calls_today,
+        "background sorting round"
+    );
+    // One coarse event per round: the app refreshes chips and column bars together.
+    let _ = svc.events.send(Event::SuggestionsChanged);
+    Ok(match pause {
+        Some(asked) => Round::Pause(asked),
+        None => Round::Worked,
+    })
 }
 
 #[cfg(test)]

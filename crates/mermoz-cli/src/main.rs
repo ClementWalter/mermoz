@@ -100,11 +100,27 @@ enum Cmd {
         #[arg(long)]
         remove: bool,
     },
-    /// Accept the AI's suggested status and projects for threads (marks them read).
+    /// Accept the AI's suggested status and projects for threads (marks them read),
+    /// or for a whole column with --column (optionally only one --to/--to-project group).
+    #[command(
+        after_help = "Examples:\n  mermoz accept M-12 M-14\n  mermoz accept --column backlog\n  mermoz accept --column backlog --to archive --to-project Receipts"
+    )]
     Accept {
-        #[arg(required = true)]
+        #[arg(required_unless_present = "column", conflicts_with = "column")]
         threads: Vec<String>,
+        /// Every pending suggestion of this status column.
+        #[arg(long)]
+        column: Option<String>,
+        /// Only the group going to this status ("none": groups that only add projects).
+        #[arg(long, requires = "column")]
+        to: Option<String>,
+        /// Only the group adding exactly these projects (repeat for several).
+        #[arg(long = "to-project", requires = "column")]
+        to_projects: Vec<String>,
     },
+    /// The AI's pending suggestions in a status column, grouped by where they go,
+    /// and how far background sorting of that column has got.
+    Suggestions { status: String },
     /// Set a follow-up date (YYYY-MM-DD); "none" clears.
     Due { thread: String, date: String },
     /// Mark a thread read or unread.
@@ -689,8 +705,36 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 format!("project + {project}")
             });
         }
-        Cmd::Accept { threads } => {
-            let v = c.call("threads.accept_suggestions", json!({ "ids": threads }))?;
+        Cmd::Accept {
+            threads,
+            column,
+            to,
+            to_projects,
+        } => {
+            let v = match column {
+                None => c.call("threads.accept_suggestions", json!({ "ids": threads }))?,
+                Some(col) => {
+                    let status = resolve_status(&mut c, &col)?;
+                    let target = if to.is_none() && to_projects.is_empty() {
+                        Value::Null
+                    } else {
+                        let to = match to.as_deref() {
+                            None | Some("none") => Value::Null,
+                            Some(t) => json!(resolve_status(&mut c, t)?),
+                        };
+                        json!({ "status": to, "projects": to_projects })
+                    };
+                    let mut v = c.call(
+                        "suggestions.accept",
+                        json!({ "status": status, "target": target }),
+                    )?;
+                    // Snapshots are for the app's undo; agents only need the count.
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove("before");
+                    }
+                    v
+                }
+            };
             if out.json {
                 return {
                     out.json(&v);
@@ -698,6 +742,44 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 };
             }
             out.line(format!("accepted {}", v["accepted"].as_i64().unwrap_or(0)));
+        }
+        Cmd::Suggestions { status } => {
+            let status = resolve_status(&mut c, &status)?;
+            let v = c.call("suggestions.summary", json!({ "statuses": [status] }))?;
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            let col = &v["columns"][0];
+            out.line(format!(
+                "{} pending · sorted {} of {}{}",
+                col["pending"].as_i64().unwrap_or(0),
+                col["classified"].as_i64().unwrap_or(0),
+                col["total"].as_i64().unwrap_or(0),
+                match v["paused"].as_str() {
+                    Some("limit") => " · paused: daily limit reached",
+                    Some(_) => " · paused: AI unavailable, retrying",
+                    None => "",
+                }
+            ));
+            for g in col["groups"].as_array().into_iter().flatten() {
+                let mut to: Vec<String> =
+                    g["status"].as_str().map(String::from).into_iter().collect();
+                to.extend(
+                    g["projects"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str().map(|p| format!("+{p}"))),
+                );
+                out.line(format!(
+                    "{:>6}  → {}",
+                    g["count"].as_i64().unwrap_or(0),
+                    to.join(" ")
+                ));
+            }
         }
         Cmd::Due { thread, date } => {
             let d = if date.eq_ignore_ascii_case("none") {
