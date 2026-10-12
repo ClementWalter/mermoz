@@ -167,6 +167,33 @@ pub struct Draft {
     pub origin: String,
     pub created: i64,
     pub updated: i64,
+    #[serde(default)]
+    pub attachments: Vec<DraftAttachment>,
+}
+
+/// How a draft carries something: the file's bytes, or a link to it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentKind {
+    #[default]
+    File,
+    Link,
+}
+
+/// A file (copied into Mermoz's data folder) or a link going out with a draft.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DraftAttachment {
+    pub id: String,
+    pub kind: AttachmentKind,
+    pub filename: String,
+    pub mime: String,
+    pub size: i64,
+    /// The stored copy, for files.
+    pub path: Option<String>,
+    /// Where the item lives, for links.
+    pub url: Option<String>,
+    /// Shown in the message by mail apps rather than offered as a download.
+    pub inline: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

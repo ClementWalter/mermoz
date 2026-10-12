@@ -174,6 +174,11 @@ fn urlencode(s: &str) -> String {
 
 #[fixture]
 fn world() -> World {
+    start_world(&[])
+}
+
+/// Daemon started with extra environment (e.g. to force a code path in tests).
+fn start_world(extra_env: &[(&str, &str)]) -> World {
     let home = tempfile::tempdir().unwrap();
     let mailbox: Shared = Default::default();
     {
@@ -248,6 +253,7 @@ fn world() -> World {
         .env("MERMOZ_POLL_SECS", "1")
         .env("MERMOZ_JEV_BASE", format!("http://127.0.0.1:{port}/jev"))
         .env("MERMOZ_TRUSTED_EXE", std::env::current_exe().unwrap())
+        .envs(extra_env.iter().copied())
         .env(
             "RUST_LOG",
             std::env::var("E2E_LOG").unwrap_or("warn".into()),
@@ -2223,6 +2229,353 @@ fn cli_rejects_a_suggestion(synced: World) {
     let t = synced.thread_by_subject("Budget sheet");
     synced.cli(&["reject", t["number"].as_str().unwrap()]);
     assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
+}
+
+// ---- attachments -------------------------------------------------------
+
+const PDF_BYTES: &[u8] = b"%PDF-1.4 fictional plan";
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nfictional\x00\xff\xfe";
+
+/// Two tiny fictional files on disk, one with a French accented name.
+fn fixture_files(w: &World) -> (PathBuf, PathBuf) {
+    let dir = w.home.path().join("to-attach");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pdf = dir.join("Relevé d'été.pdf");
+    let png = dir.join("chart.png");
+    std::fs::write(&pdf, PDF_BYTES).unwrap();
+    std::fs::write(&png, PNG_BYTES).unwrap();
+    (pdf, png)
+}
+
+/// The last message the stub Gmail received, parsed.
+fn last_sent(w: &World) -> mail_parser::Message<'static> {
+    let raw = w.mailbox.lock().unwrap().sent_raw.last().cloned().unwrap();
+    mail_parser::MessageParser::default()
+        .parse(&raw)
+        .unwrap()
+        .into_owned()
+}
+
+/// The app (a trusted caller) sends a new message with both fixture files.
+fn app_sends_two_files(w: &World) {
+    let (pdf, png) = fixture_files(w);
+    let d = w.ok(
+        "drafts.create",
+        json!({ "to": ["marc@example.com"], "subject": "Plan", "body": "Both files attached.",
+                "attachments": [pdf, { "path": png, "inline": true }] }),
+    );
+    w.ok("drafts.send", json!({ "id": d["id"] }));
+}
+
+/// A reply to "Audit report v2" carrying the PDF.
+fn app_replies_with_pdf(w: &World) {
+    let (pdf, _) = fixture_files(w);
+    let t = w.thread_by_subject("Audit report v2");
+    let d = w.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "Signed copy attached.", "attachments": [pdf] }),
+    );
+    w.ok("drafts.send", json!({ "id": d["id"] }));
+}
+
+#[fixture]
+fn upload_synced() -> World {
+    // Every send takes the large-message path, so tiny fixtures exercise it.
+    let w = start_world(&[("MERMOZ_GMAIL_UPLOAD_OVER", "0")]);
+    sign_in(&w);
+    w.wait_until("initial import", |w| {
+        w.ok("threads.list", json!({}))["total"] == 3
+    });
+    w
+}
+
+#[rstest]
+fn sent_message_carries_both_files(synced: World) {
+    app_sends_two_files(&synced);
+    assert_eq!(last_sent(&synced).attachment_count(), 2);
+}
+
+#[rstest]
+fn sent_pdf_keeps_its_bytes(synced: World) {
+    app_sends_two_files(&synced);
+    assert_eq!(
+        last_sent(&synced).attachment(0).unwrap().contents(),
+        PDF_BYTES
+    );
+}
+
+#[rstest]
+fn sent_png_keeps_its_bytes(synced: World) {
+    app_sends_two_files(&synced);
+    assert_eq!(
+        last_sent(&synced).attachment(1).unwrap().contents(),
+        PNG_BYTES
+    );
+}
+
+#[rstest]
+fn sent_accented_name_survives(synced: World) {
+    use mail_parser::MimeHeaders;
+    app_sends_two_files(&synced);
+    assert_eq!(
+        last_sent(&synced).attachment(0).unwrap().attachment_name(),
+        Some("Relevé d'été.pdf")
+    );
+}
+
+#[rstest]
+fn sent_text_is_the_first_part(synced: World) {
+    app_sends_two_files(&synced);
+    assert_eq!(
+        last_sent(&synced).body_text(0).unwrap().trim(),
+        "Both files attached."
+    );
+}
+
+#[rstest]
+fn sent_draft_files_are_cleaned_up(synced: World) {
+    app_sends_two_files(&synced);
+    let left = std::fs::read_dir(synced.home.path().join("blobs/drafts"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0);
+}
+
+#[rstest]
+fn reply_with_file_stays_in_the_gmail_thread(synced: World) {
+    app_replies_with_pdf(&synced);
+    assert_eq!(
+        synced.mailbox.lock().unwrap().sent[0].1.as_deref(),
+        Some("t1")
+    );
+}
+
+#[rstest]
+fn reply_with_file_keeps_in_reply_to(synced: World) {
+    app_replies_with_pdf(&synced);
+    assert_eq!(
+        last_sent(&synced).in_reply_to().as_text(),
+        Some("m1@example.com")
+    );
+}
+
+#[rstest]
+fn large_message_goes_through_the_upload_endpoint(upload_synced: World) {
+    app_replies_with_pdf(&upload_synced);
+    assert_eq!(
+        upload_synced.mailbox.lock().unwrap().sent_via,
+        vec!["upload"]
+    );
+}
+
+#[rstest]
+fn uploaded_message_keeps_its_thread(upload_synced: World) {
+    app_replies_with_pdf(&upload_synced);
+    assert_eq!(
+        upload_synced.mailbox.lock().unwrap().sent[0].1.as_deref(),
+        Some("t1")
+    );
+}
+
+#[rstest]
+fn uploaded_message_keeps_its_bytes(upload_synced: World) {
+    app_replies_with_pdf(&upload_synced);
+    assert_eq!(
+        last_sent(&upload_synced).attachment(0).unwrap().contents(),
+        PDF_BYTES
+    );
+}
+
+#[rstest]
+fn small_message_uses_the_json_endpoint(synced: World) {
+    app_replies_with_pdf(&synced);
+    assert_eq!(synced.mailbox.lock().unwrap().sent_via, vec!["json"]);
+}
+
+#[rstest]
+fn message_attachment_can_be_sent_again(synced: World) {
+    let t = synced.thread_by_subject("Budget sheet");
+    let full = synced.ok("threads.get", json!({ "id": t["id"] }));
+    let att = full["messages"][0]["attachments"][0]["id"].clone();
+    let d = synced.ok(
+        "drafts.create",
+        json!({ "to": ["ana@example.com"], "subject": "Fwd: Budget sheet", "body": "FYI",
+                "attachments": [{ "from_attachment": att }] }),
+    );
+    synced.ok("drafts.send", json!({ "id": d["id"] }));
+    assert_eq!(
+        last_sent(&synced).attachment(0).unwrap().contents(),
+        b"%PDF-1.4"
+    );
+}
+
+#[rstest]
+fn too_many_megabytes_are_refused_in_plain_words(synced: World) {
+    let big = synced.home.path().join("video.mov");
+    // Sparse: 26 MB by size, nothing written.
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(26 * 1024 * 1024)
+        .unwrap();
+    let err = synced
+        .call(
+            "drafts.create",
+            json!({ "to": ["marc@example.com"], "body": "x", "attachments": [big] }),
+        )
+        .unwrap_err();
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("These files add up to 26.0 MB, more than the 25.0 MB Gmail can send")
+    );
+}
+
+#[rstest]
+fn refused_attachment_leaves_no_draft(synced: World) {
+    let _ = synced.call(
+        "drafts.create",
+        json!({ "to": ["marc@example.com"], "body": "x", "attachments": ["/nonexistent/plan.pdf"] }),
+    );
+    assert_eq!(synced.ok("drafts.list", json!({})), json!([]));
+}
+
+#[rstest]
+fn detached_file_is_not_sent(synced: World) {
+    let (pdf, png) = fixture_files(&synced);
+    let d = synced.ok(
+        "drafts.create",
+        json!({ "to": ["marc@example.com"], "body": "x", "attachments": [pdf, png] }),
+    );
+    synced.ok(
+        "drafts.detach",
+        json!({ "id": d["id"], "attachment_id": d["attachments"][0]["id"] }),
+    );
+    synced.ok("drafts.send", json!({ "id": d["id"] }));
+    assert_eq!(last_sent(&synced).attachment_count(), 1);
+}
+
+/// `mermoz draft reply --attach` twice.
+fn cli_reply_with_two_files(w: &World) -> Value {
+    let (pdf, png) = fixture_files(w);
+    let t = w.thread_by_subject("Audit report v2");
+    let out = w.cli(&[
+        "--json",
+        "draft",
+        "reply",
+        t["number"].as_str().unwrap(),
+        "--body",
+        "Files attached.",
+        "--attach",
+        pdf.to_str().unwrap(),
+        "--attach",
+        png.to_str().unwrap(),
+    ]);
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[rstest]
+fn cli_attach_stores_every_file(synced: World) {
+    let d = cli_reply_with_two_files(&synced);
+    assert_eq!(d["attachments"].as_array().unwrap().len(), 2);
+}
+
+#[rstest]
+fn cli_attach_resolves_relative_paths(synced: World) {
+    fixture_files(&synced);
+    let out = Command::new(bin_dir().join("mermoz"))
+        .args([
+            "--json",
+            "draft",
+            "new",
+            "--to",
+            "marc@example.com",
+            "--body",
+            "x",
+            "--attach",
+            "chart.png",
+        ])
+        .current_dir(synced.home.path().join("to-attach"))
+        .env("MERMOZ_HOME", synced.home.path())
+        .output()
+        .unwrap();
+    let d: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(d["attachments"][0]["filename"], "chart.png");
+}
+
+#[rstest]
+fn cli_attach_missing_file_fails(synced: World) {
+    let out = synced.cli(&[
+        "draft",
+        "new",
+        "--to",
+        "marc@example.com",
+        "--body",
+        "x",
+        "--attach",
+        "/nonexistent/plan.pdf",
+    ]);
+    assert_ne!(out.status.code(), Some(0));
+}
+
+#[rstest]
+fn approved_agent_draft_sends_its_files(synced: World) {
+    let d = cli_reply_with_two_files(&synced);
+    // The agent's send waits for approval (exit 3); the user approves in the app.
+    synced.cli(&["send", d["id"].as_str().unwrap()]);
+    synced.ok("review.approve", json!({ "id": d["id"] }));
+    assert_eq!(last_sent(&synced).attachment_count(), 2);
+}
+
+#[rstest]
+fn cli_draft_attach_adds_to_an_existing_draft(synced: World) {
+    let (pdf, _) = fixture_files(&synced);
+    let d = synced.ok(
+        "drafts.create",
+        json!({ "to": ["marc@example.com"], "body": "x" }),
+    );
+    let out = synced.cli(&[
+        "--json",
+        "draft",
+        "attach",
+        d["id"].as_str().unwrap(),
+        pdf.to_str().unwrap(),
+    ]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["attachments"][0]["mime"], "application/pdf");
+}
+
+#[rstest]
+fn mcp_create_draft_takes_attachment_paths(synced: World) {
+    let (pdf, _) = fixture_files(&synced);
+    let mut child = Command::new(bin_dir().join("mermoz"))
+        .arg("mcp")
+        .env("MERMOZ_HOME", synced.home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "create_draft",
+            "arguments": { "to": ["marc@example.com"], "body": "x", "attachments": [pdf] } } })
+    )
+    .unwrap();
+    drop(stdin);
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    let _ = child.wait();
+    let v: Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    let draft: Value =
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(draft["attachments"][0]["filename"], "Relevé d'été.pdf");
 }
 
 // ---- conversations ---------------------------------------------------------

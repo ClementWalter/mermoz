@@ -479,6 +479,35 @@ impl AccountSync {
             }
             None => (None, vec![], None),
         };
+        let mut files = Vec::new();
+        let mut links = Vec::new();
+        for a in &draft.attachments {
+            match (a.kind, &a.path, &a.url) {
+                (crate::model::AttachmentKind::File, Some(p), _) => {
+                    let bytes = std::fs::read(p).map_err(|_| {
+                        Error::InvalidParams(format!(
+                            "{} is no longer available. Remove it and attach it again.",
+                            a.filename
+                        ))
+                    })?;
+                    files.push((a, bytes));
+                }
+                (crate::model::AttachmentKind::Link, _, Some(u)) => links.push(compose::Link {
+                    title: &a.filename,
+                    url: u,
+                }),
+                _ => {}
+            }
+        }
+        let parts: Vec<compose::Part> = files
+            .iter()
+            .map(|(a, bytes)| compose::Part {
+                filename: &a.filename,
+                mime: &a.mime,
+                bytes,
+                inline: a.inline,
+            })
+            .collect();
         let raw = compose::build(&Outgoing {
             from: &self.email,
             to: &draft.to,
@@ -487,9 +516,15 @@ impl AccountSync {
             body: &draft.body,
             in_reply_to: in_reply_to.as_deref(),
             references: &references,
+            parts: &parts,
+            links: &links,
         })?;
         self.gmail.send(&raw, provider_thread.as_deref()).await?;
         self.store.set_draft_state(&draft.id, "sent")?;
+        // The sent copy syncs back with its own attachments; these copies are spent.
+        if let Err(e) = self.store.purge_draft_files(&draft.id) {
+            debug!("could not remove sent draft files: {e}");
+        }
         if let Some(t) = &draft.thread_id {
             let status = after_status.unwrap_or("waiting").to_string();
             self.store.update_threads(

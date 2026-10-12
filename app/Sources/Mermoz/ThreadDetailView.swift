@@ -612,6 +612,7 @@ struct MessageCard: View {
                 FlowRow(spacing: 8) {
                     ForEach(message.attachments) { a in
                         Button { model.openAttachment(a) } label: { AttachmentChip(attachment: a) }.buttonStyle(.plain)
+                            .onDrag { model.dragProvider(for: a) }
                     }
                 }
             }
@@ -697,16 +698,45 @@ struct MessageCard: View {
     }
 }
 
+/// File badge, name and size; with `onRemove`, an × to take it out (composer).
 struct AttachmentChip: View {
-    let attachment: Attachment
+    let filename: String
+    let size: Int64
+    var isLink = false
+    var onRemove: (() -> Void)?
+
+    init(attachment: Attachment) {
+        filename = attachment.filename
+        size = attachment.size
+    }
+
+    init(filename: String, size: Int64, isLink: Bool = false, onRemove: (() -> Void)? = nil) {
+        self.filename = filename
+        self.size = size
+        self.isLink = isLink
+        self.onRemove = onRemove
+    }
 
     var body: some View {
         HStack(spacing: 9) {
-            Text(ext).font(.system(size: 9, weight: .heavy)).foregroundStyle(.white)
-                .frame(width: 26, height: 30).background(color, in: RoundedRectangle(cornerRadius: 5))
+            Group {
+                if isLink {
+                    Image(systemName: "link").font(.system(size: 11, weight: .bold))
+                } else {
+                    Text(ext).font(.system(size: 9, weight: .heavy))
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(width: 26, height: 30).background(color, in: RoundedRectangle(cornerRadius: 5))
             VStack(alignment: .leading, spacing: 1) {
-                Text(attachment.filename).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                Text(Format.size(attachment.size)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                Text(filename).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                Text(isLink ? "Link" : Format.size(size)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+            }
+            .frame(maxWidth: 200, alignment: .leading)
+            if let onRemove {
+                Button(action: onRemove) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.text3)
+                    .accessibilityLabel("Remove \(filename)")
             }
         }
         .foregroundStyle(Theme.text)
@@ -716,7 +746,7 @@ struct AttachmentChip: View {
     }
 
     private var ext: String {
-        let e = (attachment.filename as NSString).pathExtension.uppercased()
+        let e = (filename as NSString).pathExtension.uppercased()
         return e.isEmpty ? "FILE" : String(e.prefix(4))
     }
 

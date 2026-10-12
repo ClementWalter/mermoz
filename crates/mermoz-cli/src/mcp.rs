@@ -33,8 +33,10 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "statuses": { "type": "array", "items": { "type": "string" } } } } },
         { "name": "get_attachment", "description": "Get an attachment's local file path (readable offline); text attachments also return their content.",
           "inputSchema": { "type": "object", "properties": { "id": s("attachment id from get_thread") }, "required": ["id"] } },
-        { "name": "create_draft", "description": "Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves.",
-          "inputSchema": { "type": "object", "properties": { "thread_id": s("thread to reply to"), "to": { "type": "array", "items": { "type": "string" } }, "cc": { "type": "array", "items": { "type": "string" } }, "subject": s("subject"), "body": s("plain text body") }, "required": ["body"] } },
+        { "name": "create_draft", "description": "Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves. Attachments are copied into Mermoz; Gmail sends at most 25 MB of files per email.",
+          "inputSchema": { "type": "object", "properties": { "thread_id": s("thread to reply to"), "to": { "type": "array", "items": { "type": "string" } }, "cc": { "type": "array", "items": { "type": "string" } }, "subject": s("subject"), "body": s("plain text body"),
+            "attachments": { "type": "array", "description": "files to attach: absolute paths", "items": { "type": "string" } },
+            "forward_attachments": { "type": "array", "description": "attachment ids from get_thread to send again (forwarding)", "items": { "type": "string" } } }, "required": ["body"] } },
         { "name": "send_draft", "description": "Ask to send a draft. Unless the user enabled agent sending, the draft goes to the user's Review lane and this returns approval_required: tell the user, do not retry.",
           "inputSchema": { "type": "object", "properties": { "id": s("draft id") }, "required": ["id"] } },
         { "name": "search_contacts", "description": "Search the user's directory, built automatically from email signatures: names, titles, companies, phones, addresses, websites. Empty query lists recent contacts.",
@@ -102,7 +104,29 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
             }
             Ok(v)
         }
-        "create_draft" => r(c.call("drafts.create", a.clone())),
+        "create_draft" => {
+            let mut p = a.clone();
+            let mut specs: Vec<Value> = Vec::new();
+            for v in a["attachments"].as_array().into_iter().flatten() {
+                match v.as_str() {
+                    // The daemon needs absolute paths; resolve against the agent's directory.
+                    Some(path) => specs.push(json!(
+                        std::fs::canonicalize(path)
+                            .map_err(|e| format!("cannot attach {path}: {e}"))?
+                            .to_string_lossy()
+                    )),
+                    None => specs.push(v.clone()),
+                }
+            }
+            for id in a["forward_attachments"].as_array().into_iter().flatten() {
+                specs.push(json!({ "from_attachment": id }));
+            }
+            if let Some(o) = p.as_object_mut() {
+                o.remove("forward_attachments");
+                o.insert("attachments".into(), json!(specs));
+            }
+            r(c.call("drafts.create", p))
+        }
         "send_draft" => r(c.call("drafts.send", json!({ "id": a["id"] }))),
         "list_labels" => r(c.call("labels.list", json!({}))),
         "search_contacts" => r(c.call("contacts.list", json!({ "query": a.get("query"), "limit": a.get("limit").cloned().unwrap_or(json!(20)) }))),

@@ -1434,6 +1434,7 @@ dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
  "libc",
+ "mail-parser",
  "mermoz-core",
  "rstest",
  "serde",

@@ -87,6 +87,47 @@ struct LabelList {
     labels: Vec<Label>,
 }
 
+/// Upload address matching a REST base: Google serves media uploads under `/upload/`.
+pub fn upload_base(base: &str) -> String {
+    if let Ok(b) = std::env::var("MERMOZ_GMAIL_UPLOAD_BASE") {
+        return b;
+    }
+    match base.split_once("googleapis.com/") {
+        Some((host, rest)) => format!("{host}googleapis.com/upload/{rest}"),
+        None => format!("{base}/upload"),
+    }
+}
+
+/// Above this size a send goes through the upload endpoint: the JSON endpoint
+/// rejects large bodies, the upload one takes messages up to 35 MB.
+fn upload_over() -> usize {
+    std::env::var("MERMOZ_GMAIL_UPLOAD_OVER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4 * 1024 * 1024)
+}
+
+/// What a request carries.
+enum Payload<'a> {
+    Empty,
+    Json(&'a serde_json::Value),
+    Bytes {
+        content_type: &'a str,
+        data: &'a [u8],
+    },
+}
+
+/// `multipart/related` body for Gmail's upload endpoint: JSON metadata, then the message.
+fn related_body(boundary: &str, meta: &serde_json::Value, raw: &[u8]) -> Vec<u8> {
+    let mut out = format!(
+        "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{boundary}\r\nContent-Type: message/rfc822\r\n\r\n"
+    )
+    .into_bytes();
+    out.extend_from_slice(raw);
+    out.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    out
+}
+
 pub struct Gmail {
     http: reqwest::Client,
     base: String,
@@ -106,7 +147,6 @@ impl Gmail {
         Self { http, base, tokens }
     }
 
-    /// Sends a request with auth, retrying rate limits and transient 5xx with backoff.
     async fn call(
         &self,
         method: reqwest::Method,
@@ -114,16 +154,38 @@ impl Gmail {
         query: &[(&str, String)],
         body: Option<serde_json::Value>,
     ) -> Result<reqwest::Response> {
+        let payload = match &body {
+            Some(b) => Payload::Json(b),
+            None => Payload::Empty,
+        };
+        self.request(method, &format!("{}{}", self.base, path), query, payload)
+            .await
+    }
+
+    /// Sends a request with auth, retrying rate limits and transient 5xx with backoff.
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(&str, String)],
+        payload: Payload<'_>,
+    ) -> Result<reqwest::Response> {
         let mut delay = Duration::from_millis(500);
         for attempt in 0..6 {
             let token = self.tokens.access_token().await?;
             let mut req = self
                 .http
-                .request(method.clone(), format!("{}{}", self.base, path))
+                .request(method.clone(), url)
                 .bearer_auth(token)
                 .query(query);
-            if let Some(b) = &body {
-                req = req.json(b);
+            match &payload {
+                Payload::Empty => {}
+                Payload::Json(b) => req = req.json(b),
+                Payload::Bytes { content_type, data } => {
+                    req = req
+                        .header(reqwest::header::CONTENT_TYPE, *content_type)
+                        .body(data.to_vec())
+                }
             }
             let resp = req.send().await?;
             let status = resp.status().as_u16();
@@ -319,13 +381,41 @@ impl Gmail {
         Ok(())
     }
 
+    /// Sends RFC 5322 bytes; `thread_id` files the message in an existing thread.
     pub async fn send(&self, raw: &[u8], thread_id: Option<&str>) -> Result<MessageRef> {
+        if raw.len() > upload_over() {
+            return self.send_upload(raw, thread_id).await;
+        }
         let mut body = json!({ "raw": base64::engine::general_purpose::URL_SAFE.encode(raw) });
         if let Some(t) = thread_id {
             body["threadId"] = json!(t);
         }
         Ok(self
             .call(reqwest::Method::POST, "/messages/send", &[], Some(body))
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// Large messages: the upload endpoint takes the raw bytes as they are.
+    async fn send_upload(&self, raw: &[u8], thread_id: Option<&str>) -> Result<MessageRef> {
+        let meta = match thread_id {
+            Some(t) => json!({ "threadId": t }),
+            None => json!({}),
+        };
+        let boundary = format!("mermoz_{}", crate::model::new_id("b"));
+        let body = related_body(&boundary, &meta, raw);
+        let content_type = format!("multipart/related; boundary={boundary}");
+        Ok(self
+            .request(
+                reqwest::Method::POST,
+                &format!("{}/messages/send", upload_base(&self.base)),
+                &[("uploadType", "multipart".into())],
+                Payload::Bytes {
+                    content_type: &content_type,
+                    data: &body,
+                },
+            )
             .await?
             .json()
             .await?)
@@ -350,5 +440,21 @@ mod tests {
     #[case::padded("aGk=")]
     fn decode_raw_accepts_padding_variants(#[case] input: &str) {
         assert_eq!(decode_raw(input).unwrap(), b"hi");
+    }
+
+    #[rstest]
+    #[case::google(
+        "https://gmail.googleapis.com/gmail/v1/users/me",
+        "https://gmail.googleapis.com/upload/gmail/v1/users/me"
+    )]
+    #[case::stub("http://127.0.0.1:9/gmail", "http://127.0.0.1:9/gmail/upload")]
+    fn upload_base_follows_the_rest_base(#[case] base: &str, #[case] want: &str) {
+        assert_eq!(upload_base(base), want);
+    }
+
+    #[rstest]
+    fn related_body_ends_with_the_closing_boundary() {
+        let body = related_body("B", &json!({ "threadId": "t1" }), b"Subject: x\r\n\r\nhi");
+        assert!(body.ends_with(b"\r\n--B--\r\n"));
     }
 }

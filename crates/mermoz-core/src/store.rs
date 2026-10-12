@@ -97,7 +97,17 @@ const MIGRATIONS: &[&str] = &[
     CHAT,
     RECHECK_SENDER_FAILS,
     conversations::MIGRATION,
+    DRAFT_ATTACHMENTS,
 ];
+
+/// Files and links going out with a draft; files are copies under `blobs/drafts/`.
+const DRAFT_ATTACHMENTS: &str = r#"
+CREATE TABLE IF NOT EXISTS draft_attachments (
+  id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, filename TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL,
+  path TEXT, url TEXT, inline INTEGER NOT NULL DEFAULT 0, ord INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS draft_attachments_draft ON draft_attachments(draft_id, ord);
+"#;
 
 /// Failures stored under an older, stricter rule are checked again when their
 /// thread is opened, so a forwarded copy stops reading as an impersonation.
@@ -852,6 +862,7 @@ fn draft_row(r: &Row) -> rusqlite::Result<Draft> {
         origin: r.get(8)?,
         created: r.get(9)?,
         updated: r.get(10)?,
+        attachments: vec![],
     })
 }
 
@@ -896,6 +907,43 @@ fn contact_row(r: &Row) -> rusqlite::Result<Contact> {
             socials: serde_json::from_str(&socials).unwrap_or_default(),
         },
         last_seen: r.get(8)?,
+    })
+}
+
+/// Where a new draft attachment comes from.
+#[derive(Debug, Clone)]
+pub enum AttachmentSource {
+    /// A file on this Mac; it is copied, so moving the original later is harmless.
+    Path(PathBuf),
+    /// An attachment of a message already in Mermoz (forwarding, drag between messages).
+    Message(String),
+    /// A link shared instead of the bytes (e.g. a Drive file).
+    Link(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct NewAttachment {
+    pub source: AttachmentSource,
+    /// Name shown to the recipient; defaults to the source's own name.
+    pub filename: Option<String>,
+    pub inline: bool,
+}
+
+fn draft_attachment_row(r: &Row) -> rusqlite::Result<DraftAttachment> {
+    let kind: String = r.get(1)?;
+    Ok(DraftAttachment {
+        id: r.get(0)?,
+        kind: if kind == "link" {
+            AttachmentKind::Link
+        } else {
+            AttachmentKind::File
+        },
+        filename: r.get(2)?,
+        mime: r.get(3)?,
+        size: r.get(4)?,
+        path: r.get(5)?,
+        url: r.get(6)?,
+        inline: r.get::<_, i64>(7)? != 0,
     })
 }
 
@@ -3239,13 +3287,169 @@ impl Store {
 
     pub fn draft(&self, id: &str) -> Result<Draft> {
         let r = self.r.lock().unwrap();
-        r.query_row(
-            &format!("SELECT {DRAFT_COLS} FROM drafts WHERE id = ?1"),
-            [id],
-            draft_row,
-        )
-        .optional()?
-        .ok_or_else(|| Error::NotFound(format!("draft {id}")))
+        let mut d = r
+            .query_row(
+                &format!("SELECT {DRAFT_COLS} FROM drafts WHERE id = ?1"),
+                [id],
+                draft_row,
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("draft {id}")))?;
+        d.attachments = Self::draft_attachments_on(&r, id)?;
+        Ok(d)
+    }
+
+    fn draft_attachments_on(conn: &Connection, draft_id: &str) -> Result<Vec<DraftAttachment>> {
+        let mut st = conn.prepare_cached(
+            "SELECT id, kind, filename, mime, size, path, url, inline FROM draft_attachments WHERE draft_id = ?1 ORDER BY ord",
+        )?;
+        Ok(st
+            .query_map([draft_id], draft_attachment_row)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn draft_dir(&self, draft_id: &str) -> PathBuf {
+        self.blobs.join("drafts").join(safe_filename(draft_id))
+    }
+
+    /// Copies a file (or records a link) into the draft. Refuses folders, sent
+    /// drafts and anything that would push the files past what Gmail can send.
+    pub fn add_draft_attachment(
+        &self,
+        draft_id: &str,
+        a: &NewAttachment,
+    ) -> Result<DraftAttachment> {
+        let d = self.draft(draft_id)?;
+        if d.state == "sent" {
+            return Err(Error::InvalidParams(format!(
+                "draft {draft_id} was already sent"
+            )));
+        }
+        let id = new_id("datt");
+        let (kind, filename, mime, size, path, url) = match &a.source {
+            AttachmentSource::Link(url) => {
+                let title = a.filename.clone().unwrap_or_else(|| url.clone());
+                (
+                    AttachmentKind::Link,
+                    title,
+                    "text/uri-list".to_string(),
+                    0,
+                    None,
+                    Some(url.clone()),
+                )
+            }
+            src => {
+                let (from, name, known_mime) = match src {
+                    AttachmentSource::Path(p) => {
+                        let meta = std::fs::metadata(p).map_err(|_| {
+                            Error::InvalidParams(format!("{} could not be found.", p.display()))
+                        })?;
+                        if meta.is_dir() {
+                            return Err(Error::InvalidParams(format!(
+                                "{} is a folder. Compress it first, then attach the .zip file.",
+                                p.display()
+                            )));
+                        }
+                        let name = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "attachment".into());
+                        (p.clone(), name, None)
+                    }
+                    AttachmentSource::Message(aid) => {
+                        let (path, name, mime, _) = self.attachment(aid)?;
+                        (PathBuf::from(path), name, Some(mime))
+                    }
+                    AttachmentSource::Link(_) => unreachable!("handled above"),
+                };
+                let filename = a
+                    .filename
+                    .clone()
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or(name);
+                let size = std::fs::metadata(&from)?.len();
+                let used: u64 = d.attachments.iter().map(|x| x.size.max(0) as u64).sum();
+                crate::compose::check_total(used + size)?;
+                let dir = self.draft_dir(draft_id).join(&id);
+                std::fs::create_dir_all(&dir)?;
+                let dest = dir.join(safe_filename(&filename));
+                std::fs::copy(&from, &dest)?;
+                let mut head = [0u8; 16];
+                let n = std::io::Read::read(&mut std::fs::File::open(&dest)?, &mut head)?;
+                let mime = match known_mime {
+                    Some(m) if !m.is_empty() && m != "application/octet-stream" => m,
+                    _ => crate::compose::mime_for(&filename, &head[..n]),
+                };
+                let dest = dest.to_string_lossy().into_owned();
+                (
+                    AttachmentKind::File,
+                    filename,
+                    mime,
+                    size as i64,
+                    Some(dest),
+                    None,
+                )
+            }
+        };
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "INSERT INTO draft_attachments (id, draft_id, kind, filename, mime, size, path, url, inline, ord)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+               (SELECT COALESCE(MAX(ord), 0) + 1 FROM draft_attachments WHERE draft_id = ?2))",
+            params![
+                id,
+                draft_id,
+                if kind == AttachmentKind::Link { "link" } else { "file" },
+                filename,
+                mime,
+                size,
+                path,
+                url,
+                a.inline as i64
+            ],
+        )?;
+        w.execute(
+            "UPDATE drafts SET updated = ?2 WHERE id = ?1",
+            params![draft_id, now_ms()],
+        )?;
+        drop(w);
+        Ok(DraftAttachment {
+            id,
+            kind,
+            filename,
+            mime,
+            size,
+            path,
+            url,
+            inline: a.inline,
+        })
+    }
+
+    pub fn remove_draft_attachment(&self, draft_id: &str, attachment_id: &str) -> Result<()> {
+        let n = self.w.lock().unwrap().execute(
+            "DELETE FROM draft_attachments WHERE id = ?1 AND draft_id = ?2",
+            params![attachment_id, draft_id],
+        )?;
+        if n == 0 {
+            return Err(Error::NotFound(format!(
+                "attachment {attachment_id} of draft {draft_id}"
+            )));
+        }
+        let _ =
+            std::fs::remove_dir_all(self.draft_dir(draft_id).join(safe_filename(attachment_id)));
+        Ok(())
+    }
+
+    /// Drops a draft's file copies once they are no longer needed (sent or deleted).
+    pub fn purge_draft_files(&self, draft_id: &str) -> Result<()> {
+        self.w.lock().unwrap().execute(
+            "DELETE FROM draft_attachments WHERE draft_id = ?1",
+            [draft_id],
+        )?;
+        match std::fs::remove_dir_all(self.draft_dir(draft_id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 
     pub fn drafts(&self, state: Option<&str>) -> Result<Vec<Draft>> {
@@ -3253,9 +3457,13 @@ impl Store {
         let mut st = r.prepare_cached(&format!(
             "SELECT {DRAFT_COLS} FROM drafts WHERE (?1 IS NULL OR state = ?1) AND state != 'sent' ORDER BY updated DESC"
         ))?;
-        Ok(st
+        let mut out: Vec<Draft> = st
             .query_map([state], draft_row)?
-            .collect::<rusqlite::Result<_>>()?)
+            .collect::<rusqlite::Result<_>>()?;
+        for d in &mut out {
+            d.attachments = Self::draft_attachments_on(&r, &d.id)?;
+        }
+        Ok(out)
     }
 
     pub fn update_draft(
@@ -3300,7 +3508,7 @@ impl Store {
         if n == 0 {
             return Err(Error::NotFound(format!("draft {id}")));
         }
-        Ok(())
+        self.purge_draft_files(id)
     }
 
     /// Moves a draft to Review and its thread to the Review status, remembering
@@ -5028,6 +5236,7 @@ mod tests {
             origin: "agent".into(),
             created: 0,
             updated: 0,
+            attachments: vec![],
         };
         s.create_draft(&d).unwrap();
         s.move_to_review(&d.id).unwrap();
@@ -6599,5 +6808,251 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    // ---- draft attachments ----------------------------------------------
+
+    struct DraftEnv {
+        env: Env,
+        draft: String,
+        file: PathBuf,
+    }
+
+    /// A draft plus a tiny fictional file on disk to attach to it.
+    #[fixture]
+    fn draft_env(env: Env) -> DraftEnv {
+        let d = env
+            .store
+            .create_draft(&Draft {
+                id: new_id("dft"),
+                account_id: env.acc.clone(),
+                thread_id: None,
+                to: vec!["marc@example.com".into()],
+                cc: vec![],
+                subject: "Plan".into(),
+                body: "Attached.".into(),
+                state: "draft".into(),
+                origin: "app".into(),
+                created: 0,
+                updated: 0,
+                attachments: vec![],
+            })
+            .unwrap();
+        let file = env._dir.path().join("Relevé d'été.pdf");
+        std::fs::write(&file, b"%PDF-1.4 fictional").unwrap();
+        DraftEnv {
+            env,
+            draft: d.id,
+            file,
+        }
+    }
+
+    fn attach_path(e: &DraftEnv, p: &Path) -> Result<DraftAttachment> {
+        e.env.store.add_draft_attachment(
+            &e.draft,
+            &NewAttachment {
+                source: AttachmentSource::Path(p.to_path_buf()),
+                filename: None,
+                inline: false,
+            },
+        )
+    }
+
+    #[rstest]
+    fn attached_file_persists_with_the_draft(draft_env: DraftEnv) {
+        attach_path(&draft_env, &draft_env.file).unwrap();
+        assert_eq!(
+            draft_env
+                .env
+                .store
+                .draft(&draft_env.draft)
+                .unwrap()
+                .attachments[0]
+                .filename,
+            "Relevé d'été.pdf"
+        );
+    }
+
+    #[rstest]
+    fn attached_file_is_a_copy(draft_env: DraftEnv) {
+        let a = attach_path(&draft_env, &draft_env.file).unwrap();
+        std::fs::remove_file(&draft_env.file).unwrap();
+        assert_eq!(
+            std::fs::read(a.path.unwrap()).unwrap(),
+            b"%PDF-1.4 fictional"
+        );
+    }
+
+    #[rstest]
+    fn attached_file_gets_its_type(draft_env: DraftEnv) {
+        assert_eq!(
+            attach_path(&draft_env, &draft_env.file).unwrap().mime,
+            "application/pdf"
+        );
+    }
+
+    #[rstest]
+    fn drafts_list_carries_attachments(draft_env: DraftEnv) {
+        attach_path(&draft_env, &draft_env.file).unwrap();
+        assert_eq!(
+            draft_env.env.store.drafts(None).unwrap()[0]
+                .attachments
+                .len(),
+            1
+        );
+    }
+
+    #[rstest]
+    fn removed_attachment_leaves_the_draft(draft_env: DraftEnv) {
+        let a = attach_path(&draft_env, &draft_env.file).unwrap();
+        draft_env
+            .env
+            .store
+            .remove_draft_attachment(&draft_env.draft, &a.id)
+            .unwrap();
+        assert!(
+            draft_env
+                .env
+                .store
+                .draft(&draft_env.draft)
+                .unwrap()
+                .attachments
+                .is_empty()
+        );
+    }
+
+    #[rstest]
+    fn removed_attachment_deletes_its_copy(draft_env: DraftEnv) {
+        let a = attach_path(&draft_env, &draft_env.file).unwrap();
+        draft_env
+            .env
+            .store
+            .remove_draft_attachment(&draft_env.draft, &a.id)
+            .unwrap();
+        assert!(!Path::new(&a.path.unwrap()).exists());
+    }
+
+    #[rstest]
+    fn deleting_the_draft_deletes_its_copies(draft_env: DraftEnv) {
+        let a = attach_path(&draft_env, &draft_env.file).unwrap();
+        draft_env.env.store.delete_draft(&draft_env.draft).unwrap();
+        assert!(!Path::new(&a.path.unwrap()).exists());
+    }
+
+    #[rstest]
+    fn folders_are_refused(draft_env: DraftEnv) {
+        let dir = draft_env.env._dir.path().join("Photos");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(
+            attach_path(&draft_env, &dir)
+                .unwrap_err()
+                .to_string()
+                .contains("is a folder")
+        );
+    }
+
+    #[rstest]
+    fn missing_files_are_refused(draft_env: DraftEnv) {
+        let missing = draft_env.env._dir.path().join("nope.pdf");
+        assert!(attach_path(&draft_env, &missing).is_err());
+    }
+
+    #[rstest]
+    fn files_past_the_gmail_limit_are_refused(draft_env: DraftEnv) {
+        let big = draft_env.env._dir.path().join("big.bin");
+        // Sparse file: the size is what matters, no 25 MB is written.
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(crate::compose::MAX_ATTACHMENT_BYTES + 1)
+            .unwrap();
+        assert!(
+            attach_path(&draft_env, &big)
+                .unwrap_err()
+                .to_string()
+                .contains("These files add up to")
+        );
+    }
+
+    #[rstest]
+    fn renamed_attachment_keeps_the_given_name(draft_env: DraftEnv) {
+        let a = draft_env
+            .env
+            .store
+            .add_draft_attachment(
+                &draft_env.draft,
+                &NewAttachment {
+                    source: AttachmentSource::Path(draft_env.file.clone()),
+                    filename: Some("plan.pdf".into()),
+                    inline: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(a.filename, "plan.pdf");
+    }
+
+    #[rstest]
+    fn link_attachment_keeps_its_url(draft_env: DraftEnv) {
+        draft_env
+            .env
+            .store
+            .add_draft_attachment(
+                &draft_env.draft,
+                &NewAttachment {
+                    source: AttachmentSource::Link("https://drive.example/f/1".into()),
+                    filename: Some("Plan".into()),
+                    inline: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            draft_env
+                .env
+                .store
+                .draft(&draft_env.draft)
+                .unwrap()
+                .attachments[0]
+                .url
+                .as_deref(),
+            Some("https://drive.example/f/1")
+        );
+    }
+
+    #[rstest]
+    fn message_attachment_can_be_attached(draft_env: DraftEnv) {
+        let mut m = incoming("p1", "t1", "marc@example.com", &["INBOX"], 1000, "see file");
+        m.parsed.attachments.push(crate::mime::ParsedAttachment {
+            filename: "budget.xlsx".into(),
+            mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
+            data: b"PK fictional".to_vec(),
+        });
+        let s = &draft_env.env.store;
+        s.ingest(&draft_env.env.acc, "me@example.com", &m, SyncMode::Initial)
+            .unwrap();
+        let aid: String =
+            s.r.lock()
+                .unwrap()
+                .query_row("SELECT id FROM attachments", [], |r| r.get(0))
+                .unwrap();
+        let a = s
+            .add_draft_attachment(
+                &draft_env.draft,
+                &NewAttachment {
+                    source: AttachmentSource::Message(aid),
+                    filename: None,
+                    inline: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(a.path.unwrap()).unwrap(), b"PK fictional");
+    }
+
+    #[rstest]
+    fn sent_drafts_take_no_attachments(draft_env: DraftEnv) {
+        draft_env
+            .env
+            .store
+            .set_draft_state(&draft_env.draft, "sent")
+            .unwrap();
+        assert!(attach_path(&draft_env, &draft_env.file).is_err());
     }
 }

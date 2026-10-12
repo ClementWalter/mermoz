@@ -26,6 +26,10 @@ pub struct Mailbox {
     pub history_id: u64,
     pub history: Vec<(u64, Value)>,
     pub sent: Vec<(String, Option<String>)>, // decoded raw, threadId
+    /// Exact bytes of each sent message, in the same order as `sent`.
+    pub sent_raw: Vec<Vec<u8>>,
+    /// Which endpoint each send used: "json" or "upload".
+    pub sent_via: Vec<&'static str>,
     /// Nonce the stub OpenAI puts in the next ID token (set by the test from the authorize URL).
     pub oidc_nonce: String,
     /// Authorization headers seen by the stub Responses endpoint.
@@ -372,17 +376,68 @@ async fn delete_label(State(s): State<Shared>, Path(id): Path<String>) -> Json<V
 }
 
 async fn send(State(s): State<Shared>, Json(body): Json<Value>) -> Json<Value> {
-    let mut m = s.lock().unwrap();
     let raw = base64::engine::general_purpose::URL_SAFE
         .decode(body["raw"].as_str().unwrap_or(""))
         .unwrap_or_default();
-    let raw = String::from_utf8_lossy(&raw).to_string();
     let tid = body["threadId"].as_str().map(String::from);
+    Json(record_send(&s, raw, tid, "json"))
+}
+
+/// Gmail's upload endpoint: `multipart/related` with JSON metadata, then the message.
+async fn send_upload(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> (axum::http::StatusCode, Json<Value>) {
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let Some(boundary) = ct.split("boundary=").nth(1) else {
+        return (axum::http::StatusCode::BAD_REQUEST, Json(json!({})));
+    };
+    if q.get("uploadType").map(String::as_str) != Some("multipart") {
+        return (axum::http::StatusCode::BAD_REQUEST, Json(json!({})));
+    }
+    let sep = format!("--{boundary}");
+    let text = body.to_vec();
+    let find = |hay: &[u8], needle: &[u8], from: usize| {
+        hay[from..]
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .map(|i| i + from)
+    };
+    // Part 1: headers, blank line, JSON metadata.
+    let p1 = find(&text, sep.as_bytes(), 0).unwrap();
+    let meta_start = find(&text, b"\r\n\r\n", p1).unwrap() + 4;
+    let p2 = find(&text, sep.as_bytes(), meta_start).unwrap();
+    let meta: Value = serde_json::from_slice(&text[meta_start..p2 - 2]).unwrap_or(json!({}));
+    // Part 2: headers, blank line, the raw message up to the closing boundary.
+    let raw_start = find(&text, b"\r\n\r\n", p2).unwrap() + 4;
+    let end = find(&text, format!("\r\n{sep}--").as_bytes(), raw_start).unwrap();
+    let tid = meta["threadId"].as_str().map(String::from);
+    (
+        axum::http::StatusCode::OK,
+        Json(record_send(
+            &s,
+            text[raw_start..end].to_vec(),
+            tid,
+            "upload",
+        )),
+    )
+}
+
+fn record_send(s: &Shared, raw_bytes: Vec<u8>, tid: Option<String>, via: &'static str) -> Value {
+    let mut m = s.lock().unwrap();
+    let raw = String::from_utf8_lossy(&raw_bytes).to_string();
     m.sent.push((raw.clone(), tid.clone()));
+    m.sent_raw.push(raw_bytes);
+    m.sent_via.push(via);
     let id = format!("sent{}", m.sent.len());
     let thread = tid.clone().unwrap_or_else(|| id.clone());
     m.add_message(&id, &thread, &["SENT"], &raw, 4_000_000_000_000);
-    Json(json!({ "id": id, "threadId": thread }))
+    json!({ "id": id, "threadId": thread })
 }
 
 /// Stub of Anthropic's Messages API: always returns the same digest.
@@ -633,6 +688,7 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/gmail/profile", get(profile))
                 .route("/gmail/messages", get(list))
                 .route("/gmail/messages/send", post(send))
+                .route("/gmail/upload/messages/send", post(send_upload))
                 .route("/gmail/messages/{id}", get(get_message))
                 .route("/gmail/history", get(history))
                 .route("/gmail/labels", get(labels).post(create_label))

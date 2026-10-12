@@ -4,6 +4,7 @@ import Foundation
 import MermozKit
 import Observation
 import os
+import UniformTypeIdentifiers
 
 private let log = Logger(subsystem: "ai.mermoz.app", category: "model")
 
@@ -52,6 +53,7 @@ struct ComposeContext: Equatable, Identifiable {
     var body: String = ""
     /// Existing draft being edited (Review → Edit).
     var draftId: String?
+    var attachments = AttachmentList()
 }
 
 enum PaletteMode: Equatable {
@@ -1091,6 +1093,25 @@ final class AppModel {
         }
     }
 
+    /// Drag source for a message's attachment: Finder (or a composer) gets the
+    /// local file, looked up only when the drop happens.
+    func dragProvider(for a: Attachment) -> NSItemProvider {
+        let p = NSItemProvider()
+        p.suggestedName = a.filename
+        let client = client
+        p.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier, visibility: .all) { done in
+            Task {
+                do {
+                    guard let client else { throw CocoaError(.fileNoSuchFile) }
+                    let f = try await client.attachment(a.id)
+                    done(URL(fileURLWithPath: f.path).dataRepresentation, nil)
+                } catch { done(nil, error) }
+            }
+            return nil
+        }
+        return p
+    }
+
     func openAttachment(_ a: Attachment) {
         guard let client else { return }
         Task {
@@ -1136,19 +1157,31 @@ final class AppModel {
 
     func editDraft(_ d: Draft) {
         compose = ComposeContext(threadId: d.threadId, accountId: d.accountId, to: d.to, cc: d.cc,
-                                 subject: d.subject, body: d.body, draftId: d.id)
+                                 subject: d.subject, body: d.body, draftId: d.id,
+                                 attachments: AttachmentList(stored: d.attachments))
     }
 
     /// Creates (or updates) the draft and sends it; the app is a trusted caller so it sends directly.
     func send(_ c: ComposeContext, thenWaiting: Bool) async -> Bool {
         guard let client else { return false }
+        if let tooBig = c.attachments.limitMessage {
+            toast = tooBig
+            return false
+        }
         do {
-            let draft: Draft
+            var draft: Draft
             if let id = c.draftId {
                 draft = try await client.updateDraft(id, to: c.to, cc: c.cc, subject: c.subject, body: c.body)
+                for removed in c.attachments.removedStored {
+                    draft = try await client.detach(draft: id, attachmentId: removed)
+                }
+                if !c.attachments.newSpecs.isEmpty {
+                    draft = try await client.attach(draft: id, c.attachments.newSpecs)
+                }
             } else {
                 draft = try await client.createDraft(accountId: c.accountId, threadId: c.threadId, to: c.to,
-                                                     cc: c.cc, subject: c.subject, body: c.body)
+                                                     cc: c.cc, subject: c.subject, body: c.body,
+                                                     attachments: c.attachments.newSpecs)
             }
             if c.draftId != nil, isReview {
                 _ = try await client.approve(draft.id)

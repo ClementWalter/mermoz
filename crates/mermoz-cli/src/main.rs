@@ -28,6 +28,8 @@ Examples:
   mermoz attachments M-1287 --out /tmp/a    Save a thread's attachments
   mermoz status M-1287 waiting              Change a thread's status
   mermoz draft reply M-1287 --file r.txt    Draft a reply (never sends)
+  mermoz draft new --to a@x.com --body hi --attach plan.pdf --attach photo.jpg
+                                            Draft with files (25 MB in total at most)
   mermoz send dft_8f2c                      Ask to send; the user approves in Mermoz
   mermoz chat M-1287 \"should I accept?\"     Ask the AI about a thread (proposals only)
 
@@ -247,6 +249,9 @@ enum DraftCmd {
         /// Read the body from a file ("-" for stdin).
         #[arg(long)]
         file: Option<String>,
+        /// Attach a file; repeat for several.
+        #[arg(long, value_name = "PATH")]
+        attach: Vec<String>,
     },
     /// Draft a new message.
     New {
@@ -263,7 +268,18 @@ enum DraftCmd {
         /// Account email or id to send from.
         #[arg(long)]
         account: Option<String>,
+        /// Attach a file; repeat for several.
+        #[arg(long, value_name = "PATH")]
+        attach: Vec<String>,
     },
+    /// Add files to a draft.
+    Attach {
+        id: String,
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<String>,
+    },
+    /// Remove an attachment from a draft (ids are shown by `draft show`).
+    Detach { id: String, attachment: String },
     /// List drafts (optionally by state: draft, review, rejected).
     List {
         #[arg(long)]
@@ -294,6 +310,22 @@ impl Out {
     fn json(&self, v: &Value) {
         self.line(serde_json::to_string_pretty(v).unwrap_or_default());
     }
+}
+
+/// Absolute paths for the daemon, which does not share the caller's working directory.
+fn attach_paths(paths: &[String]) -> Result<Vec<String>, RpcError> {
+    paths
+        .iter()
+        .map(|p| {
+            std::fs::canonicalize(p)
+                .map(|a| a.to_string_lossy().into_owned())
+                .map_err(|e| RpcError {
+                    code: -32004,
+                    message: format!("cannot attach {p}: {e}"),
+                    data: None,
+                })
+        })
+        .collect()
 }
 
 fn read_body(body: Option<String>, file: Option<String>) -> Result<String, RpcError> {
@@ -563,6 +595,18 @@ fn print_draft(out: &Out, d: &Value) {
         d["subject"].as_str().unwrap_or("")
     ));
     out.line(d["body"].as_str().unwrap_or(""));
+    for a in d["attachments"].as_array().into_iter().flatten() {
+        let what = match a["url"].as_str() {
+            Some(u) => u.to_string(),
+            None => format!("{} bytes", a["size"].as_i64().unwrap_or(0)),
+        };
+        out.line(format!(
+            "Attached: {}  ({})  {}",
+            a["filename"].as_str().unwrap_or(""),
+            what,
+            a["id"].as_str().unwrap_or("")
+        ));
+    }
 }
 
 fn run(cli: Cli) -> Result<(), RpcError> {
@@ -1076,11 +1120,16 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             });
         }
         Cmd::Draft(d) => match d {
-            DraftCmd::Reply { thread, body, file } => {
+            DraftCmd::Reply {
+                thread,
+                body,
+                file,
+                attach,
+            } => {
                 let body = read_body(body, file)?;
                 let v = c.call(
                     "drafts.create",
-                    json!({ "thread_id": thread, "body": body }),
+                    json!({ "thread_id": thread, "body": body, "attachments": attach_paths(&attach)? }),
                 )?;
                 if out.json {
                     return {
@@ -1097,9 +1146,10 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 body,
                 file,
                 account,
+                attach,
             } => {
                 let body = read_body(body, file)?;
-                let mut p = json!({ "to": to, "cc": cc, "subject": subject, "body": body });
+                let mut p = json!({ "to": to, "cc": cc, "subject": subject, "body": body, "attachments": attach_paths(&attach)? });
                 if let Some(a) = account {
                     p["account_id"] = json!(resolve_account(&mut c, &a)?);
                 }
@@ -1142,6 +1192,32 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             DraftCmd::Edit { id, body, file } => {
                 let body = read_body(body, file)?;
                 let v = c.call("drafts.update", json!({ "id": id, "body": body }))?;
+                if out.json {
+                    return {
+                        out.json(&v);
+                        Ok(())
+                    };
+                }
+                print_draft(&out, &v);
+            }
+            DraftCmd::Attach { id, paths } => {
+                let v = c.call(
+                    "drafts.attach",
+                    json!({ "id": id, "attachments": attach_paths(&paths)? }),
+                )?;
+                if out.json {
+                    return {
+                        out.json(&v);
+                        Ok(())
+                    };
+                }
+                print_draft(&out, &v);
+            }
+            DraftCmd::Detach { id, attachment } => {
+                let v = c.call(
+                    "drafts.detach",
+                    json!({ "id": id, "attachment_id": attachment }),
+                )?;
                 if out.json {
                     return {
                         out.json(&v);

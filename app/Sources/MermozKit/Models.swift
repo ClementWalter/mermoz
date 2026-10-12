@@ -325,6 +325,7 @@ public struct Draft: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var origin: String
     public var created: Int64
     public var updated: Int64
+    public var attachments: [DraftAttachment]
 }
 
 public struct AppSettings: Codable, Sendable, Equatable {

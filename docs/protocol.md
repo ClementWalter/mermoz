@@ -145,7 +145,9 @@ app, the CLI and the MCP server are clients of this protocol.
 | `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |
 | `drafts.list`        | `{"state"?: "review"}`                                                                   | `[Draft]`                                |
 | `drafts.get`         | `{"id"}`                                                                                 | `Draft`                                  |
-| `drafts.create`      | `{"account_id"?, "thread_id"?, "to"?, "cc"?, "subject"?, "body"}` — with `thread_id`, it is a reply: recipients/subject default from the thread | `Draft` |
+| `drafts.create`      | `{"account_id"?, "thread_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}` — with `thread_id`, it is a reply: recipients/subject default from the thread. All attachments are added or none (the draft is not created) | `Draft` |
+| `drafts.attach`      | `{"id", "attachments": [Attach]}` or `{"id", ...Attach}`                                 | `Draft`                                  |
+| `drafts.detach`      | `{"id", "attachment_id"}` (an id from `Draft.attachments`)                               | `Draft`                                  |
 | `drafts.update`      | `{"id", "to"?, "cc"?, "subject"?, "body"?}`                                              | `Draft`                                  |
 | `drafts.delete`      | `{"id"}`                                                                                 | `{}`                                     |
 | `drafts.send`        | `{"id"}`                                                                                 | `{"sent": true}` or error `approval_required` |
@@ -169,6 +171,14 @@ app, the CLI and the MCP server are clients of this protocol.
 | `subscribe`          | `{}`                                                                                     | `{}` then notifications                  |
 
 ## Send gate
+
+`Attach` is an absolute file path, or `{"path" | "from_attachment" | "url", "filename"?, "inline"?}`:
+`from_attachment` copies an attachment of a message already in Mermoz (forwarding),
+`url` adds a link listed under the text instead of a file. Files are copied into
+`blobs/drafts/<draft>/` and deleted once the draft is sent or deleted. Each
+`Draft` has `attachments: [{id, kind: "file"|"link", filename, mime, size, path?, url?, inline}]`.
+More than 25 MB of files in one draft is refused with a plain-words message.
+Messages larger than 4 MB go through Gmail's upload endpoint.
 
 `drafts.send` sends immediately when the caller is Mermoz.app, or when
 `agents_may_send` is true. Otherwise the draft moves to state `review`, its

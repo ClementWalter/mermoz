@@ -231,11 +231,21 @@ public final class DaemonClient: Sendable {
     public func drafts(state: String? = nil) async throws -> [Draft] { try await call("drafts.list", Params().with("state", state)) }
     public func draft(_ id: String) async throws -> Draft { try await call("drafts.get", Params().with("id", id)) }
 
+    /// With attachments, the draft is created with all of them or not at all.
     public func createDraft(accountId: String?, threadId: String?, to: [String], cc: [String],
-                            subject: String?, body: String) async throws -> Draft {
+                            subject: String?, body: String, attachments: [AttachSpec] = []) async throws -> Draft {
         try await call("drafts.create", Params()
             .with("account_id", accountId).with("thread_id", threadId)
-            .with("to", to).with("cc", cc).with("subject", subject).with("body", body))
+            .with("to", to).with("cc", cc).with("subject", subject).with("body", body)
+            .with("attachments", attachments.isEmpty ? nil : attachments))
+    }
+
+    public func attach(draft id: String, _ attachments: [AttachSpec]) async throws -> Draft {
+        try await call("drafts.attach", Params().with("id", id).with("attachments", attachments))
+    }
+
+    public func detach(draft id: String, attachmentId: String) async throws -> Draft {
+        try await call("drafts.detach", Params().with("id", id).with("attachment_id", attachmentId))
     }
 
     public func updateDraft(_ id: String, to: [String]?, cc: [String]?, subject: String?, body: String?) async throws -> Draft {

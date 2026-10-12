@@ -6,7 +6,8 @@ use mermoz_core::model::ThreadState;
 use mermoz_core::model::{Draft, new_id, now_ms};
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
 use mermoz_core::store::{
-    ColumnScope, SuggestedFilter, SuggestionGroup, ThreadFilter, ThreadPatch,
+    AttachmentSource, ColumnScope, NewAttachment, SuggestedFilter, SuggestionGroup, ThreadFilter,
+    ThreadPatch,
 };
 use mermoz_core::sync::Event;
 use serde_json::{Value, json};
@@ -92,6 +93,50 @@ fn str_list(p: &Value, k: &str) -> Result<Option<Vec<String>>, RpcError> {
         _ => Err(RpcError::invalid(format!(
             "'{k}' must be a list of strings"
         ))),
+    }
+}
+
+/// One attachment spec: a full path, or `{path | from_attachment | url, filename?, inline?}`.
+fn attachment_spec(v: &Value) -> Result<NewAttachment, RpcError> {
+    let path = |p: &str| -> Result<AttachmentSource, RpcError> {
+        let pb = std::path::PathBuf::from(p);
+        if !pb.is_absolute() {
+            return Err(RpcError::invalid(format!(
+                "attachment path '{p}' must be absolute"
+            )));
+        }
+        Ok(AttachmentSource::Path(pb))
+    };
+    if let Some(p) = v.as_str() {
+        return Ok(NewAttachment {
+            source: path(p)?,
+            filename: None,
+            inline: false,
+        });
+    }
+    let source = if let Some(p) = opt_s(v, "path") {
+        path(&p)?
+    } else if let Some(a) = opt_s(v, "from_attachment") {
+        AttachmentSource::Message(a)
+    } else if let Some(u) = opt_s(v, "url") {
+        AttachmentSource::Link(u)
+    } else {
+        return Err(RpcError::invalid(
+            "an attachment needs 'path', 'from_attachment' or 'url'",
+        ));
+    };
+    Ok(NewAttachment {
+        source,
+        filename: opt_s(v, "filename"),
+        inline: v.get("inline").and_then(|b| b.as_bool()).unwrap_or(false),
+    })
+}
+
+fn attachment_specs(p: &Value) -> Result<Vec<NewAttachment>, RpcError> {
+    match p.get("attachments") {
+        None | Some(Value::Null) => Ok(vec![]),
+        Some(Value::Array(a)) => a.iter().map(attachment_spec).collect(),
+        Some(_) => Err(RpcError::invalid("'attachments' must be a list")),
     }
 }
 
@@ -378,10 +423,40 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 },
                 created: now,
                 updated: now,
+                attachments: vec![],
             };
+            let specs = attachment_specs(p)?;
             let d = st.create_draft(&d)?;
+            for a in &specs {
+                // All or nothing: a draft missing one of its files would go out incomplete.
+                if let Err(e) = st.add_draft_attachment(&d.id, a) {
+                    let _ = st.delete_draft(&d.id);
+                    return Err(e.into());
+                }
+            }
+            let d = st.draft(&d.id)?;
             let _ = svc.events.send(Event::DraftsChanged);
             to_value(d)
+        }
+        "drafts.attach" => {
+            let id = s(p, "id")?;
+            let specs = attachment_specs(p)?;
+            let specs = if specs.is_empty() {
+                vec![attachment_spec(p)?]
+            } else {
+                specs
+            };
+            for a in &specs {
+                st.add_draft_attachment(&id, a)?;
+            }
+            let _ = svc.events.send(Event::DraftsChanged);
+            to_value(st.draft(&id)?)
+        }
+        "drafts.detach" => {
+            let id = s(p, "id")?;
+            st.remove_draft_attachment(&id, &s(p, "attachment_id")?)?;
+            let _ = svc.events.send(Event::DraftsChanged);
+            to_value(st.draft(&id)?)
         }
         "drafts.update" => {
             let d = st.update_draft(

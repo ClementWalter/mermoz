@@ -1,6 +1,9 @@
-/// Plain-text composer with recipient pills that carry a trust mark.
+/// Plain-text composer with recipient pills that carry a trust mark, and
+/// attachments added by drop, file picker, ⇧⌘A or paste.
+import AppKit
 import MermozKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ComposeView: View {
     @Environment(AppModel.self) private var model
@@ -8,7 +11,9 @@ struct ComposeView: View {
     @State private var thenWaiting = false
     @State private var sending = false
     @State private var confirmSuspicious = false
-    @FocusState private var bodyFocused: Bool
+    @State private var dropTargeted = false
+    @State private var picking = false
+    @State private var pasteMonitor: Any?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,15 +49,15 @@ struct ComposeView: View {
             }
             .padding(.horizontal, 22)
 
-            TextEditor(text: $context.body)
-                .font(.system(size: 14))
-                .lineSpacing(4)
-                .scrollContentBackground(.hidden)
-                .focused($bodyFocused)
+            ComposeBodyEditor(text: $context.body, focusOnAppear: !context.to.isEmpty,
+                              onFiles: { urls in Task { await attach(urls) } },
+                              onImage: { data in Task { await attachPastedImage(data) } })
                 .padding(12)
                 .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.line))
                 .padding(.horizontal, 22).padding(.top, 14)
+
+            if !context.attachments.isEmpty { attachmentTray }
 
             HStack(spacing: 10) {
                 Button {
@@ -67,7 +72,12 @@ struct ComposeView: View {
                 .buttonStyle(.glassProminent)
                 .tint(Theme.accent)
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(sending || context.to.isEmpty)
+                .disabled(sending || context.to.isEmpty || context.attachments.isOverLimit)
+                Button { picking = true } label: { Image(systemName: "paperclip").font(.system(size: 14, weight: .medium)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.text2)
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .help("Attach files (⇧⌘A). You can also drop or paste them here.")
+                    .accessibilityLabel("Attach files")
                 if context.threadId != nil {
                     Toggle("Then set Waiting", isOn: $thenWaiting).toggleStyle(.checkbox).font(.system(size: 12.5))
                 }
@@ -77,7 +87,24 @@ struct ComposeView: View {
             .padding(.horizontal, 22).padding(.vertical, 16)
         }
         .foregroundStyle(Theme.text)
-        .onAppear { bodyFocused = !context.to.isEmpty }
+        .overlay { if dropTargeted { dropHighlight } }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            for p in providers {
+                _ = p.loadDataRepresentation(for: .fileURL) { data, _ in
+                    guard let data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                    Task { @MainActor in await attach([url]) }
+                }
+            }
+            return !providers.isEmpty
+        }
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result { Task { await attach(urls) } }
+        }
+        .onAppear { installPasteMonitor() }
+        .onDisappear {
+            if let m = pasteMonitor { NSEvent.removeMonitor(m) }
+            pasteMonitor = nil
+        }
         .confirmationDialog("Some recipients look suspicious", isPresented: $confirmSuspicious) {
             Button("Send anyway", role: .destructive) { doSend() }
             Button("Review recipients", role: .cancel) {}
@@ -103,6 +130,99 @@ struct ComposeView: View {
             _ = await model.send(context, thenWaiting: thenWaiting)
             sending = false
         }
+    }
+
+    // MARK: attachments
+
+    private var attachmentTray: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            FlowRow(spacing: 8) {
+                ForEach(context.attachments.items) { a in
+                    let isLink: Bool = if case .link = a.source { true } else { false }
+                    AttachmentChip(filename: a.name, size: a.size, isLink: isLink) {
+                        context.attachments.remove(id: a.id)
+                    }
+                }
+            }
+            if let tooBig = context.attachments.limitMessage {
+                Text(tooBig).font(.system(size: 12)).foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                let n = context.attachments.items.count
+                Text("\(n) \(n == 1 ? "attachment" : "attachments") · \(Format.size(context.attachments.totalSize))")
+                    .font(.system(size: 12)).foregroundStyle(Theme.text3)
+            }
+        }
+        .padding(.horizontal, 22).padding(.top, 12)
+    }
+
+    private var dropHighlight: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14).fill(Theme.accent.opacity(0.08))
+            RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.accent, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+            Label("Drop to attach", systemImage: "paperclip")
+                .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.accent)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(.regularMaterial, in: Capsule())
+        }
+        .padding(8)
+        .allowsHitTesting(false)
+    }
+
+    /// Reads sizes off the main thread so typing never waits on the disk.
+    private func attach(_ urls: [URL], inline: Bool = false) async {
+        let found = await Task.detached(priority: .userInitiated) { () -> [(URL, Int64, Bool)] in
+            urls.map { u in
+                let v = try? u.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
+                return (u, Int64(v?.fileSize ?? 0), v?.isDirectory ?? false)
+            }
+        }.value
+        for (url, size, isDir) in found {
+            if isDir {
+                model.toast = "\(url.lastPathComponent) is a folder. Compress it first, then attach the .zip file."
+                continue
+            }
+            context.attachments.add(ComposeAttachment(name: url.lastPathComponent, size: size, source: .file(url), inline: inline))
+        }
+    }
+
+    /// ⌘V in the address or subject fields with files or an image on the clipboard
+    /// attaches them; the body editor handles its own pastes.
+    private func installPasteMonitor() {
+        guard pasteMonitor == nil else { return }
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers == "v",
+                  !(event.window?.firstResponder is BodyTextView) else { return event }
+            let pb = NSPasteboard.general
+            let files = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+            if !files.isEmpty {
+                Task { @MainActor in await attach(files) }
+                return nil
+            }
+            let hasText = pb.availableType(from: [.string]) != nil
+            guard !hasText, let type = pb.availableType(from: [.png, .tiff]), let data = pb.data(forType: type) else { return event }
+            Task { @MainActor in await attachPastedImage(data) }
+            return nil
+        }
+    }
+
+    private func attachPastedImage(_ data: Data) async {
+        if let url = await Self.savePastedImage(data) { await attach([url], inline: true) }
+    }
+
+    /// Writes a pasted image to a PNG in the temporary folder, off the main thread.
+    private static func savePastedImage(_ data: Data) async -> URL? {
+        await Task.detached(priority: .userInitiated) { () -> URL? in
+            guard let png = NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:]) else { return nil }
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Mermoz Pasted", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
+                .replacingOccurrences(of: ":", with: ".")
+            let url = dir.appendingPathComponent("Pasted image \(stamp).png")
+            do { try png.write(to: url) } catch { return nil }
+            return url
+        }.value
     }
 
     private func field<C: View>(_ label: String, @ViewBuilder content: () -> C) -> some View {

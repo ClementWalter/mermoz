@@ -429,6 +429,7 @@ fn main() {
         origin: "agent".into(),
         created: now_ms(),
         updated: now_ms(),
+        attachments: vec![],
     };
     store.create_draft(&d).unwrap();
     store.move_to_review(&d.id).unwrap();

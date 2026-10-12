@@ -195,7 +195,8 @@ enum Format {
         return o.string(from: d)
     }
 
-    static func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+    /// Same units as the attachment limit, so sizes and the limit add up.
+    static func size(_ bytes: Int64) -> String { AttachmentList.format(bytes) }
 }
 
 /// A thread's projects as small colored chips; past `limit`, a "+n" chip.
