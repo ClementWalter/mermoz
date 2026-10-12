@@ -77,13 +77,18 @@ final class AppModel {
     /// Display options are kept per layout, like Linear's per-view settings.
     var listDisplay: DisplayOptions = AppModel.loadDisplay("list") ?? DisplayOptions(grouping: .priority)
     var boardDisplay: DisplayOptions = AppModel.loadDisplay("board") ?? DisplayOptions(grouping: .status)
-    var triageResult: TriageResult?
     var peopleJob = JobState()
     /// Original / Optimized, chosen per message and remembered across launches.
     var readingModes: ReadingModes = AppModel.loadReadingModes() {
         didSet { if let d = try? JSONEncoder().encode(readingModes) { UserDefaults.standard.set(d, forKey: "reading.modes") } }
     }
-    /// Keys of AI actions in flight ("clean:<message>", "optimize:<message>", "triage:<status>").
+    /// Pending AI suggestions and sorting progress of the status columns on screen.
+    var columnSuggestions: [String: ColumnSuggestions] = [:]
+    /// The AI is working through the open columns in the background.
+    var sorting = false
+    /// Why background sorting is on hold ("limit", "unavailable").
+    var sortingPaused: String?
+    /// Keys of AI actions in flight ("clean:<message>", "optimize:<message>").
     var aiBusy: Set<String> = []
     var threads: [ThreadSummary] = []
     var totalThreads = 0
@@ -104,6 +109,8 @@ final class AppModel {
     struct UndoEntry {
         var label: String
         var before: [ThreadSummary]
+        /// A group accept: restored in one call, since most of its threads are off screen.
+        var bulk = false
     }
 
     var paletteMode: PaletteMode?
@@ -303,6 +310,8 @@ final class AppModel {
             if threads != fetched { threads = fetched }
             if totalThreads != total { totalThreads = total }
         } catch { report(error) }
+        // The column bars follow the list they sit on.
+        await refreshSuggestions()
     }
 
     // MARK: paging
@@ -545,27 +554,78 @@ final class AppModel {
         }
     }
 
-    /// Lets the AI sort the newest threads of a status column (the ✦ button on a column).
-    func aiTriage(_ status: String) {
+    // MARK: column suggestions
+
+    /// The project/account the columns on screen are limited to.
+    private var columnScope: (project: String?, accountId: String?) {
+        switch selection {
+        case let .project(id): (id, nil)
+        case let .account(id): (nil, id)
+        default: (nil, nil)
+        }
+    }
+
+    /// Fetches the suggestion bars of the status columns on screen; a single status
+    /// open in the list is sorted first in the background.
+    func refreshSuggestions() async {
         guard let client else { return }
-        aiBusy.insert("triage:\(status)")
+        var statuses: [String] = []
+        var focus = false
+        if case let .status(k) = selection, layout == .list {
+            // One status listed: its bar sits on top of the list.
+            statuses = [k]
+            focus = true
+        } else if case .label = selection {
+            statuses = []
+        } else if selection != .people, effectiveDisplay.grouping == .status {
+            // Grouped by status: a bar per status group or board column.
+            statuses = viewStatuses ?? []
+        }
+        statuses = statuses.filter { !closedStatusKeys.contains($0) && $0 != "review" }
+        guard !statuses.isEmpty else {
+            if !columnSuggestions.isEmpty { columnSuggestions = [:] }
+            return
+        }
+        let scope = columnScope
+        do {
+            let s = try await client.suggestionsSummary(statuses: statuses, project: scope.project,
+                                                        accountId: scope.accountId, focus: focus)
+            let next = Dictionary(uniqueKeysWithValues: s.columns.map { ($0.status, $0) })
+            if next != columnSuggestions { columnSuggestions = next }
+            if sorting != s.sorting { sorting = s.sorting }
+            if sortingPaused != s.paused { sortingPaused = s.paused }
+        } catch { log.error("suggestions: \(error.localizedDescription)") }
+    }
+
+    private var suggestionsRefresh: Task<Void, Never>?
+
+    /// Background sorting reports every second or so; refresh chips and bars at most
+    /// every two seconds (a throttle, so a steady stream still shows progress).
+    private func scheduleSuggestionsRefresh() {
+        guard suggestionsRefresh == nil else { return }
+        suggestionsRefresh = Task {
+            try? await Task.sleep(for: .seconds(2))
+            suggestionsRefresh = nil
+            await loadList()
+        }
+    }
+
+    /// Accepts a column's suggestions (or one group of them); ⌘Z puts every thread back.
+    func acceptColumn(_ status: String, group: SuggestionGroup? = nil) {
+        guard let client else { return }
+        let scope = columnScope
         Task {
-            defer { aiBusy.remove("triage:\(status)") }
             do {
-                let r = try await client.aiTriage(status: status)
-                triageResult = r
+                let r = try await client.acceptColumn(status, group: group, project: scope.project, accountId: scope.accountId)
+                guard r.accepted > 0 else { return }
+                undoStack.append(UndoEntry(label: r.accepted == 1 ? "Accept Suggestion" : "Accept \(r.accepted) Suggestions",
+                                           before: r.before, bulk: true))
+                if undoStack.count > 100 { undoStack.removeFirst() }
+                toast = r.accepted == 1 ? "Done as suggested" : "Accepted \(r.accepted.formatted()) suggestions — ⌘Z to undo"
                 await refreshCounts()
                 await loadList()
             } catch { report(error) }
         }
-    }
-
-    /// Puts every thread the AI moved back where it was.
-    func undoTriage(_ r: TriageResult) {
-        for (from, moves) in Dictionary(grouping: r.moves, by: \.from) where !moves.isEmpty {
-            update(moves.map(\.number), status: from)
-        }
-        triageResult = nil
     }
 
     // MARK: thread
@@ -799,7 +859,8 @@ final class AppModel {
         guard let entry = undoStack.popLast(), let client else { toast = "Nothing to undo"; return }
         Task {
             do {
-                for t in entry.before {
+                if entry.bulk { try await client.restoreThreads(entry.before.map(ThreadState.init)) }
+                for t in entry.before where !entry.bulk {
                     let plan = RestorePlan.between(before: t, now: try await client.thread(t.id).thread)
                     // Read state first: marking unread moves the thread to Unread, the
                     // status update below then restores the exact status.
@@ -1111,6 +1172,14 @@ final class AppModel {
         } catch { report(error); return false }
     }
 
+    /// Daily allowance of background sorting requests.
+    func setDailyCap(_ cap: Int) {
+        guard let client else { return }
+        Task {
+            do { router = try await client.setDailyCap(cap) } catch { report(error) }
+        }
+    }
+
     func testRouter(key: String?) async -> RouterTest? {
         guard let client else { return nil }
         do { return try await client.testRouter(key: key) } catch { report(error); return nil }
@@ -1177,6 +1246,8 @@ final class AppModel {
             if peopleJob.running { Task { if let j = try? await client?.peopleStatus() { peopleJob = j } } }
         case .draftsChanged:
             Task { await refreshCounts(); if isReview { await loadList() } }
+        case .suggestionsChanged:
+            scheduleSuggestionsRefresh()
         case .unknown:
             break
         }

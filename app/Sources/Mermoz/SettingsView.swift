@@ -501,7 +501,7 @@ struct InstantSortingCard: View {
 
     var body: some View {
         SettingsCard(title: "Instant sorting (TypeSafe)",
-                     subtitle: "Suggests a status and a project for each new email in about a quarter second. Each new email is sent to TypeSafe to be sorted.") {
+                     subtitle: "Suggests a status and a project for each new email in about a quarter second, and works through older mail in your open columns in the background. Each email is sent to TypeSafe to be sorted; nothing moves until you accept.") {
             if model.router.configured {
                 HStack(spacing: 8) {
                     Circle().fill(model.router.error == nil ? Theme.ok : Theme.danger).frame(width: 8, height: 8)
@@ -521,9 +521,25 @@ struct InstantSortingCard: View {
                         .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || busy)
                 }
             }
+            if model.router.configured, let cap = model.router.dailyCap {
+                HStack(spacing: 8) {
+                    Text("Older mail sorted today: \((model.router.callsToday ?? 0).formatted()) emails")
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                    Spacer()
+                    Picker("Daily limit", selection: Binding(get: { cap }, set: { model.setDailyCap($0) })) {
+                        ForEach(Self.caps(including: cap), id: \.self) { Text($0 == 0 ? "Off" : "\($0.formatted()) a day").tag($0) }
+                    }
+                    .fixedSize()
+                }
+            }
             if let result { Text(result).font(.system(size: 12)).foregroundStyle(Theme.text2) }
         }
         .task { await model.loadRouter() }
+    }
+
+    /// Daily limits offered for background sorting, plus the current one if custom.
+    static func caps(including cap: Int) -> [Int] {
+        Array(Set([0, 2_000, 5_000, 20_000, 50_000, cap])).sorted()
     }
 
     /// Checks the key with one tiny request before keeping it.

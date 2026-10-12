@@ -10,6 +10,9 @@ struct ThreadListView: View {
         VStack(spacing: 0) {
             ListHeader()
             Divider().overlay(Theme.line)
+            if case let .status(k) = model.selection {
+                ColumnSuggestionBar(status: k).padding(.horizontal, 12).padding(.vertical, 8)
+            }
             if model.threads.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "checkmark.circle").font(.system(size: 24, weight: .light))
@@ -228,13 +231,24 @@ struct GroupHeaderView: View {
     let group: ThreadGroup
     let total: Int
 
+    /// A status group carries its column's suggestion bar, unless the whole list is
+    /// that one status (the bar then sits on top of the list).
+    private var showsBar: Bool {
+        guard group.field == .status else { return false }
+        if case .status = model.selection { return false }
+        return true
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
-            GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
-            Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
-            Spacer()
-            AcceptAllButton(threads: group.all)
-            if group.field == .status { AITriageButton(status: group.key) }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
+                Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
+                Spacer()
+                // Status columns accept through their bar, which covers threads not loaded yet.
+                if group.field != .status { AcceptAllButton(threads: group.all) }
+            }
+            if showsBar { ColumnSuggestionBar(status: group.key) }
         }
         .foregroundStyle(Theme.text.opacity(0.85))
         .padding(.horizontal, 16).padding(.vertical, 7)
@@ -276,24 +290,6 @@ struct AcceptAllButton: View {
             .foregroundStyle(Theme.accent)
             .help("Apply the AI's suggestion to these \(ids.count) threads")
         }
-    }
-}
-
-/// ✦ on a status: the AI sorts the newest threads of that status and moves them.
-struct AITriageButton: View {
-    @Environment(AppModel.self) private var model
-    let status: String
-
-    var body: some View {
-        let busy = model.aiBusy.contains("triage:\(status)")
-        Button { model.aiTriage(status) } label: {
-            if busy { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles") }
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.accent)
-        .disabled(busy)
-        .help("Let AI triage this column and move threads where they belong")
-        .accessibilityLabel("AI triage")
     }
 }
 

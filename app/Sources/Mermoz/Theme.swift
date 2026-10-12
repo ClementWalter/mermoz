@@ -231,7 +231,7 @@ struct SuggestionChip: View {
         .padding(.horizontal, 6)
         .frame(height: 18)
         .background(Theme.accentSoft.opacity(0.8), in: RoundedRectangle(cornerRadius: 5))
-        .help("Suggested by AI — press y to accept, or just read it")
+        .help("Suggested by AI — press y to accept")
     }
 
     private var text: String {

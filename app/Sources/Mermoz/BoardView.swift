@@ -93,10 +93,10 @@ struct BoardColumn: View {
                 }
                 Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
-                AcceptAllButton(threads: group.all)
-                if group.field == .status { AITriageButton(status: group.key) }
+                if group.field != .status { AcceptAllButton(threads: group.all) }
             }
             .padding(.horizontal, 4).padding(.top, 2)
+            if group.field == .status { ColumnSuggestionBar(status: group.key) }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if group.subgroups.isEmpty {

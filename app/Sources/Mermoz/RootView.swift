@@ -30,7 +30,6 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) { ToastView() }
-        .sheet(item: $model.triageResult) { r in TriageResultView(result: r) }
         .background {
             // Window-level Esc: closes the palette, then the open message. Compose owns Esc
             // (discard) while it is open, so this one steps aside to avoid a shortcut clash.

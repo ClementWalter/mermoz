@@ -86,9 +86,14 @@ public struct RouterState: Codable, Sendable, Equatable {
     public var configured: Bool
     public var error: String?
     public var model: String
+    /// Background sorting allowance per day, and how much of it today used.
+    public var dailyCap: Int?
+    public var callsToday: Int?
 
-    public init(configured: Bool = false, error: String? = nil, model: String = "") {
+    public init(configured: Bool = false, error: String? = nil, model: String = "",
+                dailyCap: Int? = nil, callsToday: Int? = nil) {
         self.configured = configured; self.error = error; self.model = model
+        self.dailyCap = dailyCap; self.callsToday = callsToday
     }
 }
 
@@ -185,28 +190,6 @@ public struct AgentState: Codable, Sendable, Equatable {
     public var pending: Int
     public var failed: Int
     public var error: String?
-}
-
-/// Result of asking the AI to triage a status column.
-public struct TriageResult: Codable, Sendable, Equatable, Identifiable {
-    public struct Move: Codable, Sendable, Equatable, Identifiable {
-        public var number: String
-        public var subject: String
-        public var from: String
-        public var to: String
-        public var priority: Int
-        /// Priority before the AI's change (absent from older daemons).
-        public var priorityFrom: Int?
-        public var reason: String
-        public var id: String { number }
-
-        /// The AI only changed the priority.
-        public var priorityOnly: Bool { from == to }
-    }
-    public var examined: Int
-    public var moved: Int
-    public var moves: [Move]
-    public var id: String { moves.map(\.number).joined(separator: ",") + "#\(examined)" }
 }
 
 public struct CleanResult: Codable, Sendable { public var cleaned: Int }
@@ -365,6 +348,8 @@ public enum DaemonEvent: Sendable, Equatable {
     case draftsChanged
     case contactsChanged
     case providersChanged
+    /// Background sorting progressed: column suggestions or progress changed.
+    case suggestionsChanged
     case unknown(kind: String)
 }
 

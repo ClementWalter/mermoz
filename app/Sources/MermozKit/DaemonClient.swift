@@ -133,6 +133,33 @@ public final class DaemonClient: Sendable {
 
     public func router() async throws -> RouterState { try await call("router.get") }
 
+    /// Pending suggestions and sorting progress of status columns; `focus` asks the
+    /// background pass to sort these columns first.
+    public func suggestionsSummary(statuses: [String], project: String?, accountId: String?,
+                                   focus: Bool) async throws -> SuggestionsSummary {
+        try await call("suggestions.summary", Params().with("statuses", statuses).with("project", project)
+            .with("account_id", accountId).with("focus", focus))
+    }
+
+    /// Accepts a column's pending suggestions, or only `group`'s.
+    public func acceptColumn(_ status: String, group: SuggestionGroup?, project: String?,
+                             accountId: String?) async throws -> ColumnAccept {
+        var p = Params().with("status", status).with("project", project).with("account_id", accountId)
+        if let group {
+            p = p.with("target", TargetParam(status: group.status, projects: group.projects))
+        }
+        return try await call("suggestions.accept", p)
+    }
+
+    /// Puts threads back as they were before a group accept.
+    public func restoreThreads(_ states: [ThreadState]) async throws {
+        try await callVoid("threads.restore", Params().with("threads", states))
+    }
+
+    public func setDailyCap(_ cap: Int) async throws -> RouterState {
+        try await call("router.set", Params().with("daily_cap", cap))
+    }
+
     /// `nil` removes the key and stops instant sorting.
     public func setRouterKey(_ key: String?) async throws -> RouterState {
         let p = key.map { Params().with("api_key", $0) } ?? Params().null("api_key")
@@ -196,9 +223,6 @@ public final class DaemonClient: Sendable {
         try await call("agent.clean", Params().with("id", id).with("message_id", message).with("missing_only", missingOnly))
     }
 
-    public func aiTriage(status: String, limit: Int = 40) async throws -> TriageResult {
-        try await call("agent.triage", Params().with("status", status).with("limit", limit))
-    }
 
     public func loginAnthropic() async throws { try await callVoid("providers.login_anthropic") }
 
@@ -235,4 +259,16 @@ public final class DaemonClient: Sendable {
 
     public func feedback() async throws -> [FeedbackEntry] { try await call("feedback.list") }
     public func subscribe() async throws { try await callVoid("subscribe") }
+}
+
+/// A suggestion group as `suggestions.accept` names it; null status means "projects only".
+struct TargetParam: Encodable, Sendable {
+    var status: String?
+    var projects: [String]
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DynamicKey.self)
+        try c.encode(status, forKey: DynamicKey("status"))
+        try c.encode(projects, forKey: DynamicKey("projects"))
+    }
 }

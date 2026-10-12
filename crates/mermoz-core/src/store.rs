@@ -2804,7 +2804,7 @@ impl Store {
 
     /// Puts threads back exactly as in the snapshots: read state, status, priority,
     /// projects and follow-up date (the undo of a group accept).
-    pub fn restore_threads(&self, before: &[ThreadSummary]) -> Result<usize> {
+    pub fn restore_threads(&self, before: &[ThreadState]) -> Result<usize> {
         type Shape = (String, i64, Vec<String>, Option<String>);
         let mut same: std::collections::BTreeMap<Shape, Vec<String>> = Default::default();
         for t in before {
@@ -5548,7 +5548,9 @@ mod tests {
             .store
             .accept_column("backlog", &ColumnScope::default(), None)
             .unwrap();
-        env.store.restore_threads(&before).unwrap();
+        env.store
+            .restore_threads(&before.iter().map(ThreadState::from).collect::<Vec<_>>())
+            .unwrap();
         assert_eq!(env.store.thread(&a).unwrap().status, "backlog");
     }
 
@@ -5559,7 +5561,9 @@ mod tests {
             .store
             .accept_column("backlog", &ColumnScope::default(), None)
             .unwrap();
-        env.store.restore_threads(&before).unwrap();
+        env.store
+            .restore_threads(&before.iter().map(ThreadState::from).collect::<Vec<_>>())
+            .unwrap();
         assert!(env.store.thread(&a).unwrap().projects.is_empty());
     }
 
@@ -5570,7 +5574,9 @@ mod tests {
             .store
             .accept_column("backlog", &ColumnScope::default(), None)
             .unwrap();
-        env.store.restore_threads(&before).unwrap();
+        env.store
+            .restore_threads(&before.iter().map(ThreadState::from).collect::<Vec<_>>())
+            .unwrap();
         assert!(!to_classify(&env, &[]).contains(&a));
     }
 

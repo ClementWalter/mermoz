@@ -42,6 +42,31 @@ pub struct ThreadSummary {
     pub suggestion: Option<Suggestion>,
 }
 
+/// The fields of a thread a group accept can change, as they were before it: what
+/// `threads.restore` puts back.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadState {
+    pub id: String,
+    pub unread: bool,
+    pub status: String,
+    pub priority: i64,
+    pub projects: Vec<String>,
+    pub due: Option<String>,
+}
+
+impl From<&ThreadSummary> for ThreadState {
+    fn from(t: &ThreadSummary) -> Self {
+        Self {
+            id: t.id.clone(),
+            unread: t.unread,
+            status: t.status.clone(),
+            priority: t.priority,
+            projects: t.projects.clone(),
+            due: t.due.clone(),
+        }
+    }
+}
+
 /// What the router predicts for a thread. Fields below the confidence bar are absent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Suggestion {

@@ -161,21 +161,32 @@ project's column.
   per-sender shortcuts and few-shot context.
 - A thread read before its prediction arrives defaults to the sender's most
   frequent status, else To do.
-- The big LLM keeps the slow jobs: clean reading view, drafts, directory,
-  column triage.
+- The big LLM keeps the slow jobs: clean reading view, drafts and directory.
 
 ### Built (2026-10-11)
 
 Statuses, Gmail mapping (Trash both ways), labels as projects (explicit add/remove
 pushes so labels set elsewhere survive), the read transition, Jev routing with
 suggestions shown on rows and cards, `y` / "Accept n" to accept, an Undo bar after
-reading applied a suggestion, and the key in Settings › Developer. Not built yet:
-the one-time migration pass over old Backlog threads (needs Jev pricing first).
+reading applied a suggestion, and the key in Settings › Developer.
 
-### Migration
+### Background sorting of open columns (built 2026-10-12)
 
-The existing open threads (e.g. 7,000+ in Backlog from an old inbox) get one
-classification pass shown as a preview with undo, instead of staying as debt.
+Jev also works through every already-read thread in To do, Waiting, In progress
+and Backlog that has no current verdict, in the background: 12 requests in
+flight, the column on screen first, then newest first, after new Unread mail.
+A thread is asked again only when new mail arrives or it lands in another column
+without the user deciding; a thread the user moved after its suggestion is left
+alone. Only confident (≥ 0.7) changes are suggested — a different status, or
+projects the thread is not in yet; "no change" is recorded and never shown.
+
+Each column carries a bar on top: "✦ 312 suggestions · Accept all", one button
+per destination ("→ Archive · Receipts 240"), and "Sorting… 1,240 / 7,256" while
+the pass is still going. Accepting a group is one ⌘Z away. Nothing moves until
+accepted. Cost: ~7,500 input tokens per call (~$2.30 for a 7,000-thread
+Backlog); a daily allowance (default 20,000 calls, Settings › Developer) is a
+safety net, 429s honour Retry-After, outages back off exponentially, and token
+use is logged. This replaces the big-LLM column triage button.
 
 ## UI
 

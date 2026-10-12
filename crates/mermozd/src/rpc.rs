@@ -2,7 +2,7 @@
 
 use crate::service::Service;
 use mermoz_core::Error;
-use mermoz_core::model::ThreadSummary;
+use mermoz_core::model::ThreadState;
 use mermoz_core::model::{Draft, new_id, now_ms};
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
 use mermoz_core::store::{ColumnScope, SuggestionGroup, ThreadFilter, ThreadPatch};
@@ -664,7 +664,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             Ok(json!({ "accepted": before.len(), "before": before }))
         }
         "threads.restore" => {
-            let before: Vec<ThreadSummary> = serde_json::from_value(
+            let before: Vec<ThreadState> = serde_json::from_value(
                 p.get("threads").cloned().unwrap_or(Value::Null),
             )
             .map_err(|e| RpcError::invalid(format!("'threads' must be thread snapshots: {e}")))?;

@@ -116,6 +116,8 @@ func decodeEvent(_ p: [String: Any]) -> DaemonEvent {
         return .contactsChanged
     case "providers_changed":
         return .providersChanged
+    case "suggestions_changed":
+        return .suggestionsChanged
     default:
         return .unknown(kind: kind)
     }
