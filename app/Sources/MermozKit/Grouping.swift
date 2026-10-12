@@ -2,8 +2,7 @@
 import Foundation
 
 public enum Grouping: String, CaseIterable, Codable, Sendable {
-    /// `suggestion`: where the AI would move each thread (reviewing a column's suggestions).
-    case status, priority, project, account, suggestion, none
+    case status, priority, project, account, none
 
     public var label: String {
         switch self {
@@ -11,13 +10,10 @@ public enum Grouping: String, CaseIterable, Codable, Sendable {
         case .priority: "Priority"
         case .project: "Project"
         case .account: "Account"
-        case .suggestion: "Suggested move"
         case .none: "No grouping"
         }
     }
 
-    /// The groupings the Display menu offers; suggestion grouping belongs to reviewing.
-    public static let menuCases: [Grouping] = allCases.filter { $0 != .suggestion }
 }
 
 public enum Ordering: String, CaseIterable, Codable, Sendable {
@@ -83,7 +79,6 @@ public enum Grouper {
         case .priority: [String(t.priority)]
         case .project: t.projects.isEmpty ? [""] : t.projects
         case .account: [t.accountId]
-        case .suggestion: [t.suggestion.map { $0.target.id } ?? ""]
         case .none: [""]
         }
     }

@@ -108,16 +108,13 @@ public final class DaemonClient: Sendable {
 
     public func threads(status: [String]? = nil, project: String? = nil, accountId: String? = nil,
                         labelId: String? = nil, priority: [Int]? = nil, order: String? = nil, reverse: Bool = false,
-                        limit: Int = 300, offset: Int = 0, suggested: SuggestionReview? = nil,
+                        limit: Int = 300, offset: Int = 0,
                         conversations: Bool = true, kind: [String]? = nil) async throws -> ThreadPage {
         // `conversations`: one row per conversation, the thread leading it.
-        var p = Params()
+        let p = Params()
             .with("status", status).with("project", project).with("account_id", accountId).with("label_id", labelId).with("order", order)
             .with("priority", priority).with("reverse", reverse).with("limit", limit).with("offset", offset)
             .with("conversations", conversations).with("kind", kind)
-        if let suggested {
-            p = suggested.group.map { p.with("suggested", TargetParam(status: $0.status, projects: $0.projects)) } ?? p.with("suggested", true)
-        }
         return try await call("threads.list", p)
     }
 
@@ -171,30 +168,27 @@ public final class DaemonClient: Sendable {
 
     public func router() async throws -> RouterState { try await call("router.get") }
 
-    /// Pending suggestions and sorting progress of status columns; `focus` asks the
-    /// background pass to sort these columns first.
-    public func suggestionsSummary(statuses: [String], project: String?, accountId: String?,
-                                   focus: Bool) async throws -> SuggestionsSummary {
-        try await call("suggestions.summary", Params().with("statuses", statuses).with("project", project)
-            .with("account_id", accountId).with("focus", focus))
-    }
-
-    /// Accepts a column's pending suggestions, or only `group`'s.
-    public func acceptColumn(_ status: String, group: SuggestionGroup?, project: String?,
-                             accountId: String?) async throws -> ColumnAccept {
-        var p = Params().with("status", status).with("project", project).with("account_id", accountId)
-        if let group {
-            p = p.with("target", TargetParam(status: group.status, projects: group.projects))
-        }
-        return try await call("suggestions.accept", p)
-    }
-
-    /// Puts threads back as they were before a group accept.
-    public func restoreThreads(_ states: [ThreadState]) async throws {
-        try await callVoid("threads.restore", Params().with("threads", states))
-    }
-
     /// Sorts every column again in the background; nothing moves until accepted.
+    /// What waits in the Sort queue (of `statuses`, else every open column) and what it learned.
+    public func sortState(statuses: [String] = []) async throws -> SortInfo {
+        try await call("sort.state", Params().with("statuses", statuses))
+    }
+
+    /// The next cards; the daemon asks the AI for these few threads only.
+    public func sortNext(statuses: [String], exclude: [String], count: Int = SortQueue.lookahead) async throws -> SortBatch {
+        try await call("sort.next", Params().with("statuses", statuses).with("exclude", exclude).with("count", count))
+    }
+
+    /// Answers a card: "yes", "no", or "change" with the destination the user chose.
+    public func sortAnswer(_ id: String, answer: String, status: String? = nil, projects: [String] = []) async throws -> SortAnswerResult {
+        try await call("sort.answer", Params().with("id", id).with("answer", answer).with("status", status).with("projects", projects))
+    }
+
+    /// Takes an answer back.
+    public func sortUndo(_ token: SortUndoToken) async throws {
+        try await callVoid("sort.undo", Params().with("undo", token))
+    }
+
     /// Clears every suggestion on read threads nobody reviewed; returns how many.
     public func clearSuggestions() async throws -> Int {
         try await call("suggestions.clear", as: Cleared.self).cleared
@@ -324,17 +318,6 @@ public final class DaemonClient: Sendable {
     public func subscribe() async throws { try await callVoid("subscribe") }
 }
 
-/// A suggestion group as `suggestions.accept` names it; null status means "projects only".
-struct TargetParam: Encodable, Sendable {
-    var status: String?
-    var projects: [String]
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: DynamicKey.self)
-        try c.encode(status, forKey: DynamicKey("status"))
-        try c.encode(projects, forKey: DynamicKey("projects"))
-    }
-}
 
 /// `suggestions.clear`.
 struct Cleared: Decodable, Sendable { var cleared: Int }

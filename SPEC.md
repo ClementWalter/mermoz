@@ -170,28 +170,42 @@ pushes so labels set elsewhere survive), the read transition, Jev routing with
 suggestions shown on rows and cards, `y` / "Accept n" to accept, an Undo bar after
 reading applied a suggestion, and the key in Settings › Developer.
 
-### Background sorting of open columns (built 2026-10-12)
+### Sort: one email at a time (decided 2026-10-12, replaces background column sorting)
 
-Jev also works through every already-read thread in To do, Waiting, In progress
-and Backlog that has no current verdict, in the background: 12 requests in
-flight, the column on screen first, then newest first, after new Unread mail.
-A thread is asked again only when new mail arrives or it lands in another column
-without the user deciding; a thread the user moved after its suggestion is left
-alone. Only confident (≥ 0.7) changes are suggested — a different status, or
-projects the thread is not in yet; "no change" is recorded and never shown.
+Sorting whole columns in the background flooded every column with hundreds of
+suggestions, many of them wrong, and no screen could review them. The default is
+now a dedicated flow: Sort shows **one email** with the AI's suggestion
+("→ Archive · Voyage") and the user answers **Yes** (y), **No** (n),
+**Change…** (c, another status or project) or **Skip** (s); ⌘Z takes an answer
+back. It opens from the sidebar (every open column) or from "✦ n to sort · Start"
+on a column.
 
-Each column carries a bar on top: "✦ 312 suggestions · Accept all", one button
-per destination ("→ Archive · Receipts 240"), and "Sorting… 1,240 / 7,256" while
-the pass is still going. Clicking "n suggestions · Review" lists every suggested
-thread of the column grouped by destination; clicking a destination chip lists only
-its threads ("Reviewing → Archive · 758", × or Esc to leave). The reading pane shows
-the selected thread; `y` accepts it, `x` (or × on its chip) dismisses it — it stays
-put and is not suggested again — and both move to the next row. "Accept these n",
-"Accept n selected" and the quicker "Accept all" are each one ⌘Z away. Nothing moves
-until accepted. Cost: ~7,500 input tokens per call (~$2.30 for a 7,000-thread
-Backlog); a daily allowance (default 20,000 calls, Settings › Developer) is a
-safety net, 429s honour Retry-After, outages back off exponentially, and token
-use is logged. This replaces the big-LLM column triage button.
+- **Just in time.** Suggestions are asked of the AI for the card on screen and a
+  few ahead (at most 12 calls per request), newest threads of the open columns
+  first. Nothing sorts whole columns any more; new Unread mail is still routed on
+  arrival.
+- **Yes** files the thread and is remembered for its sender; after three
+  consistent Yes the sender's destination is suggested without asking the AI
+  ("Learned: mail from X goes to Voyage").
+- **No** leaves the thread where it is and that destination is never suggested to
+  that sender again, including cards already prepared.
+- **Change** is a No for the suggestion and a Yes for the chosen destination.
+- Earlier answers for the sender go to Jev with every new card. The panel lists
+  what was learned in plain words.
+- **Out of credits** (HTTP 402) pauses sorting ("Sorting paused: your TypeSafe
+  credits ran out"); nothing is recorded on threads and nothing is retried for
+  15 minutes or until a new key. A daily allowance (default 20,000 calls) stays as
+  a safety net.
+
+Why the column suggestions were wrong: sender history told Jev only where the
+same people's threads were filed ("filed in X: 88"), never how many were left
+unfiled. On the user's mailbox only 11.7% of threads are filed; 96% of the
+flooded project suggestions were on unfiled threads (64% older than five years)
+and the suggested folder held a median 6% of those people's threads. The
+evaluation that measured 78% exact had only sampled filed threads, so "none" was
+never the right answer there. Jev now also sees "not filed in any folder: N", the
+project question says most mail is never filed, and a folder holding under half
+of those people's threads is never suggested.
 
 ## Conversations (decided 2026-10-12)
 

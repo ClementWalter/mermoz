@@ -88,9 +88,6 @@ public struct Suggestion: Codable, Sendable, Equatable, Hashable {
 
     /// Nothing worth showing.
     public var isEmpty: Bool { status == nil && projects.isEmpty }
-
-    /// Where it would send the thread, as a column's suggestion groups name it.
-    public var target: SuggestionGroup { SuggestionGroup(status: status, projects: projects, count: 0) }
 }
 
 /// Instant sorting (TypeSafe) state, from `router.get`.
@@ -101,13 +98,11 @@ public struct RouterState: Codable, Sendable, Equatable {
     /// Background sorting allowance per day, and how much of it today used.
     public var dailyCap: Int?
     public var callsToday: Int?
-    /// The whole-mailbox sort, while it runs.
-    public var resort: Resort?
 
     public init(configured: Bool = false, error: String? = nil, model: String = "",
-                dailyCap: Int? = nil, callsToday: Int? = nil, resort: Resort? = nil) {
+                dailyCap: Int? = nil, callsToday: Int? = nil) {
         self.configured = configured; self.error = error; self.model = model
-        self.dailyCap = dailyCap; self.callsToday = callsToday; self.resort = resort
+        self.dailyCap = dailyCap; self.callsToday = callsToday
     }
 }
 

@@ -57,6 +57,13 @@ struct SidebarView: View {
                         }
                     }
                     section("Browse") {
+                        // One email at a time with the AI's suggestion.
+                        if model.sortInfo.configured || model.sortInfo.toSort > 0 {
+                            row(.sort, count: model.sortInfo.toSort > 0 ? model.sortInfo.toSort : nil) {
+                                Image(systemName: "sparkles").font(.system(size: 11)).foregroundStyle(Theme.accent)
+                                Text("Sort")
+                            }
+                        }
                         row(.people, count: nil) {
                             Image(systemName: "person.2").font(.system(size: 11)).foregroundStyle(Theme.text2)
                             Text("People")
@@ -194,7 +201,8 @@ struct SidebarView: View {
 
     private func row<L: View>(_ sel: SidebarSelection, count: Int?, @ViewBuilder label: () -> L) -> some View {
         let on = model.selection == sel
-        return Button { model.select(sel) } label: {
+        // The sidebar's Sort covers every open column, whatever column was sorted last.
+        return Button { if sel == .sort { model.openSort() } else { model.select(sel) } } label: {
             HStack(spacing: 9) {
                 label()
                 Spacer(minLength: 4)

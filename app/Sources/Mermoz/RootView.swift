@@ -63,6 +63,8 @@ struct MainLayout: View {
                 PeopleListView().frame(width: listWidth)
                 ResizeHandle(width: $listWidth, range: 300...760)
                 ContactDetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.selection == .sort {
+                SortView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.selection == .docs {
                 DocsListView().frame(width: listWidth)
                 ResizeHandle(width: $listWidth, range: 300...760)

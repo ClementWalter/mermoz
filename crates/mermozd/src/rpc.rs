@@ -827,8 +827,12 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "sort.state" => {
             let statuses = str_list(p, "statuses")?.unwrap_or_default();
             let counts = st.sort_counts(&statuses)?;
-            let by_status: serde_json::Map<String, Value> =
-                counts.iter().map(|(k, n)| (k.clone(), json!(n))).collect();
+            // A list, not an object: status keys such as `in_progress` must reach
+            // clients as written.
+            let by_status: Vec<Value> = counts
+                .iter()
+                .map(|(k, n)| json!({ "status": k, "count": n }))
+                .collect();
             Ok(json!({
                 "to_sort": counts.iter().map(|(_, n)| n).sum::<i64>(),
                 "by_status": by_status,

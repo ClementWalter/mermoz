@@ -104,6 +104,7 @@ struct CommandPalette: View {
         case .status: "Set status…"
         case .priority: "Set priority…"
         case .project: "Add to project, or type a new name…"
+        case .sortChange: "Where does it go?"
         default: "Search mail or run a command"
         }
     }
@@ -127,6 +128,20 @@ struct CommandPalette: View {
             }
         case .project:
             return projectItems(q)
+        case .sortChange:
+            // Any status a read email can go to, then every project.
+            let routable: Set<String> = ["todo", "waiting", "in_progress", "backlog", "done", "archive"]
+            let st = model.statuses.filter { routable.contains($0.key) && (q.isEmpty || $0.name.lowercased().contains(q)) }.map { s in
+                PaletteItem(id: "ss-\(s.key)", title: s.name, icon: AnyView(StatusIcon(key: s.key, color: Color(hex: s.color)))) {
+                    model.sortChange(status: s.key)
+                }
+            }
+            let pr = model.projects.filter { q.isEmpty || $0.name.lowercased().contains(q) }.map { p in
+                PaletteItem(id: "sp-\(p.id)", title: p.name, icon: AnyView(RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9))) {
+                    model.sortChange(project: p.name)
+                }
+            }
+            return st + pr
         default:
             // Commands that match come first; mail results follow.
             let mail: [PaletteItem] = results.map { t in

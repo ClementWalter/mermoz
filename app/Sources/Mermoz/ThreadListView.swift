@@ -10,10 +10,8 @@ struct ThreadListView: View {
         VStack(spacing: 0) {
             ListHeader()
             Divider().overlay(Theme.line)
-            if let r = model.suggestionReview {
-                SuggestionReviewBar(review: r).padding(.horizontal, 12).padding(.vertical, 8)
-            } else if case let .status(k) = model.selection {
-                ColumnSuggestionBar(status: k).padding(.horizontal, 12).padding(.vertical, 8)
+            if case let .status(k) = model.selection, model.sortInfo.count(k) > 0 {
+                HStack { SortStartButton(status: k); Spacer() }.padding(.horizontal, 16).padding(.vertical, 8)
             }
             if model.threads.isEmpty {
                 VStack(spacing: 6) {
@@ -101,7 +99,7 @@ extension ThreadListView {
 /// Single-key shortcuts, handled for the whole main window (see `install`) so they
 /// work wherever the focus is: list, board or a message being read.
 enum ThreadKeys {
-    static let characters = "jkeay#usmMprct?/x"
+    static let characters = "jkeay#usmMprct?/xn"
 
     /// Routes key presses to the shortcuts unless the user is typing in a field, a
     /// draft is open, or another window (Settings) is in front.
@@ -122,6 +120,16 @@ enum ThreadKeys {
 
     @MainActor
     static func handle(_ c: String, model: AppModel) -> Bool {
+        // The Sort queue answers with y / n / c / s; the other keys work as everywhere.
+        if model.selection == .sort {
+            switch c {
+            case "y": model.sortYes(); return true
+            case "n": model.sortNo(); return true
+            case "c": model.paletteMode = .sortChange; return true
+            case "s": model.sortSkip(); return true
+            default: break
+            }
+        }
         switch c {
         case "j": model.moveSelection(1)
         case "k": model.moveSelection(-1)
@@ -131,6 +139,8 @@ enum ThreadKeys {
         case "#": model.moveSelected(to: "deleted")
         case "y": model.acceptSelected()
         case "x": model.rejectSelected()
+        // Only the Sort queue answers No; elsewhere the key types as usual.
+        case "n": return false
         case "u": model.markUnreadSelected()
         case "s": if model.selectedThreadId != nil { model.paletteMode = .status }
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
@@ -200,6 +210,8 @@ struct ListHeader: View {
             Text("Feeds").font(.system(size: 15, weight: .semibold))
         case .docs:
             Text("Docs").font(.system(size: 15, weight: .semibold))
+        case .sort:
+            Text("Sort").font(.system(size: 15, weight: .semibold))
         case let .label(acc, id):
             Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(Theme.text2)
             Text(model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label")
@@ -229,11 +241,6 @@ struct GroupLabel: View {
             case .account:
                 Circle().fill(Theme.accountColor(key, among: model.accounts)).frame(width: 8, height: 8)
                 Text(model.accounts.first { $0.id == key }?.email ?? key).lineLimit(1)
-            case .suggestion:
-                Image(systemName: "sparkle").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.accent)
-                Text(SuggestionGroup(id: key).map { g in
-                    "→ " + g.label { k in model.statuses.first { $0.key == k }?.name ?? k }
-                } ?? "No suggestion")
             case .none:
                 EmptyView()
             }
@@ -246,24 +253,13 @@ struct GroupHeaderView: View {
     let group: ThreadGroup
     let total: Int
 
-    /// A status group carries its column's suggestion bar, unless the whole list is
-    /// that one status (the bar then sits on top of the list).
-    private var showsBar: Bool {
-        guard group.field == .status else { return false }
-        if case .status = model.selection { return false }
-        return true
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
-                Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
-                Spacer()
-                // Status columns accept through their bar, which covers threads not loaded yet.
-                if group.field != .status { GroupAcceptButton(group: group) }
-            }
-            if showsBar { ColumnSuggestionBar(status: group.key) }
+        HStack(spacing: 8) {
+            GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
+            Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
+            Spacer()
+            if group.field == .status { SortStartButton(status: group.key) }
+            AcceptAllButton(threads: group.all)
         }
         .foregroundStyle(Theme.text.opacity(0.85))
         .padding(.horizontal, 16).padding(.vertical, 7)
@@ -287,26 +283,6 @@ struct SubGroupHeader: View {
         .font(.system(size: 11.5, weight: .medium))
         .foregroundStyle(Theme.text2)
         .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 4)
-    }
-}
-
-/// A group's accept control: a destination being reviewed accepts all its threads
-/// (loaded or not); other groups accept the suggestions of their loaded threads.
-struct GroupAcceptButton: View {
-    @Environment(AppModel.self) private var model
-    let group: ThreadGroup
-
-    var body: some View {
-        if group.field == .suggestion, let r = model.suggestionReview, let g = SuggestionGroup(id: group.key) {
-            Button { model.acceptColumn(r.status, group: g) } label: {
-                Label("Accept these \(model.groupTotal(group).formatted())", systemImage: "checkmark.circle").font(.system(size: 11.5))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.accent)
-            .help("Move them where the AI suggests — ⌘Z to undo")
-        } else {
-            AcceptAllButton(threads: group.all)
-        }
     }
 }
 
@@ -335,10 +311,10 @@ struct DisplayMenu: View {
     var body: some View {
         Menu {
             Picker("Grouping", selection: binding(\.grouping)) {
-                ForEach(Grouping.menuCases, id: \.self) { Text($0.label).tag($0) }
+                ForEach(Grouping.allCases, id: \.self) { Text($0.label).tag($0) }
             }
             Picker("Sub-grouping", selection: binding(\.subGrouping)) {
-                ForEach(Grouping.menuCases, id: \.self) { Text($0 == .none ? "None" : $0.label).tag($0) }
+                ForEach(Grouping.allCases, id: \.self) { Text($0 == .none ? "None" : $0.label).tag($0) }
             }
             Picker("Ordering", selection: binding(\.ordering)) {
                 ForEach(Ordering.allCases, id: \.self) { Text($0.label).tag($0) }

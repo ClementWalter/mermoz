@@ -24,8 +24,6 @@ struct BoardView: View {
             .frame(height: 50)
             .glassPanel()
 
-            if let r = model.suggestionReview { SuggestionReviewBar(review: r) }
-
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     HStack(alignment: .top, spacing: 10) {
@@ -74,6 +72,7 @@ struct BoardView: View {
         case .people: "People"
         case .feeds: "Feeds"
         case .docs: "Docs"
+        case .sort: "Sort"
         case let .label(acc, id): model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label"
         }
     }
@@ -97,10 +96,10 @@ struct BoardColumn: View {
                 }
                 Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
-                if group.field != .status { GroupAcceptButton(group: group) }
+                AcceptAllButton(threads: group.all)
             }
             .padding(.horizontal, 4).padding(.top, 2)
-            if group.field == .status { ColumnSuggestionBar(status: group.key) }
+            if group.field == .status { SortStartButton(status: group.key).padding(.horizontal, 4) }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if group.subgroups.isEmpty {
