@@ -6,8 +6,8 @@ use mermoz_core::model::ThreadState;
 use mermoz_core::model::{Draft, new_id, now_ms};
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
 use mermoz_core::store::{
-    AttachmentSource, ColumnScope, NewAttachment, SortAnswer, SortUndo, SuggestedFilter, SuggestionGroup, ThreadFilter,
-    ThreadPatch,
+    AttachmentSource, ColumnScope, NewAttachment, SortAnswer, SortUndo, SuggestedFilter,
+    SuggestionGroup, ThreadFilter, ThreadPatch,
 };
 use mermoz_core::sync::Event;
 use serde_json::{Value, json};
