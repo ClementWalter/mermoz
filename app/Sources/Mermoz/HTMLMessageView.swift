@@ -21,9 +21,11 @@ enum WebConfig {
         return config
     }()
 
-    /// CSP blocks every remote fetch (trackers, images) — only inline styles and data: images render.
-    static func page(_ html: String) -> String {
-        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; font-src data:\">"
+    /// CSP blocks every remote fetch (trackers, scripts, fonts); remote images are let
+    /// through only when `images` (the reader asked, or the sender is verified).
+    static func page(_ html: String, images: Bool = false) -> String {
+        let img = images ? "data: cid: https: http:" : "data: cid:"
+        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src \(img); style-src 'unsafe-inline'; font-src data:\">"
         let base = "<style>html,body{background:transparent}body{font:14px -apple-system,system-ui;color:#1A3346;margin:0;word-wrap:break-word;overflow:hidden}img{max-width:100%;height:auto}table{max-width:100%}</style>"
         return "<!doctype html><html><head><meta charset=\"utf-8\">\(csp)\(base)</head><body>\(html)</body></html>"
     }
@@ -31,6 +33,7 @@ enum WebConfig {
 
 struct HTMLMessageView: NSViewRepresentable {
     let html: String
+    var images = false
     @Binding var height: CGFloat
 
     func makeNSView(context: Context) -> PassthroughWebView {
@@ -45,7 +48,7 @@ struct HTMLMessageView: NSViewRepresentable {
         context.coordinator.onHeight = { h in if abs(height - h) > 1 { height = max(h, 20) } }
         if context.coordinator.loaded != html {
             context.coordinator.loaded = html
-            wv.loadHTMLString(WebConfig.page(html), baseURL: nil)
+            wv.loadHTMLString(WebConfig.page(html, images: images), baseURL: nil)
         } else {
             // Width changes reflow the text; re-measure so nothing gets clipped.
             context.coordinator.measure()

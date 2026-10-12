@@ -1390,3 +1390,51 @@ fn ai_triage_does_not_count_threads_it_leaves_as_they_are(synced: World) {
         0
     );
 }
+
+/// A newsletter whose logo is a remote image.
+fn raw_with_remote_image() -> String {
+    "From: News <news@example.com>\r\nTo: me@example.com\r\nSubject: Weekly news\r\nMessage-ID: <img@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hello</p><img src=\"https://cdn.example/logo.png\">\r\n".into()
+}
+
+fn news_html(w: &World, images: bool) -> Value {
+    w.mailbox.lock().unwrap().add_message(
+        "m9i",
+        "t9i",
+        &["INBOX"],
+        &raw_with_remote_image(),
+        NOW + 9000,
+    );
+    w.wait_until("sync", |w| {
+        w.ok("search", json!({ "query": "Weekly news" }))["threads"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    let t = w.thread_by_subject("Weekly news");
+    let m = w.ok("threads.get", json!({ "id": t["id"] }))["messages"][0]["id"].clone();
+    w.ok("messages.html", json!({ "id": m, "images": images }))
+}
+
+#[rstest]
+fn remote_images_are_hidden_by_default(synced: World) {
+    assert!(
+        !news_html(&synced, false)["html"]
+            .as_str()
+            .unwrap()
+            .contains("logo.png")
+    );
+}
+
+#[rstest]
+fn hidden_remote_images_are_reported(synced: World) {
+    assert_eq!(news_html(&synced, false)["remote_images"], true);
+}
+
+#[rstest]
+fn remote_images_load_when_asked(synced: World) {
+    assert!(
+        news_html(&synced, true)["html"]
+            .as_str()
+            .unwrap()
+            .contains("logo.png")
+    );
+}

@@ -254,6 +254,12 @@ struct MessageCard: View {
     @State private var height: CGFloat = 200
     /// Full From / To / Cc / Bcc / date, opened by clicking the recipients line.
     @State private var showDetails = false
+    /// Remote images were asked for ("Show images"); verified senders get them anyway.
+    @State private var imagesRequested = false
+    @State private var hasRemoteImages = false
+
+    /// Images load for senders Gmail verified, or when the reader asks.
+    private var loadImages: Bool { imagesRequested || message.auth == "pass" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -306,15 +312,29 @@ struct MessageCard: View {
         .padding(.horizontal, 16).padding(.vertical, 14)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: "#E3EDF6")))
-        .task(id: "\(mode)-\(showQuoted)") {
-            if mode == .original, message.hasHtml { html = await model.html(for: message.id, full: showQuoted) }
+        .task(id: "\(mode)-\(showQuoted)-\(loadImages)") {
+            if mode == .original, message.hasHtml, let body = await model.html(for: message.id, full: showQuoted, images: loadImages) {
+                html = body.html
+                hasRemoteImages = body.remoteImages ?? false
+            }
         }
     }
 
     /// The email as people expect it: rendered HTML, or its text for plain-text mail.
     @ViewBuilder private var original: some View {
+        if message.hasHtml, hasRemoteImages, !loadImages {
+            HStack(spacing: 8) {
+                Image(systemName: "photo").foregroundStyle(Theme.text3)
+                Text("Images are hidden so the sender can't see when you read this.").foregroundStyle(Theme.text2)
+                Spacer()
+                Button("Show images") { imagesRequested = true }.buttonStyle(.link)
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 12).frame(height: 32)
+            .background(Theme.accentSoft.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+        }
         if message.hasHtml, let html {
-            HTMLMessageView(html: html, height: $height).frame(height: height)
+            HTMLMessageView(html: html, images: loadImages, height: $height).frame(height: height)
         } else if message.hasHtml {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 40)
         } else {

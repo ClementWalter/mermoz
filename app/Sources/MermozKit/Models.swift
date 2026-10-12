@@ -353,6 +353,8 @@ public struct SendResult: Codable, Sendable {
 
 public struct HTMLBody: Codable, Sendable {
     public var html: String
+    /// The message has remote images (kept only when they were asked for).
+    public var remoteImages: Bool?
 }
 
 /// Notification pushed on a `subscribe` connection.

@@ -883,8 +883,8 @@ final class AppModel {
         }
     }
 
-    func html(for messageId: String, full: Bool = false) async -> String? {
-        try? await client?.html(messageId: messageId, full: full)
+    func html(for messageId: String, full: Bool = false, images: Bool = false) async -> HTMLBody? {
+        try? await client?.html(messageId: messageId, full: full, images: images)
     }
 
     // MARK: compose

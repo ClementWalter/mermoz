@@ -3,7 +3,7 @@
 use crate::service::Service;
 use mermoz_core::Error;
 use mermoz_core::model::{Draft, new_id, now_ms};
-use mermoz_core::sanitize::sanitize_html;
+use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
 use mermoz_core::store::{ThreadFilter, ThreadPatch};
 use mermoz_core::sync::Event;
 use serde_json::{Value, json};
@@ -237,7 +237,12 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             } else {
                 mermoz_core::quote::split_html(&html)
             };
-            Ok(json!({ "html": sanitize_html(&html), "has_quoted": has_quoted }))
+            // Remote images only on request: they can report that the mail was opened.
+            let images = p.get("images").and_then(|v| v.as_bool()).unwrap_or(false);
+            Ok(
+                json!({ "html": sanitize_html_with(&html, images), "has_quoted": has_quoted,
+                "remote_images": has_remote_images(&html) }),
+            )
         }
         "search" => {
             let limit = p
