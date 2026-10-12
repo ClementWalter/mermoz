@@ -116,7 +116,9 @@ extension AppModel {
         case let .draft(body): draftReply(to: card, body: body)
         case .open: openCard(card)
         case .addToCalendar: addToCalendar(card)
-        case let .archive(ids): setStatus(of: card, ids: ids.filter { !feedKept.contains($0) }, to: "archive")
+        case let .archive(ids):
+            setStatus(of: card, ids: ids.filter { !feedKept.contains($0) }, to: "archive")
+            teach(card)
         case .done: setStatus(of: card, ids: card.threadIds, to: "done")
         case .later: later(card, until: FeedLater.tomorrowMorning(after: Date()))
         }
@@ -157,6 +159,14 @@ extension AppModel {
 
     func archive(_ card: FeedCard) {
         setStatus(of: card, ids: card.threadIds.filter { !feedKept.contains($0) }, to: "archive")
+        teach(card)
+    }
+
+    /// Archiving a single automated mail is a yes to "Archive" for its sender; three
+    /// make a rule, and that sender's mail is then cleared in the batch.
+    private func teach(_ card: FeedCard) {
+        guard !card.isBatch, card.kind == .cleanup || card.kind == .reading, let client else { return }
+        Task { try? await client.learnArchive([card.thread.id]) }
     }
 
     /// One undoable change for every thread of a card, then the card folds away.

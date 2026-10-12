@@ -366,8 +366,8 @@ pub fn seed(store: &Store) -> Result<()> {
         };
         store.ingest(&acc.id, &acc.email, &msg, SyncMode::Initial)?;
     }
-    // Older mail the user archived without answering: the feed learns from it that these
-    // senders are noise, so their new mail is cleared together.
+    // Older mail the user archived from the Feed: three yes per sender teach Mermoz to
+    // archive them, so their new mail is cleared together.
     let archived = [
         (
             addr("Citymove", "no-reply@citymove.example"),
@@ -398,7 +398,8 @@ pub fn seed(store: &Store) -> Result<()> {
                     ..Default::default()
                 },
             };
-            store.ingest(&personal.id, &personal.email, &msg, SyncMode::Initial)?;
+            let tid = store.ingest(&personal.id, &personal.email, &msg, SyncMode::Initial)?;
+            store.learn_archive(&[tid])?;
         }
     }
     // A conversation spread over three Gmail threads with Nora (the user wrote first),

@@ -3084,6 +3084,26 @@ fn senders_you_always_archive_are_cleared_together(demo: World) {
 }
 
 #[rstest]
+fn three_archives_from_the_feed_join_the_batch(demo: World) {
+    let id = demo.card("Commande 48211")["id"].clone();
+    for _ in 0..3 {
+        demo.ok("feed.learn_archive", json!({ "ids": [id] }));
+    }
+    let batch = demo
+        .cards()
+        .into_iter()
+        .find(|c| c["id"] == "batch:cleanup")
+        .unwrap();
+    assert!(
+        batch["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == id)
+    );
+}
+
+#[rstest]
 fn an_automated_sender_never_archived_is_its_own_card(demo: World) {
     assert_eq!(demo.card("Commande 48211")["kind"], "cleanup");
 }

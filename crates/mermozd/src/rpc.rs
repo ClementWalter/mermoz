@@ -997,6 +997,16 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let _ = svc.events.send(Event::FeedChanged);
             Ok(json!({ "snoozed": n }))
         }
+        "feed.learn_archive" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            let ids: Vec<String> = ids
+                .iter()
+                .map(|i| st.resolve_thread_id(i))
+                .collect::<Result<_, _>>()?;
+            st.learn_archive(&ids)?;
+            let _ = svc.events.send(Event::FeedChanged);
+            Ok(json!({ "learned": ids.len() }))
+        }
         "feed.unsnooze" => {
             let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
             let ids: Vec<String> = ids

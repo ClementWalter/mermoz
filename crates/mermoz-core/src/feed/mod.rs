@@ -251,8 +251,8 @@ pub struct FeedUnit {
     pub from_backlog: bool,
     /// The last sender looks like a machine (no-reply address), known without Jev.
     pub automated_sender: bool,
-    /// The user's own decisions mark this sender as noise (always closed, never
-    /// answered): only such mail is grouped into a batch.
+    /// The user taught Mermoz to archive this sender's mail (the Sort queue's learned
+    /// rule): only such mail is grouped into a batch.
     pub learned_noise: bool,
 }
 
@@ -412,11 +412,11 @@ pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
             None => "There is something to pay.".into(),
         }),
         Kind::Cleanup => out.push(
-            "Looks automated. Once you have archived a few from this sender, they are cleared together."
+            "Looks automated. Archive it: after three from this sender, they are cleared together."
                 .into(),
         ),
         Kind::Reading => out.push(
-            "A newsletter. Once you have archived a few from this sender, they are grouped.".into(),
+            "A newsletter. Archive it: after three from this sender, they are grouped.".into(),
         ),
         Kind::Intro => out.push("Someone new for you.".into()),
         _ => {}
@@ -557,7 +557,7 @@ fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
             } else {
                 format!("{n} newsletters to read or archive")
             },
-            "You always archive these newsletters without answering.",
+            "You taught Mermoz to archive these newsletters.",
         ),
         _ => (
             "batch:cleanup",
@@ -566,7 +566,7 @@ fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
             } else {
                 format!("Clear {n} automated mails")
             },
-            "You always archive mail from these senders without answering.",
+            "You taught Mermoz to archive mail from these senders.",
         ),
     };
     // A batch's words are the one-line summaries of its members.

@@ -27,10 +27,6 @@ const UNIT_COLS: &str = "j.judged, j.kind, j.needs_reply, j.urgency, j.due, j.du
     CASE WHEN j.judged IS NOT 1 OR j.kind IN ('cleanup', 'reading') OR j.automated >= 0.7 \
       THEN (SELECT m.from_email FROM messages m WHERE m.thread_id = t.id ORDER BY m.date DESC LIMIT 1) END";
 
-/// A sender's mail is known noise once the user closed this many of their earlier
-/// threads (archived, done or deleted) without ever answering one.
-pub const NOISE_MIN_THREADS: i64 = 3;
-
 /// How many columns `UNIT_COLS` has.
 const UNIT_COL_COUNT: usize = 13;
 
@@ -290,8 +286,8 @@ impl Store {
                 );
             }
         }
-        // Only mail that looks automated needs the user's history about its sender.
-        let senders: Vec<String> = rows
+        // Only mail that looks automated is checked against the user's learned rules.
+        let automated: Vec<String> = rows
             .iter()
             .filter(|r| {
                 is_automated(&r.4)
@@ -300,12 +296,9 @@ impl Store {
                             || matches!(j.kind, Some(Kind::Cleanup | Kind::Reading))
                     })
             })
-            .map(|r| r.4.to_lowercase())
-            .filter(|s| !s.is_empty())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
+            .map(|r| r.0.id.clone())
             .collect();
-        let noise = self.learned_noise(&senders)?;
+        let noise = self.learned_noise(&automated)?;
         Ok(rows
             .drain(..)
             .map(|(t, judgment, texts, my_last, sender)| {
@@ -315,7 +308,7 @@ impl Store {
                     id: t.id.clone(),
                     from_backlog: t.status == "backlog",
                     automated_sender: is_automated(&sender),
-                    learned_noise: noise.contains(&sender.to_lowercase()),
+                    learned_noise: noise.contains(&t.id),
                     threads: vec![t],
                     judgment,
                     texts,
@@ -325,37 +318,48 @@ impl Store {
             .collect())
     }
 
-    /// Senders whose mail the user's own decisions mark as noise: at least
-    /// [`NOISE_MIN_THREADS`] of their threads closed (archive, done, deleted) and none
-    /// ever answered. Every archive in the feed teaches it; no AI guess counts.
-    pub fn learned_noise(&self, senders: &[String]) -> Result<std::collections::HashSet<String>> {
+    /// Threads whose sender the user taught to archive: the Sort queue's learned rule
+    /// for that sender (three consistent yes, never a no) is "Archive". No AI guess counts.
+    pub fn learned_noise(
+        &self,
+        thread_ids: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        let mut rules: std::collections::HashMap<String, bool> = Default::default();
         let mut out = std::collections::HashSet::new();
-        let r = self.r.lock().unwrap();
-        for chunk in senders.chunks(500) {
-            let marks = vec!["?"; chunk.len()].join(",");
-            let mut st = r.prepare(&format!(
-                "WITH th AS (SELECT DISTINCT lower(m.from_email) e, m.thread_id FROM messages m
-                             WHERE lower(m.from_email) IN ({marks}))
-                 SELECT th.e,
-                   SUM(t.status IN ('archive', 'done', 'deleted')),
-                   SUM(EXISTS (SELECT 1 FROM messages x WHERE x.thread_id = th.thread_id AND x.is_from_me = 1))
-                 FROM th JOIN threads t ON t.id = th.thread_id GROUP BY th.e"
-            ))?;
-            let rows = st.query_map(params_from_iter(chunk.iter()), |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?;
-            for row in rows {
-                let (e, closed, answered) = row?;
-                if closed >= NOISE_MIN_THREADS && answered == 0 {
-                    out.insert(e);
+        for id in thread_ids {
+            let sender = self.thread_sender(id)?;
+            let noise = match rules.get(&sender) {
+                Some(n) => *n,
+                None => {
+                    let n = self.sender_rule(&sender)?.is_some_and(|r| {
+                        r.projects.is_empty()
+                            && matches!(r.status.as_deref(), Some("archive" | "deleted"))
+                    });
+                    rules.insert(sender, n);
+                    n
                 }
+            };
+            if noise {
+                out.insert(id.clone());
             }
         }
         Ok(out)
+    }
+
+    /// The user archived these automated mails from the Feed: each counts as a yes to
+    /// "Archive" for its sender, the same answer the Sort queue records.
+    pub fn learn_archive(&self, thread_ids: &[String]) -> Result<()> {
+        let target = super::SuggestionGroup {
+            status: Some("archive".into()),
+            projects: vec![],
+            count: 0,
+        };
+        let w = self.w.lock().unwrap();
+        for id in thread_ids {
+            let sender = super::thread_sender_tx(&w, id)?;
+            super::record_feedback_tx(&w, id, &sender, &target, "yes")?;
+        }
+        Ok(())
     }
 
     /// Fills in projects and pending suggestions on the threads a feed shows; done after

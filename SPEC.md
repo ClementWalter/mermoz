@@ -443,12 +443,12 @@ actions with their keys.
 Drafts always open in the composer; nothing is ever sent from a card.
 
 **Batches are learned, never guessed.** Clean-up and Reading batches only hold
-mail from senders the user's own decisions mark as noise: at least three of
-their threads closed (archived, done or deleted) and none ever answered. Other
-automated mail, even when Jev is sure it is a receipt, is a card of its own in
-Can wait, decided one at a time; each archive teaches the rule. A section shows
-its 40 most pressing cards and a batch its 50 latest mails; the List shows the
-rest.
+mail from senders the user taught Mermoz to archive: the Sort queue's sender rule
+(three consistent yes, never a no) says Archive. Other automated mail, even when
+Jev is sure it is a receipt, is a card of its own in Can wait, decided one at a
+time; archiving it from its card is a yes for that sender, recorded with the Sort
+queue's answers. A section shows its 40 most pressing cards and a batch its 50
+latest mails; the List shows the rest.
 
 **Sections.** Now (due within two days, or urgent with someone waiting on you),
 Today (due within a week, urgent, or a wait past twice the sender's usual answer
@@ -482,8 +482,7 @@ with percentages.
 **Budget.** `feed.list` stays under one frame (16 ms) with hundreds of open
 threads; card words arrive in the background and never block keys.
 
-**Not yet.** The one-at-a-time yes/no sort's answers should also feed the
-clean-up rule once that flow is on main. Calendar clash on Date cards (needs calendar access), the
+**Not yet.** Calendar clash on Date cards (needs calendar access), the
 "matching file" on promises, a Bcc for introducers, per-item dates inside
 Reading digests.
 

@@ -332,6 +332,9 @@ public final class DaemonClient: Sendable {
     }
 
     public func unsnooze(_ ids: [String]) async throws { try await callVoid("feed.unsnooze", Params().with("ids", ids)) }
+
+    /// The user archived these automated mails from a card: a yes to "Archive" for their senders.
+    public func learnArchive(_ ids: [String]) async throws { try await callVoid("feed.learn_archive", Params().with("ids", ids)) }
     public func subscribe() async throws { try await callVoid("subscribe") }
 }
 

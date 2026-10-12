@@ -373,8 +373,8 @@ fn typical_reply_is_the_median_delay(env: Env) {
 
 const SHOP: &str = "noreply@shop.example";
 
-/// `n` earlier receipts from the shop, closed with `status`.
-fn closed_receipts(env: &Env, n: i64, status: &str) {
+/// The user archives `n` of the shop's receipts from the Feed.
+fn archive_receipts(env: &Env, n: i64) {
     for i in 0..n {
         let t = env.mail(
             &format!("r{i}"),
@@ -383,32 +383,40 @@ fn closed_receipts(env: &Env, n: i64, status: &str) {
             10 + i,
             "receipt",
         );
-        env.set_status(&t, status);
+        env.store.learn_archive(std::slice::from_ref(&t)).unwrap();
+        env.set_status(&t, "archive");
     }
 }
 
 #[rstest]
-#[case::archived("archive", true)]
-#[case::deleted("deleted", true)]
-#[case::still_to_do("todo", false)]
-fn a_sender_always_closed_is_noise(env: Env, #[case] status: &str, #[case] want: bool) {
-    closed_receipts(&env, 3, status);
+#[case::three_yes(3, true)]
+#[case::two_yes(2, false)]
+fn three_archives_teach_the_rule(env: Env, #[case] n: i64, #[case] want: bool) {
+    archive_receipts(&env, n);
     let t = env.mail("new", "new", SHOP, 0, "receipt");
     assert_eq!(env.unit(&t).learned_noise, want);
 }
 
 #[rstest]
-fn two_closed_threads_are_not_enough(env: Env) {
-    closed_receipts(&env, 2, "archive");
+fn closing_without_answering_teaches_nothing(env: Env) {
+    for i in 0..3 {
+        let t = env.mail(
+            &format!("r{i}"),
+            &format!("old{i}"),
+            SHOP,
+            10 + i,
+            "receipt",
+        );
+        env.set_status(&t, "archive");
+    }
     let t = env.mail("new", "new", SHOP, 0, "receipt");
     assert!(!env.unit(&t).learned_noise);
 }
 
 #[rstest]
-fn a_sender_you_answered_is_not_noise(env: Env) {
-    closed_receipts(&env, 3, "archive");
-    env.mail("me", "old0", ME, 9, "Merci !");
-    let t = env.mail("new", "new", SHOP, 0, "receipt");
+fn other_senders_are_not_covered(env: Env) {
+    archive_receipts(&env, 3);
+    let t = env.mail("new", "new", "noreply@bank.example", 0, "statement");
     assert!(!env.unit(&t).learned_noise);
 }
 
