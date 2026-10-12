@@ -1541,6 +1541,49 @@ fn restoring_undoes_a_column_accept(synced: World) {
     assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "todo");
 }
 
+/// A read thread nobody wrote to for ten years, sorted by a Jev that answers Waiting.
+fn sorted_stale_thread(w: &World) -> Value {
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        m.jev_status = Some("waiting".into());
+        m.add_message(
+            "m10",
+            "t10",
+            &["INBOX"],
+            &raw(
+                "Old Friend <old@example.com>",
+                "Offsite plans",
+                "Shall we?",
+                "m10",
+            ),
+            NOW - 3650 * 86_400_000,
+        );
+    }
+    w.wait_until("sync", |w| {
+        w.ok("search", json!({ "query": "Offsite plans" }))["threads"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    enable_router(w);
+    w.wait_until("background sorting", |w| {
+        !w.thread_by_subject("Offsite plans")["suggestion"].is_null()
+    });
+    w.thread_by_subject("Offsite plans")["suggestion"].clone()
+}
+
+#[rstest]
+fn stale_thread_gets_no_waiting_suggestion(synced: World) {
+    assert!(sorted_stale_thread(&synced)["status"].is_null());
+}
+
+#[rstest]
+fn stale_thread_still_gets_its_project(synced: World) {
+    assert_eq!(
+        sorted_stale_thread(&synced)["projects"],
+        json!(["Receipts"])
+    );
+}
+
 #[rstest]
 fn background_sorting_stops_at_the_daily_cap(synced: World) {
     synced.ok("router.set", json!({ "daily_cap": 0 }));

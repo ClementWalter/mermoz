@@ -866,6 +866,10 @@ impl Store {
         };
         store.seed()?;
         store.backfill_snippets()?;
+        let dropped = store.drop_stale_suggestions(now_ms())?;
+        if dropped > 0 {
+            tracing::info!(dropped, "dropped live-status suggestions on stale threads");
+        }
         Ok(store)
     }
 
@@ -2524,7 +2528,7 @@ impl Store {
                     } else {
                         format!("{name} <{email}>")
                     },
-                    days_ago: (now - date) / 86_400_000,
+                    days_ago: crate::jev::days_ago(*date, now),
                     text: new
                         .split_whitespace()
                         .collect::<Vec<_>>()
@@ -2550,7 +2554,13 @@ impl Store {
         let history = st
             .query_map([thread_id], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
+        let age = |r: Option<&(String, String, bool, i64, String, String)>| {
+            r.map_or(0, |r| crate::jev::days_ago(r.3, now))
+        };
         Ok(crate::jev::RouteInput {
+            today: chrono::Local::now().format("%Y-%m-%d").to_string(),
+            last_activity_days_ago: age(rows.last()),
+            thread_started_days_ago: age(rows.first()),
             subject: rows
                 .iter()
                 .map(|r| r.4.clone())
@@ -2735,6 +2745,36 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// Applies [`crate::jev::guard_stale`] to pending suggestions as threads age: on a
+    /// thread silent past the threshold, a status other than Done/Archive and the
+    /// priority are cleared; a suggestion left with nothing to show is closed as
+    /// "unchanged" so the thread is not asked again. Decided suggestions stay as they
+    /// are. Returns how many suggestions changed.
+    pub fn drop_stale_suggestions(&self, now: i64) -> Result<usize> {
+        let allowed = crate::jev::STALE_STATUSES
+            .iter()
+            .map(|s| format!("'{s}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let keep = format!("status IN ({allowed})");
+        let w = self.w.lock().unwrap();
+        Ok(w.execute(
+            &format!(
+                "UPDATE suggestions SET
+                   status = CASE WHEN {keep} THEN status END,
+                   status_confidence = CASE WHEN {keep} THEN status_confidence END,
+                   priority = NULL,
+                   decision = CASE WHEN {keep} OR projects_json != '[]' THEN NULL ELSE 'unchanged' END,
+                   decided = CASE WHEN {keep} OR projects_json != '[]' THEN NULL ELSE ?1 END
+                 WHERE decision IS NULL
+                   AND ((status IS NOT NULL AND NOT {keep}) OR priority IS NOT NULL)
+                   AND thread_id IN (SELECT id FROM threads WHERE (?1 - last_date) / {} > ?2)",
+                crate::jev::DAY_MS
+            ),
+            params![now, crate::jev::STALE_AFTER_DAYS],
+        )?)
     }
 
     /// Stores a background prediction for an already-read thread, reduced to what would
@@ -5430,6 +5470,111 @@ mod tests {
             .into_iter()
             .map(|(id, _)| id)
             .collect()
+    }
+
+    // ---- stale threads never keep a live status suggestion -------------
+
+    const TEN_YEARS_MS: i64 = 3650 * crate::jev::DAY_MS;
+
+    fn jev_says(status: &str, project: Option<&str>) -> Suggestion {
+        Suggestion {
+            status: Some(status.into()),
+            status_confidence: Some(0.9),
+            projects: project.into_iter().map(String::from).collect(),
+            project_confidence: project.map(|_| 0.9),
+            ..Default::default()
+        }
+    }
+
+    /// A Backlog thread last written to `age_ms` ago, holding Jev's stored verdict.
+    fn suggested(env: &Env, age_ms: i64, sg: &Suggestion) -> String {
+        let tid = open_thread(env, "1", "backlog", age_ms);
+        classify(env, &tid, sg);
+        tid
+    }
+
+    fn pending(env: &Env, tid: &str) -> Option<Suggestion> {
+        env.store.thread(tid).unwrap().suggestion
+    }
+
+    #[rstest]
+    fn stale_waiting_suggestion_loses_its_status(env: Env) {
+        let tid = suggested(&env, TEN_YEARS_MS, &jev_says("waiting", Some("Receipts")));
+        env.store.drop_stale_suggestions(now_ms()).unwrap();
+        assert_eq!(pending(&env, &tid).unwrap().status, None);
+    }
+
+    #[rstest]
+    fn stale_suggestion_keeps_its_project(env: Env) {
+        let tid = suggested(&env, TEN_YEARS_MS, &jev_says("todo", Some("Receipts")));
+        env.store.drop_stale_suggestions(now_ms()).unwrap();
+        assert_eq!(pending(&env, &tid).unwrap().projects, vec!["Receipts"]);
+    }
+
+    #[rstest]
+    fn stale_suggestion_with_nothing_left_is_dropped(env: Env) {
+        let tid = suggested(&env, TEN_YEARS_MS, &jev_says("waiting", None));
+        env.store.drop_stale_suggestions(now_ms()).unwrap();
+        assert_eq!(pending(&env, &tid), None);
+    }
+
+    #[rstest]
+    fn dropped_stale_suggestion_is_not_asked_again(env: Env) {
+        suggested(&env, TEN_YEARS_MS, &jev_says("waiting", None));
+        env.store.drop_stale_suggestions(now_ms()).unwrap();
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    #[case::recent_waiting(10 * crate::jev::DAY_MS, "waiting", Some("waiting"))]
+    #[case::stale_archive(TEN_YEARS_MS, "archive", Some("archive"))]
+    #[case::stale_done(TEN_YEARS_MS, "done", Some("done"))]
+    #[case::stale_in_progress(TEN_YEARS_MS, "in_progress", None)]
+    fn only_stale_live_statuses_are_dropped(
+        env: Env,
+        #[case] age_ms: i64,
+        #[case] status: &str,
+        #[case] want: Option<&str>,
+    ) {
+        let tid = suggested(&env, age_ms, &jev_says(status, Some("Receipts")));
+        env.store.drop_stale_suggestions(now_ms()).unwrap();
+        assert_eq!(pending(&env, &tid).unwrap().status.as_deref(), want);
+    }
+
+    #[rstest]
+    fn accepted_stale_move_stays(env: Env) {
+        let tid = suggested(&env, TEN_YEARS_MS, &jev_says("waiting", None));
+        env.store
+            .accept_suggestions(std::slice::from_ref(&tid))
+            .unwrap();
+        env.store.drop_stale_suggestions(now_ms()).unwrap();
+        assert_eq!(env.store.thread(&tid).unwrap().status, "waiting");
+    }
+
+    #[rstest]
+    fn dropping_counts_the_suggestions_it_changed(env: Env) {
+        suggested(&env, TEN_YEARS_MS, &jev_says("waiting", None));
+        assert_eq!(env.store.drop_stale_suggestions(now_ms()).unwrap(), 1);
+    }
+
+    #[rstest]
+    fn reopening_the_store_drops_stale_live_suggestions(env: Env) {
+        let tid = suggested(&env, TEN_YEARS_MS, &jev_says("waiting", Some("Receipts")));
+        let dir = env._dir.path();
+        let reopened = Store::open(&dir.join("db.sqlite"), &dir.join("blobs")).unwrap();
+        assert_eq!(
+            reopened.thread(&tid).unwrap().suggestion.unwrap().status,
+            None
+        );
+    }
+
+    #[rstest]
+    fn route_input_tells_the_last_activity(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", TEN_YEARS_MS);
+        assert_eq!(
+            env.store.route_input(&tid).unwrap().last_activity_days_ago,
+            3650
+        );
     }
 
     #[rstest]

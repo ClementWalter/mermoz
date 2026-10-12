@@ -844,6 +844,14 @@ async fn column_loop(svc: Arc<Service>) {
 }
 
 async fn column_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
+    // Threads keep ageing while the daemon runs; their pending live statuses go too.
+    if svc
+        .store
+        .drop_stale_suggestions(mermoz_core::model::now_ms())?
+        > 0
+    {
+        let _ = svc.events.send(Event::SuggestionsChanged);
+    }
     if !svc.store.threads_to_route(1)?.is_empty() {
         return Ok(Round::Yield);
     }

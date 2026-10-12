@@ -5,6 +5,9 @@
 //! threads with the same people, and a short description of every project. On the
 //! user's mailbox this took exact project accuracy from 40% to 78% (90% above 0.7
 //! confidence) at ~250 ms per thread.
+//!
+//! Age is told to Jev as words and numbers, and enforced in code: past
+//! [`STALE_AFTER_DAYS`] of silence a thread is never suggested as still live.
 
 use crate::model::{ROUTABLE_STATUSES, Suggestion};
 use crate::{Error, Result};
@@ -28,7 +31,7 @@ const STATUS_CRITERIA: &[(&str, &str)] = &[
     ),
     (
         "waiting",
-        "The user wrote last and is waiting for someone else to answer or deliver.",
+        "The user wrote last and is waiting for an answer or a delivery that could still plausibly come.",
     ),
     (
         "in_progress",
@@ -37,13 +40,45 @@ const STATUS_CRITERIA: &[(&str, &str)] = &[
     ("backlog", "Worth doing some day, not now."),
     (
         "done",
-        "Handled: the conversation reached its end and nothing is left to do.",
+        "Handled: the conversation reached its end, or has been quiet for months, and nothing is left to do.",
     ),
     (
         "archive",
         "Nothing to do and never was: newsletters, notifications, receipts, confirmations, FYI.",
     ),
 ];
+
+/// Days of silence after which a thread is over: Todo, Waiting and In Progress are no
+/// longer suggested. On the user's mailbox 99.8% of replies to the user came within 90
+/// days (p99 19 days) and 98.9% of the user's own replies did.
+pub const STALE_AFTER_DAYS: i64 = 90;
+
+/// The only statuses a stale thread may be suggested.
+pub const STALE_STATUSES: &[&str] = &["done", "archive"];
+
+pub const DAY_MS: i64 = 86_400_000;
+
+/// Whole days between a millisecond timestamp and `now_ms`.
+pub fn days_ago(date_ms: i64, now_ms: i64) -> i64 {
+    (now_ms - date_ms) / DAY_MS
+}
+
+/// Whether a thread silent for this many days is over.
+pub fn is_stale(last_activity_days_ago: i64) -> bool {
+    last_activity_days_ago > STALE_AFTER_DAYS
+}
+
+/// An age in words: Jev reads named spans more reliably than day counts.
+pub fn ago(days: i64) -> String {
+    match days {
+        ..=0 => "today".into(),
+        1 => "yesterday".into(),
+        2..14 => format!("{days} days ago"),
+        14..60 => format!("{} weeks ago", days / 7),
+        60..730 => format!("{} months ago", days / 30),
+        _ => format!("{} years ago", days / 365),
+    }
+}
 
 /// Priority options and the stored value each maps to (see `docs/protocol.md`).
 const PRIORITY_CRITERIA: &[(&str, &str, i64)] = &[
@@ -79,6 +114,10 @@ pub struct RouteMessage {
 /// Everything Jev is told about one thread.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RouteInput {
+    /// Local date the thread is judged on, `YYYY-MM-DD`.
+    pub today: String,
+    pub last_activity_days_ago: i64,
+    pub thread_started_days_ago: i64,
     pub subject: String,
     pub messages_in_thread: i64,
     pub last_message_from_me: bool,
@@ -91,6 +130,10 @@ pub struct RouteInput {
 impl RouteInput {
     fn state(&self) -> Value {
         let mut v = json!({
+            "today": self.today,
+            "last_activity": ago(self.last_activity_days_ago),
+            "last_activity_days_ago": self.last_activity_days_ago,
+            "thread_started_days_ago": self.thread_started_days_ago,
             "subject": self.subject,
             "messages_in_thread": self.messages_in_thread,
             "last_message_from_me": self.last_message_from_me,
@@ -130,7 +173,7 @@ pub fn questions(projects: &[(String, String)]) -> Value {
         "project": { "type": "choice", "criteria": folders, "instructions":
             "In which of the user's email folders should this thread be filed? If `sender_history` is present, it lists where the user filed earlier threads with the same people; it is strong evidence but not decisive." },
         "status": { "type": "choice", "criteria": status, "instructions":
-            "Where does this thread belong in the user's workflow once they have read it?" },
+            "Where does this thread belong in the user's workflow once they have read it? `last_activity` says how long ago anyone last wrote in the thread." },
         "priority": { "type": "choice", "criteria": priority, "instructions":
             "How soon does the user need to act on this thread?" },
         "automated": { "type": "noul", "instructions":
@@ -170,6 +213,24 @@ pub fn suggestion(answers: &Value, known_projects: &[String]) -> Suggestion {
     }
     s.automated = answers["automated"]["noul"].as_f64();
     s
+}
+
+/// Drops what cannot hold for a thread silent past [`STALE_AFTER_DAYS`]: any status but
+/// Done or Archive, and priority. Projects stay, since filing does not age.
+pub fn guard_stale(mut sg: Suggestion, last_activity_days_ago: i64) -> Suggestion {
+    if !is_stale(last_activity_days_ago) {
+        return sg;
+    }
+    if !sg
+        .status
+        .as_deref()
+        .is_some_and(|s| STALE_STATUSES.contains(&s))
+    {
+        sg.status = None;
+        sg.status_confidence = None;
+    }
+    sg.priority = None;
+    sg
 }
 
 /// Bar for suggestions on threads already sorted into a column: below it the thread
@@ -300,7 +361,7 @@ impl Client {
     ) -> Result<Routed> {
         let (answers, input_tokens) = self.ask_metered(&input.state(), questions).await?;
         Ok(Routed {
-            suggestion: suggestion(&answers, known),
+            suggestion: guard_stale(suggestion(&answers, known), input.last_activity_days_ago),
             input_tokens,
         })
     }
@@ -392,28 +453,114 @@ mod tests {
         assert!(q["project"]["criteria"]["none"].is_string());
     }
 
-    #[rstest]
-    fn sender_history_reads_as_filed_in() {
-        let input = RouteInput {
+    /// A one-message thread last written to `days` ago.
+    fn route_input(days: i64) -> RouteInput {
+        RouteInput {
+            today: "2026-10-12".into(),
+            last_activity_days_ago: days,
+            thread_started_days_ago: days + 10,
             subject: "Devis".into(),
             messages_in_thread: 1,
             last_message_from_me: false,
             recent_messages: vec![],
+            sender_history: vec![],
+        }
+    }
+
+    #[rstest]
+    fn sender_history_reads_as_filed_in() {
+        let input = RouteInput {
             sender_history: vec![("Immo/Houlgate".into(), 4)],
+            ..route_input(4)
         };
         assert_eq!(input.state()["sender_history"]["filed in Immo/Houlgate"], 4);
     }
 
     #[rstest]
     fn empty_sender_history_is_omitted() {
-        let input = RouteInput {
-            subject: "Devis".into(),
-            messages_in_thread: 1,
-            last_message_from_me: false,
-            recent_messages: vec![],
-            sender_history: vec![],
-        };
-        assert!(input.state().get("sender_history").is_none());
+        assert!(route_input(4).state().get("sender_history").is_none());
+    }
+
+    #[rstest]
+    #[case::today("today", json!("2026-10-12"))]
+    #[case::last_activity_in_words("last_activity", json!("10 years ago"))]
+    #[case::last_activity_in_days("last_activity_days_ago", json!(3650))]
+    #[case::thread_start("thread_started_days_ago", json!(3660))]
+    fn state_tells_the_thread_age(#[case] field: &str, #[case] want: Value) {
+        assert_eq!(route_input(3650).state()[field], want);
+    }
+
+    #[rstest]
+    fn status_question_points_at_the_age() {
+        assert!(
+            questions(&[])["status"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("`last_activity`")
+        );
+    }
+
+    #[rstest]
+    #[case::same_day(0, "today")]
+    #[case::one_day(1, "yesterday")]
+    #[case::days(9, "9 days ago")]
+    #[case::weeks(20, "2 weeks ago")]
+    #[case::months(100, "3 months ago")]
+    #[case::years(3700, "10 years ago")]
+    fn age_reads_as_words(#[case] days: i64, #[case] want: &str) {
+        assert_eq!(ago(days), want);
+    }
+
+    #[rstest]
+    #[case::exact_day(10 * DAY_MS, 10)]
+    #[case::partial_day_rounds_down(10 * DAY_MS - 1, 9)]
+    fn days_ago_counts_whole_days(#[case] age_ms: i64, #[case] want: i64) {
+        assert_eq!(days_ago(1_000 * DAY_MS - age_ms, 1_000 * DAY_MS), want);
+    }
+
+    fn live(status: &str) -> Suggestion {
+        Suggestion {
+            status: Some(status.into()),
+            status_confidence: Some(0.9),
+            projects: vec!["Immo".into()],
+            project_confidence: Some(0.9),
+            priority: Some(1),
+            automated: Some(0.1),
+        }
+    }
+
+    #[rstest]
+    #[case::waiting_on_a_recent_thread("waiting", 30, Some("waiting"))]
+    #[case::waiting_at_the_threshold("waiting", STALE_AFTER_DAYS, Some("waiting"))]
+    #[case::waiting_past_the_threshold("waiting", STALE_AFTER_DAYS + 1, None)]
+    #[case::todo_ten_years_on("todo", 3650, None)]
+    #[case::in_progress_ten_years_on("in_progress", 3650, None)]
+    #[case::backlog_ten_years_on("backlog", 3650, None)]
+    #[case::done_ten_years_on("done", 3650, Some("done"))]
+    #[case::archive_ten_years_on("archive", 3650, Some("archive"))]
+    fn stale_threads_only_get_closing_statuses(
+        #[case] status: &str,
+        #[case] days: i64,
+        #[case] want: Option<&str>,
+    ) {
+        assert_eq!(guard_stale(live(status), days).status.as_deref(), want);
+    }
+
+    #[rstest]
+    fn dropped_status_drops_its_confidence() {
+        assert_eq!(guard_stale(live("waiting"), 3650).status_confidence, None);
+    }
+
+    #[rstest]
+    fn stale_threads_keep_their_project() {
+        assert_eq!(guard_stale(live("waiting"), 3650).projects, vec!["Immo"]);
+    }
+
+    #[rstest]
+    #[case::recent(30, Some(1))]
+    #[case::stale(3650, None)]
+    fn stale_threads_have_no_priority(#[case] days: i64, #[case] want: Option<i64>) {
+        assert_eq!(guard_stale(live("todo"), days).priority, want);
     }
 
     fn column(status: (&str, f64), project: (&str, f64)) -> Suggestion {

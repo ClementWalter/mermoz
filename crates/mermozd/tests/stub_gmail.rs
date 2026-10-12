@@ -38,6 +38,8 @@ pub struct Mailbox {
     pub jev_auth: Vec<String>,
     /// Jev answers 429 (Retry-After 100 ms) to this many calls first.
     pub jev_rate_limited: usize,
+    /// Status the stub Jev picks; "archive" when unset.
+    pub jev_status: Option<String>,
     /// How long the stub AI takes to answer, to exercise slow providers.
     pub llm_delay_ms: u64,
     /// Bodies of the streamed chat requests the stub AI received.
@@ -262,7 +264,7 @@ async fn modify_thread(
 }
 
 /// Stub Jev: files everything under "Receipts" when that folder is offered, as
-/// automated mail to archive; yes/no questions answer 0.96.
+/// automated mail to archive (or `jev_status`); yes/no questions answer 0.96.
 async fn jev_systemone(
     State(s): State<Shared>,
     headers: axum::http::HeaderMap,
@@ -274,7 +276,7 @@ async fn jev_systemone(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    {
+    let status = {
         let mut m = s.lock().unwrap();
         m.jev_auth.push(auth);
         if m.jev_rate_limited > 0 {
@@ -286,7 +288,8 @@ async fn jev_systemone(
             )
                 .into_response();
         }
-    }
+        m.jev_status.clone().unwrap_or("archive".into())
+    };
     let mut answers = serde_json::Map::new();
     for (id, q) in body["questions"].as_object().into_iter().flatten() {
         let a = match (q["type"].as_str(), id.as_str()) {
@@ -295,7 +298,7 @@ async fn jev_systemone(
                 json!({ "type": "choice", "choice": "Receipts", "confidence": 0.92 })
             }
             (_, "project") => json!({ "type": "choice", "choice": "none", "confidence": 0.9 }),
-            (_, "status") => json!({ "type": "choice", "choice": "archive", "confidence": 0.9 }),
+            (_, "status") => json!({ "type": "choice", "choice": status, "confidence": 0.9 }),
             _ => json!({ "type": "choice", "choice": "none", "confidence": 0.8 }),
         };
         answers.insert(id.clone(), a);
