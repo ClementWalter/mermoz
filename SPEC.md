@@ -182,8 +182,13 @@ projects the thread is not in yet; "no change" is recorded and never shown.
 
 Each column carries a bar on top: "✦ 312 suggestions · Accept all", one button
 per destination ("→ Archive · Receipts 240"), and "Sorting… 1,240 / 7,256" while
-the pass is still going. Accepting a group is one ⌘Z away. Nothing moves until
-accepted. Cost: ~7,500 input tokens per call (~$2.30 for a 7,000-thread
+the pass is still going. Clicking "n suggestions · Review" lists every suggested
+thread of the column grouped by destination; clicking a destination chip lists only
+its threads ("Reviewing → Archive · 758", × or Esc to leave). The reading pane shows
+the selected thread; `y` accepts it, `x` (or × on its chip) dismisses it — it stays
+put and is not suggested again — and both move to the next row. "Accept these n",
+"Accept n selected" and the quicker "Accept all" are each one ⌘Z away. Nothing moves
+until accepted. Cost: ~7,500 input tokens per call (~$2.30 for a 7,000-thread
 Backlog); a daily allowance (default 20,000 calls, Settings › Developer) is a
 safety net, 429s honour Retry-After, outages back off exponentially, and token
 use is logged. This replaces the big-LLM column triage button.

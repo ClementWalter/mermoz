@@ -80,3 +80,56 @@ func pendingCountReads(_ n: Int, _ want: String) {
 @Test func remainingNeverGoesNegative() {
     #expect(column(classified: 13, total: 12).remaining == 0)
 }
+
+// MARK: reviewing
+
+private let names = ["archive": "Archive", "todo": "Todo"]
+
+@Test(arguments: [
+    SuggestionGroup(status: "archive", projects: ["Receipts"], count: 0),
+    SuggestionGroup(status: nil, projects: ["Clients/Acme, Inc"], count: 0),
+    SuggestionGroup(status: "todo", projects: [], count: 0),
+])
+func destinationSurvivesItsGroupKey(_ g: SuggestionGroup) {
+    #expect(SuggestionGroup(id: g.id) == g)
+}
+
+@Test func suggestionTargetsItsColumnGroup() {
+    let sg = Suggestion(status: "archive", projects: ["Receipts"])
+    #expect(sg.target.id == SuggestionGroup(status: "archive", projects: ["Receipts"], count: 758).id)
+}
+
+@Test func reviewOfOneDestinationNamesIt() {
+    let r = SuggestionReview(status: "backlog", group: SuggestionGroup(status: "archive", projects: [], count: 758))
+    #expect(r.title(count: 758, statusName: { names[$0] ?? $0 }, locale: en) == "Reviewing → Archive · 758")
+}
+
+@Test func reviewOfEverythingCountsSuggestions() {
+    let r = SuggestionReview(status: "backlog")
+    #expect(r.title(count: 2693, statusName: { $0 }, locale: en) == "Reviewing 2,693 suggestions")
+}
+
+@Test(arguments: [
+    (SuggestionReview(status: "backlog", group: SuggestionGroup(status: "archive", projects: [], count: 0)), "Accept these 758"),
+    (SuggestionReview(status: "backlog"), "Accept all 758"),
+])
+func reviewAcceptSaysWhatItCovers(_ r: SuggestionReview, _ want: String) {
+    #expect(r.acceptLabel(count: 758, locale: en) == want)
+}
+
+private func suggested(_ id: String, _ sg: Suggestion?) -> ThreadSummary {
+    ThreadSummary(id: id, number: "M-\(id)", accountId: "acc", subject: "s", snippet: "", participants: [], lastFrom: "",
+                  lastDate: 0, unread: false, messageCount: 1, hasAttachments: false, status: "backlog", priority: 0,
+                  suggestion: sg)
+}
+
+@Test func threadsGroupByDestination() {
+    let threads = [suggested("1", Suggestion(status: "archive")), suggested("2", Suggestion(status: "todo")),
+                   suggested("3", Suggestion(status: "archive"))]
+    let groups = Grouper.group(threads, by: .suggestion) { _ in ["archive|", "todo|"] }
+    #expect(groups.map { $0.threads.map(\.id) } == [["1", "3"], ["2"]])
+}
+
+@Test func displayMenuDoesNotOfferSuggestionGrouping() {
+    #expect(!Grouping.menuCases.contains(.suggestion))
+}

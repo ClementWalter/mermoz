@@ -12,7 +12,16 @@ public struct SuggestionGroup: Codable, Sendable, Equatable, Hashable, Identifia
         self.status = status; self.projects = projects; self.count = count
     }
 
-    public var id: String { (status ?? "") + "|" + projects.joined(separator: ",") }
+    /// Same for every thread going to the same place (the count is not part of it).
+    public var id: String { (status ?? "") + "|" + projects.joined(separator: "\u{1F}") }
+
+    /// Rebuilds a destination from its `id` (a `.suggestion` group key).
+    public init?(id: String) {
+        guard let bar = id.firstIndex(of: "|") else { return nil }
+        let s = String(id[..<bar])
+        let p = String(id[id.index(after: bar)...])
+        self.init(status: s.isEmpty ? nil : s, projects: p.isEmpty ? [] : p.components(separatedBy: "\u{1F}"), count: 0)
+    }
 
     /// "Archive · Receipts": the status by its display name, nested projects by their leaf.
     public func label(statusName: (String) -> String) -> String {
@@ -79,6 +88,31 @@ public struct ThreadState: Encodable, Sendable, Equatable {
         try c.encode(projects, forKey: DynamicKey("projects"))
         // An explicit null clears a follow-up date the accept could not have set.
         try c.encode(due, forKey: DynamicKey("due"))
+    }
+}
+
+/// Reviewing a column's suggestions before accepting: one destination, or all of them
+/// grouped by destination.
+public struct SuggestionReview: Equatable, Sendable {
+    public var status: String
+    /// nil: every suggestion of the column.
+    public var group: SuggestionGroup?
+
+    public init(status: String, group: SuggestionGroup? = nil) {
+        self.status = status; self.group = group
+    }
+
+    /// "Reviewing → Archive · 758" or "Reviewing 2,693 suggestions".
+    public func title(count: Int, statusName: (String) -> String, locale: Locale = .current) -> String {
+        let n = count.formatted(.number.locale(locale))
+        guard let group else { return "Reviewing \(ColumnSortText.pending(count, locale: locale))" }
+        return "Reviewing → \(group.label(statusName: statusName)) · \(n)"
+    }
+
+    /// "Accept these 758" / "Accept all 2,693".
+    public func acceptLabel(count: Int, locale: Locale = .current) -> String {
+        let n = count.formatted(.number.locale(locale))
+        return group == nil ? "Accept all \(n)" : "Accept these \(n)"
     }
 }
 

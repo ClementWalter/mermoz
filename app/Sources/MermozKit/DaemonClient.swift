@@ -105,10 +105,14 @@ public final class DaemonClient: Sendable {
 
     public func threads(status: [String]? = nil, project: String? = nil, accountId: String? = nil,
                         labelId: String? = nil, priority: [Int]? = nil, order: String? = nil, reverse: Bool = false,
-                        limit: Int = 300, offset: Int = 0) async throws -> ThreadPage {
-        try await call("threads.list", Params()
+                        limit: Int = 300, offset: Int = 0, suggested: SuggestionReview? = nil) async throws -> ThreadPage {
+        var p = Params()
             .with("status", status).with("project", project).with("account_id", accountId).with("label_id", labelId).with("order", order)
-            .with("priority", priority).with("reverse", reverse).with("limit", limit).with("offset", offset))
+            .with("priority", priority).with("reverse", reverse).with("limit", limit).with("offset", offset)
+        if let suggested {
+            p = suggested.group.map { p.with("suggested", TargetParam(status: $0.status, projects: $0.projects)) } ?? p.with("suggested", true)
+        }
+        return try await call("threads.list", p)
     }
 
     public func thread(_ id: String) async throws -> ThreadDetail { try await call("threads.get", Params().with("id", id)) }
@@ -125,6 +129,16 @@ public final class DaemonClient: Sendable {
         case .clear: p = p.null("due")
         }
         try await callVoid("threads.update", p)
+    }
+
+    /// Turns suggestions down; the threads stay put and are not suggested again.
+    public func rejectSuggestions(_ ids: [String]) async throws {
+        try await callVoid("threads.reject_suggestions", Params().with("ids", ids))
+    }
+
+    /// Undoes `rejectSuggestions`.
+    public func reopenSuggestions(_ ids: [String]) async throws {
+        try await callVoid("threads.reopen_suggestions", Params().with("ids", ids))
     }
 
     public func acceptSuggestions(_ ids: [String]) async throws {

@@ -119,9 +119,30 @@ enum Cmd {
         #[arg(long = "to-project", requires = "column")]
         to_projects: Vec<String>,
     },
+    /// Turn down the AI's suggestion for threads: they stay where they are and are
+    /// not suggested again until new mail arrives.
+    Reject {
+        #[arg(required = true)]
+        threads: Vec<String>,
+    },
     /// The AI's pending suggestions in a status column, grouped by where they go,
-    /// and how far background sorting of that column has got.
-    Suggestions { status: String },
+    /// and how far background sorting of that column has got; with --to/--to-project,
+    /// the threads of that one group (accept them with `mermoz accept`).
+    #[command(
+        after_help = "Examples:\n  mermoz suggestions backlog\n  mermoz suggestions backlog --to archive\n  mermoz suggestions backlog --to none --to-project Receipts"
+    )]
+    Suggestions {
+        status: String,
+        /// List the threads going to this status ("none": groups that only add projects).
+        #[arg(long)]
+        to: Option<String>,
+        /// List the threads going to exactly these projects (repeat for several).
+        #[arg(long = "to-project")]
+        to_projects: Vec<String>,
+        /// Most threads to list.
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
     /// Set a follow-up date (YYYY-MM-DD); "none" clears.
     Due { thread: String, date: String },
     /// Mark a thread read or unread.
@@ -792,8 +813,41 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             out.line(format!("accepted {}", v["accepted"].as_i64().unwrap_or(0)));
         }
-        Cmd::Suggestions { status } => {
+        Cmd::Reject { threads } => {
+            let v = c.call("threads.reject_suggestions", json!({ "ids": threads }))?;
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            out.line(format!("rejected {}", v["rejected"].as_i64().unwrap_or(0)));
+        }
+        Cmd::Suggestions {
+            status,
+            to,
+            to_projects,
+            limit,
+        } => {
             let status = resolve_status(&mut c, &status)?;
+            if to.is_some() || !to_projects.is_empty() {
+                let to = match to.as_deref() {
+                    None | Some("none") => Value::Null,
+                    Some(t) => json!(resolve_status(&mut c, t)?),
+                };
+                let v = c.call(
+                    "threads.list",
+                    json!({ "status": [status], "suggested": { "status": to, "projects": to_projects }, "limit": limit }),
+                )?;
+                if out.json {
+                    return {
+                        out.json(&v);
+                        Ok(())
+                    };
+                }
+                print_threads(&out, &v["threads"]);
+                return Ok(());
+            }
             let v = c.call("suggestions.summary", json!({ "statuses": [status] }))?;
             if out.json {
                 return {

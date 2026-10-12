@@ -88,6 +88,8 @@ final class AppModel {
     var sorting = false
     /// Why background sorting is on hold ("limit", "unavailable").
     var sortingPaused: String?
+    /// Reviewing a column's suggestions: the list shows only those threads.
+    var suggestionReview: SuggestionReview?
     /// Keys of AI actions in flight ("clean:<message>", "optimize:<message>").
     var aiBusy: Set<String> = []
     var threads: [ThreadSummary] = []
@@ -111,6 +113,8 @@ final class AppModel {
         var before: [ThreadSummary]
         /// A group accept: restored in one call, since most of its threads are off screen.
         var bulk = false
+        /// Threads whose suggestions were turned down; undo makes them pending again.
+        var rejected: [String] = []
     }
 
     var paletteMode: PaletteMode?
@@ -145,6 +149,7 @@ final class AppModel {
 
     /// Statuses the current view lists (nil: People, which lists no threads).
     var viewStatuses: [String]? {
+        if let r = suggestionReview { return [r.status] }
         let kind: ViewStatuses.Kind
         switch selection {
         case let .status(k): kind = .status(k)
@@ -248,6 +253,7 @@ final class AppModel {
 
     func select(_ s: SidebarSelection) {
         recordHistory()
+        suggestionReview = nil
         selection = s
         selectedThreadId = nil
         detail = nil
@@ -306,9 +312,10 @@ final class AppModel {
             } else {
                 // A refresh keeps the pages already scrolled through.
                 let limit = layout == .board ? 600 : max(300, threads.count)
-                pageQuery = PageQuery(statuses: statuses, project: project, accountId: accountId, labelId: labelId, order: order, reverse: reverse)
+                pageQuery = PageQuery(statuses: statuses, project: project, accountId: accountId, labelId: labelId, order: order,
+                                      reverse: reverse, suggested: suggestionReview)
                 let page = try await client.threads(status: statuses, project: project, accountId: accountId, labelId: labelId,
-                                                    order: order, reverse: reverse, limit: limit)
+                                                    order: order, reverse: reverse, limit: limit, suggested: suggestionReview)
                 fetched = page.threads
                 total = page.total
             }
@@ -338,6 +345,7 @@ final class AppModel {
         var labelId: String?
         var order: String
         var reverse: Bool
+        var suggested: SuggestionReview?
     }
 
     private var pageQuery: PageQuery?
@@ -352,7 +360,8 @@ final class AppModel {
             defer { loadingMore = false }
             do {
                 let page = try await client.threads(status: q.statuses, project: q.project, accountId: q.accountId, labelId: q.labelId,
-                                                    order: q.order, reverse: q.reverse, limit: 300, offset: offset)
+                                                    order: q.order, reverse: q.reverse, limit: 300, offset: offset,
+                                                    suggested: q.suggested)
                 let known = Set(threads.map(\.id))
                 threads += page.threads.filter { !known.contains($0.id) }
                 totalThreads = page.total
@@ -375,7 +384,7 @@ final class AppModel {
     func canOpenGroup(_ field: Grouping, _ key: String) -> Bool {
         switch field {
         case .status, .account: true
-        case .project: !key.isEmpty
+        case .project, .suggestion: !key.isEmpty
         case .priority, .none: false
         }
     }
@@ -389,6 +398,12 @@ final class AppModel {
             select(.status(key))
         case .project: select(.project(key))
         case .account: select(.account(key))
+        case .suggestion:
+            // A destination header narrows the review to that destination.
+            if let r = suggestionReview {
+                let g = columnSuggestions[r.status]?.groups.first { $0.id == key } ?? SuggestionGroup(id: key)
+                startReview(r.status, group: g)
+            }
         case .priority, .none: break
         }
     }
@@ -446,6 +461,11 @@ final class AppModel {
 
     /// Labels and projects read chronologically unless the user picked another grouping.
     var effectiveDisplay: DisplayOptions {
+        if let r = suggestionReview {
+            // One destination is a flat list; all of them are grouped by destination.
+            return DisplayOptions(grouping: r.group == nil ? .suggestion : .none,
+                                  ordering: display.ordering, reversed: display.reversed)
+        }
         let mailbox: Bool = switch selection {
         case .label, .project: true
         default: false
@@ -464,6 +484,8 @@ final class AppModel {
             case .priority: ["1", "2", "3", "4", "0"]
             case .project: projects.map(\.id)
             case .account: accounts.map(\.id)
+            // Largest destination first, as in the column's bar.
+            case .suggestion: suggestionReview.flatMap { columnSuggestions[$0.status] }?.groups.map(\.id) ?? []
             case .none: []
             }
         }
@@ -478,6 +500,12 @@ final class AppModel {
 
     /// Real size of a group when the server knows it (all-open views), else what's loaded.
     func groupTotal(_ g: ThreadGroup) -> Int {
+        if let r = suggestionReview {
+            if g.field == .suggestion {
+                return columnSuggestions[r.status]?.groups.first { $0.id == g.key }?.count ?? g.all.count
+            }
+            return totalThreads
+        }
         let allOpen: Bool = { if case .status = selection { return layout == .board } else { return false } }()
         guard allOpen else { return g.all.count }
         switch g.field {
@@ -485,7 +513,7 @@ final class AppModel {
         case .priority: return counts.priority?[g.key] ?? g.all.count
         case .project: return counts.project[g.key] ?? g.all.count
         case .account: return counts.account[g.key] ?? g.all.count
-        case .none: return g.all.count
+        case .suggestion, .none: return g.all.count
         }
     }
 
@@ -585,7 +613,9 @@ final class AppModel {
         guard let client else { return }
         var statuses: [String] = []
         var focus = false
-        if case let .status(k) = selection, layout == .list {
+        if let r = suggestionReview {
+            statuses = [r.status]
+        } else if case let .status(k) = selection, layout == .list {
             // One status listed: its bar sits on top of the list.
             statuses = [k]
             focus = true
@@ -636,6 +666,10 @@ final class AppModel {
                                            before: r.before, bulk: true))
                 if undoStack.count > 100 { undoStack.removeFirst() }
                 toast = r.accepted == 1 ? "Done as suggested" : "Accepted \(r.accepted.formatted()) suggestions — ⌘Z to undo"
+                // The reviewed threads are gone: back to the column.
+                if let rv = suggestionReview, rv.status == status, group == nil || rv.group?.id == group?.id {
+                    suggestionReview = nil
+                }
                 await refreshCounts()
                 await loadList()
             } catch { report(error) }
@@ -693,9 +727,76 @@ final class AppModel {
         }
     }
 
+    /// `y`: accepts the selected threads' suggestions and lands on the next row.
     func acceptSelected() {
         let ids = targetIds.filter { id in threads.first { $0.id == id }?.suggestion != nil }
+        guard !ids.isEmpty else { return }
+        // Undo is recorded from the rows on screen, before they leave the review.
         acceptSuggestions(ids)
+        advance(past: ids)
+    }
+
+    /// `x`: turns the selected threads' suggestions down (they stay where they are and
+    /// are not suggested again); ⌘Z brings the suggestions back.
+    func rejectSelected() {
+        let ids = targetIds.filter { id in threads.first { $0.id == id }?.suggestion != nil }
+        guard !ids.isEmpty, let client else { return }
+        reject(ids, client: client)
+    }
+
+    /// Turns one thread's suggestion down (the × on its chip).
+    func rejectSuggestion(_ id: String) {
+        guard let client else { return }
+        reject([id], client: client)
+    }
+
+    private func reject(_ ids: [String], client: DaemonClient) {
+        if suggestionReview != nil { advance(past: ids) }
+        for id in ids { setLocal(id) { $0.suggestion = nil } }
+        undoStack.append(UndoEntry(label: ids.count == 1 ? "Reject Suggestion" : "Reject \(ids.count) Suggestions",
+                                   before: [], rejected: ids))
+        Task {
+            do {
+                try await client.rejectSuggestions(ids)
+                toast = ids.count == 1 ? "Suggestion dismissed" : "Dismissed \(ids.count) suggestions"
+                await loadList()
+            } catch { report(error) }
+        }
+    }
+
+    /// Opens the row after `ids`; while reviewing, they leave the list at once.
+    private func advance(past ids: [String]) {
+        let order = layout == .list ? displayOrder : threads
+        let idx = order.firstIndex { ids.contains($0.id) }
+        let rest = order.filter { !ids.contains($0.id) }
+        if suggestionReview != nil {
+            threads.removeAll { ids.contains($0.id) }
+            totalThreads = max(0, totalThreads - ids.count)
+        }
+        multiSelection = []
+        guard let idx, ids.contains(selectedThreadId ?? "") else { return }
+        open(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id, record: false)
+    }
+
+    // MARK: reviewing suggestions
+
+    /// Shows only the column's suggested threads (one destination, or all grouped by
+    /// destination) and opens the first, so each can be read before deciding.
+    func startReview(_ status: String, group: SuggestionGroup? = nil) {
+        suggestionReview = SuggestionReview(status: status, group: group)
+        multiSelection = []
+        selectedThreadId = nil
+        detail = nil
+        Task {
+            await loadList()
+            if suggestionReview?.status == status, let first = displayOrder.first { open(first.id, record: false) }
+        }
+    }
+
+    func endReview() {
+        guard suggestionReview != nil else { return }
+        suggestionReview = nil
+        Task { await loadList() }
     }
 
     // MARK: multi-selection
@@ -748,6 +849,8 @@ final class AppModel {
         } else if !multiSelection.isEmpty {
             multiSelection = []
             anchorId = selectedThreadId
+        } else if suggestionReview != nil {
+            endReview()
         } else if selectedThreadId != nil {
             open(nil)
         } else if isReview, selectedDraftId != nil {
@@ -875,6 +978,7 @@ final class AppModel {
         guard let entry = undoStack.popLast(), let client else { toast = "Nothing to undo"; return }
         Task {
             do {
+                if !entry.rejected.isEmpty { try await client.reopenSuggestions(entry.rejected) }
                 if entry.bulk { try await client.restoreThreads(entry.before.map(ThreadState.init)) }
                 for t in entry.before where !entry.bulk {
                     let plan = RestorePlan.between(before: t, now: try await client.thread(t.id).thread)

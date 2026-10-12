@@ -178,6 +178,7 @@ struct CommandPalette: View {
                 command("c-unread", "Mark unread", "envelope.badge", detail: "U", keywords: ["new"]) { model.markUnreadSelected() },
             ]
             if model.threads.first(where: { $0.id == sel })?.suggestion != nil {
+                out.insert(command("c-reject", "Dismiss AI suggestion", "xmark", detail: "X", keywords: ["reject", "no"]) { model.rejectSelected() }, at: 0)
                 out.insert(command("c-accept", "Accept AI suggestion", "sparkle", detail: "Y", keywords: ["sort", "apply"]) { model.acceptSelected() }, at: 0)
             }
             if !(currentThread?.projects.isEmpty ?? true) {

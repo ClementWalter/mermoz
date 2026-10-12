@@ -352,8 +352,19 @@ pub struct ColumnSuggestions {
     pub total: i64,
 }
 
+/// Threads with a pending suggestion, for reviewing them before accepting.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SuggestedFilter {
+    /// Any pending suggestion.
+    Any,
+    /// Only those sending threads to this destination.
+    To(SuggestionGroup),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ThreadFilter {
+    /// Only threads with a pending suggestion (optionally to one destination).
+    pub suggested: Option<SuggestedFilter>,
     pub status: Option<Vec<String>>,
     /// Project (label) name.
     pub project: Option<String>,
@@ -1591,6 +1602,19 @@ impl Store {
             clauses.push(format!("t.priority IN ({})", vec!["?"; p.len()].join(",")));
             args.extend(p.iter().map(|x| (*x).into()));
         }
+        if let Some(sf) = &f.suggested {
+            let mut c = format!(
+                "EXISTS (SELECT 1 FROM suggestions s WHERE s.thread_id = t.id AND {PENDING_SUGGESTION}
+                   AND (s.status IS NOT NULL OR s.projects_json != '[]')"
+            );
+            if let SuggestedFilter::To(g) = sf {
+                c.push_str(" AND s.status IS ? AND s.projects_json = ?");
+                args.push(g.status.clone().into());
+                args.push(serde_json::to_string(&g.projects)?.into());
+            }
+            c.push(')');
+            clauses.push(c);
+        }
         let wh = if clauses.is_empty() {
             String::new()
         } else {
@@ -2586,6 +2610,37 @@ impl Store {
                 (n, d)
             })
             .collect())
+    }
+
+    /// Turns down pending suggestions: the threads stay where they are and are not
+    /// suggested again until new mail arrives. Returns how many were pending.
+    pub fn reject_suggestions(&self, ids: &[String]) -> Result<usize> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let mut n = 0;
+        for id in ids {
+            n += tx.execute(
+                "UPDATE suggestions SET decision = 'rejected', decided = ?2 WHERE thread_id = ?1 AND decision IS NULL",
+                params![id, now_ms()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Undoes [`Self::reject_suggestions`]: the suggestions are pending again.
+    pub fn reopen_suggestions(&self, ids: &[String]) -> Result<usize> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let mut n = 0;
+        for id in ids {
+            n += tx.execute(
+                "UPDATE suggestions SET decision = NULL, decided = NULL WHERE thread_id = ?1 AND decision = 'rejected'",
+                [id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Accepts pending suggestions as they stand: status, projects and priority apply,
@@ -5815,5 +5870,146 @@ mod tests {
         )
         .unwrap();
         assert!(s.my_past_messages(&tid, 5).unwrap().is_empty());
+    }
+
+    // ---- reviewing suggestions --------------------------------------------
+
+    fn archive_group() -> SuggestionGroup {
+        SuggestionGroup {
+            status: Some("archive".into()),
+            projects: vec!["Receipts".into()],
+            count: 0,
+        }
+    }
+
+    fn listed(env: &Env, suggested: SuggestedFilter) -> Vec<String> {
+        let f = ThreadFilter {
+            suggested: Some(suggested),
+            status: Some(vec!["backlog".into()]),
+            ..Default::default()
+        };
+        let mut ids: Vec<String> = env
+            .store
+            .threads(&f)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn sorted(ids: &[&String]) -> Vec<String> {
+        let mut v: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+        v.sort();
+        v
+    }
+
+    #[rstest]
+    fn review_lists_only_one_destination(env: Env) {
+        let (a, b, _) = two_archive_one_todo(&env);
+        assert_eq!(
+            listed(&env, SuggestedFilter::To(archive_group())),
+            sorted(&[&a, &b])
+        );
+    }
+
+    #[rstest]
+    fn review_of_everything_lists_every_suggested_thread(env: Env) {
+        let (a, b, c) = two_archive_one_todo(&env);
+        assert_eq!(listed(&env, SuggestedFilter::Any), sorted(&[&a, &b, &c]));
+    }
+
+    #[rstest]
+    fn review_skips_threads_without_a_change(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        let same = Suggestion {
+            status: Some("backlog".into()),
+            status_confidence: Some(0.9),
+            ..Default::default()
+        };
+        classify(&env, &tid, &same);
+        assert!(listed(&env, SuggestedFilter::Any).is_empty());
+    }
+
+    #[rstest]
+    fn rejected_suggestion_is_hidden(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        env.store
+            .reject_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        assert_eq!(env.store.thread(&a).unwrap().suggestion, None);
+    }
+
+    #[rstest]
+    fn rejected_thread_stays_where_it_is(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        env.store
+            .reject_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        assert_eq!(env.store.thread(&a).unwrap().status, "backlog");
+    }
+
+    #[rstest]
+    fn rejected_thread_drops_out_of_its_group(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        env.store
+            .reject_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        let col = env
+            .store
+            .column_suggestions("backlog", &ColumnScope::default())
+            .unwrap();
+        assert_eq!(col.groups[0].count, 1);
+    }
+
+    #[rstest]
+    fn rejected_thread_is_not_suggested_again(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        env.store
+            .reject_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        assert!(!to_classify(&env, &[]).contains(&a));
+    }
+
+    #[rstest]
+    fn rejecting_counts_only_pending_suggestions(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        env.store
+            .reject_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        assert_eq!(
+            env.store
+                .reject_suggestions(std::slice::from_ref(&a))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[rstest]
+    fn reopening_a_rejection_shows_the_suggestion_again(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        env.store
+            .reject_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        env.store
+            .reopen_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        assert!(env.store.thread(&a).unwrap().suggestion.is_some());
+    }
+
+    #[rstest]
+    fn reopening_leaves_accepted_suggestions_decided(env: Env) {
+        let (a, _, _) = two_archive_one_todo(&env);
+        env.store
+            .accept_suggestions(std::slice::from_ref(&a))
+            .unwrap();
+        assert_eq!(
+            env.store
+                .reopen_suggestions(std::slice::from_ref(&a))
+                .unwrap(),
+            0
+        );
     }
 }

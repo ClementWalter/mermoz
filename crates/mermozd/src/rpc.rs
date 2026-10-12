@@ -5,7 +5,9 @@ use mermoz_core::Error;
 use mermoz_core::model::ThreadState;
 use mermoz_core::model::{Draft, new_id, now_ms};
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
-use mermoz_core::store::{ColumnScope, SuggestionGroup, ThreadFilter, ThreadPatch};
+use mermoz_core::store::{
+    ColumnScope, SuggestedFilter, SuggestionGroup, ThreadFilter, ThreadPatch,
+};
 use mermoz_core::sync::Event;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -155,6 +157,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 _ => None,
             };
             let f = ThreadFilter {
+                suggested: suggested_filter(p)?,
                 status: str_list(p, "status")?,
                 project: opt_s(p, "project").or_else(|| opt_s(p, "project_id")),
                 account_id: opt_s(p, "account_id"),
@@ -216,6 +219,26 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let _ = svc.events.send(Event::ThreadsChanged(ids.clone()));
             svc.kick_all();
             Ok(json!({ "accepted": n }))
+        }
+        "threads.reject_suggestions" | "threads.reopen_suggestions" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            let ids: Vec<String> = ids
+                .iter()
+                .map(|i| st.resolve_thread_id(i))
+                .collect::<Result<_, _>>()?;
+            let n = if method == "threads.reject_suggestions" {
+                st.reject_suggestions(&ids)?
+            } else {
+                st.reopen_suggestions(&ids)?
+            };
+            let _ = svc.events.send(Event::ThreadsChanged(ids));
+            let _ = svc.events.send(Event::SuggestionsChanged);
+            let key = if method == "threads.reject_suggestions" {
+                "rejected"
+            } else {
+                "reopened"
+            };
+            Ok(json!({ key: n }))
         }
         "threads.mark_read" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;
@@ -735,6 +758,24 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             Ok(json!({}))
         }
         _ => Err(RpcError::new(-32601, format!("method not found: {method}"))),
+    }
+}
+
+/// `suggested`: true for any pending suggestion, or `{"status", "projects"}` for one destination.
+fn suggested_filter(p: &Value) -> Result<Option<SuggestedFilter>, RpcError> {
+    match p.get("suggested") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
+        Some(Value::Bool(true)) => Ok(Some(SuggestedFilter::Any)),
+        Some(g) => {
+            let mut g = g.clone();
+            // A destination is named by status and projects; the count is irrelevant here.
+            if let Some(o) = g.as_object_mut() {
+                o.entry("projects").or_insert(json!([]));
+            }
+            serde_json::from_value::<SuggestionGroup>(g)
+                .map(|g| Some(SuggestedFilter::To(g)))
+                .map_err(|e| RpcError::invalid(format!("bad 'suggested': {e}")))
+        }
     }
 }
 

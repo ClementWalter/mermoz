@@ -220,18 +220,28 @@ struct ProjectChips: View {
 struct SuggestionChip: View {
     @Environment(AppModel.self) private var model
     let suggestion: Suggestion
+    /// The thread it belongs to; when set, × dismisses the suggestion.
+    var threadId: String?
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "sparkle").font(.system(size: 9, weight: .semibold))
             Text(text).lineLimit(1)
+            if let threadId {
+                Button { model.rejectSuggestion(threadId) } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss this suggestion (x) — the thread stays where it is")
+                .accessibilityLabel("Dismiss suggestion")
+            }
         }
         .font(.system(size: 11))
         .foregroundStyle(Theme.accent)
         .padding(.horizontal, 6)
         .frame(height: 18)
         .background(Theme.accentSoft.opacity(0.8), in: RoundedRectangle(cornerRadius: 5))
-        .help("Suggested by AI — press y to accept")
+        .help("Suggested by AI — y to accept, x to dismiss")
     }
 
     private var text: String {

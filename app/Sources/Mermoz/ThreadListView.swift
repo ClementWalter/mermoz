@@ -10,7 +10,9 @@ struct ThreadListView: View {
         VStack(spacing: 0) {
             ListHeader()
             Divider().overlay(Theme.line)
-            if case let .status(k) = model.selection {
+            if let r = model.suggestionReview {
+                SuggestionReviewBar(review: r).padding(.horizontal, 12).padding(.vertical, 8)
+            } else if case let .status(k) = model.selection {
                 ColumnSuggestionBar(status: k).padding(.horizontal, 12).padding(.vertical, 8)
             }
             if model.threads.isEmpty {
@@ -99,7 +101,7 @@ extension ThreadListView {
 /// Single-key shortcuts, handled for the whole main window (see `install`) so they
 /// work wherever the focus is: list, board or a message being read.
 enum ThreadKeys {
-    static let characters = "jkeay#usmprct?/"
+    static let characters = "jkeay#usmprct?/x"
 
     /// Routes key presses to the shortcuts unless the user is typing in a field, a
     /// draft is open, or another window (Settings) is in front.
@@ -128,6 +130,7 @@ enum ThreadKeys {
         // Typed character, so it is Shift+3 on QWERTY and a plain key on AZERTY alike.
         case "#": model.moveSelected(to: "deleted")
         case "y": model.acceptSelected()
+        case "x": model.rejectSelected()
         case "u": model.markUnreadSelected()
         case "s": if model.selectedThreadId != nil { model.paletteMode = .status }
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
@@ -220,6 +223,11 @@ struct GroupLabel: View {
             case .account:
                 Circle().fill(Theme.accountColor(key, among: model.accounts)).frame(width: 8, height: 8)
                 Text(model.accounts.first { $0.id == key }?.email ?? key).lineLimit(1)
+            case .suggestion:
+                Image(systemName: "sparkle").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.accent)
+                Text(SuggestionGroup(id: key).map { g in
+                    "→ " + g.label { k in model.statuses.first { $0.key == k }?.name ?? k }
+                } ?? "No suggestion")
             case .none:
                 EmptyView()
             }
@@ -247,7 +255,7 @@ struct GroupHeaderView: View {
                 Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
                 // Status columns accept through their bar, which covers threads not loaded yet.
-                if group.field != .status { AcceptAllButton(threads: group.all) }
+                if group.field != .status { GroupAcceptButton(group: group) }
             }
             if showsBar { ColumnSuggestionBar(status: group.key) }
         }
@@ -276,6 +284,26 @@ struct SubGroupHeader: View {
     }
 }
 
+/// A group's accept control: a destination being reviewed accepts all its threads
+/// (loaded or not); other groups accept the suggestions of their loaded threads.
+struct GroupAcceptButton: View {
+    @Environment(AppModel.self) private var model
+    let group: ThreadGroup
+
+    var body: some View {
+        if group.field == .suggestion, let r = model.suggestionReview, let g = SuggestionGroup(id: group.key) {
+            Button { model.acceptColumn(r.status, group: g) } label: {
+                Label("Accept these \(model.groupTotal(group).formatted())", systemImage: "checkmark.circle").font(.system(size: 11.5))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accent)
+            .help("Move them where the AI suggests — ⌘Z to undo")
+        } else {
+            AcceptAllButton(threads: group.all)
+        }
+    }
+}
+
 /// "Accept n": applies every pending AI suggestion in a group at once.
 struct AcceptAllButton: View {
     @Environment(AppModel.self) private var model
@@ -301,10 +329,10 @@ struct DisplayMenu: View {
     var body: some View {
         Menu {
             Picker("Grouping", selection: binding(\.grouping)) {
-                ForEach(Grouping.allCases, id: \.self) { Text($0.label).tag($0) }
+                ForEach(Grouping.menuCases, id: \.self) { Text($0.label).tag($0) }
             }
             Picker("Sub-grouping", selection: binding(\.subGrouping)) {
-                ForEach(Grouping.allCases, id: \.self) { Text($0 == .none ? "None" : $0.label).tag($0) }
+                ForEach(Grouping.menuCases, id: \.self) { Text($0 == .none ? "None" : $0.label).tag($0) }
             }
             Picker("Ordering", selection: binding(\.ordering)) {
                 ForEach(Ordering.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -351,7 +379,7 @@ struct ThreadRow: View {
                     Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(Theme.text3)
                 }
                 Spacer(minLength: 4)
-                if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg) }
+                if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg, threadId: thread.id) }
                 ProjectChips(names: thread.projects)
                 if let due = thread.due { Chip(small: true) { Text("Due \(Format.due(due))") } }
                 Text(Format.short(thread.lastDate)).font(.system(size: 12)).foregroundStyle(Theme.text3)

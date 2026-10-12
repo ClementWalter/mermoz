@@ -24,6 +24,8 @@ struct BoardView: View {
             .frame(height: 50)
             .glassPanel()
 
+            if let r = model.suggestionReview { SuggestionReviewBar(review: r) }
+
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     HStack(alignment: .top, spacing: 10) {
@@ -93,7 +95,7 @@ struct BoardColumn: View {
                 }
                 Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
-                if group.field != .status { AcceptAllButton(threads: group.all) }
+                if group.field != .status { GroupAcceptButton(group: group) }
             }
             .padding(.horizontal, 4).padding(.top, 2)
             if group.field == .status { ColumnSuggestionBar(status: group.key) }
@@ -182,7 +184,7 @@ struct BoardCard: View {
                 ProjectChips(names: thread.projects, limit: 1)
             }
             .font(.system(size: 11.5)).foregroundStyle(Theme.text2)
-            if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg) }
+            if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg, threadId: thread.id) }
             if let next = thread.nextAction, !next.isEmpty {
                 Label(next, systemImage: "sparkle").font(.system(size: 11.5)).foregroundStyle(Theme.text2).lineLimit(2)
             }

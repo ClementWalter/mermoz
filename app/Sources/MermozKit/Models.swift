@@ -79,6 +79,9 @@ public struct Suggestion: Codable, Sendable, Equatable, Hashable {
 
     /// Nothing worth showing.
     public var isEmpty: Bool { status == nil && projects.isEmpty }
+
+    /// Where it would send the thread, as a column's suggestion groups name it.
+    public var target: SuggestionGroup { SuggestionGroup(status: status, projects: projects, count: 0) }
 }
 
 /// Instant sorting (TypeSafe) state, from `router.get`.

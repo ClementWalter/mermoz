@@ -1941,3 +1941,93 @@ fn mcp_chat_answers(chatting: (World, String)) {
             .contains("Move to Waiting")
     );
 }
+
+// ---- reviewing suggestions before accepting -----------------------------
+
+fn subjects(v: &Value) -> Vec<String> {
+    v["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["subject"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[rstest]
+fn review_lists_the_threads_of_one_destination(synced: World) {
+    sorted_todo(&synced);
+    let v = synced.ok(
+        "threads.list",
+        json!({ "status": ["todo"], "suggested": { "status": "archive", "projects": ["Receipts"] } }),
+    );
+    assert_eq!(subjects(&v), vec!["Budget sheet"]);
+}
+
+#[rstest]
+fn review_of_another_destination_is_empty(synced: World) {
+    sorted_todo(&synced);
+    let v = synced.ok(
+        "threads.list",
+        json!({ "status": ["todo"], "suggested": { "status": "done" } }),
+    );
+    assert_eq!(v["total"], 0);
+}
+
+#[rstest]
+fn review_of_everything_lists_suggested_threads(synced: World) {
+    sorted_todo(&synced);
+    let v = synced.ok(
+        "threads.list",
+        json!({ "status": ["todo"], "suggested": true }),
+    );
+    assert_eq!(subjects(&v), vec!["Budget sheet"]);
+}
+
+#[rstest]
+fn rejecting_drops_the_thread_from_its_group(synced: World) {
+    sorted_todo(&synced);
+    let t = synced.thread_by_subject("Budget sheet");
+    synced.ok("threads.reject_suggestions", json!({ "ids": [t["id"]] }));
+    assert_eq!(todo_column(&synced)["pending"], 0);
+}
+
+#[rstest]
+fn rejecting_keeps_the_thread_in_place(synced: World) {
+    sorted_todo(&synced);
+    let t = synced.thread_by_subject("Budget sheet");
+    synced.ok("threads.reject_suggestions", json!({ "ids": [t["id"]] }));
+    assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "todo");
+}
+
+#[rstest]
+fn undoing_a_rejection_brings_the_suggestion_back(synced: World) {
+    sorted_todo(&synced);
+    let t = synced.thread_by_subject("Budget sheet");
+    synced.ok("threads.reject_suggestions", json!({ "ids": [t["id"]] }));
+    synced.ok("threads.reopen_suggestions", json!({ "ids": [t["id"]] }));
+    assert_eq!(todo_column(&synced)["pending"], 1);
+}
+
+#[rstest]
+fn cli_lists_the_threads_of_a_destination(synced: World) {
+    sorted_todo(&synced);
+    let out = synced.cli(&[
+        "--json",
+        "suggestions",
+        "todo",
+        "--to",
+        "archive",
+        "--to-project",
+        "Receipts",
+    ]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(subjects(&v), vec!["Budget sheet"]);
+}
+
+#[rstest]
+fn cli_rejects_a_suggestion(synced: World) {
+    sorted_todo(&synced);
+    let t = synced.thread_by_subject("Budget sheet");
+    synced.cli(&["reject", t["number"].as_str().unwrap()]);
+    assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
+}

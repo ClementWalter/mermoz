@@ -6,7 +6,7 @@ struct ShortcutsOverlay: View {
 
     private let groups: [(String, [(String, String)])] = [
         ("Navigate", [("j / ↓", "Next thread"), ("k / ↑", "Previous thread"), ("⇧↑ / ⇧↓", "Select several"), ("⇧ / ⌘ click", "Select a range / one more"), ("Esc", "Close message or panel"), ("⌘← / ⌘→", "Back / forward"), ("⌘K or /", "Search or run a command")]),
-        ("Sort", [("y", "Accept the AI's suggestion"), ("e", "Done"), ("a", "Archive"), ("⌫ / ⌘⌫ / #", "Delete"), ("u", "Mark unread"), ("⌘Z", "Undo"),
+        ("Sort", [("y", "Accept the AI's suggestion"), ("x", "Dismiss the AI's suggestion"), ("e", "Done"), ("a", "Archive"), ("⌫ / ⌘⌫ / #", "Delete"), ("u", "Mark unread"), ("⌘Z", "Undo"),
                   ("s", "Set status"), ("p", "Set priority"), ("m", "Move to project")]),
         ("Write", [("r", "Reply"), ("c", "New message"), ("t", "Chat about this"), ("⌘↩", "Send / approve"), ("Esc", "Discard draft")]),
         ("Help", [("? or ⌘/", "Show this help")]),
