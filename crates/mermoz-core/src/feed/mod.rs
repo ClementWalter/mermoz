@@ -251,6 +251,9 @@ pub struct FeedUnit {
     pub from_backlog: bool,
     /// The last sender looks like a machine (no-reply address), known without Jev.
     pub automated_sender: bool,
+    /// The user's own decisions mark this sender as noise (always closed, never
+    /// answered): only such mail is grouped into a batch.
+    pub learned_noise: bool,
 }
 
 impl FeedUnit {
@@ -408,8 +411,13 @@ pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
             Some(a) => format!("There is {a} to pay."),
             None => "There is something to pay.".into(),
         }),
-        Kind::Cleanup => out.push("Sent automatically; nothing for you to do.".into()),
-        Kind::Reading => out.push("A newsletter; read it when you like.".into()),
+        Kind::Cleanup => out.push(
+            "Looks automated. Once you have archived a few from this sender, they are cleared together."
+                .into(),
+        ),
+        Kind::Reading => out.push(
+            "A newsletter. Once you have archived a few from this sender, they are grouped.".into(),
+        ),
         Kind::Intro => out.push("Someone new for you.".into()),
         _ => {}
     }
@@ -549,7 +557,7 @@ fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
             } else {
                 format!("{n} newsletters to read or archive")
             },
-            "Newsletters; read them when you like.",
+            "You always archive these newsletters without answering.",
         ),
         _ => (
             "batch:cleanup",
@@ -558,7 +566,7 @@ fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
             } else {
                 format!("Clear {n} automated mails")
             },
-            "Sent automatically; none of them needs anything from you.",
+            "You always archive mail from these senders without answering.",
         ),
     };
     // A batch's words are the one-line summaries of its members.
@@ -614,9 +622,11 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
     let (mut cleanup, mut reading) = (vec![], vec![]);
     for u in units {
         let kind = effective_kind(&u);
+        // Batches only hold what the user's own history vouches for; anything else
+        // automated is a card of its own, decided one at a time.
         match kind {
-            Kind::Cleanup => cleanup.push(u),
-            Kind::Reading => reading.push(u),
+            Kind::Cleanup if u.learned_noise => cleanup.push(u),
+            Kind::Reading if u.learned_noise => reading.push(u),
             _ => {
                 let sec = section(&u, kind, today);
                 let key = order_key(&u, today);

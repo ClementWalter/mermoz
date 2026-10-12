@@ -24,7 +24,12 @@ const DAY_MS: i64 = 86_400_000;
 const UNIT_COLS: &str = "j.judged, j.kind, j.needs_reply, j.urgency, j.due, j.due_time, j.amount, j.automated, \
     j.sender_weight, j.typical_reply_days, x.json, \
     CASE WHEN t.status = 'waiting' THEN (SELECT MAX(m.date) FROM messages m WHERE m.thread_id = t.id AND m.is_from_me = 1) END, \
-    CASE WHEN j.judged IS NOT 1 THEN (SELECT m.from_email FROM messages m WHERE m.thread_id = t.id ORDER BY m.date DESC LIMIT 1) END";
+    CASE WHEN j.judged IS NOT 1 OR j.kind IN ('cleanup', 'reading') OR j.automated >= 0.7 \
+      THEN (SELECT m.from_email FROM messages m WHERE m.thread_id = t.id ORDER BY m.date DESC LIMIT 1) END";
+
+/// A sender's mail is known noise once the user closed this many of their earlier
+/// threads (archived, done or deleted) without ever answering one.
+pub const NOISE_MIN_THREADS: i64 = 3;
 
 /// How many columns `UNIT_COLS` has.
 const UNIT_COL_COUNT: usize = 13;
@@ -219,55 +224,88 @@ impl Store {
         let (scope_sql, scope_args) = scope.clause();
         let marks = vec!["?"; FEED_STATUSES.len()].join(",");
         let horizon = (today + chrono::Duration::days(feed::BACKLOG_HORIZON_DAYS)).to_string();
-        let mut args: Vec<rusqlite::types::Value> =
-            FEED_STATUSES.iter().map(|s| s.to_string().into()).collect();
-        args.push(today.to_string().into());
-        args.push(horizon.into());
-        args.push(now.into());
-        args.extend(scope_args);
-        let r = self.r.lock().unwrap();
-        let sql = format!(
+        let base = format!(
             "SELECT {THREAD_COLS}, {UNIT_COLS} FROM threads t
              LEFT JOIN feed_judgments j ON j.thread_id = t.id
              LEFT JOIN feed_texts x ON x.thread_id = t.id AND x.for_date >= t.last_date AND x.json IS NOT NULL
+             LEFT JOIN feed_snoozes z ON z.thread_id = t.id"
+        );
+        let not_snoozed = "(z.thread_id IS NULL OR z.until <= ? OR z.for_date < t.last_date)";
+        // Two queries, each on its own index: the open statuses, then the few Backlog
+        // threads whose judged date is close (Backlog itself is never scanned).
+        let open_sql = format!(
+            "{base} WHERE t.status IN ({marks}) AND {not_snoozed}{scope_sql} ORDER BY t.last_date DESC"
+        );
+        let mut open_args: Vec<rusqlite::types::Value> =
+            FEED_STATUSES.iter().map(|s| s.to_string().into()).collect();
+        open_args.push(now.into());
+        open_args.extend(scope_args.iter().cloned());
+        // CROSS JOIN keeps the judgments (indexed by date) as the outer loop.
+        let backlog_sql = format!(
+            "SELECT {THREAD_COLS}, {UNIT_COLS} FROM feed_judgments j CROSS JOIN threads t ON t.id = j.thread_id
+             LEFT JOIN feed_texts x ON x.thread_id = t.id AND x.for_date >= t.last_date AND x.json IS NOT NULL
              LEFT JOIN feed_snoozes z ON z.thread_id = t.id
-             WHERE (t.status IN ({marks})
-                    OR (t.status = 'backlog' AND j.judged = 1 AND j.for_date >= t.last_date AND j.due BETWEEN ? AND ?))
-               AND (z.thread_id IS NULL OR z.until <= ? OR z.for_date < t.last_date){scope_sql}
+             WHERE j.judged = 1 AND j.due BETWEEN ? AND ? AND t.status = 'backlog' AND j.for_date >= t.last_date
+               AND {not_snoozed}{scope_sql}
              ORDER BY t.last_date DESC"
         );
-        let mut st = r.prepare_cached(&sql)?;
-        let mut rows: Vec<UnitRow> = st
-            .query_map(params_from_iter(args.iter()), |row| {
-                let t = thread_row(row)?;
-                // The feed's columns follow the thread's own, however many those are.
-                let b = row.as_ref().column_count() - UNIT_COL_COUNT;
-                let judged: Option<i64> = row.get(b)?;
-                let j = (judged == Some(1)).then(|| -> rusqlite::Result<Judgment> {
-                    Ok(Judgment {
-                        kind: kind_of(row.get(b + 1)?),
-                        needs_reply: row.get(b + 2)?,
-                        urgency: row.get(b + 3)?,
-                        due: row.get(b + 4)?,
-                        due_time: row.get(b + 5)?,
-                        amount: row.get(b + 6)?,
-                        automated: row.get(b + 7)?,
-                        sender_weight: row.get::<_, Option<f64>>(b + 8)?.unwrap_or(0.0),
-                        typical_reply_days: row.get(b + 9)?,
+        let mut backlog_args: Vec<rusqlite::types::Value> =
+            vec![today.to_string().into(), horizon.into(), now.into()];
+        backlog_args.extend(scope_args);
+        let read_row = |row: &rusqlite::Row| -> rusqlite::Result<UnitRow> {
+            let t = thread_row(row)?;
+            // The feed's columns follow the thread's own, however many those are.
+            let b = row.as_ref().column_count() - UNIT_COL_COUNT;
+            let judged: Option<i64> = row.get(b)?;
+            let j = if judged == Some(1) {
+                Some(Judgment {
+                    kind: kind_of(row.get(b + 1)?),
+                    needs_reply: row.get(b + 2)?,
+                    urgency: row.get(b + 3)?,
+                    due: row.get(b + 4)?,
+                    due_time: row.get(b + 5)?,
+                    amount: row.get(b + 6)?,
+                    automated: row.get(b + 7)?,
+                    sender_weight: row.get::<_, Option<f64>>(b + 8)?.unwrap_or(0.0),
+                    typical_reply_days: row.get(b + 9)?,
+                })
+            } else {
+                None
+            };
+            let texts = row
+                .get::<_, Option<String>>(b + 10)?
+                .and_then(|s| serde_json::from_str(&s).ok());
+            let my_last: Option<i64> = row.get(b + 11)?;
+            let last_sender: Option<String> = row.get(b + 12)?;
+            Ok((t, j, texts, my_last, last_sender.unwrap_or_default()))
+        };
+        let mut rows: Vec<UnitRow> = vec![];
+        {
+            let r = self.r.lock().unwrap();
+            for (sql, args) in [(&open_sql, &open_args), (&backlog_sql, &backlog_args)] {
+                let mut st = r.prepare_cached(sql)?;
+                rows.extend(
+                    st.query_map(params_from_iter(args.iter()), read_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
+                );
+            }
+        }
+        // Only mail that looks automated needs the user's history about its sender.
+        let senders: Vec<String> = rows
+            .iter()
+            .filter(|r| {
+                is_automated(&r.4)
+                    || r.1.as_ref().is_some_and(|j| {
+                        j.automated.unwrap_or(0.0) >= 0.7
+                            || matches!(j.kind, Some(Kind::Cleanup | Kind::Reading))
                     })
-                });
-                let j = match j {
-                    Some(r) => Some(r?),
-                    None => None,
-                };
-                let texts = row
-                    .get::<_, Option<String>>(b + 10)?
-                    .and_then(|s| serde_json::from_str(&s).ok());
-                let my_last: Option<i64> = row.get(b + 11)?;
-                let last_sender: Option<String> = row.get(b + 12)?;
-                Ok((t, j, texts, my_last, last_sender.unwrap_or_default()))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+            })
+            .map(|r| r.4.to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let noise = self.learned_noise(&senders)?;
         Ok(rows
             .drain(..)
             .map(|(t, judgment, texts, my_last, sender)| {
@@ -277,6 +315,7 @@ impl Store {
                     id: t.id.clone(),
                     from_backlog: t.status == "backlog",
                     automated_sender: is_automated(&sender),
+                    learned_noise: noise.contains(&sender.to_lowercase()),
                     threads: vec![t],
                     judgment,
                     texts,
@@ -284,6 +323,39 @@ impl Store {
                 }
             })
             .collect())
+    }
+
+    /// Senders whose mail the user's own decisions mark as noise: at least
+    /// [`NOISE_MIN_THREADS`] of their threads closed (archive, done, deleted) and none
+    /// ever answered. Every archive in the feed teaches it; no AI guess counts.
+    pub fn learned_noise(&self, senders: &[String]) -> Result<std::collections::HashSet<String>> {
+        let mut out = std::collections::HashSet::new();
+        let r = self.r.lock().unwrap();
+        for chunk in senders.chunks(500) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let mut st = r.prepare(&format!(
+                "WITH th AS (SELECT DISTINCT lower(m.from_email) e, m.thread_id FROM messages m
+                             WHERE lower(m.from_email) IN ({marks}))
+                 SELECT th.e,
+                   SUM(t.status IN ('archive', 'done', 'deleted')),
+                   SUM(EXISTS (SELECT 1 FROM messages x WHERE x.thread_id = th.thread_id AND x.is_from_me = 1))
+                 FROM th JOIN threads t ON t.id = th.thread_id GROUP BY th.e"
+            ))?;
+            let rows = st.query_map(params_from_iter(chunk.iter()), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (e, closed, answered) = row?;
+                if closed >= NOISE_MIN_THREADS && answered == 0 {
+                    out.insert(e);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Fills in projects and pending suggestions on the threads a feed shows; done after

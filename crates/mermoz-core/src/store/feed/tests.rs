@@ -371,6 +371,47 @@ fn typical_reply_is_the_median_delay(env: Env) {
     assert_eq!(days, Some(3.0));
 }
 
+const SHOP: &str = "noreply@shop.example";
+
+/// `n` earlier receipts from the shop, closed with `status`.
+fn closed_receipts(env: &Env, n: i64, status: &str) {
+    for i in 0..n {
+        let t = env.mail(
+            &format!("r{i}"),
+            &format!("old{i}"),
+            SHOP,
+            10 + i,
+            "receipt",
+        );
+        env.set_status(&t, status);
+    }
+}
+
+#[rstest]
+#[case::archived("archive", true)]
+#[case::deleted("deleted", true)]
+#[case::still_to_do("todo", false)]
+fn a_sender_always_closed_is_noise(env: Env, #[case] status: &str, #[case] want: bool) {
+    closed_receipts(&env, 3, status);
+    let t = env.mail("new", "new", SHOP, 0, "receipt");
+    assert_eq!(env.unit(&t).learned_noise, want);
+}
+
+#[rstest]
+fn two_closed_threads_are_not_enough(env: Env) {
+    closed_receipts(&env, 2, "archive");
+    let t = env.mail("new", "new", SHOP, 0, "receipt");
+    assert!(!env.unit(&t).learned_noise);
+}
+
+#[rstest]
+fn a_sender_you_answered_is_not_noise(env: Env) {
+    closed_receipts(&env, 3, "archive");
+    env.mail("me", "old0", ME, 9, "Merci !");
+    let t = env.mail("new", "new", SHOP, 0, "receipt");
+    assert!(!env.unit(&t).learned_noise);
+}
+
 #[rstest]
 fn waiting_thread_shows_as_waiting_for_the_ai(env: Env) {
     let t = env.mail("m1", "t1", MARIE, 0, "hi");

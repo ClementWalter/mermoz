@@ -193,7 +193,7 @@ public enum FeedActions {
         case .waiting: "Nudge"
         case .decision: "Reply"
         case .event: card.due == nil ? "Open" : "Add to Calendar"
-        case .cleanup, .reading: card.members.count == 1 ? "Archive" : "Archive \(card.members.count)"
+        case .cleanup, .reading: card.members.count > 1 ? "Archive \(card.members.count)" : "Archive"
         case .sign: "Open to sign"
         case .payment, .other: "Open"
         }

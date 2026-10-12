@@ -3068,8 +3068,24 @@ fn feed_shows_open_demo_mail_without_jev(demo: World) {
 }
 
 #[rstest]
-fn no_reply_senders_are_one_clean_up_card_without_jev(demo: World) {
-    assert!(demo.cards().iter().any(|c| c["id"] == "batch:cleanup"));
+fn senders_you_always_archive_are_cleared_together(demo: World) {
+    let batch = demo
+        .cards()
+        .into_iter()
+        .find(|c| c["id"] == "batch:cleanup")
+        .unwrap();
+    assert!(
+        batch["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Votre reçu Citymove")
+    );
+}
+
+#[rstest]
+fn an_automated_sender_never_archived_is_its_own_card(demo: World) {
+    assert_eq!(demo.card("Commande 48211")["kind"], "cleanup");
 }
 
 #[rstest]
@@ -3132,7 +3148,7 @@ fn newsletters_are_one_reading_card(judged_demo: World) {
         .into_iter()
         .find(|c| c["id"] == "batch:reading")
         .unwrap();
-    assert_eq!(reading["members"].as_array().unwrap().len(), 3);
+    assert_eq!(reading["members"].as_array().unwrap().len(), 2);
 }
 
 #[rstest]

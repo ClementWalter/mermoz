@@ -44,6 +44,15 @@ fn unit(id: &str, status: &str, j: Option<Judgment>) -> FeedUnit {
         waiting_days: None,
         from_backlog: false,
         automated_sender: false,
+        learned_noise: false,
+    }
+}
+
+/// Automated mail from a sender the user always archives.
+fn noise(id: &str, kind: Kind) -> FeedUnit {
+    FeedUnit {
+        learned_noise: true,
+        ..unit(id, "unread", Some(judged(kind)))
     }
 }
 
@@ -442,28 +451,19 @@ fn people_you_answer_come_first() {
 
 #[rstest]
 fn automated_mail_is_one_batch() {
-    let f = feed(vec![
-        unit("a", "unread", Some(judged(Kind::Cleanup))),
-        unit("b", "unread", Some(judged(Kind::Cleanup))),
-    ]);
+    let f = feed(vec![noise("a", Kind::Cleanup), noise("b", Kind::Cleanup)]);
     assert_eq!(ids(&f), vec!["batch:cleanup"]);
 }
 
 #[rstest]
 fn batch_lists_its_threads() {
-    let f = feed(vec![
-        unit("a", "unread", Some(judged(Kind::Cleanup))),
-        unit("b", "unread", Some(judged(Kind::Cleanup))),
-    ]);
+    let f = feed(vec![noise("a", Kind::Cleanup), noise("b", Kind::Cleanup)]);
     assert_eq!(f.sections[0].cards[0].members.len(), 2);
 }
 
 #[rstest]
 fn batch_title_counts_its_threads() {
-    let f = feed(vec![
-        unit("a", "unread", Some(judged(Kind::Reading))),
-        unit("b", "unread", Some(judged(Kind::Reading))),
-    ]);
+    let f = feed(vec![noise("a", Kind::Reading), noise("b", Kind::Reading)]);
     assert_eq!(
         f.sections[0].cards[0].title,
         "2 newsletters to read or archive"
@@ -472,11 +472,35 @@ fn batch_title_counts_its_threads() {
 
 #[rstest]
 fn newsletters_and_clean_up_are_separate_batches() {
-    let f = feed(vec![
-        unit("a", "unread", Some(judged(Kind::Reading))),
-        unit("b", "unread", Some(judged(Kind::Cleanup))),
-    ]);
+    let f = feed(vec![noise("a", Kind::Reading), noise("b", Kind::Cleanup)]);
     assert_eq!(ids(&f), vec!["batch:cleanup", "batch:reading"]);
+}
+
+#[rstest]
+fn automated_mail_without_a_learned_rule_is_its_own_card() {
+    let f = feed(vec![unit("a", "unread", Some(judged(Kind::Cleanup)))]);
+    assert_eq!(ids(&f), vec!["a"]);
+}
+
+#[rstest]
+fn unlearned_clean_up_card_can_wait() {
+    let f = feed(vec![unit("a", "unread", Some(judged(Kind::Cleanup)))]);
+    assert_eq!(f.sections[0].key, Section::Later);
+}
+
+#[rstest]
+fn unlearned_clean_up_card_says_how_it_learns() {
+    let u = unit("a", "unread", Some(judged(Kind::Cleanup)));
+    assert!(reasons_of(&u)[0].starts_with("Looks automated."));
+}
+
+#[rstest]
+fn only_learned_mail_joins_the_batch() {
+    let f = feed(vec![
+        noise("learned", Kind::Cleanup),
+        unit("fresh", "unread", Some(judged(Kind::Cleanup))),
+    ]);
+    assert_eq!(ids(&f), vec!["fresh", "batch:cleanup"]);
 }
 
 #[rstest]
@@ -519,7 +543,7 @@ fn a_section_counts_the_cards_left_out() {
 #[rstest]
 fn a_batch_lists_its_most_recent_mails() {
     let units = (0..MAX_BATCH_MEMBERS + 5)
-        .map(|i| unit(&format!("t{i}"), "unread", Some(judged(Kind::Cleanup))))
+        .map(|i| noise(&format!("t{i}"), Kind::Cleanup))
         .collect();
     assert_eq!(
         feed(units).sections[0].cards[0].members.len(),

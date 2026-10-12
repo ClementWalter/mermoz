@@ -366,6 +366,41 @@ pub fn seed(store: &Store) -> Result<()> {
         };
         store.ingest(&acc.id, &acc.email, &msg, SyncMode::Initial)?;
     }
+    // Older mail the user archived without answering: the feed learns from it that these
+    // senders are noise, so their new mail is cleared together.
+    let archived = [
+        (
+            addr("Citymove", "no-reply@citymove.example"),
+            "Votre reçu Citymove",
+        ),
+        (
+            addr("Le Brief Éco", "newsletter@brief-eco.example"),
+            "Le Brief Éco",
+        ),
+        (
+            addr("Quartier Libre", "news@quartier-libre.example"),
+            "Quartier Libre",
+        ),
+    ];
+    for (s, (from, subject)) in archived.iter().enumerate() {
+        for week in 1..=3 {
+            let msg = IncomingMessage {
+                provider_id: format!("old{s}-{week}"),
+                provider_thread_id: format!("old{s}-{week}"),
+                label_ids: vec![],
+                internal_date: now_ms() - week * 7 * 24 * H,
+                parsed: ParsedMessage {
+                    from: Some(from.clone()),
+                    to: vec![addr("You", "you@personal.example")],
+                    subject: format!("{subject} (archive)"),
+                    body_text: "Old issue.".into(),
+                    message_id: Some(format!("<old{s}-{week}@demo.example>")),
+                    ..Default::default()
+                },
+            };
+            store.ingest(&personal.id, &personal.email, &msg, SyncMode::Initial)?;
+        }
+    }
     // A conversation spread over three Gmail threads with Nora (the user wrote first),
     // and two automated mails from one sender: grouping shows them as one chat and one feed.
     let nora = addr("Nora Lind", "nora@agency.example");

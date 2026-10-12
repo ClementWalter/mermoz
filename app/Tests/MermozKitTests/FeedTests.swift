@@ -103,6 +103,14 @@ private var utcCalendar: Calendar {
     #expect(FeedActions.primaryLabel(c) == "Archive 2")
 }
 
+@Test func aSingleCleanUpCardSaysArchive() {
+    #expect(FeedActions.primaryLabel(card("a", .cleanup)) == "Archive")
+}
+
+@Test func aSingleCleanUpCardArchivesItsThread() {
+    #expect(FeedActions.primary(card("a", .cleanup)) == .archive(["a"]))
+}
+
 @Test func paymentOpensTheMail() {
     #expect(FeedActions.primary(card("a", .payment)) == .open)
 }

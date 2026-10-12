@@ -232,10 +232,15 @@ struct CardBody: View {
             AmountTicket(card: card)
         case .waiting:
             WaitingLine(card: card)
-        case .cleanup:
-            CleanupGroups(card: card)
-        case .reading:
-            ReadingLines(card: card)
+        case .cleanup, .reading:
+            // A batch lists its mails; a single one (sender not learned yet) shows its gist.
+            if !card.isBatch {
+                Quote(text: card.texts?.summary.isEmpty == false ? card.texts!.summary : card.thread.snippet)
+            } else if card.kind == .cleanup {
+                CleanupGroups(card: card)
+            } else {
+                ReadingLines(card: card)
+            }
         case .other:
             Quote(text: card.texts?.summary.isEmpty == false ? card.texts!.summary : card.thread.snippet)
         }

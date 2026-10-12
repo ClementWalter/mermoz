@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS feed_judgments (
   judged INTEGER NOT NULL, kind TEXT, needs_reply REAL, urgency REAL, due TEXT, due_time TEXT, amount TEXT,
   automated REAL, sender_weight REAL NOT NULL DEFAULT 0, typical_reply_days REAL,
   for_date INTEGER NOT NULL, checked_day TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS feed_judgments_due ON feed_judgments(judged, due);
 CREATE TABLE IF NOT EXISTS feed_texts (
   thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
   for_date INTEGER NOT NULL, json TEXT, error TEXT, provider_id TEXT, created INTEGER NOT NULL);
