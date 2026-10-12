@@ -668,7 +668,15 @@ final class AppModel {
             open(nil)
         } else if isReview, selectedDraftId != nil {
             selectedDraftId = nil
+        } else if layout == .board, !isAllOpenBoard {
+            // Like Linear: the last Esc lands back on every open thread.
+            select(.status(statuses.first?.key ?? "unread"))
         }
+    }
+
+    /// The board of every open thread (the board ignores which status is selected).
+    var isAllOpenBoard: Bool {
+        if case .status = selection { return layout == .board } else { return false }
     }
 
     /// j/k and arrows; with ⇧ the selection grows from the anchor.

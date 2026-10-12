@@ -18,7 +18,8 @@ struct ShortcutsOverlay: View {
                 .onTapGesture { model.showShortcuts = false }
             VStack(alignment: .leading, spacing: 18) {
                 Text("Keyboard shortcuts").font(.system(size: 17, weight: .semibold))
-                Grid(alignment: .leading, horizontalSpacing: 36, verticalSpacing: 18) {
+                // Top-aligned so both columns start at the same height.
+                Grid(alignment: .topLeading, horizontalSpacing: 40, verticalSpacing: 22) {
                     GridRow {
                         group(groups[0]); group(groups[1])
                     }
@@ -29,7 +30,7 @@ struct ShortcutsOverlay: View {
             }
             .foregroundStyle(Theme.text)
             .padding(28)
-            .frame(width: 600, alignment: .leading)
+            .frame(width: 700, alignment: .leading)
             .glassEffect(.regular.tint(Color.white.opacity(0.6)), in: RoundedRectangle(cornerRadius: 18))
         }
     }
@@ -37,10 +38,13 @@ struct ShortcutsOverlay: View {
     private func group(_ g: (String, [(String, String)])) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(g.0).font(.system(size: 11, weight: .semibold)).kerning(0.6).textCase(.uppercase).foregroundStyle(Theme.text3)
-            ForEach(g.1, id: \.1) { key, label in
-                HStack(spacing: 10) {
-                    KeyHint(key).frame(minWidth: 64, alignment: .leading)
-                    Text(label).font(.system(size: 13))
+            // A grid sizes the key column to the widest key, so every description lines up.
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                ForEach(g.1, id: \.1) { key, label in
+                    GridRow {
+                        KeyHint(key)
+                        Text(label).font(.system(size: 13))
+                    }
                 }
             }
         }
