@@ -260,6 +260,7 @@ struct MessageCard: View {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 13, weight: .semibold))
+                        SenderSeal(message: message)
                         if !message.isFromMe, !message.from.name.isEmpty {
                             Text(message.from.email).font(.system(size: 12)).foregroundStyle(Theme.text3).textSelection(.enabled).lineLimit(1)
                         }
@@ -442,4 +443,30 @@ struct FlowRow: Layout {
 
 private extension String {
     var nonEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Green seal when Gmail verified the sender's domain sent this email; an orange
+/// warning when that check failed (a likely impersonation) or when the domain is a
+/// platform anyone can send from.
+struct SenderSeal: View {
+    let message: Message
+
+    var body: some View {
+        switch message.auth {
+        case "pass":
+            Image(systemName: "checkmark.seal.fill").font(.system(size: 13)).foregroundStyle(Theme.ok)
+                .help("Verified sender: \(message.from.domain) confirmed it sent this email")
+                .accessibilityLabel("Verified sender")
+        case "shared":
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Color(hex: "#E0782F"))
+                .help("Sent through \(message.from.domain), a platform anyone can sign up to. The name “\(message.from.display)” is not verified: be careful with links and attachments.")
+                .accessibilityLabel("Sender not verified")
+        case "fail":
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Color(hex: "#E0782F"))
+                .help("Unverified sender: this email claims to come from \(message.from.domain) but failed the check. Be careful with links and attachments.")
+                .accessibilityLabel("Unverified sender")
+        default:
+            EmptyView()
+        }
+    }
 }

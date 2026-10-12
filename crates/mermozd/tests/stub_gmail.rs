@@ -162,6 +162,22 @@ async fn get_message(
     if q.get("format").map(|f| f.as_str()) == Some("raw") {
         v["raw"] = json!(b64url(&msg.raw));
     }
+    // Like Gmail's format=metadata: the message's headers, unfolded.
+    if q.get("format").map(|f| f.as_str()) == Some("metadata") {
+        let head = msg
+            .raw
+            .split("\r\n\r\n")
+            .next()
+            .unwrap_or("")
+            .replace("\r\n ", " ")
+            .replace("\r\n\t", " ");
+        let headers: Vec<Value> = head
+            .split("\r\n")
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| json!({ "name": k.trim(), "value": v.trim() }))
+            .collect();
+        v["payload"] = json!({ "headers": headers });
+    }
     Ok(Json(v))
 }
 

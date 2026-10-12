@@ -85,6 +85,9 @@ pub struct Message {
     pub has_html: bool,
     pub is_from_me: bool,
     pub attachments: Vec<AttachmentInfo>,
+    /// Sender verification: "pass", "shared" (real domain on a platform anyone can use),
+    /// "fail", "none", or null while not checked yet.
+    pub auth: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

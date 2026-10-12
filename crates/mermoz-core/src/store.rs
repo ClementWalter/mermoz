@@ -88,7 +88,11 @@ const MIGRATIONS: &[&str] = &[
     PERSON_OVERRIDES,
     WORKFLOW_V2,
     FIRST_DATE,
+    SENDER_AUTH,
 ];
+
+/// Sender verification verdict per message (null until checked; "self" for mine).
+const SENDER_AUTH: &str = "ALTER TABLE messages ADD COLUMN auth TEXT;";
 
 /// When a conversation started, for the "Created" ordering.
 const FIRST_DATE: &str = r#"
@@ -1128,8 +1132,8 @@ impl Store {
         let mid = new_id("msg");
         tx.execute(
             "INSERT INTO messages (id, account_id, provider_id, thread_id, from_name, from_email, to_json, cc_json, date, subject,
-               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 mid,
                 account_id,
@@ -1148,6 +1152,7 @@ impl Store {
                 unread as i64,
                 p.message_id,
                 serde_json::to_string(&p.references)?,
+                if is_from_me { "self" } else { crate::auth::verdict(&p.auth_results, &from.email) },
             ],
         )?;
         let fts_rowid = fts_rowid(date, tx.last_insert_rowid());
@@ -1539,7 +1544,7 @@ impl Store {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(
             "SELECT m.id, from_name, from_email, to_json, cc_json, date, subject, body_text, body_html IS NOT NULL, is_from_me,
-               (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok')
+               (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth
              FROM messages m WHERE thread_id = ?1 ORDER BY date",
         )?;
         let mut msgs = st
@@ -1563,6 +1568,10 @@ impl Store {
                     has_html: r.get::<_, i64>(8)? != 0,
                     is_from_me: r.get::<_, i64>(9)? != 0,
                     attachments: vec![],
+                    auth: crate::auth::shown(
+                        r.get::<_, Option<String>>(11)?.as_deref(),
+                        &r.get::<_, String>(2)?,
+                    ),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2542,6 +2551,27 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// (message id, provider id, sender) of a thread's messages whose sender is not
+    /// verified yet (mail imported before verification existed).
+    pub fn unverified_senders(&self, thread_id: &str) -> Result<Vec<(String, String, String)>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT id, provider_id, from_email FROM messages WHERE thread_id = ?1 AND auth IS NULL AND is_from_me = 0",
+        )?;
+        Ok(st
+            .query_map([thread_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_sender_auth(&self, message_id: &str, verdict: &str) -> Result<()> {
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "UPDATE messages SET auth = ?2 WHERE id = ?1",
+            params![message_id, verdict],
+        )?;
+        Ok(())
     }
 
     /// Forgets a label deleted on the server.

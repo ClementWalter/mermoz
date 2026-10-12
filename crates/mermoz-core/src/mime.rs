@@ -22,6 +22,8 @@ pub struct ParsedMessage {
     pub message_id: Option<String>,
     pub references: Vec<String>,
     pub attachments: Vec<ParsedAttachment>,
+    /// `Authentication-Results` header values, topmost first (see `auth`).
+    pub auth_results: Vec<String>,
 }
 
 fn addrs(a: Option<&mail_parser::Address>) -> Vec<Address> {
@@ -91,6 +93,7 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
         message_id: msg.message_id().map(|s| s.to_string()),
         references,
         attachments,
+        auth_results: crate::auth::results_from_raw(raw),
     })
 }
 

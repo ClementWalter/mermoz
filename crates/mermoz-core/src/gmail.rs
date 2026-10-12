@@ -185,6 +185,28 @@ impl Gmail {
             .await?)
     }
 
+    /// Values of the named headers, in message order.
+    pub async fn headers(&self, id: &str, names: &[&str]) -> Result<Vec<(String, String)>> {
+        let mut q: Vec<(&str, String)> = vec![("format", "metadata".into())];
+        q.extend(names.iter().map(|n| ("metadataHeaders", n.to_string())));
+        let v: serde_json::Value = self
+            .call(reqwest::Method::GET, &format!("/messages/{id}"), &q, None)
+            .await?
+            .json()
+            .await?;
+        Ok(v["payload"]["headers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|h| {
+                Some((
+                    h["name"].as_str()?.to_string(),
+                    h["value"].as_str()?.to_string(),
+                ))
+            })
+            .collect())
+    }
+
     /// Labels only: cheap refresh for label-change history events.
     pub async fn get_minimal(&self, id: &str) -> Result<RawMessage> {
         Ok(self

@@ -290,6 +290,27 @@ impl AccountSync {
         Ok(ids)
     }
 
+    /// Verifies senders of messages imported before verification existed, from the
+    /// `Authentication-Results` header Gmail kept; returns how many were checked.
+    pub async fn verify_senders(&self, items: &[(String, String, String)]) -> Result<usize> {
+        let mut n = 0;
+        for (id, provider_id, from) in items {
+            let headers = self
+                .gmail
+                .headers(provider_id, &["Authentication-Results"])
+                .await?;
+            let results: Vec<String> = headers
+                .into_iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("authentication-results"))
+                .map(|(_, v)| v)
+                .collect();
+            self.store
+                .set_sender_auth(id, crate::auth::verdict(&results, from))?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     /// Pushes queued local edits to Gmail; failures stay queued for the next round.
     pub async fn push_ops(&self) -> Result<usize> {
         let ops = self.store.pending_ops(200)?;

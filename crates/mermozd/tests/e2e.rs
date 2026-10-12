@@ -1314,3 +1314,64 @@ print(json.loads(f.readline())["id"])
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2");
 }
+
+const GMAIL_PASS: &str = "Authentication-Results: mx.google.com;\r\n       dkim=pass header.i=@amazonaws.com;\r\n       dmarc=pass (p=QUARANTINE) header.from=amazonaws.com";
+
+/// A message from AWS carrying Gmail's authentication verdict.
+fn raw_signed(id: &str) -> String {
+    format!(
+        "{GMAIL_PASS}\r\nFrom: Amazon Web Services <no-reply@amazonaws.com>\r\nTo: me@example.com\r\nSubject: Billing alert\r\nMessage-ID: <{id}@example.com>\r\n\r\nYour bill is ready.\r\n"
+    )
+}
+
+fn first_message_auth(w: &World, subject: &str) -> Value {
+    let t = w.thread_by_subject(subject);
+    w.ok("threads.get", json!({ "id": t["id"] }))["messages"][0]["auth"].clone()
+}
+
+#[rstest]
+fn new_mail_from_a_verified_sender_is_marked_pass(synced: World) {
+    synced.mailbox.lock().unwrap().add_message(
+        "m8",
+        "t8",
+        &["INBOX", "UNREAD"],
+        &raw_signed("m8"),
+        NOW + 8000,
+    );
+    synced.wait_until("sync", |w| {
+        w.ok("search", json!({ "query": "Billing alert" }))["threads"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    assert_eq!(first_message_auth(&synced, "Billing alert"), "pass");
+}
+
+#[rstest]
+fn older_mail_gets_its_sender_checked_when_opened(synced: World) {
+    synced.mailbox.lock().unwrap().add_message(
+        "m8",
+        "t8",
+        &["INBOX", "UNREAD"],
+        &raw_signed("m8"),
+        NOW + 8000,
+    );
+    synced.wait_until("sync", |w| {
+        w.ok("search", json!({ "query": "Billing alert" }))["threads"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    // As if imported before verification existed.
+    let db = synced.home.path().join("mermoz.sqlite");
+    let out = Command::new("sqlite3")
+        .args([
+            db.to_str().unwrap(),
+            "UPDATE messages SET auth = NULL WHERE subject = 'Billing alert'",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    first_message_auth(&synced, "Billing alert");
+    synced.wait_until("sender check", |w| {
+        first_message_auth(w, "Billing alert") == "pass"
+    });
+}

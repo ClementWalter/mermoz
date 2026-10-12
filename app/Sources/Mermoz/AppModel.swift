@@ -279,8 +279,11 @@ final class AppModel {
                     }
                 }
             } else {
+                // A refresh keeps the pages already scrolled through.
+                let limit = layout == .board ? 600 : max(300, threads.count)
+                pageQuery = PageQuery(statuses: statuses, project: project, accountId: accountId, labelId: labelId, order: order, reverse: reverse)
                 let page = try await client.threads(status: statuses, project: project, accountId: accountId, labelId: labelId,
-                                                    order: order, reverse: reverse, limit: layout == .board ? 600 : 300)
+                                                    order: order, reverse: reverse, limit: limit)
                 fetched = page.threads
                 total = page.total
             }
@@ -296,6 +299,71 @@ final class AppModel {
             if threads != fetched { threads = fetched }
             if totalThreads != total { totalThreads = total }
         } catch { report(error) }
+    }
+
+    // MARK: paging
+
+    /// The filters of the list on screen, reused to fetch its next page.
+    private struct PageQuery {
+        var statuses: [String]?
+        var project: String?
+        var accountId: String?
+        var labelId: String?
+        var order: String
+        var reverse: Bool
+    }
+
+    private var pageQuery: PageQuery?
+    private var loadingMore = false
+
+    /// Appends the next 300 threads when the list is scrolled to its end.
+    func loadMore() {
+        guard let client, let q = pageQuery, !loadingMore, threads.count < totalThreads else { return }
+        loadingMore = true
+        let offset = threads.count
+        Task {
+            defer { loadingMore = false }
+            do {
+                let page = try await client.threads(status: q.statuses, project: q.project, accountId: q.accountId, labelId: q.labelId,
+                                                    order: q.order, reverse: q.reverse, limit: 300, offset: offset)
+                let known = Set(threads.map(\.id))
+                threads += page.threads.filter { !known.contains($0.id) }
+                totalThreads = page.total
+            } catch { report(error) }
+        }
+    }
+
+    /// The list row to scroll to for a thread: its first copy on screen.
+    func rowAnchor(for id: String) -> String? {
+        for g in groups {
+            if g.subgroups.isEmpty {
+                if g.threads.contains(where: { $0.id == id }) { return g.id + "|" + id }
+            } else if let sub = g.subgroups.first(where: { $0.threads.contains { $0.id == id } }) {
+                return g.id + "/" + sub.id + "|" + id
+            }
+        }
+        return nil
+    }
+
+    func canOpenGroup(_ field: Grouping, _ key: String) -> Bool {
+        switch field {
+        case .status, .account: true
+        case .project: !key.isEmpty
+        case .priority, .none: false
+        }
+    }
+
+    /// Clicking a group header opens that status, project or account.
+    func openGroup(_ field: Grouping, _ key: String) {
+        guard canOpenGroup(field, key) else { return }
+        switch field {
+        case .status:
+            layout = .list
+            select(.status(key))
+        case .project: select(.project(key))
+        case .account: select(.account(key))
+        case .priority, .none: break
+        }
     }
 
     // MARK: history (⌘← / ⌘→)
@@ -646,9 +714,13 @@ final class AppModel {
             }
         }
         // A status change moves the thread out of a single-status list immediately.
-        // A thread moved to a status this view doesn't show leaves it at once.
+        // A thread moved to a status this view doesn't show leaves it at once, and the
+        // total follows so no "Showing n of n+1" flashes until the refresh.
+        let beforeTotal = totalThreads
         if let status, let visible = viewStatuses, !visible.contains(status) {
+            let count = threads.count
             threads.removeAll { ids.contains($0.id) }
+            totalThreads = max(0, totalThreads - (count - threads.count))
         }
         Task {
             do {
@@ -657,6 +729,7 @@ final class AppModel {
                 await refreshCounts()
             } catch {
                 threads = before
+                totalThreads = beforeTotal
                 detail = beforeDetail
                 report(error)
             }

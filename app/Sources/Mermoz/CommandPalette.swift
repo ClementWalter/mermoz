@@ -83,8 +83,9 @@ struct CommandPalette: View {
         }
         // Focus once the palette is in the window; setting it during appear loses to the list.
         .defaultFocus($focused, true)
-        .task {
-            try? await Task.sleep(for: .milliseconds(20))
+        // Refocus the field when a command opens another picker (status, project…).
+        .task(id: model.paletteMode) {
+            try? await Task.sleep(for: .milliseconds(30))
             focused = true
         }
         .onChange(of: query) { cursor = 0 }

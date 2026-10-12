@@ -174,6 +174,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         }
         "threads.get" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;
+            svc.verify_thread_senders(&id);
             Ok(json!({ "thread": st.thread(&id)?, "messages": st.messages(&id)? }))
         }
         "threads.update" => {

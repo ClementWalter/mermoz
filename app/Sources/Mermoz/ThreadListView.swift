@@ -24,11 +24,11 @@ struct ThreadListView: View {
                             ForEach(model.groups) { g in
                                 Section {
                                     if g.subgroups.isEmpty {
-                                        rows(g.threads)
+                                        rows(g.threads, in: g.id)
                                     } else {
                                         ForEach(g.subgroups) { sub in
                                             SubGroupHeader(group: sub)
-                                            rows(sub.threads)
+                                            rows(sub.threads, in: g.id + "/" + sub.id)
                                         }
                                     }
                                 } header: {
@@ -36,13 +36,18 @@ struct ThreadListView: View {
                                 }
                             }
                             if model.totalThreads > model.threads.count {
-                                Text("Showing \(model.threads.count) of \(model.totalThreads.formatted())")
-                                    .font(.system(size: 11.5)).foregroundStyle(Theme.text3).padding(12)
+                                // Reaching the end loads the next page.
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Loading more · \(model.threads.count) of \(model.totalThreads.formatted())")
+                                }
+                                .font(.system(size: 11.5)).foregroundStyle(Theme.text3).padding(12)
+                                .onAppear { model.loadMore() }
                             }
                         }
                     }
                     .onChange(of: model.selectedThreadId) { _, id in
-                        if let id { withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(id) } }
+                        if let id, let anchor = model.rowAnchor(for: id) { withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(anchor) } }
                     }
                 }
             }
@@ -76,10 +81,12 @@ struct ThreadListView: View {
 }
 
 extension ThreadListView {
-    private func rows(_ threads: [ThreadSummary]) -> some View {
+    /// A thread in two project groups appears in both: each copy gets its own id, or
+    /// SwiftUI draws only one and leaves an empty slot.
+    private func rows(_ threads: [ThreadSummary], in group: String) -> some View {
         ForEach(threads) { t in
             ThreadRow(thread: t, selected: model.isSelected(t.id))
-                .id(t.id)
+                .id(group + "|" + t.id)
                 .onTapGesture {
                     let mods = NSEvent.modifierFlags
                     model.click(t.id, shift: mods.contains(.shift), command: mods.contains(.command))
@@ -217,6 +224,10 @@ struct GroupHeaderView: View {
         .foregroundStyle(Theme.text.opacity(0.85))
         .padding(.horizontal, 16).padding(.vertical, 7)
         .background(.ultraThinMaterial)
+        .contentShape(Rectangle())
+        // Clicking a group opens it: its status, project or account.
+        .onTapGesture { model.openGroup(group.field, group.key) }
+        .help(model.canOpenGroup(group.field, group.key) ? "Open" : "")
     }
 }
 
