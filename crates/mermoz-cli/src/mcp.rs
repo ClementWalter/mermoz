@@ -11,10 +11,16 @@ fn tools() -> Value {
     json!([
         { "name": "search_mail", "description": "Full-text search across all local mail (instant, offline). Supports from:, to:, subject: prefixes. Returns threads best match first.",
           "inputSchema": { "type": "object", "properties": { "query": s("search words"), "limit": { "type": "integer", "default": 20 } }, "required": ["query"] } },
-        { "name": "list_threads", "description": "List threads (issues) filtered by status/project/account, newest first. Statuses: unread, todo, waiting, in_progress, backlog, review, done, archive, deleted. Projects are the user's Gmail labels; each thread lists its `projects` and the AI's pending `suggestion`. `suggested`: true for threads with a pending suggestion, or {status, projects} for one destination listed by column_suggestions.",
-          "inputSchema": { "type": "object", "properties": { "status": { "type": "array", "items": { "type": "string" } }, "project": s("project (Gmail label) name"), "account_id": s("account id"), "label_id": s("Gmail label id from list_labels (pass its account_id too)"), "suggested": { "type": ["boolean", "object"] }, "limit": { "type": "integer", "default": 50 } } } },
-        { "name": "get_thread", "description": "Read a whole thread: every message's plain-text body, recipients and attachment ids.",
-          "inputSchema": { "type": "object", "properties": { "id": s("thread id or number like M-1287") }, "required": ["id"] } },
+        { "name": "list_threads", "description": "List threads (issues) filtered by status/project/account, newest first. Statuses: unread, todo, waiting, in_progress, backlog, review, done, archive, deleted. Projects are the user's Gmail labels; each thread lists its `projects` and the AI's pending `suggestion`. `suggested`: true for threads with a pending suggestion, or {status, projects} for one destination listed by column_suggestions. `conversations`: one row per conversation (Gmail threads with the same people about the same matter, as the user sees them), each with `conversation_threads`; `kind`: [\"feed\", \"list\"] for automated senders and mailing lists.",
+          "inputSchema": { "type": "object", "properties": { "status": { "type": "array", "items": { "type": "string" } }, "project": s("project (Gmail label) name"), "account_id": s("account id"), "label_id": s("Gmail label id from list_labels (pass its account_id too)"), "suggested": { "type": ["boolean", "object"] }, "conversations": { "type": "boolean" }, "kind": { "type": "array", "items": { "type": "string" } }, "limit": { "type": "integer", "default": 50 } } } },
+        { "name": "get_thread", "description": "Read a whole thread: every message's plain-text body, recipients and attachment ids. With `conversation`, every message of the conversation it belongs to (each with its `thread_id`), plus its people, files and links.",
+          "inputSchema": { "type": "object", "properties": { "id": s("thread id or number like M-1287"), "conversation": { "type": "boolean" } }, "required": ["id"] } },
+        { "name": "split_conversation", "description": "Take a thread out of the conversation Mermoz grouped it into (when it is a different matter). Final: it is never grouped with them again.",
+          "inputSchema": { "type": "object", "properties": { "id": s("thread id or number") }, "required": ["id"] } },
+        { "name": "merge_conversations", "description": "Join the conversations of two or more threads into one (same people, same matter).",
+          "inputSchema": { "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "string" } } }, "required": ["ids"] } },
+        { "name": "list_files", "description": "Files shared in any conversation, newest first, with their attachment id (read with get_attachment) and thread.",
+          "inputSchema": { "type": "object", "properties": { "query": s("part of a file name"), "limit": { "type": "integer", "default": 50 } } } },
         { "name": "update_thread", "description": "Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), projects (Gmail labels: add_projects/remove_projects, or projects to replace) or due date (YYYY-MM-DD, null clears). 'deleted' moves the thread to Gmail Trash.",
           "inputSchema": { "type": "object", "properties": { "id": s("thread id or number"), "status": s("status key"), "priority": { "type": "integer" }, "add_projects": { "type": "array", "items": { "type": "string" } }, "remove_projects": { "type": "array", "items": { "type": "string" } }, "projects": { "type": "array", "items": { "type": "string" } }, "due": { "type": ["string", "null"] } }, "required": ["id"] } },
         { "name": "accept_suggestions", "description": "Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read. Pass `ids`, or `column` (a status) to accept that column's pending suggestions — all of them, or only the group given by `to_status`/`to_projects` as listed by column_suggestions.",
@@ -62,7 +68,16 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
             }
             r(c.call("threads.list", p))
         }
-        "get_thread" => r(c.call("threads.get", json!({ "id": a["id"] }))),
+        "get_thread" => r(c.call(
+            "threads.get",
+            json!({ "id": a["id"], "conversation": a.get("conversation").cloned().unwrap_or(json!(false)) }),
+        )),
+        "split_conversation" => r(c.call("conversations.split", json!({ "id": a["id"] }))),
+        "merge_conversations" => r(c.call("conversations.merge", json!({ "ids": a["ids"] }))),
+        "list_files" => r(c.call(
+            "files.list",
+            json!({ "query": a.get("query").cloned().unwrap_or(Value::Null), "limit": a.get("limit").cloned().unwrap_or(json!(50)) }),
+        )),
         "update_thread" => {
             let mut p = a.clone();
             let id = p

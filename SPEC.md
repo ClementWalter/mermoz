@@ -350,6 +350,11 @@ joins selected conversations. The sidebar's Browse section holds People, Docs
 from other sources (a second source plugs in without changing the tab). The demo
 data (`seed_demo`) includes a three-thread conversation and a feed.
 
+CLI / MCP: `mermoz list --conversations` (`--feeds`), `mermoz thread <id>
+--conversation`, `mermoz conversation split|merge`, `mermoz files`; MCP
+`list_threads` takes `conversations` / `kind`, `get_thread` takes `conversation`,
+plus `split_conversation`, `merge_conversations` and `list_files`.
+
 Not built yet: projects suggested to a joining thread and few-shot examples from
 past splits.
 

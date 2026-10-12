@@ -21,6 +21,10 @@ Examples:
   mermoz list --status todo                 Threads waiting on you
   mermoz search \"from:marc audit\" --json    Full-text search, JSON output
   mermoz thread M-1287                      Read a whole thread
+  mermoz thread M-1287 --conversation       Read every thread of its conversation
+  mermoz list --conversations --status todo One row per conversation
+  mermoz conversation split M-1290          Take a thread out of its conversation
+  mermoz files invoice                      Files shared anywhere, by name
   mermoz attachments M-1287 --out /tmp/a    Save a thread's attachments
   mermoz status M-1287 waiting              Change a thread's status
   mermoz draft reply M-1287 --file r.txt    Draft a reply (never sends)
@@ -59,6 +63,12 @@ enum Cmd {
         /// Gmail label ("mailbox") name, e.g. "Clients/Acme".
         #[arg(long)]
         label: Option<String>,
+        /// One row per conversation (the thread leading it), as in the app.
+        #[arg(long)]
+        conversations: bool,
+        /// Only automated senders and mailing lists (implies --conversations).
+        #[arg(long)]
+        feeds: bool,
         #[arg(long, default_value_t = 50)]
         limit: i64,
     },
@@ -79,7 +89,21 @@ enum Cmd {
         limit: i64,
     },
     /// Show a thread with all messages.
-    Thread { id: String },
+    Thread {
+        id: String,
+        /// Every message of the thread's conversation (Gmail threads read as one chat).
+        #[arg(long)]
+        conversation: bool,
+    },
+    /// Split or join conversations (Gmail threads read as one chat).
+    #[command(subcommand)]
+    Conversation(ConversationCmd),
+    /// Files shared in any conversation, newest first, optionally matching a name.
+    Files {
+        query: Vec<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
     /// List a thread's attachments, or save them with --out.
     Attachments {
         thread: String,
@@ -200,6 +224,17 @@ enum Cmd {
     Sync,
     /// Run an MCP server on stdio.
     Mcp,
+}
+
+#[derive(Subcommand)]
+enum ConversationCmd {
+    /// Take a thread out of its conversation for good.
+    Split { thread: String },
+    /// Join the conversations of these threads into one.
+    Merge {
+        #[arg(required = true, num_args = 2..)]
+        threads: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -384,6 +419,10 @@ fn print_threads(out: &Out, threads: &Value) {
             },
             truncate(t["subject"].as_str().unwrap_or(""), 70),
         ));
+        let n = t["conversation_threads"].as_i64().unwrap_or(1);
+        if n > 1 {
+            out.line(format!("{:<8} ({n} threads in this conversation)", ""));
+        }
     }
 }
 
@@ -576,9 +615,14 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             project,
             account,
             label,
+            conversations,
+            feeds,
             limit,
         } => {
-            let mut p = json!({ "limit": limit });
+            let mut p = json!({ "limit": limit, "conversations": conversations || feeds });
+            if feeds {
+                p["kind"] = json!(["feed", "list"]);
+            }
             if let Some(s) = status {
                 let keys: Vec<String> = s
                     .split(',')
@@ -624,8 +668,55 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             print_threads(&out, &v["threads"]);
         }
-        Cmd::Thread { id } => {
-            let v = c.call("threads.get", json!({ "id": id }))?;
+        Cmd::Conversation(cmd) => {
+            let v = match cmd {
+                ConversationCmd::Split { thread } => {
+                    c.call("conversations.split", json!({ "id": thread }))?
+                }
+                ConversationCmd::Merge { threads } => {
+                    c.call("conversations.merge", json!({ "ids": threads }))?
+                }
+            };
+            if out.json {
+                out.json(&v);
+            } else {
+                out.line(format!(
+                    "conversation {}",
+                    v["conversation_id"].as_str().unwrap_or("")
+                ));
+            }
+        }
+        Cmd::Files { query, limit } => {
+            let q = query.join(" ");
+            let v = c.call(
+                "files.list",
+                json!({ "query": if q.is_empty() { Value::Null } else { json!(q) }, "limit": limit }),
+            )?;
+            if out.json {
+                out.json(&v);
+                return Ok(());
+            }
+            let files = v.as_array().cloned().unwrap_or_default();
+            if files.is_empty() {
+                out.line("No files.");
+            }
+            for f in files {
+                out.line(format!(
+                    "{:<24} {:<18} {}  {} ({} bytes)  thread {}",
+                    f["id"].as_str().unwrap_or(""),
+                    truncate(f["from"].as_str().unwrap_or(""), 18),
+                    fmt_date(f["date"].as_i64().unwrap_or(0)),
+                    f["filename"].as_str().unwrap_or(""),
+                    f["size"],
+                    f["thread_id"].as_str().unwrap_or("")
+                ));
+            }
+        }
+        Cmd::Thread { id, conversation } => {
+            let v = c.call(
+                "threads.get",
+                json!({ "id": id, "conversation": conversation }),
+            )?;
             if out.json {
                 return {
                     out.json(&v);
@@ -673,7 +764,27 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                     t["number"].as_str().unwrap_or("")
                 ));
             }
+            let mut current = String::new();
             for m in v["messages"].as_array().into_iter().flatten() {
+                // In a conversation, say where each Gmail thread starts.
+                let tid = m["thread_id"].as_str().unwrap_or("").to_string();
+                if conversation && tid != current {
+                    let subject = v["conversation"]["threads"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|t| t["id"] == tid.as_str())
+                        .map(|t| {
+                            format!(
+                                "{}  {}",
+                                t["number"].as_str().unwrap_or(""),
+                                t["subject"].as_str().unwrap_or("")
+                            )
+                        })
+                        .unwrap_or_default();
+                    out.line(format!("\n══ thread {subject}"));
+                    current = tid;
+                }
                 let f = &m["from"];
                 out.line(format!(
                     "\n── {} <{}> · {}",

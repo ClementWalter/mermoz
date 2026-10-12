@@ -2470,3 +2470,82 @@ fn shared_files_are_listed(synced: World) {
     let v = synced.ok("files.list", json!({}));
     assert_eq!(v[0]["filename"], "report.pdf");
 }
+
+#[rstest]
+fn cli_reads_a_whole_conversation(nora: World) {
+    let n = nora.thread_by_subject("Signing postponed")["number"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = nora.cli(&["thread", &n, "--conversation", "--json"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+}
+
+#[rstest]
+fn cli_lists_one_row_per_conversation(nora: World) {
+    let out = nora.cli(&["list", "--conversations", "--json", "--limit", "100"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["conversation_threads"] == 2)
+        .count();
+    assert_eq!(rows, 1);
+}
+
+#[rstest]
+fn cli_splits_a_conversation(nora: World) {
+    let n = nora.thread_by_subject("Signing postponed")["number"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    nora.cli(&["conversation", "split", &n]);
+    assert_ne!(
+        conversation_of(&nora, "Signing postponed"),
+        conversation_of(&nora, "Flat sale, next steps")
+    );
+}
+
+#[rstest]
+fn cli_lists_shared_files(synced: World) {
+    let out = synced.cli(&["files", "report", "--json"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["filename"], "report.pdf");
+}
+
+#[rstest]
+fn mcp_offers_conversation_tools(synced: World) {
+    let mut child = Command::new(bin_dir().join("mermoz"))
+        .arg("mcp")
+        .env("MERMOZ_HOME", synced.home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "{}", json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } })).unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "list_files", "arguments": {} } })
+    )
+    .unwrap();
+    drop(stdin);
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    let _ = child.wait();
+    let last: Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    assert!(
+        last["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("report.pdf")
+    );
+}
