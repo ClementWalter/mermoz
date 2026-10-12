@@ -149,6 +149,39 @@
     requestAnimationFrame(frame);
   }
 
+  // Beta sign-up: the address goes to the Mermoz beta Google Form (its responses are
+  // the passenger list). A cross-origin POST can't be read back, so success means the
+  // request left; the hidden "company" field catches bots.
+  const FORM = "https://docs.google.com/forms/d/e/1FAIpQLSfmXDOdAhuseGM4E348LK5xBR31b9Xdkbu0ergYQw81jB2ZOg/formResponse";
+  const EMAIL_FIELD = "entry.1376824829";
+  document.querySelectorAll("[data-beta-form]").forEach((form) => {
+    const msg = form.querySelector(".form-msg");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = form.email.value.trim();
+      if (form.company.value) return;
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        msg.className = "form-msg err";
+        msg.textContent = "That address doesn't look right.";
+        return;
+      }
+      const button = form.querySelector("button");
+      button.disabled = true;
+      button.textContent = "Sending…";
+      try {
+        await fetch(FORM, { method: "POST", mode: "no-cors", body: new URLSearchParams({ [EMAIL_FIELD]: email }) });
+        form.classList.add("done");
+        msg.className = "form-msg ok";
+        msg.textContent = "You're on the passenger list. We'll email you when your access opens. ✈";
+      } catch {
+        button.disabled = false;
+        button.textContent = "Join the beta";
+        msg.className = "form-msg err";
+        msg.textContent = "Couldn't send. Check your connection and try again.";
+      }
+    });
+  });
+
   // Sections rise into place as they scroll into view.
   const io = new IntersectionObserver(
     (entries) => entries.forEach((e) => e.isIntersecting && (e.target.classList.add("shown"), io.unobserve(e.target))),

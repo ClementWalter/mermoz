@@ -49,10 +49,60 @@ kbd {
   box-shadow: 0 1px 0 var(--line);
 }
 
+/* Private beta: the banner on top, the pill, and the sign-up form. */
+.beta-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 45;
+  text-align: center;
+  font-size: 14px;
+  padding: 9px 16px;
+  background: var(--accent);
+  color: #fff;
+}
+.beta-bar a { color: #fff; font-weight: 600; }
+.beta-pill {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid #fff;
+  border-radius: 999px;
+  padding: 4px 10px;
+  margin-right: 8px;
+}
+.download-card .beta-pill { margin: 0 0 14px; }
+.beta-form { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 520px; margin: 0 auto; }
+.beta-form input[type="email"] {
+  flex: 1 1 260px;
+  font: inherit;
+  font-size: 17px;
+  padding: 15px 18px;
+  border-radius: 16px;
+  border: 1px solid #fff;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: inset 0 0 0 1px var(--line), 0 10px 30px rgba(31, 111, 181, 0.10);
+  color: var(--ink);
+}
+.beta-form input[type="email"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.beta-form button { border: 0; cursor: pointer; font: inherit; font-weight: 600; font-size: 17px; }
+.beta-form .hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+.form-msg { flex-basis: 100%; margin: 4px 0 0; font-size: 15px; min-height: 1.2em; text-align: center; color: var(--ink-2); }
+.form-msg.ok { color: #2E9A6B; font-weight: 600; }
+.form-msg.err { color: #C93A3A; }
+.beta-form.done input, .beta-form.done button { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.hero-form { margin-top: 6px; }
+
 /* Navigation: a floating glass bar. */
 .nav {
   position: fixed;
-  top: 16px;
+  top: 52px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 40;
@@ -82,7 +132,7 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 130px 24px 80px;
+  padding: 170px 24px 80px;
   overflow: hidden;
   background:
     radial-gradient(1200px 600px at 20% 10%, #F8FBFF 0%, transparent 60%),
