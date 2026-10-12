@@ -98,6 +98,8 @@ const MIGRATIONS: &[&str] = &[
     RECHECK_SENDER_FAILS,
     conversations::MIGRATION,
     DRAFT_ATTACHMENTS,
+    SORT_FEEDBACK,
+    CLEAR_FLOOD,
 ];
 
 /// Files and links going out with a draft; files are copies under `blobs/drafts/`.
@@ -112,6 +114,28 @@ CREATE INDEX IF NOT EXISTS draft_attachments_draft ON draft_attachments(draft_id
 /// Failures stored under an older, stricter rule are checked again when their
 /// thread is opened, so a forwarded copy stops reading as an impersonation.
 const RECHECK_SENDER_FAILS: &str = "UPDATE messages SET auth = NULL WHERE auth = 'fail';";
+
+/// The user's yes/no answers to suggestions, per sender: what the Sort queue learns from.
+const SORT_FEEDBACK: &str = r#"
+CREATE TABLE IF NOT EXISTS sort_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, sender TEXT NOT NULL,
+  status TEXT, projects_json TEXT NOT NULL DEFAULT '[]', verdict TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS sort_feedback_sender ON sort_feedback(sender, verdict);
+CREATE INDEX IF NOT EXISTS sort_feedback_thread ON sort_feedback(thread_id);
+"#;
+
+/// Machine verdicts on read threads that nobody reviewed: the flood of suggestions from
+/// whole-column passes, and "no change" verdicts (some recorded for failed calls).
+/// Accepted and rejected suggestions, and Unread's, stay.
+const MACHINE_VERDICTS: &str =
+    "DELETE FROM suggestions WHERE (decision IS NULL OR decision IN ('unchanged', 'moved'))
+  AND thread_id IN (SELECT id FROM threads WHERE status != 'unread')";
+
+/// Clears the whole-column passes once: the Sort queue asks again, one card at a time.
+const CLEAR_FLOOD: &str =
+    "DELETE FROM suggestions WHERE (decision IS NULL OR decision IN ('unchanged', 'moved'))
+  AND thread_id IN (SELECT id FROM threads WHERE status != 'unread');
+DELETE FROM settings WHERE key = 'resort';";
 
 /// The status a suggestion was made for: once the thread sits elsewhere, the
 /// suggestion is stale, hidden, and the thread is classified again.
@@ -320,6 +344,84 @@ pub struct IncomingMessage {
     pub parsed: ParsedMessage,
 }
 
+/// Rows of `threads t LEFT JOIN suggestions s` the Sort queue still has to show:
+/// never judged, new mail since, or a suggestion still pending.
+const SORT_DUE: &str = "(s.thread_id IS NULL OR s.for_date < t.last_date OR s.decision IS NULL)";
+
+/// `?,?` for the open columns the queue covers (all of them when `statuses` is empty).
+fn sort_columns(statuses: &[String]) -> (String, Vec<rusqlite::types::Value>) {
+    let cols: Vec<String> = if statuses.is_empty() {
+        RESUMABLE.iter().map(|s| s.to_string()).collect()
+    } else {
+        statuses
+            .iter()
+            .filter(|s| RESUMABLE.contains(&s.as_str()))
+            .cloned()
+            .collect()
+    };
+    // An empty IN list is a syntax error; a status no thread has matches nothing.
+    let cols = if cols.is_empty() {
+        vec!["-".to_string()]
+    } else {
+        cols
+    };
+    (
+        vec!["?"; cols.len()].join(","),
+        cols.into_iter().map(Into::into).collect(),
+    )
+}
+
+fn thread_sender_tx(c: &Connection, thread_id: &str) -> Result<String> {
+    let from: Option<String> = c
+        .query_row(
+            "SELECT lower(from_email) FROM messages WHERE thread_id = ?1 AND is_from_me = 0 ORDER BY date DESC LIMIT 1",
+            [thread_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(f) = from {
+        return Ok(f);
+    }
+    Ok(c.query_row(
+        "SELECT lower(json_extract(m.to_json, '$[0].email')) FROM messages m WHERE m.thread_id = ?1 ORDER BY m.date DESC LIMIT 1",
+        [thread_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()?
+    .flatten()
+    .unwrap_or_default())
+}
+
+fn refused_tx(c: &Connection, sender: &str, target: &SuggestionGroup) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sort_feedback WHERE sender = ?1 AND verdict = 'no'
+           AND status IS ?2 AND projects_json = ?3)",
+        params![
+            sender,
+            target.status,
+            serde_json::to_string(&target.projects)?
+        ],
+        |r| r.get(0),
+    )?)
+}
+
+fn record_feedback_tx(
+    c: &Connection,
+    thread_id: &str,
+    sender: &str,
+    target: &SuggestionGroup,
+    verdict: &str,
+) -> Result<()> {
+    if sender.is_empty() || (target.status.is_none() && target.projects.is_empty()) {
+        return Ok(());
+    }
+    c.execute(
+        "INSERT INTO sort_feedback (thread_id, sender, status, projects_json, verdict, created) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![thread_id, sender, target.status, serde_json::to_string(&target.projects)?, verdict, now_ms()],
+    )?;
+    Ok(())
+}
+
 /// Settings key counting today's background router calls.
 fn background_calls_key() -> String {
     format!("jev_calls:{}", chrono::Utc::now().format("%Y-%m-%d"))
@@ -360,59 +462,71 @@ pub struct SuggestionGroup {
     pub count: i64,
 }
 
-/// A column's pending suggestions and classification progress.
+impl SuggestionGroup {
+    /// Where a suggestion would send its thread.
+    pub fn of(sg: &Suggestion) -> Self {
+        Self {
+            status: sg.status.clone(),
+            projects: sg.projects.clone(),
+            count: 0,
+        }
+    }
+}
+
+/// A column's pending suggestions, grouped by destination.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ColumnSuggestions {
     pub status: String,
     pub pending: i64,
     pub groups: Vec<SuggestionGroup>,
-    /// Threads with an up-to-date verdict (a suggestion or "no change").
-    pub classified: i64,
-    pub total: i64,
-    /// Whether background sorting works through this column (open columns, and any
-    /// column of a running [`Resort`]).
-    pub sorted: bool,
 }
 
-/// A requested second look at whole columns: every thread whose verdict predates
-/// `since` goes through the background pass again, except those the user decided on
-/// by hand (a rejection, or a move after the suggestion).
+/// A thread waiting in the Sort queue; `ready` when its suggestion is already computed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortCandidate {
+    pub id: String,
+    pub last_date: i64,
+    pub ready: bool,
+}
+
+/// What the user answered to a card.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SortAnswer {
+    Yes,
+    No,
+    /// Another destination: a No for the suggestion and a Yes for this one.
+    Change {
+        status: Option<String>,
+        projects: Vec<String>,
+    },
+}
+
+/// Puts a thread and its card back as before an answer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Resort {
+pub struct SortUndo {
+    pub thread: ThreadState,
+    /// Answers recorded from this time on are forgotten.
     pub since: i64,
-    pub statuses: Vec<String>,
-    /// Threads in the columns when it started.
-    pub total: i64,
-    /// Hard limit on calls for this run; it replaces the daily cap while it runs.
-    pub ceiling: i64,
-    pub calls: i64,
-    pub input_tokens: i64,
 }
 
-const RESORT_KEY: &str = "resort";
-
-/// Threads of a [`Resort`] still due (alias `s` for suggestions, `t` for threads):
-/// never looked at, or looked at before `since` with a verdict the user did not
-/// override. An accepted move counts while the thread still sits where it was sent.
-fn resort_due_sql(since: i64) -> String {
-    format!(
-        "(s.thread_id IS NULL OR (s.created < {since} AND (
-           s.decision IS NULL OR s.decision = 'read'
-           OR (s.decision = 'accepted' AND t.status IS COALESCE(s.status, s.for_status))
-           OR (s.decision IN ('unchanged', 'moved') AND t.status IS s.for_status))))"
-    )
+/// Something the Sort queue learned from the user's answers.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Learned {
+    pub sender: String,
+    pub name: String,
+    pub status: Option<String>,
+    pub projects: Vec<String>,
+    /// "rule": suggested from now on without asking the AI; "avoid": never suggested again.
+    pub kind: String,
+    pub count: i64,
 }
 
-/// `'a','b'` for statuses already checked against [`ROUTABLE_STATUSES`].
-fn quoted(statuses: &[String]) -> String {
-    statuses
-        .iter()
-        .map(|s| format!("'{s}'"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
+/// (sender, status, projects json, verdict, count, sender's display name)
+type FeedbackRow = (String, Option<String>, String, String, i64, Option<String>);
 
-/// Threads with a pending suggestion, for reviewing them before accepting.
+/// Consistent yes answers after which a sender's destination is suggested without the AI.
+pub const TRUST_AFTER: i64 = 3;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SuggestedFilter {
     /// Any pending suggestion.
@@ -2714,6 +2828,33 @@ impl Store {
         let history = st
             .query_map([thread_id], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
+        // The same people's threads, filed or not: a folder only means something
+        // against how much of their mail the user never filed.
+        let (peer_threads, filed_peers): (i64, i64) = r.query_row(
+            "WITH people AS (
+               SELECT lower(from_email) e FROM messages WHERE thread_id = ?1 AND is_from_me = 0
+               UNION SELECT lower(json_extract(j.value, '$.email')) FROM messages m, json_each(m.to_json) j
+                 WHERE m.thread_id = ?1 AND m.is_from_me = 1),
+             peers AS (
+               SELECT DISTINCT m.thread_id FROM people p JOIN messages m ON lower(m.from_email) = p.e WHERE m.thread_id != ?1)
+             SELECT COUNT(*), COALESCE(SUM(EXISTS (SELECT 1 FROM thread_projects tp WHERE tp.thread_id = p.thread_id)), 0) FROM peers p",
+            [thread_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let sender = thread_sender_tx(&r, thread_id)?;
+        let mut st = r.prepare_cached(
+            "SELECT verdict, status, projects_json, COUNT(*) FROM sort_feedback WHERE sender = ?1 GROUP BY 1, 2, 3",
+        )?;
+        let earlier_answers = st
+            .query_map([&sender], |r| {
+                let (verdict, status, pj): (String, Option<String>, String) =
+                    (r.get(0)?, r.get(1)?, r.get(2)?);
+                let projects: Vec<String> = serde_json::from_str(&pj).unwrap_or_default();
+                let mut to: Vec<String> = status.into_iter().collect();
+                to.extend(projects);
+                Ok((format!("{verdict}: {}", to.join(" · ")), r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
         let age = |r: Option<&(String, String, bool, i64, String, String)>| {
             r.map_or(0, |r| crate::jev::days_ago(r.3, now))
         };
@@ -2730,6 +2871,9 @@ impl Store {
             last_message_from_me: rows.last().map(|r| r.2).unwrap_or(false),
             recent_messages: recent,
             sender_history: history,
+            peer_threads,
+            unfiled_peers: peer_threads - filed_peers,
+            earlier_answers,
         })
     }
 
@@ -2789,10 +2933,27 @@ impl Store {
         let tx = w.transaction()?;
         let mut n = 0;
         for id in ids {
+            let target: Option<(Option<String>, String)> = tx
+                .query_row(
+                    "SELECT status, projects_json FROM suggestions WHERE thread_id = ?1 AND decision IS NULL",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((status, pj)) = target else {
+                continue;
+            };
             n += tx.execute(
                 "UPDATE suggestions SET decision = 'rejected', decided = ?2 WHERE thread_id = ?1 AND decision IS NULL",
                 params![id, now_ms()],
             )?;
+            let target = SuggestionGroup {
+                status,
+                projects: serde_json::from_str(&pj).unwrap_or_default(),
+                count: 0,
+            };
+            let sender = thread_sender_tx(&tx, id)?;
+            record_feedback_tx(&tx, id, &sender, &target, "no")?;
         }
         tx.commit()?;
         Ok(n)
@@ -2838,7 +2999,7 @@ impl Store {
                 .filter(|p| !current.contains(p))
                 .collect();
             Self::set_thread_projects_tx(&tx, &acc, id, &add, &[])?;
-            if let Some(st) = status {
+            if let Some(st) = &status {
                 tx.execute(
                     "UPDATE threads SET status = ?2, prev_status = NULL WHERE id = ?1",
                     params![id, st],
@@ -2860,6 +3021,13 @@ impl Store {
                 Self::enqueue_tx(&tx, &acc, "read", id, &serde_json::json!({ "read": true }))?;
             }
             Self::decide_suggestion_tx(&tx, id, "accepted")?;
+            let target = SuggestionGroup {
+                status: status.clone(),
+                projects: serde_json::from_str(&pj).unwrap_or_default(),
+                count: 0,
+            };
+            let sender = thread_sender_tx(&tx, id)?;
+            record_feedback_tx(&tx, id, &sender, &target, "yes")?;
             Self::enqueue_label_sync_tx(&tx, &acc, id)?;
             n += 1;
         }
@@ -2867,56 +3035,254 @@ impl Store {
         Ok(n)
     }
 
-    /// Already-read threads in open columns that need a (fresh) classification: never
-    /// classified, new mail since, or a pending suggestion made for another status.
-    /// `focus` statuses come first (the column on screen), then every open one, newest first.
-    /// Threads the user decided on since their last suggestion are left alone.
-    pub fn threads_to_classify(&self, focus: &[String], limit: i64) -> Result<Vec<(String, i64)>> {
-        let resort = self.resort()?;
-        let resorted: Vec<&str> = resort
-            .iter()
-            .flat_map(|r| r.statuses.iter().map(String::as_str))
-            .collect();
-        let due = resort.as_ref().map_or(String::new(), |r| {
-            format!(
-                " OR (t.status IN ({}) AND {})",
-                quoted(&r.statuses),
-                resort_due_sql(r.since)
-            )
-        });
+    /// The Sort queue: read threads in open columns (or `statuses` among them) with no
+    /// decided verdict since their last message, newest first. Pending suggestions made
+    /// for the thread as it is now are `ready`; the rest need the AI. `exclude`: cards the
+    /// user already holds or skipped.
+    pub fn sort_candidates(
+        &self,
+        statuses: &[String],
+        exclude: &[String],
+        limit: i64,
+    ) -> Result<Vec<SortCandidate>> {
+        let (cols, mut args) = sort_columns(statuses);
+        let skip = if exclude.is_empty() {
+            String::new()
+        } else {
+            args.extend(exclude.iter().map(|e| e.clone().into()));
+            format!(" AND t.id NOT IN ({})", vec!["?"; exclude.len()].join(","))
+        };
         let r = self.bg.lock().unwrap();
-        let mut out: Vec<(String, i64)> = vec![];
-        let focus: Vec<&str> = focus
-            .iter()
-            .map(String::as_str)
-            .filter(|s| RESUMABLE.contains(s) || resorted.contains(s))
-            .collect();
-        for statuses in [focus.as_slice(), RESUMABLE, resorted.as_slice()] {
-            let want = limit - out.len() as i64;
-            if statuses.is_empty() || want <= 0 {
-                continue;
-            }
-            let marks = vec!["?"; statuses.len()].join(",");
-            // Rows already taken may come back, so ask for that many more.
-            let mut st = r.prepare_cached(&format!(
-                "SELECT t.id, t.last_date FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
-                 WHERE t.status IN ({marks}) AND (s.thread_id IS NULL OR s.for_date < t.last_date
-                   OR (s.decision IS NULL AND s.for_status IS NOT t.status){due})
-                 ORDER BY t.last_date DESC LIMIT {}",
-                limit
-            ))?;
-            let rows = st
-                .query_map(params_from_iter(statuses.iter()), |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for row in rows {
-                if (out.len() as i64) < limit && !out.iter().any(|(id, _)| *id == row.0) {
-                    out.push(row);
+        let mut st = r.prepare(&format!(
+            "SELECT t.id, t.last_date, s.thread_id IS NOT NULL AND s.decision IS NULL AND s.for_date >= t.last_date
+                    AND s.for_status IS t.status
+             FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
+             WHERE t.status IN ({cols}) AND {SORT_DUE}{skip} ORDER BY t.last_date DESC LIMIT {limit}"
+        ))?;
+        Ok(st
+            .query_map(params_from_iter(args.iter()), |r| {
+                Ok(SortCandidate {
+                    id: r.get(0)?,
+                    last_date: r.get(1)?,
+                    ready: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Threads waiting in the Sort queue, per open column.
+    pub fn sort_counts(&self, statuses: &[String]) -> Result<Vec<(String, i64)>> {
+        let (cols, args) = sort_columns(statuses);
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare(&format!(
+            "SELECT t.status, COUNT(*) FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
+             WHERE t.status IN ({cols}) AND {SORT_DUE} GROUP BY t.status"
+        ))?;
+        Ok(st
+            .query_map(params_from_iter(args.iter()), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Who a thread is with, for learning: the last sender who is not the user, else
+    /// the first person the user wrote to.
+    pub fn thread_sender(&self, thread_id: &str) -> Result<String> {
+        let r = self.r.lock().unwrap();
+        thread_sender_tx(&r, thread_id)
+    }
+
+    /// The destination this sender's mail goes to once the user said yes to it
+    /// [`TRUST_AFTER`] times, as most of their yes answers, and never no.
+    pub fn sender_rule(&self, sender: &str) -> Result<Option<SuggestionGroup>> {
+        let r = self.r.lock().unwrap();
+        let total: i64 = r.query_row(
+            "SELECT COUNT(*) FROM sort_feedback WHERE sender = ?1 AND verdict = 'yes'",
+            [sender],
+            |r| r.get(0),
+        )?;
+        let top: Option<(Option<String>, String, i64)> = r
+            .query_row(
+                "SELECT f.status, f.projects_json, COUNT(*) n FROM sort_feedback f
+                 WHERE f.sender = ?1 AND f.verdict = 'yes' AND NOT EXISTS (
+                   SELECT 1 FROM sort_feedback g WHERE g.sender = f.sender AND g.verdict = 'no'
+                     AND g.status IS f.status AND g.projects_json = f.projects_json)
+                 GROUP BY 1, 2 ORDER BY n DESC LIMIT 1",
+                [sender],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        Ok(top
+            .filter(|(_, _, n)| *n >= TRUST_AFTER && n * 2 > total)
+            .map(|(status, pj, count)| SuggestionGroup {
+                status,
+                projects: serde_json::from_str(&pj).unwrap_or_default(),
+                count,
+            }))
+    }
+
+    /// Whether the user already said no to sending this sender's mail there.
+    pub fn refused_before(&self, sender: &str, target: &SuggestionGroup) -> Result<bool> {
+        let r = self.r.lock().unwrap();
+        refused_tx(&r, sender, target)
+    }
+
+    /// What the answers taught, newest first: senders with a rule, and refused moves.
+    pub fn learned(&self, limit: i64) -> Result<Vec<Learned>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare(
+            "SELECT f.sender, f.status, f.projects_json, f.verdict, COUNT(*) n, MAX(f.created) last,
+                    (SELECT MAX(m.from_name) FROM messages m WHERE lower(m.from_email) = f.sender)
+             FROM sort_feedback f GROUP BY 1, 2, 3, 4 ORDER BY last DESC",
+        )?;
+        let rows: Vec<FeedbackRow> = st
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(st);
+        drop(r);
+        let mut out = vec![];
+        for (sender, status, pj, verdict, n, name) in rows {
+            let target = SuggestionGroup {
+                status: status.clone(),
+                projects: serde_json::from_str(&pj).unwrap_or_default(),
+                count: n,
+            };
+            let kind = match verdict.as_str() {
+                "no" => "avoid",
+                _ if self
+                    .sender_rule(&sender)?
+                    .is_some_and(|g| g.status == status && g.projects == target.projects) =>
+                {
+                    "rule"
                 }
+                _ => continue,
+            };
+            out.push(Learned {
+                name: name
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| sender.clone()),
+                sender,
+                status,
+                projects: target.projects,
+                kind: kind.into(),
+                count: n,
+            });
+            if out.len() as i64 >= limit {
+                break;
             }
         }
         Ok(out)
+    }
+
+    /// Records a yes/no answer to a card and applies it; returns how to undo it.
+    pub fn answer_sort(&self, thread_id: &str, answer: &SortAnswer) -> Result<SortUndo> {
+        let undo = SortUndo {
+            thread: ThreadState::from(&self.thread(thread_id)?),
+            since: now_ms(),
+        };
+        match answer {
+            SortAnswer::Yes => {
+                self.accept_suggestions(&[thread_id.to_string()])?;
+            }
+            SortAnswer::No => {
+                self.reject_suggestions(&[thread_id.to_string()])?;
+            }
+            SortAnswer::Change { status, projects } => {
+                self.reject_suggestions(&[thread_id.to_string()])?;
+                self.update_threads(
+                    &[thread_id.to_string()],
+                    &ThreadPatch {
+                        status: status.clone(),
+                        add_projects: projects.clone(),
+                        ..Default::default()
+                    },
+                )?;
+                let sender = self.thread_sender(thread_id)?;
+                let target = SuggestionGroup {
+                    status: status.clone(),
+                    projects: projects.clone(),
+                    count: 0,
+                };
+                let w = self.w.lock().unwrap();
+                record_feedback_tx(&w, thread_id, &sender, &target, "yes")?;
+            }
+        }
+        Ok(undo)
+    }
+
+    /// Takes an answer back: the thread returns as it was, the answer is forgotten and
+    /// its card is pending again.
+    pub fn undo_sort(&self, undo: &SortUndo) -> Result<()> {
+        self.restore_threads(std::slice::from_ref(&undo.thread))?;
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "DELETE FROM sort_feedback WHERE thread_id = ?1 AND created >= ?2",
+            params![undo.thread.id, undo.since],
+        )?;
+        w.execute(
+            "UPDATE suggestions SET decision = NULL, decided = NULL WHERE thread_id = ?1",
+            [&undo.thread.id],
+        )?;
+        Ok(())
+    }
+
+    /// Closes a prepared card whose destination the user refused for this sender since
+    /// it was computed; returns whether it was closed.
+    pub fn close_if_refused(&self, thread_id: &str) -> Result<bool> {
+        let w = self.w.lock().unwrap();
+        let pending: Option<(Option<String>, String)> = w
+            .query_row(
+                "SELECT status, projects_json FROM suggestions WHERE thread_id = ?1 AND decision IS NULL",
+                [thread_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((status, pj)) = pending else {
+            return Ok(false);
+        };
+        let target = SuggestionGroup {
+            status,
+            projects: serde_json::from_str(&pj).unwrap_or_default(),
+            count: 0,
+        };
+        let sender = thread_sender_tx(&w, thread_id)?;
+        if !refused_tx(&w, &sender, &target)? {
+            return Ok(false);
+        }
+        w.execute(
+            "UPDATE suggestions SET decision = 'refused_before', decided = ?2 WHERE thread_id = ?1 AND decision IS NULL",
+            params![thread_id, now_ms()],
+        )?;
+        Ok(true)
+    }
+
+    /// What made a thread's stored suggestion: "learned" (a sender rule) or the AI model.
+    pub fn suggestion_model(&self, thread_id: &str) -> Result<Option<String>> {
+        let r = self.r.lock().unwrap();
+        Ok(r.query_row(
+            "SELECT model FROM suggestions WHERE thread_id = ?1",
+            [thread_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+    }
+
+    /// Clears machine suggestions nobody reviewed on read threads (see
+    /// [`MACHINE_VERDICTS`]) and any whole-mailbox pass still recorded.
+    pub fn clear_machine_suggestions(&self) -> Result<usize> {
+        let w = self.w.lock().unwrap();
+        let n = w.execute(MACHINE_VERDICTS, [])?;
+        w.execute("DELETE FROM settings WHERE key = 'resort'", [])?;
+        Ok(n)
     }
 
     /// Applies [`crate::jev::guard_stale`] to pending suggestions as threads age: on a
@@ -2949,10 +3315,11 @@ impl Store {
         )?)
     }
 
-    /// Stores a background prediction for an already-read thread, reduced to what would
+    /// Stores a Sort queue prediction for an already-read thread, reduced to what would
     /// change (see [`crate::jev::column_suggestion`]) against the thread as it is now.
-    /// "No change", or a thread that left the open columns meanwhile, is recorded as
-    /// decided so it is not asked again. Returns whether a suggestion is now shown.
+    /// "No change", a destination the user refused for this sender before, or a thread
+    /// that left the open columns meanwhile, is recorded as decided so it is not asked
+    /// again. Returns whether a suggestion is now shown.
     pub fn save_column_suggestion(
         &self,
         thread_id: &str,
@@ -2960,7 +3327,6 @@ impl Store {
         model: &str,
         for_date: i64,
     ) -> Result<bool> {
-        let resorted = self.resort()?.map(|r| r.statuses).unwrap_or_default();
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
         let status: Option<String> = tx
@@ -2976,10 +3342,12 @@ impl Store {
         let current: Vec<String> = Self::thread_projects_tx(&tx, thread_id)?
             .into_iter()
             .collect();
+        let sender = thread_sender_tx(&tx, thread_id)?;
         let (kept, decision) = match crate::jev::column_suggestion(sg, &status, &current) {
-            Some(k) if RESUMABLE.contains(&status.as_str()) || resorted.contains(&status) => {
-                (k, None)
+            Some(k) if refused_tx(&tx, &sender, &SuggestionGroup::of(&k))? => {
+                (k, Some("refused_before"))
             }
+            Some(k) if RESUMABLE.contains(&status.as_str()) => (k, None),
             Some(k) => (k, Some("moved")),
             None => (Suggestion::default(), Some("unchanged")),
         };
@@ -3004,20 +3372,13 @@ impl Store {
     }
 
     /// Pending suggestions of one column, grouped by where they would send threads
-    /// (largest group first), and how far classification of the column has got.
+    /// (largest group first).
     pub fn column_suggestions(
         &self,
         status: &str,
         scope: &ColumnScope,
     ) -> Result<ColumnSuggestions> {
         let (scope_sql, scope_args) = scope.clause();
-        let resort = self
-            .resort()?
-            .filter(|r| r.statuses.iter().any(|s| s == status));
-        // While a resort runs, a verdict from before it no longer counts as sorted.
-        let not_due = resort.as_ref().map_or(String::new(), |r| {
-            format!(" AND NOT {}", resort_due_sql(r.since))
-        });
         let r = self.r.lock().unwrap();
         let mut args: Vec<rusqlite::types::Value> = vec![status.to_string().into()];
         args.extend(scope_args);
@@ -3036,111 +3397,11 @@ impl Store {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let (total, classified): (i64, i64) = r.query_row(
-            &format!(
-                "SELECT COUNT(*), COALESCE(SUM(s.thread_id IS NOT NULL AND s.for_date >= t.last_date
-                   AND (s.decision IS NOT NULL OR s.for_status IS t.status){not_due}), 0)
-                 FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id WHERE t.status = ?1{scope_sql}"
-            ),
-            params_from_iter(args.iter()),
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
         Ok(ColumnSuggestions {
             status: status.to_string(),
             pending: groups.iter().map(|g| g.count).sum(),
             groups,
-            classified,
-            total,
-            sorted: RESUMABLE.contains(&status) || resort.is_some(),
         })
-    }
-
-    /// Starts (or widens) a [`Resort`] of these columns from now on. Its ceiling is
-    /// 1.2 calls per thread of the columns, room for the few retried after new mail.
-    pub fn start_resort(&self, statuses: &[String], now: i64) -> Result<Resort> {
-        if let Some(bad) = statuses
-            .iter()
-            .find(|s| !ROUTABLE_STATUSES.contains(&s.as_str()))
-        {
-            return Err(Error::InvalidParams(format!(
-                "'{bad}' cannot be sorted; use one of {}",
-                ROUTABLE_STATUSES.join(", ")
-            )));
-        }
-        let mut all: Vec<String> = self.resort()?.map(|r| r.statuses).unwrap_or_default();
-        for s in statuses {
-            if !all.contains(s) {
-                all.push(s.clone());
-            }
-        }
-        let threads: i64 = self.r.lock().unwrap().query_row(
-            &format!(
-                "SELECT COUNT(*) FROM threads WHERE status IN ({})",
-                quoted(&all)
-            ),
-            [],
-            |r| r.get(0),
-        )?;
-        let resort = Resort {
-            since: now,
-            statuses: all,
-            total: threads,
-            ceiling: (threads * 6 + 4) / 5,
-            calls: 0,
-            input_tokens: 0,
-        };
-        self.save_resort(&resort)?;
-        Ok(resort)
-    }
-
-    /// The running [`Resort`], if any.
-    pub fn resort(&self) -> Result<Option<Resort>> {
-        Ok(self
-            .setting(RESORT_KEY)?
-            .and_then(|v| serde_json::from_str(&v).ok()))
-    }
-
-    fn save_resort(&self, r: &Resort) -> Result<()> {
-        self.set_setting(RESORT_KEY, &serde_json::to_string(r)?)
-    }
-
-    /// Adds one background round to the running [`Resort`]; returns it updated.
-    pub fn record_resort_round(&self, calls: i64, input_tokens: i64) -> Result<Option<Resort>> {
-        let Some(mut r) = self.resort()? else {
-            return Ok(None);
-        };
-        r.calls += calls;
-        r.input_tokens += input_tokens;
-        self.save_resort(&r)?;
-        Ok(Some(r))
-    }
-
-    /// Ends the [`Resort`] started at `since`; returns it as it ended. A resort asked
-    /// for since then (a new `since`) keeps running.
-    pub fn finish_resort(&self, since: i64) -> Result<Option<Resort>> {
-        let r = self.resort()?.filter(|r| r.since == since);
-        self.w.lock().unwrap().execute(
-            "DELETE FROM settings WHERE key = ?1 AND json_extract(value, '$.since') = ?2",
-            params![RESORT_KEY, since],
-        )?;
-        Ok(r)
-    }
-
-    /// Threads the running [`Resort`] has yet to look at again.
-    pub fn resort_remaining(&self) -> Result<i64> {
-        let Some(r) = self.resort()? else {
-            return Ok(0);
-        };
-        Ok(self.r.lock().unwrap().query_row(
-            &format!(
-                "SELECT COUNT(*) FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
-                 WHERE t.status IN ({}) AND {}",
-                quoted(&r.statuses),
-                resort_due_sql(r.since)
-            ),
-            [],
-            |row| row.get(0),
-        )?)
     }
 
     /// Accepts every pending suggestion of a column, or only those sending threads to
@@ -5922,13 +6183,14 @@ mod tests {
             .unwrap()
     }
 
-    fn to_classify(env: &Env, focus: &[&str]) -> Vec<String> {
-        let focus: Vec<String> = focus.iter().map(|s| s.to_string()).collect();
+    /// The Sort queue's threads, optionally limited to some columns.
+    fn to_classify(env: &Env, columns: &[&str]) -> Vec<String> {
+        let columns: Vec<String> = columns.iter().map(|s| s.to_string()).collect();
         env.store
-            .threads_to_classify(&focus, 10)
+            .sort_candidates(&columns, &[], 10)
             .unwrap()
             .into_iter()
-            .map(|(id, _)| id)
+            .map(|c| c.id)
             .collect()
     }
 
@@ -6037,210 +6299,6 @@ mod tests {
         );
     }
 
-    // ---- sorting whole columns again ------------------------------------
-
-    fn all_columns() -> Vec<String> {
-        ROUTABLE_STATUSES.iter().map(|s| s.to_string()).collect()
-    }
-
-    /// Starts a resort just after every verdict saved so far.
-    fn resort_everything(env: &Env) -> Resort {
-        env.store
-            .start_resort(&all_columns(), now_ms() + 1)
-            .unwrap()
-    }
-
-    fn move_by_hand(env: &Env, tid: &str, status: &str) {
-        env.store
-            .update_threads(
-                &[tid.to_string()],
-                &ThreadPatch {
-                    status: Some(status.into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-
-    #[rstest]
-    fn resort_takes_archived_threads(env: Env) {
-        let tid = open_thread(&env, "1", "archive", 0);
-        resort_everything(&env);
-        assert_eq!(to_classify(&env, &[]), vec![tid]);
-    }
-
-    #[rstest]
-    fn resort_takes_threads_with_a_no_change_verdict(env: Env) {
-        let tid = suggested(&env, 0, &jev_says("backlog", None));
-        resort_everything(&env);
-        assert_eq!(to_classify(&env, &[]), vec![tid]);
-    }
-
-    #[rstest]
-    fn resort_takes_accepted_moves(env: Env) {
-        let tid = suggested(&env, 0, &jev_says("waiting", None));
-        env.store
-            .accept_suggestions(std::slice::from_ref(&tid))
-            .unwrap();
-        resort_everything(&env);
-        assert_eq!(to_classify(&env, &[]), vec![tid]);
-    }
-
-    #[rstest]
-    fn resort_keeps_rejections(env: Env) {
-        let tid = suggested(&env, 0, &jev_says("waiting", None));
-        env.store.reject_suggestions(&[tid]).unwrap();
-        resort_everything(&env);
-        assert!(to_classify(&env, &[]).is_empty());
-    }
-
-    #[rstest]
-    fn resort_skips_threads_moved_by_hand_after_their_suggestion(env: Env) {
-        let tid = suggested(&env, 0, &jev_says("waiting", None));
-        move_by_hand(&env, &tid, "todo");
-        resort_everything(&env);
-        assert!(to_classify(&env, &[]).is_empty());
-    }
-
-    #[rstest]
-    fn resort_skips_accepted_moves_the_user_undid_by_hand(env: Env) {
-        let tid = suggested(&env, 0, &jev_says("waiting", None));
-        env.store
-            .accept_suggestions(std::slice::from_ref(&tid))
-            .unwrap();
-        move_by_hand(&env, &tid, "backlog");
-        resort_everything(&env);
-        assert!(to_classify(&env, &[]).is_empty());
-    }
-
-    #[rstest]
-    fn thread_sorted_again_is_not_due_anymore(env: Env) {
-        let tid = suggested(&env, 0, &jev_says("backlog", None));
-        env.store
-            .start_resort(&all_columns(), now_ms() - 1)
-            .unwrap();
-        classify(&env, &tid, &jev_says("archive", None));
-        assert!(to_classify(&env, &[]).is_empty());
-    }
-
-    #[rstest]
-    fn resort_is_limited_to_its_columns(env: Env) {
-        open_thread(&env, "1", "archive", 0);
-        env.store
-            .start_resort(&["done".to_string()], now_ms() + 1)
-            .unwrap();
-        assert!(to_classify(&env, &[]).is_empty());
-    }
-
-    #[rstest]
-    fn resort_shows_suggestions_on_archived_threads(env: Env) {
-        let tid = open_thread(&env, "1", "archive", 0);
-        resort_everything(&env);
-        classify(&env, &tid, &jev_says("done", Some("Receipts")));
-        assert_eq!(pending(&env, &tid).unwrap().status.as_deref(), Some("done"));
-    }
-
-    #[rstest]
-    fn archived_suggestions_stay_hidden_without_a_resort(env: Env) {
-        let tid = open_thread(&env, "1", "archive", 0);
-        classify(&env, &tid, &jev_says("done", Some("Receipts")));
-        assert_eq!(pending(&env, &tid), None);
-    }
-
-    #[rstest]
-    fn resort_restarts_column_progress(env: Env) {
-        suggested(&env, 0, &jev_says("backlog", None));
-        resort_everything(&env);
-        let col = env
-            .store
-            .column_suggestions("backlog", &ColumnScope::default())
-            .unwrap();
-        assert_eq!(col.classified, 0);
-    }
-
-    #[rstest]
-    #[case::open_column_without_resort("backlog", false, true)]
-    #[case::archive_without_resort("archive", false, false)]
-    #[case::archive_during_resort("archive", true, true)]
-    fn column_reports_whether_it_is_sorted(
-        env: Env,
-        #[case] status: &str,
-        #[case] resorting: bool,
-        #[case] want: bool,
-    ) {
-        if resorting {
-            resort_everything(&env);
-        }
-        let col = env
-            .store
-            .column_suggestions(status, &ColumnScope::default())
-            .unwrap();
-        assert_eq!(col.sorted, want);
-    }
-
-    #[rstest]
-    fn resort_ceiling_is_a_fifth_above_the_thread_count(env: Env) {
-        for n in ["1", "2", "3", "4", "5"] {
-            open_thread(&env, n, "archive", 0);
-        }
-        assert_eq!(resort_everything(&env).ceiling, 6);
-    }
-
-    #[rstest]
-    fn resort_refuses_unknown_columns(env: Env) {
-        assert!(
-            env.store
-                .start_resort(&["someday".to_string()], now_ms())
-                .is_err()
-        );
-    }
-
-    #[rstest]
-    fn second_resort_widens_the_first(env: Env) {
-        env.store
-            .start_resort(&["done".to_string()], now_ms())
-            .unwrap();
-        let r = env
-            .store
-            .start_resort(&["archive".to_string()], now_ms())
-            .unwrap();
-        assert_eq!(r.statuses, vec!["done", "archive"]);
-    }
-
-    #[rstest]
-    fn resort_rounds_add_up(env: Env) {
-        resort_everything(&env);
-        env.store.record_resort_round(48, 360_000).unwrap();
-        let r = env.store.record_resort_round(12, 90_000).unwrap().unwrap();
-        assert_eq!((r.calls, r.input_tokens), (60, 450_000));
-    }
-
-    #[rstest]
-    fn finished_resort_is_gone(env: Env) {
-        let r = resort_everything(&env);
-        env.store.finish_resort(r.since).unwrap();
-        assert_eq!(env.store.resort().unwrap(), None);
-    }
-
-    #[rstest]
-    fn finishing_an_older_resort_keeps_the_new_one(env: Env) {
-        let old = resort_everything(&env);
-        let new = env
-            .store
-            .start_resort(&["done".to_string()], old.since + 5)
-            .unwrap();
-        env.store.finish_resort(old.since).unwrap();
-        assert_eq!(env.store.resort().unwrap(), Some(new));
-    }
-
-    #[rstest]
-    fn resort_counts_what_is_left(env: Env) {
-        open_thread(&env, "1", "archive", 0);
-        open_thread(&env, "2", "done", 0);
-        resort_everything(&env);
-        assert_eq!(env.store.resort_remaining().unwrap(), 2);
-    }
-
     #[rstest]
     fn unclassified_backlog_thread_is_classified(env: Env) {
         let tid = open_thread(&env, "1", "backlog", 0);
@@ -6257,10 +6315,10 @@ mod tests {
     }
 
     #[rstest]
-    fn classified_thread_is_not_asked_again(env: Env) {
+    fn classified_thread_is_a_ready_card(env: Env) {
         let tid = open_thread(&env, "1", "backlog", 0);
         classify(&env, &tid, &jev_archive());
-        assert!(to_classify(&env, &[]).is_empty());
+        assert!(env.store.sort_candidates(&[], &[], 10).unwrap()[0].ready);
     }
 
     #[rstest]
@@ -6431,18 +6489,6 @@ mod tests {
             .column_suggestions("backlog", &ColumnScope::default())
             .unwrap();
         assert_eq!(col.pending, 3);
-    }
-
-    #[rstest]
-    fn column_progress_counts_classified_threads(env: Env) {
-        let a = open_thread(&env, "1", "backlog", 0);
-        open_thread(&env, "2", "backlog", 1_000);
-        classify(&env, &a, &jev_archive());
-        let col = env
-            .store
-            .column_suggestions("backlog", &ColumnScope::default())
-            .unwrap();
-        assert_eq!((col.classified, col.total), (1, 2));
     }
 
     #[rstest]
@@ -7066,5 +7112,319 @@ mod tests {
             .set_draft_state(&draft_env.draft, "sent")
             .unwrap();
         assert!(attach_path(&draft_env, &draft_env.file).is_err());
+    }
+
+    // ---- the Sort queue and what it learns ----------------------------------
+
+    /// A read Backlog thread from `sender`, `n` its unique suffix.
+    fn from_sender(env: &Env, n: &str, sender: &str) -> String {
+        let tid = env
+            .store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming(
+                    &format!("m{n}"),
+                    &format!("t{n}"),
+                    sender,
+                    &["INBOX"],
+                    now_ms() - 1000,
+                    "hi",
+                ),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        env.store
+            .update_threads(
+                std::slice::from_ref(&tid),
+                &ThreadPatch {
+                    status: Some("backlog".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        tid
+    }
+
+    fn to_voyage() -> Suggestion {
+        Suggestion {
+            projects: vec!["Voyage".into()],
+            project_confidence: Some(0.9),
+            ..Default::default()
+        }
+    }
+
+    fn voyage() -> SuggestionGroup {
+        SuggestionGroup {
+            status: None,
+            projects: vec!["Voyage".into()],
+            count: 0,
+        }
+    }
+
+    /// Classifies and answers one card from `sender`.
+    fn answered(env: &Env, n: &str, sender: &str, answer: SortAnswer) -> String {
+        let tid = from_sender(env, n, sender);
+        classify(env, &tid, &to_voyage());
+        env.store.answer_sort(&tid, &answer).unwrap();
+        tid
+    }
+
+    #[rstest]
+    fn queue_takes_open_columns_newest_first(env: Env) {
+        let old = open_thread(&env, "1", "backlog", 50_000);
+        let new = open_thread(&env, "2", "todo", 0);
+        assert_eq!(to_classify(&env, &[]), vec![new, old]);
+    }
+
+    #[rstest]
+    fn queue_leaves_out_cards_the_user_holds(env: Env) {
+        let a = open_thread(&env, "1", "backlog", 0);
+        open_thread(&env, "2", "backlog", 1000);
+        let ids: Vec<String> = env
+            .store
+            .sort_candidates(&[], std::slice::from_ref(&a), 10)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert!(!ids.contains(&a));
+    }
+
+    #[rstest]
+    fn unclassified_card_needs_the_ai(env: Env) {
+        open_thread(&env, "1", "backlog", 0);
+        assert!(!env.store.sort_candidates(&[], &[], 10).unwrap()[0].ready);
+    }
+
+    #[rstest]
+    fn queue_counts_per_column(env: Env) {
+        open_thread(&env, "1", "backlog", 0);
+        open_thread(&env, "2", "backlog", 0);
+        open_thread(&env, "3", "todo", 0);
+        let mut counts = env.store.sort_counts(&[]).unwrap();
+        counts.sort();
+        assert_eq!(counts, vec![("backlog".into(), 2), ("todo".into(), 1)]);
+    }
+
+    #[rstest]
+    fn answered_card_leaves_the_queue(env: Env) {
+        let tid = answered(&env, "1", "ana@travel.example", SortAnswer::Yes);
+        assert!(!to_classify(&env, &[]).contains(&tid));
+    }
+
+    #[rstest]
+    fn yes_files_the_thread(env: Env) {
+        let tid = answered(&env, "1", "ana@travel.example", SortAnswer::Yes);
+        assert_eq!(
+            env.store.thread(&tid).unwrap().projects,
+            vec!["Voyage".to_string()]
+        );
+    }
+
+    #[rstest]
+    fn no_leaves_the_thread_where_it_is(env: Env) {
+        let tid = answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        assert!(env.store.thread(&tid).unwrap().projects.is_empty());
+    }
+
+    #[rstest]
+    fn same_sender_is_not_offered_a_refused_destination_again(env: Env) {
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        let next = from_sender(&env, "2", "ana@travel.example");
+        assert!(!classify(&env, &next, &to_voyage()));
+    }
+
+    #[rstest]
+    fn another_sender_is_still_offered_that_destination(env: Env) {
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        let next = from_sender(&env, "2", "bob@other.example");
+        assert!(classify(&env, &next, &to_voyage()));
+    }
+
+    #[rstest]
+    fn refusal_is_remembered_as_a_negative(env: Env) {
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        assert!(
+            env.store
+                .refused_before("ana@travel.example", &voyage())
+                .unwrap()
+        );
+    }
+
+    #[rstest]
+    fn change_refuses_the_suggestion(env: Env) {
+        answered(
+            &env,
+            "1",
+            "ana@travel.example",
+            SortAnswer::Change {
+                status: None,
+                projects: vec!["Immo".into()],
+            },
+        );
+        assert!(
+            env.store
+                .refused_before("ana@travel.example", &voyage())
+                .unwrap()
+        );
+    }
+
+    #[rstest]
+    fn change_files_where_the_user_chose(env: Env) {
+        let tid = answered(
+            &env,
+            "1",
+            "ana@travel.example",
+            SortAnswer::Change {
+                status: None,
+                projects: vec!["Immo".into()],
+            },
+        );
+        assert_eq!(
+            env.store.thread(&tid).unwrap().projects,
+            vec!["Immo".to_string()]
+        );
+    }
+
+    #[rstest]
+    #[case::two_yes(2, None)]
+    #[case::three_yes(3, Some(vec!["Voyage".to_string()]))]
+    fn sender_rule_after_three_consistent_yes(
+        #[case] yes: usize,
+        #[case] want: Option<Vec<String>>,
+    ) {
+        let env = env();
+        for i in 0..yes {
+            answered(&env, &i.to_string(), "ana@travel.example", SortAnswer::Yes);
+        }
+        assert_eq!(
+            env.store
+                .sender_rule("ana@travel.example")
+                .unwrap()
+                .map(|g| g.projects),
+            want
+        );
+    }
+
+    #[rstest]
+    fn a_no_for_that_destination_blocks_the_rule(env: Env) {
+        for i in 0..3 {
+            answered(&env, &i.to_string(), "ana@travel.example", SortAnswer::Yes);
+        }
+        answered(&env, "9", "ana@travel.example", SortAnswer::No);
+        assert_eq!(env.store.sender_rule("ana@travel.example").unwrap(), None);
+    }
+
+    #[rstest]
+    fn learned_rule_is_listed_in_plain_terms(env: Env) {
+        for i in 0..3 {
+            answered(&env, &i.to_string(), "ana@travel.example", SortAnswer::Yes);
+        }
+        let l = &env.store.learned(10).unwrap()[0];
+        assert_eq!(
+            (l.kind.as_str(), l.projects.clone()),
+            ("rule", vec!["Voyage".to_string()])
+        );
+    }
+
+    #[rstest]
+    fn refusal_is_listed_as_avoided(env: Env) {
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        assert_eq!(env.store.learned(10).unwrap()[0].kind, "avoid");
+    }
+
+    #[rstest]
+    fn undo_puts_the_card_back(env: Env) {
+        let tid = from_sender(&env, "1", "ana@travel.example");
+        classify(&env, &tid, &to_voyage());
+        let undo = env.store.answer_sort(&tid, &SortAnswer::Yes).unwrap();
+        env.store.undo_sort(&undo).unwrap();
+        assert!(env.store.sort_candidates(&[], &[], 10).unwrap()[0].ready);
+    }
+
+    #[rstest]
+    fn undo_forgets_the_answer(env: Env) {
+        let tid = from_sender(&env, "1", "ana@travel.example");
+        classify(&env, &tid, &to_voyage());
+        let undo = env.store.answer_sort(&tid, &SortAnswer::No).unwrap();
+        env.store.undo_sort(&undo).unwrap();
+        assert!(
+            !env.store
+                .refused_before("ana@travel.example", &voyage())
+                .unwrap()
+        );
+    }
+
+    #[rstest]
+    fn undo_unfiles_the_thread(env: Env) {
+        let tid = from_sender(&env, "1", "ana@travel.example");
+        classify(&env, &tid, &to_voyage());
+        let undo = env.store.answer_sort(&tid, &SortAnswer::Yes).unwrap();
+        env.store.undo_sort(&undo).unwrap();
+        assert!(env.store.thread(&tid).unwrap().projects.is_empty());
+    }
+
+    #[rstest]
+    fn earlier_answers_reach_the_router(env: Env) {
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        let next = from_sender(&env, "2", "ana@travel.example");
+        assert_eq!(
+            env.store.route_input(&next).unwrap().earlier_answers,
+            vec![("no: Voyage".to_string(), 1)]
+        );
+    }
+
+    #[rstest]
+    fn route_input_counts_the_unfiled_threads_with_these_people(env: Env) {
+        from_sender(&env, "1", "ana@travel.example");
+        from_sender(&env, "2", "ana@travel.example");
+        let tid = from_sender(&env, "3", "ana@travel.example");
+        assert_eq!(env.store.route_input(&tid).unwrap().unfiled_peers, 2);
+    }
+
+    #[rstest]
+    fn clearing_drops_unreviewed_suggestions(env: Env) {
+        let tid = open_thread(&env, "1", "backlog", 0);
+        classify(&env, &tid, &jev_archive());
+        env.store.clear_machine_suggestions().unwrap();
+        assert_eq!(env.store.thread(&tid).unwrap().suggestion, None);
+    }
+
+    #[rstest]
+    fn clearing_keeps_unread_suggestions(env: Env) {
+        let tid = unread_thread(&env);
+        env.store
+            .save_suggestion(&tid, &archive_suggestion(), "jev", now_ms())
+            .unwrap();
+        env.store.clear_machine_suggestions().unwrap();
+        assert!(env.store.thread(&tid).unwrap().suggestion.is_some());
+    }
+
+    #[rstest]
+    fn clearing_keeps_refusals(env: Env) {
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        env.store.clear_machine_suggestions().unwrap();
+        assert!(
+            env.store
+                .refused_before("ana@travel.example", &voyage())
+                .unwrap()
+        );
+    }
+
+    #[rstest]
+    fn prepared_card_is_closed_after_a_no_for_the_same_sender(env: Env) {
+        let next = from_sender(&env, "2", "ana@travel.example");
+        classify(&env, &next, &to_voyage());
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        assert!(env.store.close_if_refused(&next).unwrap());
+    }
+
+    #[rstest]
+    fn prepared_card_of_another_sender_stays(env: Env) {
+        let next = from_sender(&env, "2", "bob@other.example");
+        classify(&env, &next, &to_voyage());
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        assert!(!env.store.close_if_refused(&next).unwrap());
     }
 }

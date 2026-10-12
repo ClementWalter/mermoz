@@ -535,21 +535,16 @@ struct InstantSortingCard: View {
             }
             if model.router.configured {
                 HStack(spacing: 8) {
-                    if let r = model.router.resort {
-                        Text(ResortText.progress(r)).font(.system(size: 12.5)).foregroundStyle(Theme.text2)
-                    } else {
-                        Text("Take a fresh look at every email, archived ones included.")
-                            .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
-                    }
+                    Text("Suggestions waiting on emails you already read.")
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
                     Spacer()
-                    Button("Sort my whole mailbox again") { confirmResort = true }
+                    Button("Clear them") { confirmResort = true }
                         .buttonStyle(.glass)
-                        .disabled(model.router.resort != nil)
                 }
-                .confirmationDialog("Sort your whole mailbox again?", isPresented: $confirmResort) {
-                    Button("Sort everything again") { Task { await model.resortMailbox() } }
+                .confirmationDialog("Clear suggestions you haven't reviewed?", isPresented: $confirmResort) {
+                    Button("Clear") { Task { await model.clearSuggestions() } }
                 } message: {
-                    Text("Every email, archived ones included, gets a fresh suggestion of where it belongs. Nothing moves until you accept, and emails you already turned a suggestion down for are left alone. It runs in the background for a few hours, past the daily limit, and costs a few dollars on your TypeSafe account.")
+                    Text("Emails stay where they are. Suggestions you accepted or turned down are kept, and new emails keep getting theirs.")
                 }
             }
             if let result { Text(result).font(.system(size: 12)).foregroundStyle(Theme.text2) }

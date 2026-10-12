@@ -1481,19 +1481,50 @@ fn remote_images_load_when_asked(synced: World) {
     );
 }
 
-// ---- background sorting of open columns ---------------------------------
+// ---- the Sort queue ---------------------------------------------------------
 
-/// Turns the router on and waits until the read "Budget sheet" (To do) has its
-/// background suggestion: the stub files everything in Receipts, to archive.
+/// The next Sort cards of the To do column.
+fn sort_todo(w: &World) -> Value {
+    w.ok("sort.next", json!({ "statuses": ["todo"] }))
+}
+
+/// Turns the router on and asks the Sort queue for To do's cards until the read
+/// "Budget sheet" has its suggestion: the stub files everything in Receipts, to archive.
 fn sorted_todo(w: &World) {
     enable_router(w);
-    w.wait_until("background sorting", |w| {
+    w.wait_until("sort queue", |w| {
+        sort_todo(w);
         !w.thread_by_subject("Budget sheet")["suggestion"].is_null()
     });
 }
 
 fn todo_column(w: &World) -> Value {
     w.ok("suggestions.summary", json!({ "statuses": ["todo"] }))["columns"][0].clone()
+}
+
+#[rstest]
+fn nothing_is_suggested_on_read_threads_before_the_queue_asks(synced: World) {
+    enable_router(&synced);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
+}
+
+#[rstest]
+fn sort_queue_shows_the_card_it_asked_for(synced: World) {
+    enable_router(&synced);
+    assert_eq!(
+        sort_todo(&synced)["cards"][0]["thread"]["subject"],
+        "Budget sheet"
+    );
+}
+
+#[rstest]
+fn sort_queue_counts_what_is_left(synced: World) {
+    enable_router(&synced);
+    assert_eq!(
+        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
+        1
+    );
 }
 
 #[rstest]
@@ -1517,27 +1548,6 @@ fn column_summary_groups_by_target(synced: World) {
     assert_eq!(
         todo_column(&synced)["groups"],
         json!([{ "status": "archive", "projects": ["Receipts"], "count": 1 }])
-    );
-}
-
-#[rstest]
-fn column_summary_reports_sorting_progress(synced: World) {
-    sorted_todo(&synced);
-    let col = todo_column(&synced);
-    assert_eq!(
-        (col["classified"].clone(), col["total"].clone()),
-        (json!(1), json!(1))
-    );
-}
-
-#[rstest]
-fn background_calls_are_counted(synced: World) {
-    sorted_todo(&synced);
-    assert!(
-        synced.ok("suggestions.summary", json!({ "statuses": ["todo"] }))["calls_today"]
-            .as_i64()
-            .unwrap()
-            >= 1
     );
 }
 
@@ -1606,7 +1616,8 @@ fn sorted_stale_thread(w: &World) -> Value {
             .is_some_and(|a| !a.is_empty())
     });
     enable_router(w);
-    w.wait_until("background sorting", |w| {
+    w.wait_until("sort queue", |w| {
+        sort_todo(w);
         !w.thread_by_subject("Offsite plans")["suggestion"].is_null()
     });
     w.thread_by_subject("Offsite plans")["suggestion"].clone()
@@ -1626,13 +1637,10 @@ fn stale_thread_still_gets_its_project(synced: World) {
 }
 
 #[rstest]
-fn background_sorting_stops_at_the_daily_cap(synced: World) {
+fn sort_queue_stops_at_the_daily_cap(synced: World) {
     synced.ok("router.set", json!({ "daily_cap": 0 }));
     enable_router(&synced);
-    synced.wait_until("cap reached", |w| {
-        w.ok("suggestions.summary", json!({ "statuses": ["todo"] }))["paused"] == "limit"
-    });
-    assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
+    assert_eq!(sort_todo(&synced)["cards"], json!([]));
 }
 
 #[rstest]
@@ -1658,118 +1666,186 @@ fn cli_lists_column_suggestions(synced: World) {
     assert!(String::from_utf8_lossy(&out.stdout).contains("→ archive +Receipts"));
 }
 
-// ---- sorting the whole mailbox again ---------------------------------------
-
-fn archive_column(w: &World) -> Value {
-    w.ok("suggestions.summary", json!({ "statuses": ["archive"] }))["columns"][0].clone()
-}
-
-/// Open columns sorted, then `mermoz resort --all`, then the archived "Your statement"
-/// sorted too.
-fn resorted_all(w: &World) {
-    sorted_todo(w);
-    let out = w.cli(&["resort", "--all"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    w.wait_until("whole-mailbox sort", |w| {
-        !w.thread_by_subject("Your statement")["suggestion"].is_null()
-    });
-}
-
-/// `mermoz resort --all` while TypeSafe keeps answering "slow down".
-fn resort_stalled(w: &World) {
-    sorted_todo(w);
-    w.mailbox.lock().unwrap().jev_rate_limited = 1_000_000;
-    w.cli(&["resort", "--all"]);
-}
+// ---- stopping the flood ---------------------------------------------------
 
 #[rstest]
-fn resort_sorts_archived_mail(synced: World) {
-    resorted_all(&synced);
-    assert_eq!(
-        synced.thread_by_subject("Your statement")["suggestion"]["projects"],
-        json!(["Receipts"])
-    );
-}
-
-#[rstest]
-fn archived_mail_is_not_sorted_without_resort(synced: World) {
+fn stopping_a_resort_clears_unreviewed_suggestions(synced: World) {
     sorted_todo(&synced);
-    assert!(synced.thread_by_subject("Your statement")["suggestion"].is_null());
+    synced.cli(&["resort", "--stop"]);
+    assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
 }
 
 #[rstest]
-fn resort_ends_once_everything_is_sorted(synced: World) {
-    resorted_all(&synced);
-    synced.wait_until("resort end", |w| {
-        w.ok("router.get", json!({}))["resort"].is_null()
-    });
-}
-
-#[rstest]
-fn archive_bar_shows_sorting_during_resort(synced: World) {
-    resort_stalled(&synced);
-    assert_eq!(archive_column(&synced)["sorted"], true);
-}
-
-#[rstest]
-fn archive_bar_progress_starts_from_zero(synced: World) {
-    resort_stalled(&synced);
-    let col = archive_column(&synced);
+fn cleared_thread_stays_in_the_sort_queue(synced: World) {
+    sorted_todo(&synced);
+    synced.cli(&["suggestions", "--clear"]);
     assert_eq!(
-        (col["classified"].clone(), col["total"].clone()),
-        (json!(0), json!(1))
+        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
+        1
     );
 }
 
 #[rstest]
-fn resort_puts_open_columns_back_in_the_queue(synced: World) {
-    resort_stalled(&synced);
-    assert_eq!(todo_column(&synced)["classified"], 0);
-}
-
-#[rstest]
-fn cli_resort_reports_the_columns(synced: World) {
+fn clearing_keeps_unread_suggestions(synced: World) {
     sorted_todo(&synced);
-    let out = synced.cli(&["resort", "--column", "archive"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("(archive)"));
+    synced.cli(&["suggestions", "--clear"]);
+    assert!(!synced.thread_by_subject("Audit report v2")["suggestion"].is_null());
 }
 
 #[rstest]
-fn resort_needs_a_typesafe_key(synced: World) {
+fn starting_a_whole_mailbox_sort_is_refused(synced: World) {
+    enable_router(&synced);
     assert!(synced.call("suggestions.resort", json!({})).is_err());
 }
 
+/// Router on, then TypeSafe runs out of credits.
+fn out_of_credits(w: &World) {
+    enable_router(w);
+    w.mailbox.lock().unwrap().jev_out_of_credits = true;
+}
+
 #[rstest]
-fn mcp_resorts_the_mailbox(synced: World) {
+fn out_of_credits_pauses_sorting(synced: World) {
+    out_of_credits(&synced);
+    assert_eq!(sort_todo(&synced)["paused"], "credits");
+}
+
+#[rstest]
+fn out_of_credits_leaves_the_thread_in_the_queue(synced: World) {
+    out_of_credits(&synced);
+    sort_todo(&synced);
+    assert_eq!(
+        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
+        1
+    );
+}
+
+#[rstest]
+fn out_of_credits_stops_asking(synced: World) {
+    out_of_credits(&synced);
+    sort_todo(&synced);
+    let before = synced.mailbox.lock().unwrap().jev_auth.len();
+    sort_todo(&synced);
+    assert_eq!(synced.mailbox.lock().unwrap().jev_auth.len(), before);
+}
+
+#[rstest]
+fn out_of_credits_is_said_in_plain_words(synced: World) {
+    out_of_credits(&synced);
+    sort_todo(&synced);
+    assert_eq!(
+        synced.ok("router.get", json!({}))["error"],
+        "Sorting paused: your TypeSafe credits ran out"
+    );
+}
+
+#[rstest]
+fn a_new_key_resumes_sorting(synced: World) {
+    out_of_credits(&synced);
+    sort_todo(&synced);
+    synced.mailbox.lock().unwrap().jev_out_of_credits = false;
+    synced.ok("router.set", json!({ "api_key": "jev-topped-up" }));
+    assert!(sort_todo(&synced)["paused"].is_null());
+}
+
+// ---- answering cards, and what the queue learns ---------------------------
+
+/// `n` more read To do threads from Jonas, the "Budget sheet" sender.
+fn more_from_jonas(w: &World, n: usize) {
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        for i in 0..n {
+            let id = format!("j{i}");
+            m.add_message(
+                &id,
+                &format!("tj{i}"),
+                &["INBOX"],
+                &raw(
+                    "Jonas <jonas@example.com>",
+                    &format!("Sheet {i}"),
+                    "Numbers",
+                    &id,
+                ),
+                NOW - 5000 - i as i64,
+            );
+        }
+    }
+    w.wait_until("sync", |w| {
+        w.ok("threads.list", json!({}))["total"] == 3 + n as i64
+    });
+}
+
+fn answer(w: &World, subject: &str, a: &str) -> Value {
+    let t = w.thread_by_subject(subject);
+    w.ok("sort.answer", json!({ "id": t["id"], "answer": a }))
+}
+
+#[rstest]
+fn yes_moves_the_thread(synced: World) {
     sorted_todo(&synced);
-    let mut child = Command::new(bin_dir().join("mermoz"))
-        .arg("mcp")
-        .env("MERMOZ_HOME", synced.home.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, "{}", json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "resort_mailbox", "arguments": { "statuses": ["done"] } } })).unwrap();
-    drop(stdin);
-    let mut out = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut out)
-        .unwrap();
-    let _ = child.wait();
-    let v: Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
-    assert!(
-        v["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("\"done\"")
+    answer(&synced, "Budget sheet", "yes");
+    assert_eq!(
+        synced.thread_by_subject("Budget sheet")["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+fn undo_puts_the_card_back(synced: World) {
+    sorted_todo(&synced);
+    let v = answer(&synced, "Budget sheet", "yes");
+    synced.ok("sort.undo", json!({ "undo": v["undo"] }));
+    assert_eq!(synced.thread_by_subject("Budget sheet")["status"], "todo");
+}
+
+#[rstest]
+fn change_files_where_the_user_chose(synced: World) {
+    sorted_todo(&synced);
+    let t = synced.thread_by_subject("Budget sheet");
+    synced.ok(
+        "sort.answer",
+        json!({ "id": t["id"], "answer": "change", "status": "waiting" }),
+    );
+    assert_eq!(
+        synced.thread_by_subject("Budget sheet")["status"],
+        "waiting"
+    );
+}
+
+#[rstest]
+fn no_means_the_same_sender_is_not_offered_it_again(synced: World) {
+    more_from_jonas(&synced, 1);
+    sorted_todo(&synced);
+    answer(&synced, "Budget sheet", "no");
+    sort_todo(&synced);
+    assert!(synced.thread_by_subject("Sheet 0")["suggestion"].is_null());
+}
+
+#[rstest]
+fn third_yes_teaches_a_rule(synced: World) {
+    more_from_jonas(&synced, 2);
+    enable_router(&synced);
+    let mut last = Value::Null;
+    for subject in ["Budget sheet", "Sheet 0", "Sheet 1"] {
+        synced.wait_until("card", |w| {
+            sort_todo(w);
+            !w.thread_by_subject(subject)["suggestion"].is_null()
+        });
+        last = answer(&synced, subject, "yes");
+    }
+    assert_eq!(
+        last["learned"],
+        "Learned: mail from Jonas goes to archive · Receipts"
+    );
+}
+
+#[rstest]
+fn learned_rule_is_listed(synced: World) {
+    sorted_todo(&synced);
+    answer(&synced, "Budget sheet", "no");
+    assert_eq!(
+        synced.ok("sort.state", json!({}))["learned"][0]["kind"],
+        "avoid"
     );
 }
 

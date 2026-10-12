@@ -6,7 +6,7 @@ use mermoz_core::model::ThreadState;
 use mermoz_core::model::{Draft, new_id, now_ms};
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
 use mermoz_core::store::{
-    AttachmentSource, ColumnScope, NewAttachment, SuggestedFilter, SuggestionGroup, ThreadFilter,
+    AttachmentSource, ColumnScope, NewAttachment, SortAnswer, SortUndo, SuggestedFilter, SuggestionGroup, ThreadFilter,
     ThreadPatch,
 };
 use mermoz_core::sync::Event;
@@ -566,7 +566,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                     .filter(|c| *c >= 0)
                     .ok_or_else(|| RpcError::invalid("'daily_cap' must be a number ≥ 0"))?;
                 st.set_setting("jev_daily_cap", &cap.to_string())?;
-                svc.column_kick.notify_one();
+                svc.resume();
                 if p.get("api_key").is_none() {
                     return Ok(router_state(svc));
                 }
@@ -584,7 +584,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 }
             }
             svc.router_kick.notify_one();
-            svc.column_kick.notify_one();
+            svc.resume();
             Ok(router_state(svc))
         }
         "router.test" => {
@@ -788,47 +788,129 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let statuses =
                 str_list(p, "statuses")?.ok_or_else(|| RpcError::invalid("missing 'statuses'"))?;
             let scope = column_scope(p);
-            if p.get("focus").and_then(|v| v.as_bool()).unwrap_or(false) {
-                svc.set_focus(statuses.clone());
+            let mut columns = vec![];
+            for s in &statuses {
+                let mut c = serde_json::to_value(st.column_suggestions(s, &scope)?)
+                    .map_err(|e| RpcError::new(-32000, e.to_string()))?;
+                // Nothing sorts whole columns any more; zero progress keeps older apps' bars quiet.
+                c["classified"] = json!(0);
+                c["total"] = json!(0);
+                c["sorted"] = json!(false);
+                columns.push(c);
             }
-            let columns = statuses
-                .iter()
-                .map(|s| st.column_suggestions(s, &scope))
-                .collect::<Result<Vec<_>, _>>()?;
-            let state = svc.column.lock().unwrap().clone();
             Ok(json!({
                 "columns": columns,
-                "sorting": state.sorting,
-                "paused": state.paused,
+                "sorting": false,
+                "paused": svc.paused(),
                 "calls_today": st.background_calls_today()?,
                 "daily_cap": st.background_daily_cap()?,
-                "resort": st.resort()?,
+                "resort": null,
             }))
         }
         "suggestions.resort" => {
-            // A second look at whole columns (all sortable ones by default): verdicts
-            // made before now no longer count, except the user's own decisions.
-            if mermoz_core::jev::load_key().is_none() {
+            // Whole columns are no longer sorted at once; only stopping is left: it ends
+            // a pass recorded by an older daemon and clears what it suggested.
+            if !p.get("stop").and_then(|v| v.as_bool()).unwrap_or(false) {
                 return Err(RpcError::invalid(
-                    "Instant sorting is off. Add a TypeSafe key in Settings › Developer first.",
+                    "Sorting whole columns at once is turned off; pass {\"stop\": true} to clear a previous run.",
                 ));
             }
-            let statuses = str_list(p, "statuses")?.unwrap_or_else(|| {
-                mermoz_core::model::ROUTABLE_STATUSES
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            });
-            let r = st.start_resort(&statuses, mermoz_core::model::now_ms())?;
+            let cleared = st.clear_machine_suggestions()?;
             tracing::info!(
-                statuses = ?r.statuses,
-                threads = r.total,
-                ceiling = r.ceiling,
-                "whole-mailbox sort started"
+                cleared,
+                "whole-mailbox sort stopped; unreviewed suggestions cleared"
             );
-            svc.column_kick.notify_one();
             let _ = svc.events.send(Event::SuggestionsChanged);
-            Ok(json!({ "resort": r, "due": st.resort_remaining()? }))
+            let _ = svc.events.send(Event::ThreadsChanged(vec![]));
+            Ok(json!({ "stopped": true, "cleared": cleared }))
+        }
+        "sort.state" => {
+            let statuses = str_list(p, "statuses")?.unwrap_or_default();
+            let counts = st.sort_counts(&statuses)?;
+            let by_status: serde_json::Map<String, Value> =
+                counts.iter().map(|(k, n)| (k.clone(), json!(n))).collect();
+            Ok(json!({
+                "to_sort": counts.iter().map(|(_, n)| n).sum::<i64>(),
+                "by_status": by_status,
+                "configured": mermoz_core::jev::load_key().is_some(),
+                "paused": svc.paused(),
+                "learned": st.learned(20)?,
+            }))
+        }
+        "sort.next" => {
+            let statuses = str_list(p, "statuses")?.unwrap_or_default();
+            let exclude = str_list(p, "exclude")?.unwrap_or_default();
+            let want = p
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .map_or(crate::service::SORT_AHEAD, |n| n as usize)
+                .clamp(1, 10);
+            to_value(svc.sort_next(&statuses, &exclude, want).await?)
+        }
+        "sort.answer" => {
+            let id = st.resolve_thread_id(&s(p, "id")?)?;
+            let answer = match s(p, "answer")?.as_str() {
+                "yes" => SortAnswer::Yes,
+                "no" => SortAnswer::No,
+                "change" => SortAnswer::Change {
+                    status: opt_s(p, "status"),
+                    projects: str_list(p, "projects")?.unwrap_or_default(),
+                },
+                other => {
+                    return Err(RpcError::invalid(format!(
+                        "answer must be yes, no or change, not '{other}'"
+                    )));
+                }
+            };
+            if let SortAnswer::Change {
+                status: None,
+                projects,
+            } = &answer
+                && projects.is_empty()
+            {
+                return Err(RpcError::invalid("change needs a 'status' or 'projects'"));
+            }
+            let sender = st.thread_sender(&id)?;
+            let had_rule = st.sender_rule(&sender)?.is_some();
+            let undo = st.answer_sort(&id, &answer)?;
+            // A rule that this answer just made is told once, in plain words.
+            let learned = match st.sender_rule(&sender)? {
+                Some(g) if !had_rule => {
+                    let name = st.thread(&id)?.last_from;
+                    let mut to: Vec<String> = g.status.into_iter().collect();
+                    to.extend(g.projects);
+                    Some(format!(
+                        "Learned: mail from {name} goes to {}",
+                        to.join(" · ")
+                    ))
+                }
+                _ => None,
+            };
+            let _ = svc.events.send(Event::ThreadsChanged(vec![id.clone()]));
+            if let Ok((acc, _)) = st.provider_thread_id(&id) {
+                svc.kick(&acc);
+            }
+            Ok(json!({ "undo": undo, "learned": learned }))
+        }
+        "sort.undo" => {
+            let undo: SortUndo =
+                serde_json::from_value(p.get("undo").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| RpcError::invalid(format!("bad 'undo': {e}")))?;
+            st.undo_sort(&undo)?;
+            let _ = svc
+                .events
+                .send(Event::ThreadsChanged(vec![undo.thread.id.clone()]));
+            if let Ok((acc, _)) = st.provider_thread_id(&undo.thread.id) {
+                svc.kick(&acc);
+            }
+            Ok(json!({}))
+        }
+        "suggestions.clear" => {
+            let cleared = st.clear_machine_suggestions()?;
+            tracing::info!(cleared, "unreviewed suggestions cleared");
+            let _ = svc.events.send(Event::SuggestionsChanged);
+            let _ = svc.events.send(Event::ThreadsChanged(vec![]));
+            Ok(json!({ "cleared": cleared }))
         }
         "suggestions.accept" => {
             let status = s(p, "status")?;
@@ -955,6 +1037,6 @@ fn router_state(svc: &Service) -> Value {
         "model": "jev-latest",
         "daily_cap": svc.store.background_daily_cap().unwrap_or(mermoz_core::jev::DEFAULT_DAILY_CAP),
         "calls_today": svc.store.background_calls_today().unwrap_or(0),
-        "resort": svc.store.resort().ok().flatten(),
+        "paused": svc.paused(),
     })
 }

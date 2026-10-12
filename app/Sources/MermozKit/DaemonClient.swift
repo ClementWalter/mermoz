@@ -195,8 +195,9 @@ public final class DaemonClient: Sendable {
     }
 
     /// Sorts every column again in the background; nothing moves until accepted.
-    public func resortMailbox() async throws -> ResortStart {
-        try await call("suggestions.resort")
+    /// Clears every suggestion on read threads nobody reviewed; returns how many.
+    public func clearSuggestions() async throws -> Int {
+        try await call("suggestions.clear", as: Cleared.self).cleared
     }
 
     public func setDailyCap(_ cap: Int) async throws -> RouterState {
@@ -334,3 +335,6 @@ struct TargetParam: Encodable, Sendable {
         try c.encode(projects, forKey: DynamicKey("projects"))
     }
 }
+
+/// `suggestions.clear`.
+struct Cleared: Decodable, Sendable { var cleared: Int }

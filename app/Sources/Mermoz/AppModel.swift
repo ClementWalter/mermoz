@@ -1357,11 +1357,12 @@ final class AppModel {
     }
 
     /// Daily allowance of background sorting requests.
-    /// Asks for a fresh sort of every column; progress shows in the column bars.
-    func resortMailbox() async {
+    /// Clears every suggestion on read threads nobody reviewed.
+    func clearSuggestions() async {
         guard let client else { return }
         do {
-            _ = try await client.resortMailbox()
+            let n = try await client.clearSuggestions()
+            toast = n == 1 ? "Cleared 1 suggestion" : "Cleared \(n.formatted()) suggestions"
             await loadRouter()
             await loadList()
         } catch { report(error) }

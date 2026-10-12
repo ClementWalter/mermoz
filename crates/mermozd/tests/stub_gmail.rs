@@ -42,6 +42,8 @@ pub struct Mailbox {
     pub jev_auth: Vec<String>,
     /// Jev answers 429 (Retry-After 100 ms) to this many calls first.
     pub jev_rate_limited: usize,
+    /// Jev answers 402 (no credits left) while set.
+    pub jev_out_of_credits: bool,
     /// Status the stub Jev picks; "archive" when unset.
     pub jev_status: Option<String>,
     /// Conversation questions the AI answered.
@@ -292,6 +294,13 @@ async fn jev_systemone(
     let status = {
         let mut m = s.lock().unwrap();
         m.jev_auth.push(auth);
+        if m.jev_out_of_credits {
+            return (
+                axum::http::StatusCode::PAYMENT_REQUIRED,
+                r#"{"error":{"type":"billing_error","message":"credit balance is too low"}}"#,
+            )
+                .into_response();
+        }
         if m.jev_rate_limited > 0 {
             m.jev_rate_limited -= 1;
             return (

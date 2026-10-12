@@ -151,19 +151,12 @@ enum Cmd {
         #[arg(required = true)]
         threads: Vec<String>,
     },
-    /// Sort whole columns again in the background: every thread gets a fresh look and
-    /// a suggestion where it should move. Threads you turned a suggestion down for, or
-    /// moved yourself since, are left alone. Nothing moves until accepted.
-    #[command(
-        after_help = "Examples:\n  mermoz resort --all\n  mermoz resort --column todo --column waiting\n  mermoz suggestions archive   # follow progress"
-    )]
+    /// Stop a whole-mailbox sort and clear the suggestions it left that nobody
+    /// reviewed. Accepted and turned-down suggestions are kept.
+    #[command(after_help = "Examples:\n  mermoz resort --stop")]
     Resort {
-        /// Every column: todo, waiting, in_progress, backlog, done and archive.
-        #[arg(long, conflicts_with = "column", required_unless_present = "column")]
-        all: bool,
-        /// One status column (repeat for several).
-        #[arg(long)]
-        column: Vec<String>,
+        #[arg(long, required = true)]
+        stop: bool,
     },
     /// The AI's pending suggestions in a status column, grouped by where they go,
     /// and how far background sorting of that column has got; with --to/--to-project,
@@ -172,7 +165,12 @@ enum Cmd {
         after_help = "Examples:\n  mermoz suggestions backlog\n  mermoz suggestions backlog --to archive\n  mermoz suggestions backlog --to none --to-project Receipts"
     )]
     Suggestions {
-        status: String,
+        #[arg(required_unless_present = "clear")]
+        status: Option<String>,
+        /// Clear every suggestion on read threads that nobody reviewed (Unread mail keeps
+        /// its own); accepted and turned-down ones are kept.
+        #[arg(long, conflicts_with_all = ["to", "to_projects"])]
+        clear: bool,
         /// List the threads going to this status ("none": groups that only add projects).
         #[arg(long)]
         to: Option<String>,
@@ -1071,42 +1069,41 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             out.line(format!("rejected {}", v["rejected"].as_i64().unwrap_or(0)));
         }
-        Cmd::Resort { all, column } => {
-            let params = if all {
-                json!({})
-            } else {
-                let statuses = column
-                    .iter()
-                    .map(|s| resolve_status(&mut c, s))
-                    .collect::<Result<Vec<_>, _>>()?;
-                json!({ "statuses": statuses })
-            };
-            let v = c.call("suggestions.resort", params)?;
+        Cmd::Resort { stop } => {
+            let v = c.call("suggestions.resort", json!({ "stop": stop }))?;
             if out.json {
                 return {
                     out.json(&v);
                     Ok(())
                 };
             }
-            let columns: Vec<&str> = v["resort"]["statuses"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|s| s.as_str())
-                .collect();
             out.line(format!(
-                "sorting {} threads again in the background ({}); follow with `mermoz suggestions <column>`",
-                v["due"].as_i64().unwrap_or(0),
-                columns.join(", ")
+                "stopped; cleared {} unreviewed suggestions",
+                v["cleared"].as_i64().unwrap_or(0)
             ));
         }
         Cmd::Suggestions {
             status,
+            clear,
             to,
             to_projects,
             limit,
         } => {
-            let status = resolve_status(&mut c, &status)?;
+            if clear {
+                let v = c.call("suggestions.clear", json!({}))?;
+                if out.json {
+                    return {
+                        out.json(&v);
+                        Ok(())
+                    };
+                }
+                out.line(format!(
+                    "cleared {} unreviewed suggestions",
+                    v["cleared"].as_i64().unwrap_or(0)
+                ));
+                return Ok(());
+            }
+            let status = resolve_status(&mut c, &status.unwrap_or_default())?;
             if to.is_some() || !to_projects.is_empty() {
                 let to = match to.as_deref() {
                     None | Some("none") => Value::Null,
@@ -1134,18 +1131,11 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             let col = &v["columns"][0];
             out.line(format!(
-                "{} pending · sorted {} of {}{}{}",
+                "{} pending{}",
                 col["pending"].as_i64().unwrap_or(0),
-                col["classified"].as_i64().unwrap_or(0),
-                col["total"].as_i64().unwrap_or(0),
-                if v["resort"].is_object() {
-                    " · whole-mailbox sort running"
-                } else {
-                    ""
-                },
                 match v["paused"].as_str() {
-                    Some("limit") => " · paused: daily limit reached",
-                    Some(_) => " · paused: AI unavailable, retrying",
+                    Some("credits") => " · sorting paused: your TypeSafe credits ran out",
+                    Some(_) => " · sorting paused: AI unavailable, retrying later",
                     None => "",
                 }
             ));

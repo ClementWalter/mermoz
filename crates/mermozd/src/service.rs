@@ -42,12 +42,8 @@ pub struct Service {
     verifying: Mutex<std::collections::HashSet<String>>,
     /// Project descriptions for the router, rebuilt every [`DESCRIPTIONS_TTL`].
     descriptions: Mutex<Option<Descriptions>>,
-    /// Wakes the background column sorter (key set, focus changed).
-    pub column_kick: Arc<Notify>,
-    /// Background column sorting state, shown in column headers.
-    pub column: Mutex<ColumnState>,
-    /// Statuses of the columns on screen.
-    focus: Mutex<Vec<String>>,
+    /// Why the AI is on hold, and until when (out of credits, rate limited…).
+    pub pause: Mutex<Option<Pause>>,
     /// Wakes conversation grouping (new mail routed, key or AI changed).
     pub grouping_kick: Arc<Notify>,
     /// Google Drive connections, picks and the local Drive cache.
@@ -76,9 +72,7 @@ impl Service {
             router_error: Mutex::new(None),
             verifying: Mutex::new(Default::default()),
             descriptions: Mutex::new(None),
-            column_kick: Arc::new(Notify::new()),
-            column: Mutex::new(ColumnState::default()),
-            focus: Mutex::new(vec![]),
+            pause: Mutex::new(None),
             grouping_kick: Arc::new(Notify::new()),
             drive: Default::default(),
         })
@@ -597,13 +591,6 @@ fn ensure_import(svc: &Arc<Service>, w: &Arc<Worker>) {
 /// Project descriptions change slowly; rebuilding them costs a scan of filed mail.
 const DESCRIPTIONS_TTL: Duration = Duration::from_secs(600);
 
-/// Requests in flight for the background pass (12 ran clean against the live API).
-const COLUMN_PARALLEL: usize = 12;
-
-/// Threads taken per background round; small enough that a focus change or new
-/// mail is picked up within a couple of seconds.
-const COLUMN_BATCH: i64 = 48;
-
 /// What a routing call needs besides the thread: the client and the questions.
 struct RouteKit {
     client: Arc<jev::Client>,
@@ -611,29 +598,53 @@ struct RouteKit {
     known: Arc<Vec<String>>,
 }
 
-/// Background sorting of the open columns, as the app shows it.
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct ColumnState {
-    /// Working through threads right now.
-    pub sorting: bool,
-    /// Why sorting is on hold: "limit" (daily cap reached) or "unavailable" (backing off).
-    pub paused: Option<String>,
+/// The AI is on hold: `reason` is "credits" (TypeSafe credits ran out) or
+/// "unavailable" (rate limited or down); nothing is asked before `until`.
+#[derive(Debug, Clone)]
+pub struct Pause {
+    pub reason: String,
+    pub until: std::time::Instant,
 }
+
+/// Wait before one probe call after the credits ran out: topping up is a human step.
+const CREDITS_RETRY: Duration = Duration::from_secs(900);
 
 impl Service {
     pub fn start_router(self: &Arc<Self>) {
         tokio::spawn(router_loop(self.clone()));
-        tokio::spawn(column_loop(self.clone()));
         tokio::spawn(crate::grouping::grouping_loop(self.clone()));
     }
 
-    /// The columns on screen; the background pass sorts them first.
-    pub fn set_focus(&self, statuses: Vec<String>) {
-        let mut f = self.focus.lock().unwrap();
-        if *f != statuses {
-            *f = statuses;
-            self.column_kick.notify_one();
-        }
+    /// Why the AI is on hold right now, if it is.
+    pub fn paused(&self) -> Option<String> {
+        self.pause
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|p| p.until > std::time::Instant::now())
+            .map(|p| p.reason.clone())
+    }
+
+    /// Puts the AI on hold after a refusal that says to stop asking for a while.
+    pub fn pause_for(&self, e: &Error, previous: Option<Duration>) -> Duration {
+        let (reason, wait) = match e {
+            Error::OutOfCredits => ("credits", CREDITS_RETRY),
+            Error::RateLimited { retry_after } => {
+                ("unavailable", jev::backoff(*retry_after, previous))
+            }
+            _ => ("unavailable", jev::backoff(None, previous)),
+        };
+        warn!(reason, wait_s = wait.as_secs(), "AI sorting paused");
+        *self.pause.lock().unwrap() = Some(Pause {
+            reason: reason.into(),
+            until: std::time::Instant::now() + wait,
+        });
+        wait
+    }
+
+    /// A new key (or a top-up) lifts any hold at once.
+    pub fn resume(&self) {
+        *self.pause.lock().unwrap() = None;
     }
 
     fn route_kit(&self, key: &str) -> Result<RouteKit> {
@@ -695,9 +706,11 @@ async fn route_many(
     out
 }
 
-/// A refused key, a rate limit or an outage: stop and retry later, never a verdict.
-fn pause_reason(e: &Error) -> Option<Option<Duration>> {
+/// No credits, a refused key, a rate limit or an outage: stop and retry later, never a
+/// verdict on the thread.
+pub(crate) fn pause_reason(e: &Error) -> Option<Option<Duration>> {
     match e {
+        Error::OutOfCredits => Some(Some(CREDITS_RETRY)),
         Error::RateLimited { retry_after } => Some(*retry_after),
         Error::InvalidParams(_) | Error::Http(_) => Some(None),
         Error::Upstream { status, .. } if *status == 429 || *status >= 500 => Some(None),
@@ -712,19 +725,235 @@ fn input_tokens(outcomes: &[Outcome]) -> i64 {
         .sum()
 }
 
-/// Routes every new Unread thread through Jev while a TypeSafe key is set.
+/// Cards the Sort queue prepares per request: the one on screen and a few ahead.
+pub const SORT_AHEAD: usize = 3;
+
+/// AI calls one Sort request may make, so threads with nothing to change cannot
+/// turn one card into a long wait or a bulk pass.
+const SORT_CALLS_PER_REQUEST: usize = 12;
+
+/// Requests in flight while preparing cards.
+const SORT_PARALLEL: usize = 4;
+
+/// One card of the Sort queue: the thread with its suggestion, and why, in plain words.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SortCard {
+    pub thread: mermoz_core::model::ThreadSummary,
+    pub why: Option<String>,
+}
+
+/// What a Sort request returns: the cards ready now, and why the AI is on hold if it is.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SortBatch {
+    pub cards: Vec<SortCard>,
+    pub paused: Option<String>,
+}
+
+impl Service {
+    /// The next cards of the Sort queue (or of `statuses` among the open columns),
+    /// leaving out `exclude` (cards the user holds or skipped). Suggestions are asked
+    /// of the AI only for these few threads, just before they are shown.
+    pub async fn sort_next(
+        self: &Arc<Self>,
+        statuses: &[String],
+        exclude: &[String],
+        want: usize,
+    ) -> Result<SortBatch> {
+        let mut seen: Vec<String> = exclude.to_vec();
+        let mut cards = vec![];
+        let mut calls_left = SORT_CALLS_PER_REQUEST;
+        let mut backoff = None;
+        while cards.len() < want {
+            let cands = self
+                .store
+                .sort_candidates(statuses, &seen, (want * 2 + 4) as i64)?;
+            if cands.is_empty() {
+                break;
+            }
+            let mut to_route = vec![];
+            for c in cands {
+                seen.push(c.id.clone());
+                if c.ready {
+                    // A No given since this card was prepared applies to it too.
+                    if !self.store.close_if_refused(&c.id)? {
+                        cards.push(self.sort_card(&c.id)?);
+                    }
+                } else if let Some(sg) = self.learned_suggestion(&c.id)? {
+                    if self
+                        .store
+                        .save_column_suggestion(&c.id, &sg, "learned", c.last_date)?
+                    {
+                        cards.push(self.sort_card(&c.id)?);
+                    }
+                } else {
+                    to_route.push((c.id, c.last_date));
+                }
+                if cards.len() >= want {
+                    break;
+                }
+            }
+            if cards.len() >= want || to_route.is_empty() {
+                continue;
+            }
+            let Some(key) = jev::load_key() else { break };
+            if self.paused().is_some() || calls_left == 0 {
+                break;
+            }
+            let room = jev::calls_left(
+                self.store.background_calls_today()?,
+                self.store.background_daily_cap()?,
+            );
+            to_route.truncate(
+                calls_left
+                    .min(room.max(0) as usize)
+                    .min(want - cards.len() + 2),
+            );
+            if to_route.is_empty() {
+                break;
+            }
+            calls_left -= to_route.len();
+            let kit = self.route_kit(&key)?;
+            let outcomes = route_many(self, &kit, &to_route, SORT_PARALLEL).await;
+            let tokens = input_tokens(&outcomes);
+            let ok = outcomes.iter().filter(|(_, _, r)| r.is_ok()).count() as i64;
+            let calls_today = self.store.add_background_calls(ok)?;
+            info!(
+                calls = ok,
+                input_tokens = tokens,
+                calls_today,
+                "sort queue routed"
+            );
+            let mut stop = false;
+            for (tid, last_date, res) in outcomes {
+                match res {
+                    Ok(r) => {
+                        if self.store.save_column_suggestion(
+                            &tid,
+                            &r.suggestion,
+                            "jev-latest",
+                            last_date,
+                        )? {
+                            cards.push(self.sort_card(&tid)?);
+                        }
+                    }
+                    // No verdict is recorded: the thread stays in the queue for later.
+                    Err(e) if pause_reason(&e).is_some() => {
+                        backoff = Some(self.pause_for(&e, backoff));
+                        *self.router_error.lock().unwrap() = Some(e.to_string());
+                        stop = true;
+                    }
+                    Err(e) => {
+                        warn!(thread = %tid, "sort queue skipped thread: {e}");
+                        self.store.save_column_suggestion(
+                            &tid,
+                            &Default::default(),
+                            "jev-latest",
+                            last_date,
+                        )?;
+                    }
+                }
+            }
+            if stop {
+                break;
+            }
+        }
+        cards.truncate(want);
+        Ok(SortBatch {
+            cards,
+            paused: self.paused(),
+        })
+    }
+
+    /// A trusted sender's destination (see [`mermoz_core::store::TRUST_AFTER`]) as a
+    /// suggestion, without asking the AI.
+    fn learned_suggestion(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<mermoz_core::model::Suggestion>> {
+        let sender = self.store.thread_sender(thread_id)?;
+        let Some(g) = self.store.sender_rule(&sender)? else {
+            return Ok(None);
+        };
+        let days = jev::days_ago(
+            self.store.thread(thread_id)?.last_date,
+            mermoz_core::model::now_ms(),
+        );
+        let sg = mermoz_core::model::Suggestion {
+            status_confidence: g.status.as_ref().map(|_| 1.0),
+            project_confidence: (!g.projects.is_empty()).then_some(1.0),
+            status: g.status,
+            projects: g.projects,
+            ..Default::default()
+        };
+        Ok(Some(jev::guard_stale(sg, days)))
+    }
+
+    /// The card for a thread whose suggestion is stored, with the evidence behind it.
+    fn sort_card(&self, thread_id: &str) -> Result<SortCard> {
+        let thread = self.store.thread(thread_id)?;
+        let model = self.store.suggestion_model(thread_id)?;
+        let why = match (&thread.suggestion, model.as_deref()) {
+            (Some(sg), Some("learned")) => Some(format!(
+                "Learned: mail from {} goes to {}",
+                thread.last_from,
+                target_words(sg)
+            )),
+            (Some(sg), _) if !sg.projects.is_empty() => {
+                let input = self.store.route_input(thread_id)?;
+                let p = &sg.projects[0];
+                input
+                    .sender_history
+                    .iter()
+                    .find(|(n, _)| n == p)
+                    .filter(|_| input.peer_threads > 0)
+                    .map(|(_, n)| {
+                        format!(
+                            "You filed {n} of your {} other threads with these people in {p}",
+                            input.peer_threads
+                        )
+                    })
+            }
+            _ => None,
+        };
+        Ok(SortCard { thread, why })
+    }
+}
+
+/// "Archive · Voyage": a destination in plain words.
+fn target_words(sg: &mermoz_core::model::Suggestion) -> String {
+    let mut parts: Vec<String> = sg
+        .status
+        .iter()
+        .map(|s| {
+            mermoz_core::model::DEFAULT_STATUSES
+                .iter()
+                .find(|(k, ..)| k == s)
+                .map_or(s.clone(), |(_, name, ..)| name.to_string())
+        })
+        .collect();
+    parts.extend(sg.projects.iter().cloned());
+    parts.join(" · ")
+}
+
+/// Routes every new Unread thread through Jev while a TypeSafe key is set and the
+/// AI is not on hold.
 async fn router_loop(svc: Arc<Service>) {
+    let mut backoff = None;
     loop {
-        if let Some(key) = jev::load_key() {
+        if let Some(key) = jev::load_key().filter(|_| svc.paused().is_none()) {
             match route_pending(&svc, &key).await {
                 Ok(n) => {
                     if n > 0 {
                         info!(routed = n, "routed new mail");
                     }
                     *svc.router_error.lock().unwrap() = None;
+                    backoff = None;
                 }
                 Err(e) => {
                     warn!("router: {e}");
+                    if pause_reason(&e).is_some() {
+                        backoff = Some(svc.pause_for(&e, backoff));
+                    }
                     *svc.router_error.lock().unwrap() = Some(e.to_string());
                 }
             }
@@ -777,230 +1006,37 @@ async fn route_pending(svc: &Arc<Service>, key: &str) -> Result<usize> {
     // Routed mail knows whether it is automated: grouping can take it now.
     svc.grouping_kick.notify_one();
     match stop {
-        Some(Error::InvalidParams(m)) => Err(Error::InvalidParams(m)),
-        Some(Error::Http(e)) => Err(Error::Http(e)),
+        Some(
+            e @ (Error::InvalidParams(_)
+            | Error::Http(_)
+            | Error::OutOfCredits
+            | Error::RateLimited { .. }),
+        ) => Err(e),
         Some(_) => Err(Error::other("TypeSafe is unavailable right now")),
         None => Ok(n),
     }
 }
 
-/// How a background round ended.
-#[derive(Debug, PartialEq)]
-enum Round {
-    /// Threads were classified; more may be waiting.
-    Worked,
-    /// Nothing left to classify.
-    Idle,
-    /// New Unread mail goes first.
-    Yield,
-    /// Today's cap is spent.
-    Capped,
-    /// TypeSafe refused or is overloaded; wait (as asked, if it said) before retrying.
-    Pause(Option<Duration>),
-}
-
-/// Sorts the open columns in the background: every already-read thread without a
-/// current verdict gets one Jev call, the column on screen first. Suggestions only;
-/// nothing moves until the user accepts.
-async fn column_loop(svc: Arc<Service>) {
-    let mut last_backoff: Option<Duration> = None;
-    loop {
-        let round = match jev::load_key() {
-            None => Round::Idle,
-            Some(key) => column_round(&svc, &key).await.unwrap_or_else(|e| {
-                warn!("background sorting: {e}");
-                Round::Pause(None)
-            }),
-        };
-        let (sorting, paused, wait) = match round {
-            Round::Worked => (true, None, Duration::from_millis(20)),
-            Round::Yield => (true, None, Duration::from_millis(500)),
-            Round::Idle => (false, None, Duration::from_secs(30)),
-            Round::Capped => (false, Some("limit"), Duration::from_secs(600)),
-            Round::Pause(asked) => {
-                let d = jev::backoff(asked, last_backoff);
-                warn!(wait_ms = d.as_millis() as u64, "background sorting paused");
-                (false, Some("unavailable"), d)
-            }
-        };
-        last_backoff = match round {
-            Round::Pause(asked) => Some(jev::backoff(asked, last_backoff)),
-            _ => None,
-        };
-        let state = ColumnState {
-            sorting,
-            paused: paused.map(String::from),
-        };
-        let changed = {
-            let mut s = svc.column.lock().unwrap();
-            let changed = s.sorting != state.sorting || s.paused != state.paused;
-            *s = state;
-            changed
-        };
-        if changed {
-            let _ = svc.events.send(Event::SuggestionsChanged);
-        }
-        if paused.is_some() {
-            // A kick must not cut a backoff short.
-            tokio::time::sleep(wait).await;
-        } else {
-            tokio::select! {
-                _ = tokio::time::sleep(wait) => {}
-                _ = svc.column_kick.notified() => {}
-            }
-        }
-    }
-}
-
-/// Calls the next background round may make: what is left of a running resort's
-/// ceiling, else of today's cap.
-fn allowance(resort: Option<&mermoz_core::store::Resort>, used_today: i64, cap: i64) -> i64 {
-    match resort {
-        Some(r) => (r.ceiling - r.calls).max(0),
-        None => jev::calls_left(used_today, cap),
-    }
-}
-
-async fn column_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
-    // Threads keep ageing while the daemon runs; their pending live statuses go too.
-    if svc
-        .store
-        .drop_stale_suggestions(mermoz_core::model::now_ms())?
-        > 0
-    {
-        let _ = svc.events.send(Event::SuggestionsChanged);
-    }
-    if !svc.store.threads_to_route(1)?.is_empty() {
-        return Ok(Round::Yield);
-    }
-    let used = svc.store.background_calls_today()?;
-    let cap = svc.store.background_daily_cap()?;
-    let mut resort = svc.store.resort()?;
-    if let Some(r) = resort.as_ref().filter(|r| r.calls >= r.ceiling) {
-        warn!(
-            calls = r.calls,
-            ceiling = r.ceiling,
-            "whole-mailbox sort reached its ceiling; stopping it"
-        );
-        svc.store.finish_resort(r.since)?;
-        resort = None;
-    }
-    let left = allowance(resort.as_ref(), used, cap);
-    if left == 0 {
-        info!(
-            calls_today = used,
-            cap, "background sorting reached today's limit"
-        );
-        return Ok(Round::Capped);
-    }
-    let focus = svc.focus.lock().unwrap().clone();
-    let batch = svc
-        .store
-        .threads_to_classify(&focus, left.min(COLUMN_BATCH))?;
-    if batch.is_empty() {
-        // Only the resort this round started with: one asked for meanwhile has work.
-        if let Some(r) = resort
-            .as_ref()
-            .map(|r| svc.store.finish_resort(r.since))
-            .transpose()?
-            .flatten()
-        {
-            info!(
-                calls = r.calls,
-                input_tokens = r.input_tokens,
-                "whole-mailbox sort finished"
-            );
-            let _ = svc.events.send(Event::SuggestionsChanged);
-        }
-        return Ok(Round::Idle);
-    }
-    let kit = svc.route_kit(key)?;
-    let outcomes = route_many(svc, &kit, &batch, COLUMN_PARALLEL).await;
-    let tokens = input_tokens(&outcomes);
-    // A resort's calls count against its own ceiling, not today's allowance.
-    let calls_today = if resort.is_some() {
-        if let Some(r) = svc
-            .store
-            .record_resort_round(outcomes.len() as i64, tokens)?
-        {
-            info!(
-                calls = r.calls,
-                ceiling = r.ceiling,
-                remaining = svc.store.resort_remaining()?,
-                input_tokens = r.input_tokens,
-                "whole-mailbox sort progress"
-            );
-        }
-        used
-    } else {
-        svc.store.add_background_calls(outcomes.len() as i64)?
-    };
-    let (mut classified, mut shown) = (0, vec![]);
-    let mut pause = None;
-    for (tid, last_date, res) in outcomes {
-        match res {
-            Ok(r) => {
-                classified += 1;
-                if svc
-                    .store
-                    .save_column_suggestion(&tid, &r.suggestion, "jev-latest", last_date)?
-                {
-                    shown.push(tid);
-                }
-            }
-            Err(e) => match pause_reason(&e) {
-                Some(asked) => pause = Some(asked.or(pause.flatten())),
-                None => {
-                    warn!(thread = %tid, "background sorting skipped thread: {e}");
-                    svc.store.save_column_suggestion(
-                        &tid,
-                        &Default::default(),
-                        "jev-latest",
-                        last_date,
-                    )?;
-                }
-            },
-        }
-    }
-    info!(
-        classified,
-        suggested = shown.len(),
-        input_tokens = tokens,
-        calls_today,
-        "background sorting round"
-    );
-    // One coarse event per round: the app refreshes chips and column bars together.
-    let _ = svc.events.send(Event::SuggestionsChanged);
-    Ok(match pause {
-        Some(asked) => Round::Pause(asked),
-        None => Round::Worked,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{allowance, import_needed};
-    use mermoz_core::store::Resort;
+    use super::{import_needed, pause_reason};
+    use mermoz_core::Error;
     use rstest::rstest;
 
-    fn resort(calls: i64, ceiling: i64) -> Resort {
-        Resort {
-            since: 0,
-            statuses: vec!["archive".into()],
-            total: 100,
-            ceiling,
-            calls,
-            input_tokens: 0,
-        }
+    #[rstest]
+    fn out_of_credits_pauses_instead_of_judging_the_thread() {
+        assert!(pause_reason(&Error::OutOfCredits).is_some());
     }
 
     #[rstest]
-    #[case::daily_cap_without_resort(None, 2000)]
-    #[case::resort_goes_past_the_daily_cap(Some(resort(0, 30_000)), 30_000)]
-    #[case::resort_counts_its_own_calls(Some(resort(29_000, 30_000)), 1000)]
-    #[case::resort_stops_at_its_ceiling(Some(resort(30_500, 30_000)), 0)]
-    fn background_allowance(#[case] r: Option<Resort>, #[case] want: i64) {
-        assert_eq!(allowance(r.as_ref(), 18_000, 20_000), want);
+    fn a_thread_specific_error_is_no_pause() {
+        assert!(
+            pause_reason(&Error::Upstream {
+                status: 400,
+                body: String::new()
+            })
+            .is_none()
+        );
     }
 
     #[rstest]

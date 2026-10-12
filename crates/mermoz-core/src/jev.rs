@@ -125,6 +125,13 @@ pub struct RouteInput {
     /// "filed in <project>" → how many earlier threads with these people.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sender_history: Vec<(String, i64)>,
+    /// Other threads with these people, filed or not.
+    pub peer_threads: i64,
+    /// Those of them the user never filed in any folder.
+    pub unfiled_peers: i64,
+    /// The user's earlier yes/no answers for this sender: ("yes: Archive · Voyage", n).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub earlier_answers: Vec<(String, i64)>,
 }
 
 impl RouteInput {
@@ -140,12 +147,23 @@ impl RouteInput {
             "recent_messages": self.recent_messages,
         });
         if !self.sender_history.is_empty() {
-            let h: serde_json::Map<String, Value> = self
+            let mut h: serde_json::Map<String, Value> = self
                 .sender_history
                 .iter()
                 .map(|(p, n)| (format!("filed in {p}"), json!(n)))
                 .collect();
+            // Without this, "filed in X: 88" reads as a habit even when the user left
+            // 1,000 other threads with the same people unfiled.
+            h.insert("not filed in any folder".into(), json!(self.unfiled_peers));
             v["sender_history"] = Value::Object(h);
+        }
+        if !self.earlier_answers.is_empty() {
+            let a: serde_json::Map<String, Value> = self
+                .earlier_answers
+                .iter()
+                .map(|(k, n)| (k.clone(), json!(n)))
+                .collect();
+            v["user_answers_for_this_sender"] = Value::Object(a);
         }
         v
     }
@@ -171,7 +189,7 @@ pub fn questions(projects: &[(String, String)]) -> Value {
         .collect();
     json!({
         "project": { "type": "choice", "criteria": folders, "instructions":
-            "In which of the user's email folders should this thread be filed? If `sender_history` is present, it lists where the user filed earlier threads with the same people; it is strong evidence but not decisive." },
+            "In which of the user's email folders should this thread be filed? Most of the user's mail is never filed: answer `none` unless the thread clearly belongs in a folder. If `sender_history` is present, it counts earlier threads with the same people per folder and those never filed; a folder is good evidence only when it holds most of them. `user_answers_for_this_sender` lists suggestions the user accepted (yes) or turned down (no) for this sender." },
         "status": { "type": "choice", "criteria": status, "instructions":
             "Where does this thread belong in the user's workflow once they have read it? `last_activity` says how long ago anyone last wrote in the thread." },
         "priority": { "type": "choice", "criteria": priority, "instructions":
@@ -230,6 +248,33 @@ pub fn guard_stale(mut sg: Suggestion, last_activity_days_ago: i64) -> Suggestio
         sg.status_confidence = None;
     }
     sg.priority = None;
+    sg
+}
+
+/// A suggested folder must hold at least this share of the threads the user had with
+/// the same people. On the user's mailbox the flooded suggestions went to folders
+/// holding a median 6% of those threads.
+pub const MIN_FOLDER_SHARE: f64 = 0.5;
+
+/// Below this many earlier threads with the same people the share says too little;
+/// Jev's answer from the folder descriptions stands.
+pub const MIN_PEERS_FOR_SHARE: i64 = 3;
+
+/// Drops a suggested folder that holds less than [`MIN_FOLDER_SHARE`] of the threads
+/// the user had with the same people.
+pub fn guard_folder_share(mut sg: Suggestion, history: &[(String, i64)], peers: i64) -> Suggestion {
+    if peers < MIN_PEERS_FOR_SHARE || sg.projects.is_empty() {
+        return sg;
+    }
+    let filed_there = |p: &String| history.iter().find(|(n, _)| n == p).map_or(0, |(_, c)| *c);
+    if sg
+        .projects
+        .iter()
+        .any(|p| (filed_there(p) as f64) / (peers as f64) < MIN_FOLDER_SHARE)
+    {
+        sg.projects.clear();
+        sg.project_confidence = None;
+    }
     sg
 }
 
@@ -345,6 +390,7 @@ impl Client {
                 401 | 403 => Error::InvalidParams(
                     "The TypeSafe key was refused. Check it in Settings › Developer.".into(),
                 ),
+                402 => Error::OutOfCredits,
                 429 => Error::RateLimited { retry_after: retry },
                 _ => Error::Upstream { status, body },
             });
@@ -361,7 +407,11 @@ impl Client {
     ) -> Result<Routed> {
         let (answers, input_tokens) = self.ask_metered(&input.state(), questions).await?;
         Ok(Routed {
-            suggestion: guard_stale(suggestion(&answers, known), input.last_activity_days_ago),
+            suggestion: guard_folder_share(
+                guard_stale(suggestion(&answers, known), input.last_activity_days_ago),
+                &input.sender_history,
+                input.peer_threads,
+            ),
             input_tokens,
         })
     }
@@ -464,7 +514,84 @@ mod tests {
             last_message_from_me: false,
             recent_messages: vec![],
             sender_history: vec![],
+            peer_threads: 0,
+            unfiled_peers: 0,
+            earlier_answers: vec![],
         }
+    }
+
+    fn filed(project: &str) -> Suggestion {
+        Suggestion {
+            projects: vec![project.into()],
+            project_confidence: Some(0.95),
+            ..Default::default()
+        }
+    }
+
+    #[rstest]
+    #[case::folder_holds_most(vec![("Voyage", 8)], 10, vec!["Voyage"])]
+    #[case::folder_holds_a_few(vec![("Voyage", 2)], 40, vec![])]
+    #[case::exactly_half(vec![("Voyage", 5)], 10, vec!["Voyage"])]
+    #[case::people_never_filed_there(vec![("Immo", 9)], 10, vec![])]
+    #[case::too_few_threads_to_judge(vec![], 2, vec!["Voyage"])]
+    fn folder_must_hold_most_of_these_people_s_threads(
+        #[case] history: Vec<(&str, i64)>,
+        #[case] peers: i64,
+        #[case] want: Vec<&str>,
+    ) {
+        let history: Vec<(String, i64)> = history.into_iter().map(|(p, n)| (p.into(), n)).collect();
+        assert_eq!(
+            guard_folder_share(filed("Voyage"), &history, peers).projects,
+            want
+        );
+    }
+
+    #[rstest]
+    fn dropped_folder_keeps_the_status() {
+        let sg = Suggestion {
+            status: Some("archive".into()),
+            ..filed("Voyage")
+        };
+        assert_eq!(
+            guard_folder_share(sg, &[], 40).status.as_deref(),
+            Some("archive")
+        );
+    }
+
+    #[rstest]
+    fn sender_history_tells_the_unfiled_threads() {
+        let input = RouteInput {
+            sender_history: vec![("Immo".into(), 4)],
+            peer_threads: 40,
+            unfiled_peers: 36,
+            ..route_input(4)
+        };
+        assert_eq!(
+            input.state()["sender_history"]["not filed in any folder"],
+            36
+        );
+    }
+
+    #[rstest]
+    fn earlier_answers_reach_jev() {
+        let input = RouteInput {
+            earlier_answers: vec![("no: Done · Mariage".into(), 2)],
+            ..route_input(4)
+        };
+        assert_eq!(
+            input.state()["user_answers_for_this_sender"]["no: Done · Mariage"],
+            2
+        );
+    }
+
+    #[rstest]
+    fn project_question_says_most_mail_is_not_filed() {
+        assert!(
+            questions(&[])["project"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("never filed")
+        );
     }
 
     #[rstest]
