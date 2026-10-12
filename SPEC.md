@@ -409,64 +409,74 @@ untick either and the app adapts.
 - **Keyboard-first:** j/k navigation, single-key status/priority changes, ⌘K
   command palette (also hosts "ask your mailbox").
 
-### Feed view (design, 2026-10-12, not built)
+### Feed view (decided 2026-10-12)
 
-A third layout next to Board and List: **Board | List | Feed**. The feed turns
-everything open into one ordered stream of cards. Each card is one thing to do,
-phrased as an action, with one line on why it matters now and the next step one
-key away. Mockup: `docs/design/feed-cards.html`.
+A third layout next to Board and List: **Board | List | Feed**, never the default.
+The feed turns everything open into one ordered stream of cards. Each card is one
+thing to do, phrased as an action, with one line on why it matters now and the
+next step one key away. Design mockup: `docs/design/feed-cards.html`.
 
 **What feeds it.** Unread, To do, In progress and Waiting. Backlog appears only
-when something brings it back (a date within 48 h, a new reply), tagged "Back
-from Backlog". The feed works on conversations (several threads grouped by
-person and topic) when they exist, otherwise on Gmail threads. It respects the
-sidebar selection, so a project's feed is that project's work.
+when a date it mentions is within two days, tagged "Back from Backlog". Snoozed
+threads (Later) stay out until their time or new mail. The feed works on Gmail
+threads through a unit that can hold several threads, so person-and-topic
+conversations can plug in later. It respects the sidebar selection: a project's
+feed is that project's work.
 
 **Card types.** Every card shares one anatomy: kind label, person and project,
 due chip, title phrased as the action, a "why now" line, the type's body, then
-actions with their keys. Ten types, recommended variant first:
+actions with their keys.
 
-| Type | Body | Primary action |
+| Type | Body | Primary action (↩) |
 | --- | --- | --- |
-| Reply needed | two-line draft peek | Send the draft |
-| Decision | option tiles, the AI's pick with its reason | Pick an option (drafts the reply) |
-| Document to sign | three key points + file | Open to sign |
-| You promised | your own sentence, deadline highlighted, matching file | Reply with the file |
-| Date | day agenda showing any clash, else a calendar tile | Add to calendar |
-| To pay | amount first, reference, due date | Open payment page |
-| New person | person card with who introduced them | Reply, introducer in Bcc |
-| Waiting on | one quiet line; the nudge draft opens on Enter | Send a nudge |
-| Clean-up | automated mail grouped by kind, untick to keep | Archive all |
-| Reading | one line per newsletter; a date becomes "Add" | Archive all |
+| Reply needed | two-line draft peek | Open the draft in the composer |
+| Decision | option tiles, the AI's pick with its reason | 1–3 open the reply choosing it |
+| Document to sign | three key points + file | Open the mail |
+| You promised | your own words, the deadline | Open the draft |
+| Date | calendar tile with day and time | Add to Calendar |
+| To pay | amount first, reference, due date | Open the mail; e marks it paid |
+| New person | who they are, who introduced them | Open the draft |
+| Waiting on | one quiet line; how long, how long they usually take | Open a nudge |
+| Clean-up | automated mail grouped by sender, untick to keep | Archive them (undo) |
+| Reading | one line per newsletter | Archive them (undo) |
 
-**Sections.** Now (due within 48 h, or urgent with someone waiting on you),
-Today, This week, Waiting on others (rises to Today when overdue for that
-sender), Can wait (clean-ups and reading). A short header counts what is left.
+Drafts always open in the composer; nothing is ever sent from a card.
 
-**Keys.** Same as the rest of the app: j/k move, e Done, a Archive, y accept,
-r reply/edit the draft, ⌘↩ send, ⌘Z undo. New in the feed: ↩ runs the card's
-primary action, 1–3 pick an option, l Later (snooze to tomorrow), o open the
-full conversation on the right, i ask about this card. A handled card slides
-out, leaves a one-second "Done · Undo" strip that folds away, and focus moves
-to the next card.
+**Sections.** Now (due within two days, or urgent with someone waiting on you),
+Today (due within a week, urgent, or a wait past twice the sender's usual answer
+time), This week, Waiting on others, Can wait (clean-ups and reading). A short
+header counts what is left.
+
+**Keys.** Same as the rest of the app: j/k move, e Done, a Archive, y accept, r
+reply, ⌘Z undo, t ask about this (the "Chat about this" panel). New in the feed:
+↩ runs the card's primary action, 1–3 pick an option, l Later (until tomorrow
+morning), ⇧L Later until a chosen day, o open the mail on the right. A handled
+card slides out, leaves a short "Done · Undo" strip that folds away, and focus
+moves to the next card. "Why this card?" explains a card in plain words, never
+with percentages.
 
 **Who decides what.**
 - Code decides the set, the section and the order: deadline, then urgency ×
-  how much you answer this sender, then age. Order stays stable between refreshes
-  and every position can be explained.
-- Jev, already run on arrival, adds the fast per-item judgments: needs a reply,
-  urgency, deadline/event/amount extraction, card type, automated. Calibrated
-  probabilities; below threshold the card falls back to a plain type.
-- The big AI writes only words: title, "why now", drafts, digests, key points.
-  It runs lazily when a card scrolls into view and is cached per thread version,
-  so a feed of 20 cards costs the visible handful, not the mailbox.
-- Without AI (no key, offline, or an account with no allowed provider) the feed
-  still works: same sections from statuses and due dates, the subject as title,
-  no "why now" line, no drafts.
+  how much you answer these people, then age. Order stays stable between
+  refreshes and every position can be explained.
+- Jev judges each open thread once per new message, in the background: card
+  kind, needs a reply, urgency, automated. Dates and amounts are found by code in
+  the mail (French and English), and Jev only picks which one is the deadline or
+  the amount to pay, so a card never shows a date or amount the mail doesn't
+  contain. Below the confidence bar the card falls back to plain facts. Calls
+  share the background daily cap.
+- The account's AI writes only words: title, "why now", drafts, options, key
+  points, one-line summaries. It runs only for cards on screen, is cached until
+  new mail arrives, and is never asked for an account that allows no AI.
+- Without Jev or AI the feed still works: sections from statuses and follow-up
+  dates, no-reply senders batched as clean-up, the subject as title, no drafts.
 
-**Budget.** Opening the feed is local and instant (cached judgments, < 5 ms
-ordering). AI text appears within about a second per visible card, never blocks
-keys, and is never sent anywhere an account forbids.
+**Budget.** `feed.list` stays under one frame (16 ms) with hundreds of open
+threads; card words arrive in the background and never block keys.
+
+**Not yet.** Calendar clash on Date cards (needs calendar access), the
+"matching file" on promises, a Bcc for introducers, per-item dates inside
+Reading digests.
 
 ## Agents
 

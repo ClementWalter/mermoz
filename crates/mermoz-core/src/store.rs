@@ -13,6 +13,9 @@ use std::sync::Mutex;
 mod conversations;
 pub use conversations::{GroupingPlan, PairCandidate};
 
+mod feed;
+pub use feed::FEED_STATUSES;
+
 const PRAGMAS: &str =
     "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";
 
@@ -100,6 +103,7 @@ const MIGRATIONS: &[&str] = &[
     DRAFT_ATTACHMENTS,
     SORT_FEEDBACK,
     CLEAR_FLOOD,
+    FEED,
 ];
 
 /// Files and links going out with a draft; files are copies under `blobs/drafts/`.
@@ -156,6 +160,22 @@ const PENDING_SUGGESTION: &str =
     "s.decision IS NULL AND (s.for_status IS NULL OR s.for_status = t.status)";
 
 /// "Chat about this": each thread's conversation with the AI, kept to show it again.
+/// The feed: Jev's per-thread judgments, the AI's card words and snoozes, each made for
+/// the thread's latest message (`for_date`) and redone when new mail arrives.
+const FEED: &str = r#"
+CREATE TABLE IF NOT EXISTS feed_judgments (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  judged INTEGER NOT NULL, kind TEXT, needs_reply REAL, urgency REAL, due TEXT, due_time TEXT, amount TEXT,
+  automated REAL, sender_weight REAL NOT NULL DEFAULT 0, typical_reply_days REAL,
+  for_date INTEGER NOT NULL, checked_day TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS feed_texts (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  for_date INTEGER NOT NULL, json TEXT, error TEXT, provider_id TEXT, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS feed_snoozes (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  until INTEGER NOT NULL, for_date INTEGER NOT NULL);
+"#;
+
 const CHAT: &str = r#"
 CREATE TABLE IF NOT EXISTS chat_messages (
   id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,

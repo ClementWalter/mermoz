@@ -217,6 +217,11 @@ fn start_world(extra_env: &[(&str, &str)]) -> World {
             NOW - 2000,
         );
     }
+    launch(home, mailbox, extra_env)
+}
+
+/// Starts the stub servers and a daemon on `home` with extra environment.
+fn launch(home: tempfile::TempDir, mailbox: Shared, extra_env: &[(&str, &str)]) -> World {
     let port = stub_gmail::start(mailbox.clone());
     std::fs::write(
         home.path().join("oauth_client.json"),
@@ -2976,5 +2981,347 @@ fn mcp_offers_conversation_tools(synced: World) {
             .as_str()
             .unwrap()
             .contains("report.pdf")
+    );
+}
+
+// ---- Feed (on the fictional demo mailbox) ------------------------------------------
+
+/// A daemon serving the demo mailbox (`mermoz_core::demo`), offline.
+#[fixture]
+fn demo() -> World {
+    let home = tempfile::tempdir().unwrap();
+    {
+        let store = mermoz_core::store::Store::open(
+            &home.path().join("mermoz.sqlite"),
+            &home.path().join("blobs"),
+        )
+        .unwrap();
+        mermoz_core::demo::seed(&store).unwrap();
+    }
+    // MERMOZ_NO_SYNC serves the store only, as with demo data.
+    launch(home, Default::default(), &[("MERMOZ_NO_SYNC", "1")])
+}
+
+impl World {
+    fn feed(&self) -> Value {
+        self.ok("feed.list", json!({}))
+    }
+
+    fn cards(&self) -> Vec<Value> {
+        self.feed()["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| s["cards"].as_array().unwrap().clone())
+            .collect()
+    }
+
+    /// The card about the thread whose subject starts with `subject`.
+    fn card(&self, subject: &str) -> Value {
+        self.cards()
+            .into_iter()
+            .find(|c| {
+                c["thread"]["subject"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with(subject))
+            })
+            .unwrap_or_else(|| panic!("no card for {subject}"))
+    }
+
+    fn section_of(&self, subject: &str) -> Value {
+        self.card(subject)["section"].clone()
+    }
+
+    /// Sets the TypeSafe key and waits until every open thread is judged.
+    fn judged(self) -> Self {
+        self.ok("router.set", json!({ "api_key": "jev-test" }));
+        self.wait_until("feed judgments", |w| {
+            let f = w.feed();
+            f["open"].as_u64() > Some(0) && f["judged"] == f["open"]
+        });
+        self
+    }
+
+    fn allow_ai_everywhere(&self) {
+        let pr = self.ok(
+            "providers.save",
+            json!({ "name": "Personal AI", "kind": "anthropic", "model": "claude-opus-5-5",
+            "base_url": format!("http://127.0.0.1:{}", self.port), "api_key": "sk-test" }),
+        );
+        for acc in self.ok("accounts.list", json!({})).as_array().unwrap() {
+            self.ok(
+                "accounts.agent.set",
+                json!({ "account_id": acc["id"], "provider_ids": [pr["id"]] }),
+            );
+        }
+    }
+}
+
+#[fixture]
+fn judged_demo(demo: World) -> World {
+    demo.judged()
+}
+
+#[rstest]
+fn feed_shows_open_demo_mail_without_jev(demo: World) {
+    assert!(demo.feed()["open"].as_u64().unwrap() > 5);
+}
+
+#[rstest]
+fn no_reply_senders_are_one_clean_up_card_without_jev(demo: World) {
+    assert!(demo.cards().iter().any(|c| c["id"] == "batch:cleanup"));
+}
+
+#[rstest]
+fn feed_reports_sorting_while_jev_works(demo: World) {
+    assert_eq!(demo.feed()["sorting"], false);
+}
+
+#[rstest]
+fn a_choice_to_make_is_a_decision_card(judged_demo: World) {
+    assert_eq!(judged_demo.card("Carrelage")["kind"], "decision");
+}
+
+#[rstest]
+fn a_bill_shows_the_amount_written_in_the_mail(judged_demo: World) {
+    assert_eq!(judged_demo.card("Facture cantine")["amount"], "126,00 €");
+}
+
+#[rstest]
+fn a_bill_due_this_week_is_for_today(judged_demo: World) {
+    assert_eq!(judged_demo.section_of("Facture cantine"), "today");
+}
+
+#[rstest]
+fn backlog_with_a_close_date_comes_back(judged_demo: World) {
+    assert_eq!(judged_demo.card("Réunion parents")["from_backlog"], true);
+}
+
+#[rstest]
+fn backlog_card_says_why_it_came_back(judged_demo: World) {
+    assert_eq!(
+        judged_demo.card("Réunion parents")["reasons"][0],
+        "It was in your Backlog, and its date is close."
+    );
+}
+
+#[rstest]
+fn backlog_event_is_now(judged_demo: World) {
+    assert_eq!(judged_demo.section_of("Réunion parents"), "now");
+}
+
+#[rstest]
+fn backlog_event_keeps_its_time(judged_demo: World) {
+    assert_eq!(judged_demo.card("Réunion parents")["due_time"], "18:00");
+}
+
+#[rstest]
+fn a_promise_you_made_is_a_card(judged_demo: World) {
+    assert_eq!(judged_demo.card("Chiffres du T3")["kind"], "promise");
+}
+
+#[rstest]
+fn an_overdue_wait_rises_to_today(judged_demo: World) {
+    assert_eq!(judged_demo.section_of("Devis cuisine"), "today");
+}
+
+#[rstest]
+fn newsletters_are_one_reading_card(judged_demo: World) {
+    let reading = judged_demo
+        .cards()
+        .into_iter()
+        .find(|c| c["id"] == "batch:reading")
+        .unwrap();
+    assert_eq!(reading["members"].as_array().unwrap().len(), 3);
+}
+
+#[rstest]
+fn each_open_thread_is_judged_once(judged_demo: World) {
+    let calls = judged_demo.mailbox.lock().unwrap().jev_feed_calls;
+    judged_demo.ok("sync.now", json!({}));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(judged_demo.mailbox.lock().unwrap().jev_feed_calls, calls);
+}
+
+#[rstest]
+fn feed_calls_count_towards_the_daily_cap(judged_demo: World) {
+    assert!(
+        judged_demo.ok("router.get", json!({}))["calls_today"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[rstest]
+fn cards_want_words_once_an_ai_is_allowed(judged_demo: World) {
+    judged_demo.allow_ai_everywhere();
+    assert_eq!(judged_demo.card("Carrelage")["texts_wanted"], true);
+}
+
+#[rstest]
+fn cards_want_no_words_without_an_ai(judged_demo: World) {
+    assert_eq!(judged_demo.card("Carrelage")["texts_wanted"], false);
+}
+
+fn ask_words(w: &World, subject: &str) {
+    let id = w.card(subject)["id"].clone();
+    w.ok("feed.texts", json!({ "ids": [id] }));
+    w.wait_until("card words", |w| w.card(subject)["texts"].is_object());
+}
+
+#[rstest]
+fn the_ai_writes_the_title_of_a_visible_card(judged_demo: World) {
+    judged_demo.allow_ai_everywhere();
+    ask_words(&judged_demo, "Carrelage");
+    assert_eq!(
+        judged_demo.card("Carrelage")["title"],
+        "Choose the kitchen tiles"
+    );
+}
+
+#[rstest]
+fn the_ai_offers_the_options_of_a_decision(judged_demo: World) {
+    judged_demo.allow_ai_everywhere();
+    ask_words(&judged_demo, "Carrelage");
+    assert_eq!(
+        judged_demo.card("Carrelage")["texts"]["options"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[rstest]
+fn card_words_are_written_once(judged_demo: World) {
+    judged_demo.allow_ai_everywhere();
+    ask_words(&judged_demo, "Carrelage");
+    let id = judged_demo.card("Carrelage")["id"].clone();
+    judged_demo.ok("feed.texts", json!({ "ids": [id] }));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(judged_demo.mailbox.lock().unwrap().feed_text_calls, 1);
+}
+
+#[rstest]
+fn only_requested_cards_get_words(judged_demo: World) {
+    judged_demo.allow_ai_everywhere();
+    ask_words(&judged_demo, "Carrelage");
+    assert!(judged_demo.card("Facture cantine")["texts"].is_null());
+}
+
+#[rstest]
+fn later_hides_a_card(demo: World) {
+    let id = demo.card("Carrelage")["id"].clone();
+    demo.ok(
+        "feed.snooze",
+        json!({ "ids": [id], "until": 4_000_000_000_000_i64 }),
+    );
+    assert!(
+        !demo
+            .cards()
+            .iter()
+            .any(|c| c["thread"]["subject"] == "Carrelage cuisine : ton choix avant vendredi")
+    );
+}
+
+#[rstest]
+fn undoing_later_brings_the_card_back(demo: World) {
+    let id = demo.card("Carrelage")["id"].clone();
+    demo.ok(
+        "feed.snooze",
+        json!({ "ids": [id.clone()], "until": 4_000_000_000_000_i64 }),
+    );
+    demo.ok("feed.unsnooze", json!({ "ids": [id] }));
+    assert_eq!(demo.card("Carrelage")["kind"], "other");
+}
+
+#[rstest]
+fn archiving_a_batch_empties_the_clean_up_card(demo: World) {
+    let batch = demo
+        .cards()
+        .into_iter()
+        .find(|c| c["id"] == "batch:cleanup")
+        .unwrap();
+    let ids: Vec<Value> = batch["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].clone())
+        .collect();
+    demo.ok("threads.update", json!({ "ids": ids, "status": "archive" }));
+    assert!(!demo.cards().iter().any(|c| c["id"] == "batch:cleanup"));
+}
+
+#[rstest]
+fn restoring_a_batch_brings_it_back(demo: World) {
+    let batch = demo
+        .cards()
+        .into_iter()
+        .find(|c| c["id"] == "batch:cleanup")
+        .unwrap();
+    let before: Vec<Value> = batch["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            json!({ "id": t["id"], "unread": t["unread"], "status": t["status"],
+                    "priority": t["priority"], "projects": t["projects"], "due": t["due"] })
+        })
+        .collect();
+    let ids: Vec<Value> = before.iter().map(|t| t["id"].clone()).collect();
+    demo.ok("threads.update", json!({ "ids": ids, "status": "archive" }));
+    demo.ok("threads.restore", json!({ "threads": before }));
+    assert!(demo.cards().iter().any(|c| c["id"] == "batch:cleanup"));
+}
+
+#[rstest]
+fn cli_feed_json_lists_sections(demo: World) {
+    let out = demo.cli(&["--json", "feed"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!v["sections"].as_array().unwrap().is_empty());
+}
+
+#[rstest]
+fn cli_later_hides_a_thread(demo: World) {
+    let number = demo.card("Carrelage")["thread"]["number"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    demo.cli(&["later", &number]);
+    assert!(
+        !demo
+            .cards()
+            .iter()
+            .any(|c| c["thread"]["number"] == number.as_str())
+    );
+}
+
+#[rstest]
+fn mcp_lists_the_feed(demo: World) {
+    let mut child = Command::new(bin_dir().join("mermoz"))
+        .arg("mcp")
+        .env("MERMOZ_HOME", demo.home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "{}", json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "feed", "arguments": {} } })).unwrap();
+    drop(stdin);
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    let _ = child.wait();
+    let v: Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    assert!(
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"sections\"")
     );
 }

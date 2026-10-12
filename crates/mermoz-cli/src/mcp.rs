@@ -54,6 +54,10 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "account_id": s("account id"), "query": s("words to find"), "limit": { "type": "integer", "default": 20 } }, "required": ["account_id"] } },
         { "name": "save_attachment_to_drive", "description": "Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing). Returns the folder and an Open in Drive link; saving again returns the same file. Sharing files stays with the user in the app.",
           "inputSchema": { "type": "object", "properties": { "id": s("attachment id from get_thread") }, "required": ["id"] } },
+        { "name": "feed", "description": "The user's Feed: every open thread as a card (one thing to do), in sections now, today, week, waiting, later, ordered by deadline then urgency. Each card has a kind (reply, decision, sign, promise, event, payment, intro, waiting, cleanup, reading, other), plain-language reasons, the deadline and amount written in the mail, and the AI's words when written. Automated mail and newsletters come as batch cards listing their threads.",
+          "inputSchema": { "type": "object", "properties": { "project": s("only this project's cards") } } },
+        { "name": "snooze_thread", "description": "Later: hide threads from the Feed until a time (Unix ms) or until new mail arrives in them. until null brings them back now.",
+          "inputSchema": { "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "string" } }, "until": { "type": ["integer", "null"] } }, "required": ["ids"] } },
         { "name": "submit_feedback", "description": "Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.",
           "inputSchema": { "type": "object", "properties": { "text": s("what went wrong or is missing"), "tool": s("tool name") }, "required": ["text"] } }
     ])
@@ -160,6 +164,11 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
         "column_suggestions" => r(c.call("suggestions.summary", a.clone())),
         "reject_suggestions" => r(c.call("threads.reject_suggestions", json!({ "ids": a["ids"] }))),
         "stop_resort" => r(c.call("suggestions.resort", json!({ "stop": true }))),
+        "feed" => r(c.call("feed.list", a.clone())),
+        "snooze_thread" => match a.get("until").and_then(|u| u.as_i64()) {
+            Some(until) => r(c.call("feed.snooze", json!({ "ids": a["ids"], "until": until }))),
+            None => r(c.call("feed.unsnooze", json!({ "ids": a["ids"] }))),
+        },
         "chat_about_thread" => match a.get("question").and_then(|q| q.as_str()) {
             Some(q) if !q.trim().is_empty() => r(c.call(
                 "chat.send",

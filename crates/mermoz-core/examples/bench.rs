@@ -159,6 +159,28 @@ fn main() {
         p95: pct(&mut counts, 0.95),
         budget: Duration::from_millis(16),
     });
+    // A busy feed: 150 open threads on top of the mailbox's own open ones.
+    store
+        .update_threads(
+            &ids[..150.min(ids.len())],
+            &mermoz_core::store::ThreadPatch {
+                status: Some("todo".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut feed = time(50, || {
+        let today = mermoz_core::feed::today();
+        let units = store
+            .feed_units(&Default::default(), today, mermoz_core::model::now_ms())
+            .unwrap();
+        mermoz_core::feed::assemble(units, today, &Default::default());
+    });
+    checks.push(Check {
+        name: "feed.list",
+        p95: pct(&mut feed, 0.95),
+        budget: Duration::from_millis(16),
+    });
     for (name, q) in [
         ("search rare word", "w1a2b"),
         ("search common word", "meeting"),

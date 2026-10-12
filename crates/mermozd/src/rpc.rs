@@ -585,6 +585,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             }
             svc.router_kick.notify_one();
             svc.resume();
+            svc.feed_kick.notify_one();
             Ok(router_state(svc))
         }
         "router.test" => {
@@ -976,6 +977,35 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "chat.clear" => {
             let id = st.resolve_thread_id(&s(p, "thread_id")?)?;
             Ok(json!({ "deleted": st.clear_chat(&id)? }))
+        }
+        "feed.list" => Ok(crate::feed::list(svc, &column_scope(p))?),
+        "feed.texts" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            Ok(json!({ "queued": crate::feed::request_texts(svc, &ids)? }))
+        }
+        "feed.snooze" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            let ids: Vec<String> = ids
+                .iter()
+                .map(|i| st.resolve_thread_id(i))
+                .collect::<Result<_, _>>()?;
+            let until = p
+                .get("until")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| RpcError::invalid("missing 'until' (Unix milliseconds)"))?;
+            let n = st.snooze(&ids, until)?;
+            let _ = svc.events.send(Event::FeedChanged);
+            Ok(json!({ "snoozed": n }))
+        }
+        "feed.unsnooze" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            let ids: Vec<String> = ids
+                .iter()
+                .map(|i| st.resolve_thread_id(i))
+                .collect::<Result<_, _>>()?;
+            let n = st.unsnooze(&ids)?;
+            let _ = svc.events.send(Event::FeedChanged);
+            Ok(json!({ "unsnoozed": n }))
         }
         "settings.get" => Ok(
             json!({ "agents_may_send": st.setting("agents_may_send")?.as_deref() == Some("true") }),

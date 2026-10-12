@@ -105,6 +105,27 @@ app, the CLI and the MCP server are clients of this protocol.
              {"kind": "project", "label": "File in Finance", "project": "Finance"},
              {"kind": "follow_up", "label": "Remind me on Oct 20", "due": "2026-10-20"}],
  "searched": false, "research_unavailable": false, "created": 1791700000000}
+
+// Feed: sections in order (now, today, week, waiting, later), empty ones left out.
+// `sorting` is true while Jev has open threads left to judge.
+{"sections": [{"key": "now", "title": "Now", "cards": [Card]}], "open": 23, "judged": 21, "sorting": true}
+
+// Card: one thing to do. `kind`: reply | decision | sign | promise | event | payment |
+// intro | waiting | cleanup | reading | other. Batches (`id` "batch:cleanup" /
+// "batch:reading") list their threads in `members`. `due` is the user's follow-up date,
+// else the deadline Jev picked among the dates written in the mail; `amount` is
+// verbatim from the mail. `reasons` explain the card in plain words. `texts` are the
+// AI's words, null until written; `texts_wanted` says the account's AI may write them.
+{"id": "thr_…", "kind": "decision", "section": "now", "thread": ThreadSummary, "members": [],
+ "title": "Choose the kitchen tiles", "why": "…" | null, "reasons": ["The mail asks for it by Fri 16 Oct."],
+ "due": "2026-10-16" | null, "due_time": "18:00" | null, "amount": "126,00 €" | null,
+ "from_backlog": false, "waiting_days": 6 | null, "texts": Texts | null, "texts_wanted": true}
+
+// Texts: the AI's words for a card (cached until new mail). `options` for decisions,
+// `points` for sign / payment / event, `draft` for reply / promise / intro / waiting;
+// a batch carries one summary per member in `lines`.
+{"title": "…", "why": "…", "draft": "…", "summary": "…", "points": ["…"], "lines": ["…"],
+ "options": [{"label": "…", "detail": "…", "recommended": true, "reason": "…", "reply": "…"}]}
 ```
 
 ## Methods
@@ -171,6 +192,10 @@ app, the CLI and the MCP server are clients of this protocol.
 | `chat.get`           | `{"thread_id"}`                                                                          | `{"messages": [ChatMessage], "research_available": bool}` |
 | `chat.send`          | `{"thread_id", "text", "research"?: true}` — asks the account's allowed AI; streams `chat_delta` | `ChatMessage` (the answer)       |
 | `chat.clear`         | `{"thread_id"}`                                                                          | `{"deleted": n}`                         |
+| `feed.list`          | `{"project"?, "account_id"?}` — the Feed: open threads as cards, in sections            | `Feed`                                   |
+| `feed.texts`         | `{"ids": [thread id]}` — asks the account's allowed AI to write these cards' words in the background (cards on screen only); emits `feed_changed` per card | `{"queued": n}` |
+| `feed.snooze`        | `{"ids": [id], "until": ms}` — Later: hides the threads from the feed until `until` or new mail | `{"snoozed": n}`                  |
+| `feed.unsnooze`      | `{"ids": [id]}`                                                                          | `{"unsnoozed": n}`                       |
 | `feedback.submit`    | `{"text", "command"?, "agent"?}`                                                         | `{"id"}`                                 |
 | `feedback.list`      | `{}`                                                                                     | `[{"id","text","command","agent","created"}]` |
 | `subscribe`          | `{}`                                                                                     | `{}` then notifications                  |
@@ -255,6 +280,7 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "contacts_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "suggestions_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "drive_changed", "account_id": "acc_1"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "feed_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "chat_delta", "thread_id": "thr_…", "text": "the answer so far"}}
 ```
 

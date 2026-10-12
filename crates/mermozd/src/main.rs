@@ -3,6 +3,7 @@
 
 mod chat;
 mod drive;
+mod feed;
 mod grouping;
 mod peer;
 mod rpc;
@@ -38,6 +39,7 @@ fn event_json(e: &Event) -> Value {
         Event::DriveChanged { account_id } => {
             json!({ "kind": "drive_changed", "account_id": account_id })
         }
+        Event::FeedChanged => json!({ "kind": "feed_changed" }),
         Event::ChatDelta { thread_id, text } => {
             json!({ "kind": "chat_delta", "thread_id": thread_id, "text": text })
         }
@@ -165,6 +167,8 @@ async fn main() -> anyhow::Result<()> {
     // Only this user may talk to the daemon.
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
     info!("mermozd listening on {}", sock.display());
+    // The feed only reads the store and Jev, so it also runs on demo data.
+    feed::start(&svc);
     // MERMOZ_NO_SYNC serves the local store only (demo data, offline UI work).
     if std::env::var_os("MERMOZ_NO_SYNC").is_none() {
         svc.start_all();

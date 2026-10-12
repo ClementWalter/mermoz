@@ -40,6 +40,10 @@ pub struct Mailbox {
     pub fail_once: BTreeSet<String>,
     /// Authorization headers seen by the stub TypeSafe endpoint.
     pub jev_auth: Vec<String>,
+    /// Feed judgments the stub Jev made.
+    pub jev_feed_calls: usize,
+    /// Card words the stub AI wrote.
+    pub feed_text_calls: usize,
     /// Jev answers 429 (Retry-After 100 ms) to this many calls first.
     pub jev_rate_limited: usize,
     /// Jev answers 402 (no credits left) while set.
@@ -317,13 +321,37 @@ async fn jev_systemone(
         .as_str()
         .unwrap_or("")
         .to_string();
+    let questions = &body["questions"];
+    // Feed calls (they ask for a card kind) get answers shaped by the subject.
+    let feed_kind = questions
+        .get("kind")
+        .map(|_| feed_kind(body["state"]["subject"].as_str().unwrap_or("")));
+    s.lock().unwrap().jev_feed_calls += feed_kind.is_some() as usize;
     let mut answers = serde_json::Map::new();
-    for (id, q) in body["questions"].as_object().into_iter().flatten() {
-        let a = match (q["type"].as_str(), id.as_str()) {
-            (Some("noul"), "automated") => {
+    for (id, q) in questions.as_object().into_iter().flatten() {
+        let first_option = || {
+            q["criteria"]
+                .as_object()
+                .and_then(|c| c.keys().find(|k| *k != "none").cloned())
+                .unwrap_or_else(|| "none".into())
+        };
+        let a = match (q["type"].as_str(), id.as_str(), feed_kind) {
+            (_, "kind", Some(k)) => json!({ "type": "choice", "choice": k, "confidence": 0.9 }),
+            (_, "automated", Some(k)) => {
+                let p = if matches!(k, "reading" | "cleanup") {
+                    0.96
+                } else {
+                    0.05
+                };
+                json!({ "type": "noul", "noul": p })
+            }
+            (_, "due" | "amount", Some(_)) => {
+                json!({ "type": "choice", "choice": first_option(), "confidence": 0.9 })
+            }
+            (Some("noul"), "automated", _) => {
                 json!({ "type": "noul", "noul": if state.contains("noreply") { 0.96 } else { 0.05 } })
             }
-            (Some("noul"), "same") => {
+            (Some("noul"), "same", _) => {
                 let p = if later.contains("Maybe") {
                     0.6
                 } else if later.contains("Unrelated") {
@@ -333,19 +361,42 @@ async fn jev_systemone(
                 };
                 json!({ "type": "noul", "noul": p })
             }
-            (Some("noul"), _) => json!({ "type": "noul", "noul": 0.96 }),
-            (_, "relation") => json!({ "type": "score", "score": 1.5, "confidence": 0.5 }),
-            (_, "project") if q["criteria"].get("Receipts").is_some() => {
+            (Some("noul"), ..) => json!({ "type": "noul", "noul": 0.96 }),
+            (_, "relation", _) => json!({ "type": "score", "score": 1.5, "confidence": 0.5 }),
+            (Some("score"), ..) => json!({ "type": "score", "score": 2.0, "confidence": 0.8 }),
+            (_, "project", _) if q["criteria"].get("Receipts").is_some() => {
                 json!({ "type": "choice", "choice": "Receipts", "confidence": 0.92 })
             }
-            (_, "project") => json!({ "type": "choice", "choice": "none", "confidence": 0.9 }),
-            (_, "status") => json!({ "type": "choice", "choice": status, "confidence": 0.9 }),
+            (_, "project", _) => json!({ "type": "choice", "choice": "none", "confidence": 0.9 }),
+            (_, "status", _) => json!({ "type": "choice", "choice": status, "confidence": 0.9 }),
             _ => json!({ "type": "choice", "choice": "none", "confidence": 0.8 }),
         };
         answers.insert(id.clone(), a);
     }
     Json(json!({ "answers": answers, "usage": { "input_tokens": 7500, "output_tokens": 900 } }))
         .into_response()
+}
+
+/// The card kind the stub Jev gives a demo thread, from words in its subject.
+fn feed_kind(subject: &str) -> &'static str {
+    const KINDS: &[(&str, &str)] = &[
+        ("Carrelage", "decision"),
+        ("Facture", "payment"),
+        ("Réunion", "event"),
+        ("Avenant", "sign"),
+        ("Chiffres", "promise"),
+        ("intro", "intro"),
+        ("Brief", "reading"),
+        ("Quartier", "reading"),
+        ("digest", "reading"),
+        ("reçu", "cleanup"),
+        ("Commande", "cleanup"),
+        ("statement", "cleanup"),
+    ];
+    KINDS
+        .iter()
+        .find(|(w, _)| subject.contains(w))
+        .map_or("reply", |(_, k)| k)
 }
 
 /// Like Gmail, a POST without a Content-Length is refused with 411.
@@ -486,6 +537,27 @@ async fn llm(
             .collect();
         let text = json!({ "groups": [{ "ids": ids, "name": "Tidy Name", "kind": "person" }] })
             .to_string();
+        return Json(
+            json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
+        );
+    }
+    // Feed card words (schema starting with "title").
+    if body["output_config"]["format"]["schema"]["required"][0] == "title" {
+        s.lock().unwrap().feed_text_calls += 1;
+        let text = json!({
+            "title": "Choose the kitchen tiles",
+            "why": "Marie needs your pick by Friday to order on time.",
+            "draft": "",
+            "options": [
+                { "label": "Grès cérame gris", "detail": "42 €/m², 3 weeks", "recommended": true,
+                  "reason": "Arrives sooner", "reply": "Bonjour Marie, on part sur le grès cérame gris." },
+                { "label": "Terre cuite", "detail": "58 €/m², 6 weeks", "recommended": false,
+                  "reason": "", "reply": "Bonjour Marie, on part sur la terre cuite." }
+            ],
+            "points": [],
+            "summary": "Marie asks which floor tiles to order."
+        })
+        .to_string();
         return Json(
             json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
         );

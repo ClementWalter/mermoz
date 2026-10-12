@@ -135,7 +135,7 @@ pub struct RouteInput {
 }
 
 impl RouteInput {
-    fn state(&self) -> Value {
+    pub fn state(&self) -> Value {
         let mut v = json!({
             "today": self.today,
             "last_activity": ago(self.last_activity_days_ago),

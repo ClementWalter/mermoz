@@ -316,9 +316,9 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
         <span class="kbd">y</span><span>Accept the AI's suggestion</span>
         <span class="kbd">e</span><span>Done</span>
         <span class="kbd">a</span><span>Archive</span>
-        <span class="kbd">l</span><span>Later (snooze, new)</span>
+        <span class="kbd">l / ⇧L</span><span>Later: tomorrow / pick a day</span>
         <span class="kbd">o</span><span>Open the conversation (new)</span>
-        <span class="kbd">i</span><span>Ask about this (new)</span>
+        <span class="kbd">t</span><span>Ask about this</span>
         <span class="kbd">⌘Z</span><span>Undo</span>
       </div>
     </aside>
@@ -396,15 +396,15 @@ const KIND = {
 };
 
 const CARDS = [
-  { id: "c1", kind: "decision", section: "now", rec: "B", who: "Marie Lefèvre", ini: "ML", av: COLORS.orange, project: ["Rénovation cuisine", COLORS.orange], age: "2 h", due: ["Thu 16 Oct", "due"], conv: "3 threads",
+  { id: "c1", kind: "decision", section: "now", rec: "B", who: "Marie Lefèvre", ini: "ML", av: COLORS.orange, project: ["Rénovation cuisine", COLORS.orange], age: "2 h", due: ["Fri 16 Oct", "due"], conv: "3 threads",
     title: "Choose the kitchen floor tiles",
-    why: "Marie needs your pick by Thursday to order on time, and she asked again this morning.",
-    quote: "On part sur lequel ? Il me faut une réponse jeudi pour tenir le planning.",
+    why: "Marie needs your pick by Friday to order on time, and she asked again this morning.",
+    quote: "On part sur lequel ? Il me faut une réponse vendredi pour tenir le planning.",
     options: [
       { t: "Grès cérame gris", m: "42 €/m² · delivered in 3 weeks", rec: "Matches the quote you approved" },
       { t: "Terre cuite", m: "58 €/m² · delivered in 6 weeks" },
       { t: "Ask for samples", m: "Pushes the order back a week" } ],
-    sig: [["Asks you to choose", "jev", "0.94"], ["Deadline Thu 16 Oct", "jev", "extracted"], ["Conversation of 3 threads", "rule", "grouped"], ["Options and prices", "big", "on view"]] },
+    sig: [["Asks you to choose", "jev", "0.94"], ["Deadline Fri 16 Oct", "jev", "extracted"], ["Conversation of 3 threads", "rule", "grouped"], ["Options and prices", "big", "on view"]] },
   { id: "c2", kind: "reply", section: "now", rec: "A", who: "Thomas Bernard", ini: "TB", av: COLORS.blue, project: ["Acme offsite", COLORS.blue], age: "Yesterday", due: ["Fri 17 Oct", "due"],
     title: "Confirm you'll present at the 21 Oct offsite",
     why: "He locks the agenda on Friday and you're the last speaker who hasn't answered.",
@@ -480,7 +480,7 @@ function head(c) {
 }
 const title = (c) => `<div class="title">${esc(c.title)}</div>`;
 const why = (c) => `<div class="why">${I.spark}<span>${esc(c.why)}</span></div>`;
-const more = `<span class="sp"></span>${btn("Later", "l", "ghost", "later")}${btn("Ask", "i", "ghost", "ask")}`;
+const more = `<span class="sp"></span>${btn("Later", "l", "ghost", "later")}${btn("Ask", "t", "ghost", "ask")}`;
 
 /* Body + actions per type and variant. */
 const R = {
@@ -655,7 +655,7 @@ document.getElementById("feed").addEventListener("keydown", (e) => {
   else if (k === "y") finish(focusId, "Suggestion accepted");
   else if (k === "r") toast("Opens the draft for editing");
   else if (k === "o") toast("Opens the full conversation on the right");
-  else if (k === "i") toast("Opens 'Ask about this' beside the card");
+  else if (k === "t") toast("Opens 'Ask about this' beside the card");
   else return;
   e.preventDefault();
 });

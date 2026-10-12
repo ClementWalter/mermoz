@@ -31,6 +31,8 @@ pub enum Event {
     DriveChanged {
         account_id: String,
     },
+    /// Feed judgments or card words changed.
+    FeedChanged,
     /// The answer streaming into a thread's chat so far (whole text, actions block hidden).
     ChatDelta {
         thread_id: String,

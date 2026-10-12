@@ -48,6 +48,10 @@ pub struct Service {
     pub grouping_kick: Arc<Notify>,
     /// Google Drive connections, picks and the local Drive cache.
     pub drive: crate::drive::Hub,
+    /// Wakes the feed's background judging (new mail, key set).
+    pub feed_kick: Arc<Notify>,
+    /// Threads whose card words are being written, so a re-render doesn't ask twice.
+    pub feed_inflight: Mutex<std::collections::HashSet<String>>,
 }
 
 pub(crate) fn poll_interval() -> Duration {
@@ -75,6 +79,8 @@ impl Service {
             pause: Mutex::new(None),
             grouping_kick: Arc::new(Notify::new()),
             drive: Default::default(),
+            feed_kick: Arc::new(Notify::new()),
+            feed_inflight: Mutex::new(Default::default()),
         })
     }
 
@@ -426,7 +432,7 @@ pub fn backfill_since(store: &Store) -> i64 {
 }
 
 /// Network, rate-limit and server errors are retried later, never recorded as a verdict.
-fn transient(e: &Error) -> bool {
+pub(crate) fn transient(e: &Error) -> bool {
     match e {
         Error::Http(_) => true,
         Error::Upstream { status, .. } => {
@@ -530,6 +536,7 @@ async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
             warn!(account = %w.sync.email, "incremental: {e}");
         }
         svc.router_kick.notify_one();
+        svc.feed_kick.notify_one();
         match w.sync.push_ops().await {
             Ok(n) if n > 0 => info!(account = %w.sync.email, pushed = n, "pushed local changes"),
             Ok(_) => {}
