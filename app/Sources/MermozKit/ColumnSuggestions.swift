@@ -39,10 +39,14 @@ public struct ColumnSuggestions: Codable, Sendable, Equatable {
     /// Threads the AI has already looked at (with or without a suggestion).
     public var classified: Int
     public var total: Int
+    /// Whether background sorting works through this column; older daemons leave it
+    /// out and only the open columns are sorted.
+    public var sorted: Bool?
 
-    public init(status: String, pending: Int, groups: [SuggestionGroup], classified: Int, total: Int) {
+    public init(status: String, pending: Int, groups: [SuggestionGroup], classified: Int, total: Int,
+                sorted: Bool? = nil) {
         self.status = status; self.pending = pending; self.groups = groups
-        self.classified = classified; self.total = total
+        self.classified = classified; self.total = total; self.sorted = sorted
     }
 
     /// Threads still waiting for the AI's look.
@@ -57,6 +61,42 @@ public struct SuggestionsSummary: Codable, Sendable, Equatable {
     public var paused: String?
     public var callsToday: Int
     public var dailyCap: Int
+    /// The whole-mailbox sort, while it runs.
+    public var resort: Resort?
+}
+
+/// A second look at whole columns, asked for by the user; the daily limit does not
+/// apply while it runs.
+public struct Resort: Codable, Sendable, Equatable {
+    public var since: Int
+    public var statuses: [String]
+    /// Emails in those columns when it started.
+    public var total: Int
+    public var ceiling: Int
+    /// Emails looked at so far.
+    public var calls: Int
+    public var inputTokens: Int
+
+    public init(since: Int = 0, statuses: [String], total: Int, ceiling: Int, calls: Int, inputTokens: Int = 0) {
+        self.since = since; self.statuses = statuses; self.total = total
+        self.ceiling = ceiling; self.calls = calls; self.inputTokens = inputTokens
+    }
+}
+
+/// `suggestions.resort`.
+public struct ResortStart: Codable, Sendable, Equatable {
+    public var resort: Resort
+    /// Emails due for a fresh look.
+    public var due: Int
+}
+
+/// Plain words for the whole-mailbox sort in Settings.
+public enum ResortText {
+    /// "Sorting your whole mailbox: 1,240 of 27,315 emails looked at".
+    public static func progress(_ r: Resort, locale: Locale = .current) -> String {
+        let n = { (v: Int) in v.formatted(.number.locale(locale)) }
+        return "Sorting your whole mailbox: \(n(min(r.calls, r.total))) of \(n(r.total)) emails looked at"
+    }
 }
 
 /// `suggestions.accept`: how many moved, and the threads as they were (for undo).
@@ -125,7 +165,7 @@ public enum ColumnSortText {
     /// once the column is done, for columns that are not sorted, or when sorting is off.
     public static func progress(_ c: ColumnSuggestions, sorting: Bool, paused: String?,
                                 locale: Locale = .current) -> String? {
-        guard sortedStatuses.contains(c.status), c.remaining > 0 else { return nil }
+        guard c.sorted ?? sortedStatuses.contains(c.status), c.remaining > 0 else { return nil }
         switch paused {
         case "limit": return "Sorting continues tomorrow"
         case "unavailable": return "Sorting paused, retrying soon"

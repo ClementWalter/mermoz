@@ -1652,6 +1652,121 @@ fn cli_lists_column_suggestions(synced: World) {
     assert!(String::from_utf8_lossy(&out.stdout).contains("→ archive +Receipts"));
 }
 
+// ---- sorting the whole mailbox again ---------------------------------------
+
+fn archive_column(w: &World) -> Value {
+    w.ok("suggestions.summary", json!({ "statuses": ["archive"] }))["columns"][0].clone()
+}
+
+/// Open columns sorted, then `mermoz resort --all`, then the archived "Your statement"
+/// sorted too.
+fn resorted_all(w: &World) {
+    sorted_todo(w);
+    let out = w.cli(&["resort", "--all"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    w.wait_until("whole-mailbox sort", |w| {
+        !w.thread_by_subject("Your statement")["suggestion"].is_null()
+    });
+}
+
+/// `mermoz resort --all` while TypeSafe keeps answering "slow down".
+fn resort_stalled(w: &World) {
+    sorted_todo(w);
+    w.mailbox.lock().unwrap().jev_rate_limited = 1_000_000;
+    w.cli(&["resort", "--all"]);
+}
+
+#[rstest]
+fn resort_sorts_archived_mail(synced: World) {
+    resorted_all(&synced);
+    assert_eq!(
+        synced.thread_by_subject("Your statement")["suggestion"]["projects"],
+        json!(["Receipts"])
+    );
+}
+
+#[rstest]
+fn archived_mail_is_not_sorted_without_resort(synced: World) {
+    sorted_todo(&synced);
+    assert!(synced.thread_by_subject("Your statement")["suggestion"].is_null());
+}
+
+#[rstest]
+fn resort_ends_once_everything_is_sorted(synced: World) {
+    resorted_all(&synced);
+    synced.wait_until("resort end", |w| {
+        w.ok("router.get", json!({}))["resort"].is_null()
+    });
+}
+
+#[rstest]
+fn archive_bar_shows_sorting_during_resort(synced: World) {
+    resort_stalled(&synced);
+    assert_eq!(archive_column(&synced)["sorted"], true);
+}
+
+#[rstest]
+fn archive_bar_progress_starts_from_zero(synced: World) {
+    resort_stalled(&synced);
+    let col = archive_column(&synced);
+    assert_eq!(
+        (col["classified"].clone(), col["total"].clone()),
+        (json!(0), json!(1))
+    );
+}
+
+#[rstest]
+fn resort_puts_open_columns_back_in_the_queue(synced: World) {
+    resort_stalled(&synced);
+    assert_eq!(todo_column(&synced)["classified"], 0);
+}
+
+#[rstest]
+fn cli_resort_reports_the_columns(synced: World) {
+    sorted_todo(&synced);
+    let out = synced.cli(&["resort", "--column", "archive"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("(archive)"));
+}
+
+#[rstest]
+fn resort_needs_a_typesafe_key(synced: World) {
+    assert!(synced.call("suggestions.resort", json!({})).is_err());
+}
+
+#[rstest]
+fn mcp_resorts_the_mailbox(synced: World) {
+    sorted_todo(&synced);
+    let mut child = Command::new(bin_dir().join("mermoz"))
+        .arg("mcp")
+        .env("MERMOZ_HOME", synced.home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "{}", json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "resort_mailbox", "arguments": { "statuses": ["done"] } } })).unwrap();
+    drop(stdin);
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    let _ = child.wait();
+    let v: Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    assert!(
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"done\"")
+    );
+}
+
 // ---- chat about a thread ---------------------------------------------------
 
 /// A thread with an AI allowed for its account, ready to chat about.

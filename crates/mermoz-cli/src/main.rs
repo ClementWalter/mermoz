@@ -125,6 +125,20 @@ enum Cmd {
         #[arg(required = true)]
         threads: Vec<String>,
     },
+    /// Sort whole columns again in the background: every thread gets a fresh look and
+    /// a suggestion where it should move. Threads you turned a suggestion down for, or
+    /// moved yourself since, are left alone. Nothing moves until accepted.
+    #[command(
+        after_help = "Examples:\n  mermoz resort --all\n  mermoz resort --column todo --column waiting\n  mermoz suggestions archive   # follow progress"
+    )]
+    Resort {
+        /// Every column: todo, waiting, in_progress, backlog, done and archive.
+        #[arg(long, conflicts_with = "column", required_unless_present = "column")]
+        all: bool,
+        /// One status column (repeat for several).
+        #[arg(long)]
+        column: Vec<String>,
+    },
     /// The AI's pending suggestions in a status column, grouped by where they go,
     /// and how far background sorting of that column has got; with --to/--to-project,
     /// the threads of that one group (accept them with `mermoz accept`).
@@ -823,6 +837,35 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             out.line(format!("rejected {}", v["rejected"].as_i64().unwrap_or(0)));
         }
+        Cmd::Resort { all, column } => {
+            let params = if all {
+                json!({})
+            } else {
+                let statuses = column
+                    .iter()
+                    .map(|s| resolve_status(&mut c, s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                json!({ "statuses": statuses })
+            };
+            let v = c.call("suggestions.resort", params)?;
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            let columns: Vec<&str> = v["resort"]["statuses"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.as_str())
+                .collect();
+            out.line(format!(
+                "sorting {} threads again in the background ({}); follow with `mermoz suggestions <column>`",
+                v["due"].as_i64().unwrap_or(0),
+                columns.join(", ")
+            ));
+        }
         Cmd::Suggestions {
             status,
             to,
@@ -857,10 +900,15 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             let col = &v["columns"][0];
             out.line(format!(
-                "{} pending · sorted {} of {}{}",
+                "{} pending · sorted {} of {}{}{}",
                 col["pending"].as_i64().unwrap_or(0),
                 col["classified"].as_i64().unwrap_or(0),
                 col["total"].as_i64().unwrap_or(0),
+                if v["resort"].is_object() {
+                    " · whole-mailbox sort running"
+                } else {
+                    ""
+                },
                 match v["paused"].as_str() {
                     Some("limit") => " · paused: daily limit reached",
                     Some(_) => " · paused: AI unavailable, retrying",

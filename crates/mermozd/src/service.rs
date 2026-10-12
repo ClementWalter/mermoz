@@ -843,6 +843,15 @@ async fn column_loop(svc: Arc<Service>) {
     }
 }
 
+/// Calls the next background round may make: what is left of a running resort's
+/// ceiling, else of today's cap.
+fn allowance(resort: Option<&mermoz_core::store::Resort>, used_today: i64, cap: i64) -> i64 {
+    match resort {
+        Some(r) => (r.ceiling - r.calls).max(0),
+        None => jev::calls_left(used_today, cap),
+    }
+}
+
 async fn column_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
     // Threads keep ageing while the daemon runs; their pending live statuses go too.
     if svc
@@ -857,7 +866,17 @@ async fn column_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
     }
     let used = svc.store.background_calls_today()?;
     let cap = svc.store.background_daily_cap()?;
-    let left = jev::calls_left(used, cap);
+    let mut resort = svc.store.resort()?;
+    if let Some(r) = resort.as_ref().filter(|r| r.calls >= r.ceiling) {
+        warn!(
+            calls = r.calls,
+            ceiling = r.ceiling,
+            "whole-mailbox sort reached its ceiling; stopping it"
+        );
+        svc.store.finish_resort(r.since)?;
+        resort = None;
+    }
+    let left = allowance(resort.as_ref(), used, cap);
     if left == 0 {
         info!(
             calls_today = used,
@@ -870,12 +889,43 @@ async fn column_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
         .store
         .threads_to_classify(&focus, left.min(COLUMN_BATCH))?;
     if batch.is_empty() {
+        // Only the resort this round started with: one asked for meanwhile has work.
+        if let Some(r) = resort
+            .as_ref()
+            .map(|r| svc.store.finish_resort(r.since))
+            .transpose()?
+            .flatten()
+        {
+            info!(
+                calls = r.calls,
+                input_tokens = r.input_tokens,
+                "whole-mailbox sort finished"
+            );
+            let _ = svc.events.send(Event::SuggestionsChanged);
+        }
         return Ok(Round::Idle);
     }
     let kit = svc.route_kit(key)?;
     let outcomes = route_many(svc, &kit, &batch, COLUMN_PARALLEL).await;
-    let calls_today = svc.store.add_background_calls(outcomes.len() as i64)?;
     let tokens = input_tokens(&outcomes);
+    // A resort's calls count against its own ceiling, not today's allowance.
+    let calls_today = if resort.is_some() {
+        if let Some(r) = svc
+            .store
+            .record_resort_round(outcomes.len() as i64, tokens)?
+        {
+            info!(
+                calls = r.calls,
+                ceiling = r.ceiling,
+                remaining = svc.store.resort_remaining()?,
+                input_tokens = r.input_tokens,
+                "whole-mailbox sort progress"
+            );
+        }
+        used
+    } else {
+        svc.store.add_background_calls(outcomes.len() as i64)?
+    };
     let (mut classified, mut shown) = (0, vec![]);
     let mut pause = None;
     for (tid, last_date, res) in outcomes {
@@ -920,8 +970,29 @@ async fn column_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
 
 #[cfg(test)]
 mod tests {
-    use super::import_needed;
+    use super::{allowance, import_needed};
+    use mermoz_core::store::Resort;
     use rstest::rstest;
+
+    fn resort(calls: i64, ceiling: i64) -> Resort {
+        Resort {
+            since: 0,
+            statuses: vec!["archive".into()],
+            total: 100,
+            ceiling,
+            calls,
+            input_tokens: 0,
+        }
+    }
+
+    #[rstest]
+    #[case::daily_cap_without_resort(None, 2000)]
+    #[case::resort_goes_past_the_daily_cap(Some(resort(0, 30_000)), 30_000)]
+    #[case::resort_counts_its_own_calls(Some(resort(29_000, 30_000)), 1000)]
+    #[case::resort_stops_at_its_ceiling(Some(resort(30_500, 30_000)), 0)]
+    fn background_allowance(#[case] r: Option<Resort>, #[case] want: i64) {
+        assert_eq!(allowance(r.as_ref(), 18_000, 20_000), want);
+    }
 
     #[rstest]
     #[case::fresh("initial", true)]

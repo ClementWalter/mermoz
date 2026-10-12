@@ -170,6 +170,11 @@ public final class DaemonClient: Sendable {
         try await callVoid("threads.restore", Params().with("threads", states))
     }
 
+    /// Sorts every column again in the background; nothing moves until accepted.
+    public func resortMailbox() async throws -> ResortStart {
+        try await call("suggestions.resort")
+    }
+
     public func setDailyCap(_ cap: Int) async throws -> RouterState {
         try await call("router.set", Params().with("daily_cap", cap))
     }

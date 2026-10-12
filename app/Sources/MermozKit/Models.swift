@@ -92,11 +92,13 @@ public struct RouterState: Codable, Sendable, Equatable {
     /// Background sorting allowance per day, and how much of it today used.
     public var dailyCap: Int?
     public var callsToday: Int?
+    /// The whole-mailbox sort, while it runs.
+    public var resort: Resort?
 
     public init(configured: Bool = false, error: String? = nil, model: String = "",
-                dailyCap: Int? = nil, callsToday: Int? = nil) {
+                dailyCap: Int? = nil, callsToday: Int? = nil, resort: Resort? = nil) {
         self.configured = configured; self.error = error; self.model = model
-        self.dailyCap = dailyCap; self.callsToday = callsToday
+        self.dailyCap = dailyCap; self.callsToday = callsToday; self.resort = resort
     }
 }
 

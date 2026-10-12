@@ -133,3 +133,41 @@ private func suggested(_ id: String, _ sg: Suggestion?) -> ThreadSummary {
 @Test func displayMenuDoesNotOfferSuggestionGrouping() {
     #expect(!Grouping.menuCases.contains(.suggestion))
 }
+
+// ---- whole-mailbox sort ---------------------------------------------------
+
+@Test func summaryDecodesTheRunningResort() throws {
+    let json = Data(#"""
+    {"columns":[],"sorting":true,"paused":null,"calls_today":0,"daily_cap":20000,
+     "resort":{"since":1,"statuses":["archive"],"total":10,"ceiling":12,"calls":4,"input_tokens":30000}}
+    """#.utf8)
+    #expect(try RPCCoding.decoder().decode(SuggestionsSummary.self, from: json).resort?.calls == 4)
+}
+
+@Test func routerStateDecodesTheRunningResort() throws {
+    let json = Data(#"""
+    {"configured":true,"error":null,"model":"jev-latest","daily_cap":20000,"calls_today":0,
+     "resort":{"since":1,"statuses":["done"],"total":10,"ceiling":12,"calls":0,"input_tokens":0}}
+    """#.utf8)
+    #expect(try RPCCoding.decoder().decode(RouterState.self, from: json).resort?.statuses == ["done"])
+}
+
+@Test func archiveBeingSortedShowsProgress() {
+    let c = ColumnSuggestions(status: "archive", pending: 0, groups: [], classified: 0, total: 20_894, sorted: true)
+    #expect(ColumnSortText.progress(c, sorting: true, paused: nil, locale: en) == "Sorting… 0 / 20,894")
+}
+
+@Test func archiveNotBeingSortedHasNoProgress() {
+    let c = ColumnSuggestions(status: "archive", pending: 0, groups: [], classified: 0, total: 20_894, sorted: false)
+    #expect(ColumnSortText.progress(c, sorting: true, paused: nil, locale: en) == nil)
+}
+
+@Test func resortProgressReadsAsEmails() {
+    let r = Resort(statuses: ["archive"], total: 27_315, ceiling: 32_778, calls: 1_240)
+    #expect(ResortText.progress(r, locale: en) == "Sorting your whole mailbox: 1,240 of 27,315 emails looked at")
+}
+
+@Test func resortProgressNeverPassesTheTotal() {
+    let r = Resort(statuses: ["archive"], total: 100, ceiling: 120, calls: 104)
+    #expect(ResortText.progress(r, locale: en) == "Sorting your whole mailbox: 100 of 100 emails looked at")
+}

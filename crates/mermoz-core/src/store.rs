@@ -355,6 +355,47 @@ pub struct ColumnSuggestions {
     /// Threads with an up-to-date verdict (a suggestion or "no change").
     pub classified: i64,
     pub total: i64,
+    /// Whether background sorting works through this column (open columns, and any
+    /// column of a running [`Resort`]).
+    pub sorted: bool,
+}
+
+/// A requested second look at whole columns: every thread whose verdict predates
+/// `since` goes through the background pass again, except those the user decided on
+/// by hand (a rejection, or a move after the suggestion).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Resort {
+    pub since: i64,
+    pub statuses: Vec<String>,
+    /// Threads in the columns when it started.
+    pub total: i64,
+    /// Hard limit on calls for this run; it replaces the daily cap while it runs.
+    pub ceiling: i64,
+    pub calls: i64,
+    pub input_tokens: i64,
+}
+
+const RESORT_KEY: &str = "resort";
+
+/// Threads of a [`Resort`] still due (alias `s` for suggestions, `t` for threads):
+/// never looked at, or looked at before `since` with a verdict the user did not
+/// override. An accepted move counts while the thread still sits where it was sent.
+fn resort_due_sql(since: i64) -> String {
+    format!(
+        "(s.thread_id IS NULL OR (s.created < {since} AND (
+           s.decision IS NULL OR s.decision = 'read'
+           OR (s.decision = 'accepted' AND t.status IS COALESCE(s.status, s.for_status))
+           OR (s.decision IN ('unchanged', 'moved') AND t.status IS s.for_status))))"
+    )
+}
+
+/// `'a','b'` for statuses already checked against [`ROUTABLE_STATUSES`].
+fn quoted(statuses: &[String]) -> String {
+    statuses
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Threads with a pending suggestion, for reviewing them before accepting.
@@ -2717,14 +2758,26 @@ impl Store {
     /// `focus` statuses come first (the column on screen), then every open one, newest first.
     /// Threads the user decided on since their last suggestion are left alone.
     pub fn threads_to_classify(&self, focus: &[String], limit: i64) -> Result<Vec<(String, i64)>> {
+        let resort = self.resort()?;
+        let resorted: Vec<&str> = resort
+            .iter()
+            .flat_map(|r| r.statuses.iter().map(String::as_str))
+            .collect();
+        let due = resort.as_ref().map_or(String::new(), |r| {
+            format!(
+                " OR (t.status IN ({}) AND {})",
+                quoted(&r.statuses),
+                resort_due_sql(r.since)
+            )
+        });
         let r = self.bg.lock().unwrap();
         let mut out: Vec<(String, i64)> = vec![];
         let focus: Vec<&str> = focus
             .iter()
             .map(String::as_str)
-            .filter(|s| RESUMABLE.contains(s))
+            .filter(|s| RESUMABLE.contains(s) || resorted.contains(s))
             .collect();
-        for statuses in [focus.as_slice(), RESUMABLE] {
+        for statuses in [focus.as_slice(), RESUMABLE, resorted.as_slice()] {
             let want = limit - out.len() as i64;
             if statuses.is_empty() || want <= 0 {
                 continue;
@@ -2734,7 +2787,7 @@ impl Store {
             let mut st = r.prepare_cached(&format!(
                 "SELECT t.id, t.last_date FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
                  WHERE t.status IN ({marks}) AND (s.thread_id IS NULL OR s.for_date < t.last_date
-                   OR (s.decision IS NULL AND s.for_status IS NOT t.status))
+                   OR (s.decision IS NULL AND s.for_status IS NOT t.status){due})
                  ORDER BY t.last_date DESC LIMIT {}",
                 limit
             ))?;
@@ -2793,6 +2846,7 @@ impl Store {
         model: &str,
         for_date: i64,
     ) -> Result<bool> {
+        let resorted = self.resort()?.map(|r| r.statuses).unwrap_or_default();
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
         let status: Option<String> = tx
@@ -2809,7 +2863,9 @@ impl Store {
             .into_iter()
             .collect();
         let (kept, decision) = match crate::jev::column_suggestion(sg, &status, &current) {
-            Some(k) if RESUMABLE.contains(&status.as_str()) => (k, None),
+            Some(k) if RESUMABLE.contains(&status.as_str()) || resorted.contains(&status) => {
+                (k, None)
+            }
             Some(k) => (k, Some("moved")),
             None => (Suggestion::default(), Some("unchanged")),
         };
@@ -2841,6 +2897,13 @@ impl Store {
         scope: &ColumnScope,
     ) -> Result<ColumnSuggestions> {
         let (scope_sql, scope_args) = scope.clause();
+        let resort = self
+            .resort()?
+            .filter(|r| r.statuses.iter().any(|s| s == status));
+        // While a resort runs, a verdict from before it no longer counts as sorted.
+        let not_due = resort.as_ref().map_or(String::new(), |r| {
+            format!(" AND NOT {}", resort_due_sql(r.since))
+        });
         let r = self.r.lock().unwrap();
         let mut args: Vec<rusqlite::types::Value> = vec![status.to_string().into()];
         args.extend(scope_args);
@@ -2862,7 +2925,7 @@ impl Store {
         let (total, classified): (i64, i64) = r.query_row(
             &format!(
                 "SELECT COUNT(*), COALESCE(SUM(s.thread_id IS NOT NULL AND s.for_date >= t.last_date
-                   AND (s.decision IS NOT NULL OR s.for_status IS t.status)), 0)
+                   AND (s.decision IS NOT NULL OR s.for_status IS t.status){not_due}), 0)
                  FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id WHERE t.status = ?1{scope_sql}"
             ),
             params_from_iter(args.iter()),
@@ -2874,7 +2937,96 @@ impl Store {
             groups,
             classified,
             total,
+            sorted: RESUMABLE.contains(&status) || resort.is_some(),
         })
+    }
+
+    /// Starts (or widens) a [`Resort`] of these columns from now on. Its ceiling is
+    /// 1.2 calls per thread of the columns, room for the few retried after new mail.
+    pub fn start_resort(&self, statuses: &[String], now: i64) -> Result<Resort> {
+        if let Some(bad) = statuses
+            .iter()
+            .find(|s| !ROUTABLE_STATUSES.contains(&s.as_str()))
+        {
+            return Err(Error::InvalidParams(format!(
+                "'{bad}' cannot be sorted; use one of {}",
+                ROUTABLE_STATUSES.join(", ")
+            )));
+        }
+        let mut all: Vec<String> = self.resort()?.map(|r| r.statuses).unwrap_or_default();
+        for s in statuses {
+            if !all.contains(s) {
+                all.push(s.clone());
+            }
+        }
+        let threads: i64 = self.r.lock().unwrap().query_row(
+            &format!(
+                "SELECT COUNT(*) FROM threads WHERE status IN ({})",
+                quoted(&all)
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        let resort = Resort {
+            since: now,
+            statuses: all,
+            total: threads,
+            ceiling: (threads * 6 + 4) / 5,
+            calls: 0,
+            input_tokens: 0,
+        };
+        self.save_resort(&resort)?;
+        Ok(resort)
+    }
+
+    /// The running [`Resort`], if any.
+    pub fn resort(&self) -> Result<Option<Resort>> {
+        Ok(self
+            .setting(RESORT_KEY)?
+            .and_then(|v| serde_json::from_str(&v).ok()))
+    }
+
+    fn save_resort(&self, r: &Resort) -> Result<()> {
+        self.set_setting(RESORT_KEY, &serde_json::to_string(r)?)
+    }
+
+    /// Adds one background round to the running [`Resort`]; returns it updated.
+    pub fn record_resort_round(&self, calls: i64, input_tokens: i64) -> Result<Option<Resort>> {
+        let Some(mut r) = self.resort()? else {
+            return Ok(None);
+        };
+        r.calls += calls;
+        r.input_tokens += input_tokens;
+        self.save_resort(&r)?;
+        Ok(Some(r))
+    }
+
+    /// Ends the [`Resort`] started at `since`; returns it as it ended. A resort asked
+    /// for since then (a new `since`) keeps running.
+    pub fn finish_resort(&self, since: i64) -> Result<Option<Resort>> {
+        let r = self.resort()?.filter(|r| r.since == since);
+        self.w.lock().unwrap().execute(
+            "DELETE FROM settings WHERE key = ?1 AND json_extract(value, '$.since') = ?2",
+            params![RESORT_KEY, since],
+        )?;
+        Ok(r)
+    }
+
+    /// Threads the running [`Resort`] has yet to look at again.
+    pub fn resort_remaining(&self) -> Result<i64> {
+        let Some(r) = self.resort()? else {
+            return Ok(0);
+        };
+        Ok(self.r.lock().unwrap().query_row(
+            &format!(
+                "SELECT COUNT(*) FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
+                 WHERE t.status IN ({}) AND {}",
+                quoted(&r.statuses),
+                resort_due_sql(r.since)
+            ),
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     /// Accepts every pending suggestion of a column, or only those sending threads to
@@ -5608,6 +5760,210 @@ mod tests {
             env.store.route_input(&tid).unwrap().last_activity_days_ago,
             3650
         );
+    }
+
+    // ---- sorting whole columns again ------------------------------------
+
+    fn all_columns() -> Vec<String> {
+        ROUTABLE_STATUSES.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Starts a resort just after every verdict saved so far.
+    fn resort_everything(env: &Env) -> Resort {
+        env.store
+            .start_resort(&all_columns(), now_ms() + 1)
+            .unwrap()
+    }
+
+    fn move_by_hand(env: &Env, tid: &str, status: &str) {
+        env.store
+            .update_threads(
+                &[tid.to_string()],
+                &ThreadPatch {
+                    status: Some(status.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    #[rstest]
+    fn resort_takes_archived_threads(env: Env) {
+        let tid = open_thread(&env, "1", "archive", 0);
+        resort_everything(&env);
+        assert_eq!(to_classify(&env, &[]), vec![tid]);
+    }
+
+    #[rstest]
+    fn resort_takes_threads_with_a_no_change_verdict(env: Env) {
+        let tid = suggested(&env, 0, &jev_says("backlog", None));
+        resort_everything(&env);
+        assert_eq!(to_classify(&env, &[]), vec![tid]);
+    }
+
+    #[rstest]
+    fn resort_takes_accepted_moves(env: Env) {
+        let tid = suggested(&env, 0, &jev_says("waiting", None));
+        env.store
+            .accept_suggestions(std::slice::from_ref(&tid))
+            .unwrap();
+        resort_everything(&env);
+        assert_eq!(to_classify(&env, &[]), vec![tid]);
+    }
+
+    #[rstest]
+    fn resort_keeps_rejections(env: Env) {
+        let tid = suggested(&env, 0, &jev_says("waiting", None));
+        env.store.reject_suggestions(&[tid]).unwrap();
+        resort_everything(&env);
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn resort_skips_threads_moved_by_hand_after_their_suggestion(env: Env) {
+        let tid = suggested(&env, 0, &jev_says("waiting", None));
+        move_by_hand(&env, &tid, "todo");
+        resort_everything(&env);
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn resort_skips_accepted_moves_the_user_undid_by_hand(env: Env) {
+        let tid = suggested(&env, 0, &jev_says("waiting", None));
+        env.store
+            .accept_suggestions(std::slice::from_ref(&tid))
+            .unwrap();
+        move_by_hand(&env, &tid, "backlog");
+        resort_everything(&env);
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn thread_sorted_again_is_not_due_anymore(env: Env) {
+        let tid = suggested(&env, 0, &jev_says("backlog", None));
+        env.store
+            .start_resort(&all_columns(), now_ms() - 1)
+            .unwrap();
+        classify(&env, &tid, &jev_says("archive", None));
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn resort_is_limited_to_its_columns(env: Env) {
+        open_thread(&env, "1", "archive", 0);
+        env.store
+            .start_resort(&["done".to_string()], now_ms() + 1)
+            .unwrap();
+        assert!(to_classify(&env, &[]).is_empty());
+    }
+
+    #[rstest]
+    fn resort_shows_suggestions_on_archived_threads(env: Env) {
+        let tid = open_thread(&env, "1", "archive", 0);
+        resort_everything(&env);
+        classify(&env, &tid, &jev_says("done", Some("Receipts")));
+        assert_eq!(pending(&env, &tid).unwrap().status.as_deref(), Some("done"));
+    }
+
+    #[rstest]
+    fn archived_suggestions_stay_hidden_without_a_resort(env: Env) {
+        let tid = open_thread(&env, "1", "archive", 0);
+        classify(&env, &tid, &jev_says("done", Some("Receipts")));
+        assert_eq!(pending(&env, &tid), None);
+    }
+
+    #[rstest]
+    fn resort_restarts_column_progress(env: Env) {
+        suggested(&env, 0, &jev_says("backlog", None));
+        resort_everything(&env);
+        let col = env
+            .store
+            .column_suggestions("backlog", &ColumnScope::default())
+            .unwrap();
+        assert_eq!(col.classified, 0);
+    }
+
+    #[rstest]
+    #[case::open_column_without_resort("backlog", false, true)]
+    #[case::archive_without_resort("archive", false, false)]
+    #[case::archive_during_resort("archive", true, true)]
+    fn column_reports_whether_it_is_sorted(
+        env: Env,
+        #[case] status: &str,
+        #[case] resorting: bool,
+        #[case] want: bool,
+    ) {
+        if resorting {
+            resort_everything(&env);
+        }
+        let col = env
+            .store
+            .column_suggestions(status, &ColumnScope::default())
+            .unwrap();
+        assert_eq!(col.sorted, want);
+    }
+
+    #[rstest]
+    fn resort_ceiling_is_a_fifth_above_the_thread_count(env: Env) {
+        for n in ["1", "2", "3", "4", "5"] {
+            open_thread(&env, n, "archive", 0);
+        }
+        assert_eq!(resort_everything(&env).ceiling, 6);
+    }
+
+    #[rstest]
+    fn resort_refuses_unknown_columns(env: Env) {
+        assert!(
+            env.store
+                .start_resort(&["someday".to_string()], now_ms())
+                .is_err()
+        );
+    }
+
+    #[rstest]
+    fn second_resort_widens_the_first(env: Env) {
+        env.store
+            .start_resort(&["done".to_string()], now_ms())
+            .unwrap();
+        let r = env
+            .store
+            .start_resort(&["archive".to_string()], now_ms())
+            .unwrap();
+        assert_eq!(r.statuses, vec!["done", "archive"]);
+    }
+
+    #[rstest]
+    fn resort_rounds_add_up(env: Env) {
+        resort_everything(&env);
+        env.store.record_resort_round(48, 360_000).unwrap();
+        let r = env.store.record_resort_round(12, 90_000).unwrap().unwrap();
+        assert_eq!((r.calls, r.input_tokens), (60, 450_000));
+    }
+
+    #[rstest]
+    fn finished_resort_is_gone(env: Env) {
+        let r = resort_everything(&env);
+        env.store.finish_resort(r.since).unwrap();
+        assert_eq!(env.store.resort().unwrap(), None);
+    }
+
+    #[rstest]
+    fn finishing_an_older_resort_keeps_the_new_one(env: Env) {
+        let old = resort_everything(&env);
+        let new = env
+            .store
+            .start_resort(&["done".to_string()], old.since + 5)
+            .unwrap();
+        env.store.finish_resort(old.since).unwrap();
+        assert_eq!(env.store.resort().unwrap(), Some(new));
+    }
+
+    #[rstest]
+    fn resort_counts_what_is_left(env: Env) {
+        open_thread(&env, "1", "archive", 0);
+        open_thread(&env, "2", "done", 0);
+        resort_everything(&env);
+        assert_eq!(env.store.resort_remaining().unwrap(), 2);
     }
 
     #[rstest]

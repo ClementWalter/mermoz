@@ -625,7 +625,8 @@ final class AppModel {
             // Grouped by status: a bar per status group or board column.
             statuses = viewStatuses ?? []
         }
-        statuses = statuses.filter { !closedStatusKeys.contains($0) && $0 != "review" }
+        // Done and Archive keep their bar: a whole-mailbox sort suggests there too.
+        statuses = statuses.filter { $0 != "deleted" && $0 != "review" }
         guard !statuses.isEmpty else {
             if !columnSuggestions.isEmpty { columnSuggestions = [:] }
             return
@@ -638,6 +639,7 @@ final class AppModel {
             if next != columnSuggestions { columnSuggestions = next }
             if sorting != s.sorting { sorting = s.sorting }
             if sortingPaused != s.paused { sortingPaused = s.paused }
+            if router.resort != s.resort { router.resort = s.resort }
         } catch { log.error("suggestions: \(error.localizedDescription)") }
     }
 
@@ -1293,6 +1295,16 @@ final class AppModel {
     }
 
     /// Daily allowance of background sorting requests.
+    /// Asks for a fresh sort of every column; progress shows in the column bars.
+    func resortMailbox() async {
+        guard let client else { return }
+        do {
+            _ = try await client.resortMailbox()
+            await loadRouter()
+            await loadList()
+        } catch { report(error) }
+    }
+
     func setDailyCap(_ cap: Int) {
         guard let client else { return }
         Task {

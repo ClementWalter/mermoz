@@ -498,6 +498,7 @@ struct InstantSortingCard: View {
     @State private var key = ""
     @State private var busy = false
     @State private var result: String?
+    @State private var confirmResort = false
 
     var body: some View {
         SettingsCard(title: "Instant sorting (TypeSafe)",
@@ -530,6 +531,25 @@ struct InstantSortingCard: View {
                         ForEach(Self.caps(including: cap), id: \.self) { Text($0 == 0 ? "Off" : "\($0.formatted()) a day").tag($0) }
                     }
                     .fixedSize()
+                }
+            }
+            if model.router.configured {
+                HStack(spacing: 8) {
+                    if let r = model.router.resort {
+                        Text(ResortText.progress(r)).font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                    } else {
+                        Text("Take a fresh look at every email, archived ones included.")
+                            .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                    }
+                    Spacer()
+                    Button("Sort my whole mailbox again") { confirmResort = true }
+                        .buttonStyle(.glass)
+                        .disabled(model.router.resort != nil)
+                }
+                .confirmationDialog("Sort your whole mailbox again?", isPresented: $confirmResort) {
+                    Button("Sort everything again") { Task { await model.resortMailbox() } }
+                } message: {
+                    Text("Every email, archived ones included, gets a fresh suggestion of where it belongs. Nothing moves until you accept, and emails you already turned a suggestion down for are left alone. It runs in the background for a few hours, past the daily limit, and costs a few dollars on your TypeSafe account.")
                 }
             }
             if let result { Text(result).font(.system(size: 12)).foregroundStyle(Theme.text2) }

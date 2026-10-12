@@ -23,6 +23,8 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "string" } } }, "required": ["ids"] } },
         { "name": "column_suggestions", "description": "The AI's pending suggestions in status columns, grouped by target (status + projects) with counts, and how far background sorting has got (classified of total). Nothing moves until accepted.",
           "inputSchema": { "type": "object", "properties": { "statuses": { "type": "array", "items": { "type": "string" } }, "project": s("limit to a project"), "account_id": s("limit to an account") }, "required": ["statuses"] } },
+        { "name": "resort_mailbox", "description": "Ask the AI to sort whole status columns again in the background (all of todo, waiting, in_progress, backlog, done, archive unless `statuses` is given). Each thread gets a fresh suggestion; threads whose suggestion the user turned down or that the user moved by hand are left alone. Nothing moves until accepted; follow progress with column_suggestions.",
+          "inputSchema": { "type": "object", "properties": { "statuses": { "type": "array", "items": { "type": "string" } } } } },
         { "name": "get_attachment", "description": "Get an attachment's local file path (readable offline); text attachments also return their content.",
           "inputSchema": { "type": "object", "properties": { "id": s("attachment id from get_thread") }, "required": ["id"] } },
         { "name": "create_draft", "description": "Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves.",
@@ -110,6 +112,7 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
         },
         "column_suggestions" => r(c.call("suggestions.summary", a.clone())),
         "reject_suggestions" => r(c.call("threads.reject_suggestions", json!({ "ids": a["ids"] }))),
+        "resort_mailbox" => r(c.call("suggestions.resort", a.clone())),
         "chat_about_thread" => match a.get("question").and_then(|q| q.as_str()) {
             Some(q) if !q.trim().is_empty() => r(c.call(
                 "chat.send",

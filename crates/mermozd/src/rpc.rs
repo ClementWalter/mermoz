@@ -668,7 +668,33 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 "paused": state.paused,
                 "calls_today": st.background_calls_today()?,
                 "daily_cap": st.background_daily_cap()?,
+                "resort": st.resort()?,
             }))
+        }
+        "suggestions.resort" => {
+            // A second look at whole columns (all sortable ones by default): verdicts
+            // made before now no longer count, except the user's own decisions.
+            if mermoz_core::jev::load_key().is_none() {
+                return Err(RpcError::invalid(
+                    "Instant sorting is off. Add a TypeSafe key in Settings › Developer first.",
+                ));
+            }
+            let statuses = str_list(p, "statuses")?.unwrap_or_else(|| {
+                mermoz_core::model::ROUTABLE_STATUSES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            });
+            let r = st.start_resort(&statuses, mermoz_core::model::now_ms())?;
+            tracing::info!(
+                statuses = ?r.statuses,
+                threads = r.total,
+                ceiling = r.ceiling,
+                "whole-mailbox sort started"
+            );
+            svc.column_kick.notify_one();
+            let _ = svc.events.send(Event::SuggestionsChanged);
+            Ok(json!({ "resort": r, "due": st.resort_remaining()? }))
         }
         "suggestions.accept" => {
             let status = s(p, "status")?;
@@ -794,5 +820,6 @@ fn router_state(svc: &Service) -> Value {
         "model": "jev-latest",
         "daily_cap": svc.store.background_daily_cap().unwrap_or(mermoz_core::jev::DEFAULT_DAILY_CAP),
         "calls_today": svc.store.background_calls_today().unwrap_or(0),
+        "resort": svc.store.resort().ok().flatten(),
     })
 }
