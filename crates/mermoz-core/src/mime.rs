@@ -3,11 +3,15 @@
 use crate::model::Address;
 use mail_parser::{MessageParser, MimeHeaders};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ParsedAttachment {
     pub filename: String,
     pub mime: String,
     pub data: Vec<u8>,
+    /// `Content-ID` without angle brackets: what `cid:` links in the HTML point to.
+    pub content_id: Option<String>,
+    /// Shown inside the body (an image pasted in the text), not a file sent along.
+    pub inline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -69,10 +73,31 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
                     None => ct.ctype().to_string(),
                 })
                 .unwrap_or_else(|| "application/octet-stream".into());
+            let content_id = p
+                .content_id()
+                .map(|c| {
+                    c.trim()
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_string()
+                })
+                .filter(|c| !c.is_empty());
+            // Inline: placed in the body (pasted image). An explicit "attachment"
+            // disposition is a file sent along, even when it carries a Content-ID.
+            let disposition = p
+                .content_disposition()
+                .map(|d| d.ctype().to_ascii_lowercase());
+            let inline = match disposition.as_deref() {
+                Some("attachment") => false,
+                Some("inline") => true,
+                _ => content_id.is_some(),
+            };
             ParsedAttachment {
                 filename: p.attachment_name().unwrap_or("attachment").to_string(),
                 mime,
                 data: p.contents().to_vec(),
+                content_id,
+                inline,
             }
         })
         .collect();

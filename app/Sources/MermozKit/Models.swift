@@ -132,6 +132,18 @@ public struct Attachment: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var filename: String
     public var mime: String
     public var size: Int64
+    /// An image placed in the body (shown there), not a file sent along.
+    public var inline: Bool?
+
+    public init(id: String, filename: String, mime: String, size: Int64, inline: Bool? = nil) {
+        self.id = id; self.filename = filename; self.mime = mime; self.size = size; self.inline = inline
+    }
+}
+
+/// The email exactly as received, from `messages.source`.
+public struct MessageSource: Codable, Sendable, Equatable {
+    public var source: String
+    public var truncated: Bool
 }
 
 public struct Message: Codable, Sendable, Identifiable, Equatable {

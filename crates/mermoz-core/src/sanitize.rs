@@ -36,6 +36,8 @@ pub fn sanitize_html_with(html: &str, images: bool) -> String {
                 _ => Some(Cow::Borrowed(value)),
             }
         })
+        // `cid:` links are the message's own images, put in by `inline::resolve`.
+        .add_url_schemes(["cid"])
         .link_rel(Some("noopener noreferrer"))
         .clean(html)
         .to_string()
@@ -85,5 +87,10 @@ mod tests {
             !sanitize_html(r#"<div style="background:url(https://t.example/x)">a</div>"#)
                 .contains("t.example")
         );
+    }
+
+    #[rstest]
+    fn own_image_links_survive() {
+        assert!(sanitize_html(r#"<img src="cid:ii_k1">"#).contains("cid:ii_k1"));
     }
 }

@@ -1,4 +1,4 @@
-/// Formatted-message renderer: a script-free WKWebView per expanded message, remote loads off.
+/// Formatted-message renderer: a script-free WKWebView per message, remote loads off.
 import AppKit
 import SwiftUI
 import WebKit

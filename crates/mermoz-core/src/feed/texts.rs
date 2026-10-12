@@ -188,6 +188,7 @@ mod tests {
                 filename: "agenda.pdf".into(),
                 mime: "application/pdf".into(),
                 size: 1,
+                inline: false,
             }],
             auth: None,
         }

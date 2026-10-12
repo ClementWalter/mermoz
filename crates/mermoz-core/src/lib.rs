@@ -16,6 +16,7 @@ pub mod drive_cache;
 pub mod error;
 pub mod feed;
 pub mod gmail;
+pub mod inline;
 pub mod jev;
 pub mod mime;
 pub mod model;

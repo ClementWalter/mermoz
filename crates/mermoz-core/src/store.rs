@@ -104,7 +104,13 @@ const MIGRATIONS: &[&str] = &[
     SORT_FEEDBACK,
     CLEAR_FLOOD,
     FEED,
+    INLINE_PARTS,
 ];
+
+/// Which parts are images placed in the body (`cid:` links), so they render there and
+/// not as attachment chips. Older mail learns its Content-IDs when first shown.
+const INLINE_PARTS: &str = "ALTER TABLE attachments ADD COLUMN content_id TEXT;
+ALTER TABLE attachments ADD COLUMN inline INTEGER NOT NULL DEFAULT 0;";
 
 /// Files and links going out with a draft; files are copies under `blobs/drafts/`.
 const DRAFT_ATTACHMENTS: &str = r#"
@@ -1526,8 +1532,8 @@ impl Store {
             let path = dir.join(safe_filename(&a.filename));
             std::fs::write(&path, &a.data)?;
             tx.execute(
-                "INSERT INTO attachments (id, message_id, filename, mime, size, path) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![aid, mid, a.filename, a.mime, a.data.len() as i64, path.to_string_lossy()],
+                "INSERT INTO attachments (id, message_id, filename, mime, size, path, content_id, inline) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![aid, mid, a.filename, a.mime, a.data.len() as i64, path.to_string_lossy(), a.content_id, a.inline as i64],
             )?;
         }
         Self::refresh_thread(tx, &thread_id)?;
@@ -1952,7 +1958,7 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut st = r.prepare_cached(
-            "SELECT id, filename, mime, size FROM attachments WHERE message_id = ?1",
+            "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
         )?;
         for m in &mut msgs {
             // A forward's header looks like quoted history but is the content.
@@ -1968,11 +1974,97 @@ impl Store {
                         filename: r.get(1)?,
                         mime: r.get(2)?,
                         size: r.get(3)?,
+                        inline: r.get::<_, i64>(4)? != 0,
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
         }
         Ok(msgs)
+    }
+
+    /// A message's own parts its HTML can show inline (`cid:` links), read from disk.
+    pub fn inline_parts(&self, message_id: &str) -> Result<Vec<crate::inline::InlinePart>> {
+        let rows: Vec<(Option<String>, String, String, String)> = {
+            let r = self.r.lock().unwrap();
+            let mut st = r.prepare_cached(
+                "SELECT content_id, filename, mime, path FROM attachments WHERE message_id = ?1 AND mime LIKE 'image/%'",
+            )?;
+            st.query_map([message_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        };
+        Ok(rows
+            .into_iter()
+            .filter_map(|(content_id, filename, mime, path)| {
+                Some(crate::inline::InlinePart {
+                    content_id,
+                    filename,
+                    mime,
+                    data: std::fs::read(path).ok()?,
+                })
+            })
+            .collect())
+    }
+
+    /// (account id, Gmail message id) of a message whose image parts were stored
+    /// before Content-IDs were kept, so they can be learnt from Gmail once.
+    pub fn message_missing_cids(&self, message_id: &str) -> Result<Option<(String, String)>> {
+        let r = self.r.lock().unwrap();
+        Ok(r.query_row(
+            "SELECT m.account_id, m.provider_id FROM messages m WHERE m.id = ?1 AND EXISTS
+               (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.content_id IS NULL AND a.mime LIKE 'image/%')",
+            [message_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+    }
+
+    /// Records the Content-ID and placement of a message's parts, matched by file name
+    /// in order. Parts without a Content-ID get an empty one, so they are asked once.
+    pub fn set_attachment_cids(
+        &self,
+        message_id: &str,
+        parts: &[crate::mime::ParsedAttachment],
+    ) -> Result<()> {
+        let w = self.w.lock().unwrap();
+        let ids: Vec<(String, String)> = w
+            .prepare_cached(
+                "SELECT id, filename FROM attachments WHERE message_id = ?1 ORDER BY rowid",
+            )?
+            .query_map([message_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut used = vec![false; parts.len()];
+        for (id, name) in ids {
+            let found = parts
+                .iter()
+                .enumerate()
+                .find(|(i, p)| !used[*i] && p.filename == name);
+            let (cid, inline) = match found {
+                Some((i, p)) => {
+                    used[i] = true;
+                    (p.content_id.clone().unwrap_or_default(), p.inline)
+                }
+                None => (String::new(), false),
+            };
+            w.execute(
+                "UPDATE attachments SET content_id = ?2, inline = ?3 WHERE id = ?1",
+                params![id, cid, inline as i64],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// (account id, Gmail message id) of a stored message.
+    pub fn message_origin(&self, message_id: &str) -> Result<(String, String)> {
+        let r = self.r.lock().unwrap();
+        r.query_row(
+            "SELECT account_id, provider_id FROM messages WHERE id = ?1",
+            [message_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("message {message_id}")))
     }
 
     /// (HTML body, subject) of a message.
@@ -4897,6 +4989,7 @@ mod tests {
             filename: "x".repeat(400),
             mime: "text/plain".into(),
             data: b"d".to_vec(),
+            ..Default::default()
         });
         assert!(
             env.store
@@ -4914,6 +5007,7 @@ mod tests {
             filename: "a.txt".into(),
             mime: "text/plain".into(),
             data: b"d".to_vec(),
+            ..Default::default()
         });
         // Blobs dir replaced by a file: attachment writes fail for this batch.
         std::fs::remove_dir_all(&blobs).unwrap();
@@ -7103,6 +7197,7 @@ mod tests {
             filename: "budget.xlsx".into(),
             mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
             data: b"PK fictional".to_vec(),
+            ..Default::default()
         });
         let s = &draft_env.env.store;
         s.ingest(&draft_env.env.acc, "me@example.com", &m, SyncMode::Initial)

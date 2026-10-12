@@ -133,6 +133,11 @@ public final class DaemonClient: Sendable {
         try await callVoid("conversations.merge", Params().with("ids", threadIds))
     }
 
+    /// The email exactly as received (all headers), fetched only on request.
+    public func messageSource(_ id: String) async throws -> MessageSource {
+        try await call("messages.source", Params().with("id", id))
+    }
+
     /// Files shared anywhere, newest first.
     public func files(query: String? = nil, limit: Int = 300) async throws -> [SharedFile] {
         try await call("files.list", Params().with("query", query).with("limit", limit))

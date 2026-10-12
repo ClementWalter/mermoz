@@ -1022,6 +1022,7 @@ mod tests {
                                 filename: f.into(),
                                 mime: "application/pdf".into(),
                                 data: b"%PDF".to_vec(),
+                                ..Default::default()
                             }]
                         })
                         .unwrap_or_default(),
@@ -1445,5 +1446,50 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[rstest]
+    fn older_mail_learns_its_content_ids(env: Env) {
+        let t = env.mail(Mail {
+            file: Some("chart.png"),
+            ..Default::default()
+        });
+        let mid = env.store.conversation_messages(&t).unwrap()[0].id.clone();
+        env.store
+            .w
+            .lock()
+            .unwrap()
+            .execute("UPDATE attachments SET mime = 'image/png'", [])
+            .unwrap();
+        let part = ParsedAttachment {
+            filename: "chart.png".into(),
+            content_id: Some("ii_1".into()),
+            inline: true,
+            ..Default::default()
+        };
+        env.store.set_attachment_cids(&mid, &[part]).unwrap();
+        assert_eq!(
+            env.store.inline_parts(&mid).unwrap()[0]
+                .content_id
+                .as_deref(),
+            Some("ii_1")
+        );
+    }
+
+    #[rstest]
+    fn learnt_inline_parts_leave_the_attachment_chips(env: Env) {
+        let t = env.mail(Mail {
+            file: Some("chart.png"),
+            ..Default::default()
+        });
+        let mid = env.store.conversation_messages(&t).unwrap()[0].id.clone();
+        let part = ParsedAttachment {
+            filename: "chart.png".into(),
+            content_id: Some("ii_1".into()),
+            inline: true,
+            ..Default::default()
+        };
+        env.store.set_attachment_cids(&mid, &[part]).unwrap();
+        assert!(env.store.conversation_messages(&t).unwrap()[0].attachments[0].inline);
     }
 }

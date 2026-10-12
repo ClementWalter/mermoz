@@ -66,6 +66,35 @@ pub(crate) fn s(p: &Value, k: &str) -> Result<String, RpcError> {
         .ok_or_else(|| RpcError::invalid(format!("missing string param '{k}'")))
 }
 
+/// Puts the message's own images (`cid:` links) in its HTML. Mail stored before
+/// Content-IDs were kept learns them from Gmail once, on first view.
+async fn inline_images(svc: &Arc<Service>, mid: &str, html: String) -> Result<String, RpcError> {
+    use mermoz_core::inline;
+    if !inline::has_cid(&html) {
+        return Ok(html);
+    }
+    let st = &svc.store;
+    let (out, missing) = inline::resolve(&html, &st.inline_parts(mid)?);
+    if missing == 0 {
+        return Ok(out);
+    }
+    let Some((account, provider_id)) = st.message_missing_cids(mid)? else {
+        return Ok(out);
+    };
+    let fetched = match svc.worker(&account) {
+        Ok(w) => w.sync.gmail.get_raw(&provider_id).await.ok(),
+        Err(_) => None,
+    };
+    let parsed = fetched
+        .and_then(|m| mermoz_core::gmail::decode_raw(m.raw.as_deref()?).ok())
+        .and_then(|raw| mermoz_core::mime::parse(&raw));
+    let Some(parsed) = parsed else {
+        return Ok(out);
+    };
+    st.set_attachment_cids(mid, &parsed.attachments)?;
+    Ok(inline::resolve(&html, &st.inline_parts(mid)?).0)
+}
+
 /// A boolean parameter, false when absent.
 fn flag(p: &Value, k: &str) -> bool {
     p.get(k).and_then(|v| v.as_bool()).unwrap_or(false)
@@ -354,8 +383,27 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             }
             Ok(json!({}))
         }
+        "messages.source" => {
+            // The email exactly as received (every header, the true From and Reply-To),
+            // fetched from Gmail only when the reader asks for it.
+            let mid = s(p, "id")?;
+            let (account, provider_id) = st.message_origin(&mid)?;
+            let raw = svc
+                .worker(&account)?
+                .sync
+                .gmail
+                .get_raw(&provider_id)
+                .await?
+                .raw
+                .ok_or_else(|| RpcError::invalid("Gmail returned no source for this email"))?;
+            let bytes = mermoz_core::gmail::decode_raw(&raw)?;
+            const MAX: usize = 2 * 1024 * 1024;
+            let text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX)]).into_owned();
+            Ok(json!({ "source": text, "truncated": bytes.len() > MAX }))
+        }
         "messages.html" => {
-            let (html, subject) = st.message_html(&s(p, "id")?)?;
+            let mid = s(p, "id")?;
+            let (html, subject) = st.message_html(&mid)?;
             let html = html.unwrap_or_default();
             // A forward is shown whole: its header block is content, not quoted history.
             let full = p.get("full").and_then(|v| v.as_bool()).unwrap_or(false)
@@ -367,10 +415,9 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             };
             // Remote images only on request: they can report that the mail was opened.
             let images = p.get("images").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(
-                json!({ "html": sanitize_html_with(&html, images), "has_quoted": has_quoted,
-                "remote_images": has_remote_images(&html) }),
-            )
+            let clean = inline_images(svc, &mid, sanitize_html_with(&html, images)).await?;
+            Ok(json!({ "html": clean, "has_quoted": has_quoted,
+                "remote_images": has_remote_images(&html) }))
         }
         "search" => {
             let limit = p

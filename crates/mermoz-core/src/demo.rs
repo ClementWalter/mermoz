@@ -45,16 +45,19 @@ pub fn seed(store: &Store) -> Result<()> {
         filename: "Avenant_bail_2026.pdf".into(),
         mime: "application/pdf".into(),
         data: b"%PDF-1.4 demo".to_vec(),
+        ..Default::default()
     };
     let pdf = ParsedAttachment {
         filename: "audit-report-v2.pdf".into(),
         mime: "application/pdf".into(),
         data: b"%PDF-1.4 demo".to_vec(),
+        ..Default::default()
     };
     let xls = ParsedAttachment {
         filename: "findings.xlsx".into(),
         mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
         data: b"demo".to_vec(),
+        ..Default::default()
     };
 
     let seeds = vec![
@@ -418,6 +421,7 @@ pub fn seed(store: &Store) -> Result<()> {
                 filename: "cellar-plan.pdf".into(),
                 mime: "application/pdf".into(),
                 data: b"%PDF-1.4 demo".to_vec(),
+                ..Default::default()
             }),
         ),
         (
@@ -442,6 +446,7 @@ pub fn seed(store: &Store) -> Result<()> {
                 filename: "cellar-door.png".into(),
                 mime: "image/png".into(),
                 data: b"\x89PNG demo".to_vec(),
+                ..Default::default()
             }),
         ),
         (

@@ -7,8 +7,6 @@ import SwiftUI
 struct ThreadDetailView: View {
     @Environment(AppModel.self) private var model
     let detail: ThreadDetail
-    /// Messages shown in full; the latest starts open and every one folds on header click.
-    @State private var expanded: Set<String> = []
 
     private var conversation: Conversation {
         detail.conversation ?? Conversation(id: detail.thread.id, threads: [detail.thread])
@@ -39,24 +37,19 @@ struct ThreadDetailView: View {
         .foregroundStyle(Theme.text)
         // Drive previews, the Docs tab's Drive files and saved attachments; again on new mail.
         .task(id: "\(detail.thread.id)-\(detail.messages.count)") { await model.loadDrive(threadId: detail.thread.id) }
-        .onAppear { expanded = Set(detail.messages.suffix(1).map(\.id)) }
-        .onChange(of: detail.thread.id) { expanded = Set(detail.messages.suffix(1).map(\.id)) }
     }
 
     private var chat: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
+                LazyVStack(alignment: .leading, spacing: 10) {
                     if let s = detail.thread.summary, !s.isEmpty { SummaryBox(summary: s, next: detail.thread.nextAction) }
                     ForEach(Timeline.items(detail.messages, threads: conversation.threads)) { item in
                         switch item {
                         case let .marker(threadId, subject, date, joined):
                             ThreadMarker(threadId: threadId, subject: subject, date: date, joined: joined)
                         case let .message(m):
-                            MessageBubble(message: m, expanded: expanded.contains(m.id)) {
-                                if expanded.contains(m.id) { expanded.remove(m.id) } else { expanded.insert(m.id) }
-                            }
-                            .id(m.id)
+                            MessageBubble(message: m, kind: conversation.kind).id(m.id)
                         }
                     }
                 }
@@ -157,52 +150,239 @@ struct ThreadMarker: View {
     }
 }
 
-/// One message as a chat bubble: the user's on the right. Folded bubbles show a few
-/// lines; an open one is the full message with its Original / Optimized choice.
+/// One message as a chat bubble, the user's on the right: the same layout for every
+/// conversation (feeds and lists only get a compact header). The email's own text shows
+/// at once and in full; its formatted version replaces it once loaded; the AI's clean
+/// version only when the reader picks Optimized for this message.
 struct MessageBubble: View {
+    @Environment(AppModel.self) private var model
     let message: Message
-    let expanded: Bool
-    let toggle: () -> Void
+    var kind: String?
+    @State private var showQuoted = false
+    @State private var html: String?
+    @State private var height: CGFloat = 40
+    /// Full From / To / Cc / Bcc / date, opened by clicking the recipients line.
+    @State private var showDetails = false
+    /// Remote images were asked for ("Show images"); verified senders get them anyway.
+    @State private var imagesRequested = false
+    @State private var hasRemoteImages = false
+    /// "Show more" pressed on a very long message.
+    @State private var expandedText = false
+    @State private var showSource = false
+
+    private var layout: MessageLayout { MessageLayout.of(message, kind: kind) }
+    private var compact: Bool { if case let .bubble(_, c) = layout { c } else { false } }
+    /// This message's own Original / Optimized choice; other messages keep theirs.
+    private var mode: ReadingMode { model.readingModes[message: message.id] }
+    /// The Gmail thread the message belongs to, for asking the AI about it.
+    private var threadId: String? { message.threadId ?? model.detail?.thread.id }
+    /// Images load for senders Gmail verified, or when the reader asks.
+    private var loadImages: Bool { imagesRequested || message.auth == "pass" }
+    private var shown: BodyShown { MessageBody.shown(message, mode: mode, htmlReady: html != nil, showQuoted: showQuoted) }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if message.isFromMe { Spacer(minLength: 56) }
-            Group {
-                if expanded {
-                    MessageCard(message: message, tint: message.isFromMe ? Theme.accentSoft : .white, onFold: toggle)
-                } else {
-                    FoldedBubble(message: message).onTapGesture(perform: toggle)
-                }
-            }
+            bubble
             if !message.isFromMe { Spacer(minLength: 56) }
         }
+        .sheet(isPresented: $showSource) { MessageSourceView(message: message) }
+    }
+
+    private var bubble: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            header
+            if !compact {
+                Button { withAnimation(.easeOut(duration: 0.15)) { showDetails.toggle() } } label: {
+                    HStack(spacing: 4) {
+                        Text(Recipients.line(to: message.to, cc: message.cc, bcc: message.bcc ?? [])).lineLimit(1)
+                        Image(systemName: showDetails ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+                    }
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(showDetails ? "Hide details" : "Show everyone on this email")
+            }
+            if showDetails { MessageDetails(message: message) }
+            if mode == .original, message.hasHtml, hasRemoteImages, !loadImages { remoteImagesBar }
+            content
+            if mode == .optimized, message.bodyClean == nil { optimizedPending }
+            if message.hasQuoted == true, mode == .original {
+                // Quoted history stays one click away, like Gmail's "…".
+                Button { showQuoted.toggle() } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.text3)
+                        .frame(width: 30, height: 16)
+                        .background(Theme.accentSoft.opacity(0.7), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(showQuoted ? "Hide earlier messages" : "Show earlier messages")
+                .accessibilityLabel(showQuoted ? "Hide quoted text" : "Show quoted text")
+            }
+            DriveLinkCards(messageId: message.id)
+            let chips = MessageBody.chips(message)
+            if !chips.isEmpty {
+                FlowRow(spacing: 8) {
+                    ForEach(chips) { a in
+                        HStack(spacing: 2) {
+                            Button { model.openAttachment(a) } label: { AttachmentChip(attachment: a) }.buttonStyle(.plain)
+                                .onDrag { model.dragProvider(for: a) }
+                            SaveToDriveButton(attachment: a)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, compact ? 9 : 11)
+        .background(message.isFromMe ? Theme.accentSoft : Color.white, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color(hex: "#E3EDF6")))
+        .task(id: "\(mode)-\(showQuoted)-\(loadImages)") {
+            // The formatted email is local and quick; its text shows meanwhile.
+            if mode == .original, message.hasHtml, let body = await model.html(for: message.id, full: showQuoted, images: loadImages) {
+                html = body.html
+                hasRemoteImages = body.remoteImages ?? false
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            if !message.isFromMe { Avatar(name: message.from.display) }
+            Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 13, weight: .semibold))
+            SenderSeal(message: message)
+            Text(Format.long(message.date)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+            Spacer(minLength: 6)
+            if mode == .optimized {
+                Label("Optimized", systemImage: "sparkle").font(.system(size: 11)).foregroundStyle(Theme.accent)
+            }
+            Menu {
+                Picker("Show", selection: Binding(get: { mode }, set: { choose($0) })) {
+                    Text("Original (as sent)").tag(ReadingMode.original)
+                    Text("Optimized (clean version by AI)").tag(ReadingMode.optimized)
+                }
+                .pickerStyle(.inline)
+                if mode == .optimized, message.bodyClean != nil, let threadId {
+                    Button("Rewrite the optimized version") { model.aiClean(threadId, message: message.id) }
+                }
+                Divider()
+                Button("View source") { showSource = true }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 13)).foregroundStyle(Theme.text3)
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+            .help("Original or optimized, view source")
+        }
+    }
+
+    /// Picking Optimized is the only thing that asks the AI, and only once per message.
+    private func choose(_ m: ReadingMode) {
+        model.readingModes[message: message.id] = m
+        if m == .optimized, message.bodyClean == nil, let threadId { model.optimize(threadId, message: message.id) }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch shown {
+        case .html:
+            if let html { HTMLMessageView(html: html, images: loadImages, height: $height).frame(height: height) }
+        case let .clean(c):
+            bodyText(Text(c.isEmpty ? AttributedString("(empty message)") : CleanText.attributed(c)))
+        case let .text(t):
+            let cut = MessageBody.clamp(t.trimmingCharacters(in: .whitespacesAndNewlines), expanded: expandedText)
+            bodyText(Text(cut.text.isEmpty ? "(empty message)" : cut.text))
+            if cut.clamped {
+                Button("Show more") { expandedText = true }.buttonStyle(.link).font(.system(size: 12))
+            }
+            // The formatted version places pasted images itself; until then they show here.
+            let images = MessageBody.inlineImages(message)
+            if !images.isEmpty {
+                FlowRow(spacing: 8) {
+                    ForEach(images) { a in
+                        Button { model.openAttachment(a) } label: { PhotoThumb(file: SharedFile(id: a.id, filename: a.filename, mime: a.mime, size: a.size, messageId: message.id, threadId: threadId ?? "", from: "", date: message.date)).frame(width: 160) }
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Optimized chosen but not made yet: the email stays readable above this line.
+    private var optimizedPending: some View {
+        HStack(spacing: 8) {
+            if model.aiBusy.contains("optimize:\(message.id)") {
+                ProgressView().controlSize(.mini)
+                Text("Writing the optimized version…")
+            } else if let threadId {
+                Image(systemName: "sparkle")
+                Text("No optimized version yet")
+                Button("Make it") { model.optimize(threadId, message: message.id) }.buttonStyle(.link)
+            }
+        }
+        .font(.system(size: 12)).foregroundStyle(Theme.text2)
+    }
+
+    private var remoteImagesBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo").foregroundStyle(Theme.text3)
+            Text("Images from the web are hidden so the sender can't see when you read this.").foregroundStyle(Theme.text2)
+            Spacer()
+            Button("Show images") { imagesRequested = true }.buttonStyle(.link)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 10).frame(minHeight: 28)
+        .background(Theme.accentSoft.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func bodyText(_ text: Text) -> some View {
+        text.font(.system(size: 13.5)).lineSpacing(3)
+            .foregroundStyle(Theme.text.opacity(0.9))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-struct FoldedBubble: View {
+/// The email exactly as received: every header (true From, Reply-To) and its parts.
+struct MessageSourceView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     let message: Message
+    @State private var source: MessageSource?
+    @State private var error: String?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            if !message.isFromMe { Avatar(name: message.from.display) }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 12, weight: .semibold))
-                    Text(Format.short(message.date)).font(.system(size: 11)).foregroundStyle(Theme.text3)
-                    if !message.attachments.isEmpty {
-                        Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(Theme.text3)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Source of this email").font(.system(size: 14, weight: .semibold))
+                Spacer()
+                if let source {
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(source.source, forType: .string)
                     }
                 }
-                Text((message.bodyClean ?? message.displayBody).trimmingCharacters(in: .whitespacesAndNewlines))
-                    .font(.system(size: 13)).foregroundStyle(Theme.text.opacity(0.88))
-                    .lineLimit(4)
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            if let source {
+                ScrollView {
+                    Text(source.source + (source.truncated ? "\n\n… (cut: the rest is attached files)" : ""))
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if let error {
+                Text(error).foregroundStyle(Theme.text2).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 9)
-        .background(message.isFromMe ? Theme.accentSoft : Color.white, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color(hex: "#E3EDF6")))
-        .contentShape(Rectangle())
-        .help("Show the whole message")
+        .padding(16)
+        .frame(minWidth: 640, minHeight: 480)
+        .task {
+            do { source = try await model.client?.messageSource(message.id) } catch {
+                self.error = "The source can't be fetched right now (it comes from Gmail). Try again when online."
+            }
+        }
     }
 }
 
@@ -518,193 +698,6 @@ struct Avatar: View {
 
     /// String.hashValue is seeded per launch; colors must stay the same across launches.
     private var stableHash: Int { name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) } }
-}
-
-struct CollapsedMessage: View {
-    let message: Message
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Avatar(name: message.from.display, me: message.isFromMe)
-            Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.text)
-            if !message.isFromMe, !message.from.name.isEmpty {
-                // Who it is when the display name is generic ("complaints", "support").
-                Text(message.from.domain).font(.system(size: 11.5)).foregroundStyle(Theme.text3).lineLimit(1)
-            }
-            Text(message.displayBody.replacingOccurrences(of: "\n", with: " ")).lineLimit(1).foregroundStyle(Theme.text2)
-            Spacer(minLength: 6)
-            Text(Format.short(message.date)).foregroundStyle(Theme.text3)
-        }
-        .font(.system(size: 12.5))
-        .padding(.horizontal, 12).padding(.vertical, 9)
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(hex: "#E3EDF6")))
-        .contentShape(Rectangle())
-    }
-}
-
-struct MessageCard: View {
-    @Environment(AppModel.self) private var model
-    let message: Message
-    /// The bubble's color: the user's own messages are tinted.
-    var tint: Color = .white
-    var onFold: () -> Void = {}
-    /// The Gmail thread the message belongs to, for asking the AI about it.
-    private var threadId: String? { message.threadId ?? model.detail?.thread.id }
-    /// This message's own Original / Optimized choice; other messages keep theirs.
-    private var mode: ReadingMode { model.readingModes[message: message.id] }
-    @State private var showQuoted = false
-    @State private var html: String?
-    @State private var height: CGFloat = 200
-    /// Full From / To / Cc / Bcc / date, opened by clicking the recipients line.
-    @State private var showDetails = false
-    /// Remote images were asked for ("Show images"); verified senders get them anyway.
-    @State private var imagesRequested = false
-    @State private var hasRemoteImages = false
-
-    /// Images load for senders Gmail verified, or when the reader asks.
-    private var loadImages: Bool { imagesRequested || message.auth == "pass" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Avatar(name: message.from.display, me: message.isFromMe)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 13, weight: .semibold))
-                        SenderSeal(message: message)
-                        if !message.isFromMe, !message.from.name.isEmpty {
-                            Text(message.from.email).font(.system(size: 12)).foregroundStyle(Theme.text3).textSelection(.enabled).lineLimit(1)
-                        }
-                    }
-                    Button { withAnimation(.easeOut(duration: 0.15)) { showDetails.toggle() } } label: {
-                        HStack(spacing: 4) {
-                            Text(recipientsLine).lineLimit(1)
-                            Image(systemName: showDetails ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
-                        }
-                        .font(.system(size: 12)).foregroundStyle(Theme.text3)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(showDetails ? "Hide details" : "Show everyone on this email")
-                }
-                Spacer()
-                if mode == .optimized, message.bodyClean != nil, let threadId {
-                    // ✦ asks the AI again for this message only.
-                    Button { model.aiClean(threadId, message: message.id) } label: {
-                        if model.aiBusy.contains("clean:\(message.id)") { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles") }
-                    }
-                    .buttonStyle(.plain).foregroundStyle(Theme.accent)
-                    .disabled(model.aiBusy.contains("clean:\(message.id)"))
-                    .help("Rewrite this optimized version with AI (asks your AI again)").accessibilityLabel("Rewrite with AI")
-                }
-                Picker("", selection: Binding(get: { mode }, set: { model.readingModes[message: message.id] = $0 })) {
-                    Text("Original").tag(ReadingMode.original)
-                    Label("Optimized", systemImage: "sparkle").tag(ReadingMode.optimized)
-                }
-                .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
-                .help("Original: the email as sent · Optimized: a clean version written by AI, kept once made")
-                Text(Format.long(message.date)).font(.system(size: 12)).foregroundStyle(Theme.text3)
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { onFold() }
-            if showDetails { MessageDetails(message: message) }
-            if mode == .optimized {
-                optimized
-            } else {
-                original
-            }
-            DriveLinkCards(messageId: message.id)
-            if !message.attachments.isEmpty {
-                FlowRow(spacing: 8) {
-                    ForEach(message.attachments) { a in
-                        HStack(spacing: 2) {
-                            Button { model.openAttachment(a) } label: { AttachmentChip(attachment: a) }.buttonStyle(.plain)
-                                .onDrag { model.dragProvider(for: a) }
-                            SaveToDriveButton(attachment: a)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 14)
-        .background(tint, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: "#E3EDF6")))
-        .task(id: "\(mode)-\(showQuoted)-\(loadImages)") {
-            if mode == .original, message.hasHtml, let body = await model.html(for: message.id, full: showQuoted, images: loadImages) {
-                html = body.html
-                hasRemoteImages = body.remoteImages ?? false
-            }
-        }
-    }
-
-    /// The email as people expect it: rendered HTML, or its text for plain-text mail.
-    @ViewBuilder private var original: some View {
-        if message.hasHtml, hasRemoteImages, !loadImages {
-            HStack(spacing: 8) {
-                Image(systemName: "photo").foregroundStyle(Theme.text3)
-                Text("Images are hidden so the sender can't see when you read this.").foregroundStyle(Theme.text2)
-                Spacer()
-                Button("Show images") { imagesRequested = true }.buttonStyle(.link)
-            }
-            .font(.system(size: 12))
-            .padding(.horizontal, 12).frame(height: 32)
-            .background(Theme.accentSoft.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-        }
-        if message.hasHtml, let html {
-            HTMLMessageView(html: html, images: loadImages, height: $height).frame(height: height)
-        } else if message.hasHtml {
-            ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 40)
-        } else {
-            bodyText(Text((showQuoted ? message.bodyText : message.displayBody).nonEmpty ?? "(empty message)"))
-        }
-        if message.hasQuoted == true {
-            // Quoted history stays one click away, like Gmail's "…".
-            Button { showQuoted.toggle() } label: {
-                Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Theme.text3)
-                    .frame(width: 30, height: 16)
-                    .background(Theme.accentSoft.opacity(0.7), in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .help(showQuoted ? "Hide earlier messages" : "Show earlier messages")
-            .accessibilityLabel(showQuoted ? "Hide quoted text" : "Show quoted text")
-        }
-    }
-
-    /// The AI's clean version, made once per message and stored.
-    @ViewBuilder private var optimized: some View {
-        if let clean = message.bodyClean {
-            bodyText(Text(clean.isEmpty ? AttributedString("(empty message)") : CleanText.attributed(clean)))
-        } else if let threadId {
-            HStack(spacing: 8) {
-                if model.aiBusy.contains("optimize:\(message.id)") {
-                    ProgressView().controlSize(.small)
-                    Text("Writing the optimized version…")
-                } else {
-                    Image(systemName: "sparkle")
-                    Text("No optimized version yet")
-                    Button("Make it") { model.optimize(threadId, message: message.id) }.buttonStyle(.link)
-                }
-            }
-            .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .task(id: message.id) { model.optimize(threadId, message: message.id) }
-        }
-    }
-
-    private func bodyText(_ text: Text) -> some View {
-        text.font(.system(size: 13.5)).lineSpacing(3)
-            .foregroundStyle(Theme.text.opacity(0.9))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var recipientsLine: String {
-        var s = "to " + message.to.map(\.display).joined(separator: ", ")
-        if !message.cc.isEmpty { s += ", cc " + message.cc.map(\.display).joined(separator: ", ") }
-        if let bcc = message.bcc, !bcc.isEmpty { s += ", bcc " + bcc.map(\.display).joined(separator: ", ") }
-        return s
-    }
 }
 
 /// File badge, name and size; with `onRemove`, an × to take it out (composer).

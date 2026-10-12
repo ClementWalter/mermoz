@@ -3361,3 +3361,106 @@ fn mcp_lists_the_feed(demo: World) {
             .contains("\"sections\"")
     );
 }
+
+// ---- reading: instant original, inline images, source ----------------------
+
+/// HTML mail with an image pasted in the body (`cid:`) and a PDF sent along.
+fn raw_with_inline_image() -> String {
+    "From: Nora Lind <nora@agency.example>\r\nTo: me@example.com\r\nSubject: Chart\r\nMessage-ID: <chart@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"M\"\r\n\r\n--M\r\nContent-Type: multipart/related; boundary=\"R\"\r\n\r\n--R\r\nContent-Type: text/html\r\n\r\n<p>See the chart:</p><img src=\"cid:ii_chart1\" alt=\"Graphique.png\">\r\n--R\r\nContent-Type: image/png\r\nContent-ID: <ii_chart1>\r\nContent-Disposition: inline; filename=\"Graphique.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n--R--\r\n--M\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"notes.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQ=\r\n--M--\r\n".into()
+}
+
+fn with_chart(w: &World) -> Value {
+    w.mailbox.lock().unwrap().add_message(
+        "c1",
+        "tc",
+        &["INBOX"],
+        &raw_with_inline_image(),
+        NOW + 1000,
+    );
+    w.wait_until("the chart mail", |w| {
+        w.ok("threads.list", json!({}))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Chart")
+    });
+    let id = w.thread_by_subject("Chart")["id"].clone();
+    w.ok("threads.get", json!({ "id": id, "conversation": true }))
+}
+
+#[rstest]
+fn pasted_images_show_in_the_body(synced: World) {
+    let mid = with_chart(&synced)["messages"][0]["id"].clone();
+    let v = synced.ok("messages.html", json!({ "id": mid }));
+    assert!(
+        v["html"]
+            .as_str()
+            .unwrap()
+            .contains("src=\"data:image/png;base64,iVBORw0KGgo=\"")
+    );
+}
+
+#[rstest]
+fn pasted_images_are_not_remote_images(synced: World) {
+    let mid = with_chart(&synced)["messages"][0]["id"].clone();
+    let v = synced.ok("messages.html", json!({ "id": mid }));
+    assert_eq!(v["remote_images"], false);
+}
+
+#[rstest]
+fn a_pasted_image_is_marked_inline(synced: World) {
+    let m = &with_chart(&synced)["messages"][0];
+    let image = m["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["filename"] == "Graphique.png")
+        .cloned()
+        .unwrap();
+    assert_eq!(image["inline"], true);
+}
+
+#[rstest]
+fn a_file_sent_along_stays_an_attachment(synced: World) {
+    let m = &with_chart(&synced)["messages"][0];
+    let pdf = m["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["filename"] == "notes.pdf")
+        .cloned()
+        .unwrap();
+    assert_eq!(pdf["inline"], false);
+}
+
+#[rstest]
+fn opening_a_conversation_never_asks_the_ai(nora: World) {
+    allow_ai(&nora);
+    let id = nora.thread_by_subject("Signing postponed")["id"].clone();
+    let v = nora.ok("threads.get", json!({ "id": id, "conversation": true }));
+    for m in v["messages"].as_array().unwrap() {
+        nora.ok("messages.html", json!({ "id": m["id"] }));
+    }
+    nora.ok("threads.mark_read", json!({ "id": id }));
+    let m = nora.mailbox.lock().unwrap();
+    assert_eq!(
+        (
+            m.llm_keys.len(),
+            m.responses_auth.len(),
+            m.chat_requests.len()
+        ),
+        (0, 0, 0)
+    );
+}
+
+#[rstest]
+fn the_source_is_the_email_as_received(synced: World) {
+    let mid = with_chart(&synced)["messages"][0]["id"].clone();
+    let v = synced.ok("messages.source", json!({ "id": mid }));
+    assert!(
+        v["source"]
+            .as_str()
+            .unwrap()
+            .contains("Content-ID: <ii_chart1>")
+    );
+}

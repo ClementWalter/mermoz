@@ -100,6 +100,9 @@ pub struct AttachmentInfo {
     pub filename: String,
     pub mime: String,
     pub size: i64,
+    /// An image placed in the body (shown there), not a file sent along.
+    #[serde(default)]
+    pub inline: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
