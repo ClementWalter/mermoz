@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mermoz Feed Cards</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap">
+<style>
+/* Layout: the app window (sidebar · feed · pencilled design notes), then the A/B catalogue below. */
+:root {
+  --ground: #EAF3FB;
+  --paper: #FFFFFF;
+  --panel: #F6FAFE;
+  --ink: #0D2436;
+  --ink-2: #4B6477;
+  --ink-3: #5A7386;
+  --accent: #1F6FB5;
+  --accent-soft: #DCEBFA;
+  --line: #DDE9F3;
+  --pencil: #5F7F99;
+  --on-accent: #FFFFFF;
+  --ok: #2E9A6B;
+  --warn: #D9902F;
+  --danger: #C93A3A;
+  --warn-soft: #FBEFDC;
+  --ok-soft: #DFF2E8;
+  --danger-soft: #F8E1E1;
+  --shadow: 0 8px 24px rgba(31, 111, 181, 0.08);
+  --serif: "Fraunces", Georgia, serif;
+  --hand: "Caveat", "Bradley Hand", cursive;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0C1720; --paper: #15232F; --panel: #111E29; --ink: #E3EEF7; --ink-2: #A7BCCD; --ink-3: #8AA2B5;
+    --accent: #6AAEEA; --accent-soft: #1A3550; --line: #24384A; --pencil: #8FB0CA; --on-accent: #0C1720;
+    --ok: #5CC497; --warn: #E8AE5A; --danger: #EE7C7C; --warn-soft: #3A2C17; --ok-soft: #17352A; --danger-soft: #3D1E1E;
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.35); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0C1720; --paper: #15232F; --panel: #111E29; --ink: #E3EEF7; --ink-2: #A7BCCD; --ink-3: #8AA2B5;
+  --accent: #6AAEEA; --accent-soft: #1A3550; --line: #24384A; --pencil: #8FB0CA; --on-accent: #0C1720;
+  --ok: #5CC497; --warn: #E8AE5A; --danger: #EE7C7C; --warn-soft: #3A2C17; --ok-soft: #17352A; --danger-soft: #3D1E1E;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--ground); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: 16px; padding-block: 24px 64px; display: flex; flex-direction: column; gap: 28px; }
+h1, h2 { font-family: var(--serif); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: 30px; }
+h2 { font-size: 22px; }
+p { margin: 0; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Page header and controls */
+.top { display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: end; justify-content: space-between; }
+.top .lede { color: var(--ink-2); max-width: 62ch; margin-top: 6px; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 2px; }
+.seg button { border: 0; background: transparent; padding: 4px 11px; border-radius: 7px; cursor: pointer; font-size: 12.5px; color: var(--ink-2); }
+.seg button[aria-pressed="true"] { background: var(--paper); color: var(--ink); box-shadow: 0 1px 2px rgba(13, 36, 54, 0.12); font-weight: 600; }
+.ctl-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-right: 6px; }
+
+/* App window */
+.window { display: grid; grid-template-columns: 190px minmax(0, 1fr) 270px; gap: 10px; padding: 10px; border-radius: 18px; background: var(--ground); border: 1px solid var(--line); box-shadow: var(--shadow); min-height: 720px; }
+.side { border-radius: 14px; background: color-mix(in srgb, var(--paper) 55%, transparent); border: 1px solid var(--line); padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.side .lights { display: flex; gap: 6px; margin: 0 0 12px 4px; }
+.side .lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.side .h { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-3); margin: 12px 6px 4px; }
+.side .it { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 7px; color: var(--ink-2); }
+.side .it.on { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.side .it .n { margin-left: auto; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.dot { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+
+.main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.bar { display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 16px; border-radius: 14px; background: color-mix(in srgb, var(--paper) 60%, transparent); border: 1px solid var(--line); }
+.bar .t { font-weight: 600; font-size: 15px; }
+.bar .c { color: var(--ink-3); font-size: 12px; }
+.bar .sp { flex: 1; }
+.feed { border-radius: 14px; background: var(--panel); border: 1px solid var(--line); padding: 18px 18px 28px; overflow: hidden; }
+.feed-inner { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.brief { display: flex; gap: 12px; align-items: flex-start; padding: 4px 2px 10px; }
+.brief .date { font-family: var(--serif); font-size: 21px; }
+.brief p { color: var(--ink-2); font-size: 13.5px; margin-top: 2px; }
+.brief .counts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.section-h { display: flex; align-items: baseline; gap: 8px; margin: 14px 2px 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-3); }
+.section-h .n { font-weight: 500; letter-spacing: 0; }
+.section-h .rule { flex: 1; height: 1px; background: var(--line); align-self: center; }
+.section-h .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+/* Shared atoms */
+.chip { display: inline-flex; align-items: center; gap: 5px; height: 19px; padding: 0 6px; border-radius: 5px; font-size: 11px; color: var(--ink-2); background: var(--paper); border: 1px solid var(--line); white-space: nowrap; }
+.chip.due { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); background: var(--warn-soft); }
+.chip.late { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: var(--danger-soft); }
+.chip.ai { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 17px; padding: 0 4px; font-size: 10.5px; border-radius: 4px; border: 1px solid var(--line); background: var(--paper); color: var(--ink-3); font-family: var(--sans); line-height: 1; }
+.av { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; color: #fff; flex: none; letter-spacing: 0.02em; }
+.av.lg { width: 40px; height: 40px; font-size: 14px; }
+.ico { width: 13px; height: 13px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Card shell */
+.card { position: relative; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 12px; display: flex; flex-direction: column; gap: 8px; transition: border-color .12s, box-shadow .12s; cursor: default; }
+.card.focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
+.card .head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ink-3); min-width: 0; flex-wrap: wrap; }
+.card .kind { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px; color: var(--kc, var(--ink-3)); }
+.card .who { color: var(--ink-2); font-weight: 500; }
+.card .head .sp { flex: 1; }
+.card .title { font-size: 15px; font-weight: 600; line-height: 1.3; text-wrap: pretty; }
+.card .why { display: flex; gap: 6px; color: var(--ink-2); font-size: 13px; }
+.card .why .ico { color: var(--accent); margin-top: 3px; }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
+.btn { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.pri .kbd { background: transparent; border-color: color-mix(in srgb, var(--on-accent) 40%, transparent); color: var(--on-accent); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--ink-3); padding: 0 6px; }
+.acts .sp { flex: 1; }
+.src { font-size: 11.5px; color: var(--ink-3); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* Type-specific bodies */
+.quote { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; color: var(--ink-2); font-size: 13px; font-style: italic; }
+.draft { background: var(--panel); border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 9px; padding: 8px 10px; font-size: 13px; color: var(--ink); }
+.draft .lbl { font-size: 10.5px; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; display: flex; gap: 5px; align-items: center; margin-bottom: 3px; }
+.draft.peek .txt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.bubbles { display: flex; flex-direction: column; gap: 6px; }
+.bub { max-width: 86%; padding: 7px 10px; border-radius: 12px; font-size: 13px; }
+.bub.them { background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.bub.me { align-self: flex-end; background: var(--accent-soft); border-bottom-right-radius: 4px; }
+.bub .m { font-size: 10.5px; color: var(--ink-3); display: block; margin-bottom: 2px; }
+.opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.tile { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; background: var(--panel); cursor: pointer; text-align: left; }
+.tile.rec { border-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 55%, var(--paper)); }
+.tile .tt { font-weight: 600; font-size: 13px; display: flex; gap: 6px; align-items: center; }
+.tile .mm { font-size: 11.5px; color: var(--ink-3); }
+.tile .rr { font-size: 11.5px; color: var(--accent); }
+.dayline { display: flex; align-items: center; gap: 0; margin: 4px 0; }
+.dayline i { flex: 1; height: 2px; background: var(--line); }
+.dayline b { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+.dayline b.sent { background: var(--accent); }
+.dayline b.now { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.daylbl { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); }
+.slim { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.slim .title { font-size: 14px; }
+.groups { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.grp { display: flex; align-items: center; gap: 9px; padding: 7px 10px; font-size: 13px; border-top: 1px solid var(--line); background: var(--paper); }
+.grp:first-child { border-top: 0; }
+.grp .n { font-variant-numeric: tabular-nums; font-weight: 600; width: 18px; text-align: right; }
+.grp .ex { color: var(--ink-3); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.grp input { accent-color: var(--accent); margin: 0; }
+.deck { position: relative; height: 92px; margin: 2px 4px 4px; }
+.deck .mini { position: absolute; left: 0; right: 0; border: 1px solid var(--line); background: var(--paper); border-radius: 9px; padding: 7px 10px; font-size: 12px; color: var(--ink-2); display: flex; gap: 8px; align-items: center; box-shadow: 0 2px 6px rgba(13,36,54,.06); }
+.deck .mini b { color: var(--ink); font-weight: 600; }
+.cal { display: flex; gap: 12px; align-items: center; }
+.cal .tile-d { width: 54px; flex: none; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); text-align: center; background: var(--paper); }
+.cal .tile-d .m { background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .08em; padding: 2px 0; }
+.cal .tile-d .d { font-family: var(--serif); font-size: 24px; line-height: 1.2; padding: 2px 0 0; }
+.cal .tile-d .w { font-size: 10px; color: var(--ink-3); padding-bottom: 4px; }
+.cal .meta { font-size: 13px; color: var(--ink-2); display: flex; flex-direction: column; gap: 2px; }
+.agenda { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; font-size: 12.5px; }
+.agenda .row { display: grid; grid-template-columns: 54px minmax(0, 1fr); border-top: 1px solid var(--line); }
+.agenda .row:first-child { border-top: 0; }
+.agenda .h { color: var(--ink-3); padding: 5px 8px; font-variant-numeric: tabular-nums; border-right: 1px solid var(--line); }
+.agenda .ev { padding: 5px 8px; }
+.agenda .ev.new { background: color-mix(in srgb, var(--accent-soft) 70%, transparent); border-left: 3px solid var(--accent); }
+.agenda .ev.clash { background: var(--warn-soft); border-left: 3px solid var(--warn); }
+.digest { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.digest .s { color: var(--ink-3); font-size: 11.5px; }
+.nl { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.nl .r { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; padding: 7px 10px; border-top: 1px solid var(--line); align-items: start; font-size: 13px; }
+.nl .r:first-child { border-top: 0; }
+.nl .r .s { font-weight: 600; font-size: 12px; }
+.nl .r .x { color: var(--ink-2); }
+.mark { background: color-mix(in srgb, var(--warn) 28%, transparent); border-radius: 3px; padding: 0 2px; font-style: normal; color: var(--ink); }
+.checks { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.checks label { display: flex; gap: 8px; align-items: center; }
+.checks input { accent-color: var(--accent); }
+.person { display: flex; gap: 12px; align-items: center; }
+.person .nm { font-weight: 600; font-size: 14px; }
+.person .rl { font-size: 12.5px; color: var(--ink-2); }
+.tri { display: grid; grid-template-columns: auto 1fr auto 1fr auto; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.tri .node { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; }
+.tri .ln { height: 1px; background: repeating-linear-gradient(90deg, var(--pencil) 0 4px, transparent 4px 8px); }
+.file { display: flex; gap: 12px; align-items: flex-start; }
+.thumb { width: 64px; height: 84px; flex: none; border-radius: 6px; background: var(--paper); border: 1px solid var(--line); padding: 8px 7px; display: flex; flex-direction: column; gap: 4px; box-shadow: 2px 2px 0 var(--line); }
+.thumb i { height: 3px; border-radius: 2px; background: var(--line); display: block; }
+.thumb i.sig { margin-top: auto; height: 10px; border: 1px dashed var(--accent); background: transparent; }
+.points { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+.fileline { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-2); padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.ticket { display: grid; grid-template-columns: auto 1fr; gap: 4px 18px; align-items: baseline; padding: 10px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+.ticket .amt { font-family: var(--serif); font-size: 28px; font-variant-numeric: tabular-nums; grid-row: span 2; }
+.ticket .l { font-size: 12.5px; color: var(--ink-2); }
+.moneyline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.moneyline .amt { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 15px; }
+.stamp { font-size: 11.5px; color: var(--ink-3); }
+
+/* Done animation */
+.card.leaving { animation: fold .32s ease-in forwards; }
+@keyframes fold { to { opacity: 0; transform: translateX(14px) scale(.98); } }
+.done-strip { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-radius: 10px; font-size: 12.5px; color: var(--ok); background: var(--ok-soft); overflow: hidden; transition: height .25s ease .9s, opacity .25s ease .9s, margin .25s ease .9s, padding .25s ease .9s; }
+.done-strip.gone { height: 0; opacity: 0; margin-top: -10px; padding-block: 0; }
+.done-strip button { margin-left: auto; border: 0; background: transparent; color: var(--accent); cursor: pointer; font-weight: 600; font-size: 12.5px; }
+@media (prefers-reduced-motion: reduce) { .card.leaving { animation-duration: .01s; } .done-strip { transition: none; } }
+
+/* Design notes rail (designer's pencil, not app UI) */
+.notes { border-radius: 14px; border: 1.5px dashed var(--pencil); padding: 14px 14px; color: var(--pencil); display: flex; flex-direction: column; gap: 10px; align-self: start; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
+.notes .hand { font-family: var(--hand); font-size: 22px; line-height: 1.1; color: var(--pencil); }
+.notes .small { font-size: 12px; color: var(--ink-2); }
+.sig { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; font-size: 12px; color: var(--ink-2); }
+.sig .w { align-self: start; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 5px; border-radius: 4px; font-weight: 600; justify-self: end; }
+.w.jev { background: var(--accent-soft); color: var(--accent); }
+.w.rule { background: var(--line); color: var(--ink-2); }
+.w.big { background: var(--warn-soft); color: var(--warn); }
+.sig-w { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; font-size: 12px; color: var(--ink-2); align-items: center; }
+
+/* Catalogue */
+.cat { display: flex; flex-direction: column; gap: 22px; }
+.cat-row { display: flex; flex-direction: column; gap: 10px; }
+.cat-row .hd { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.cat-row .hd h3 { font-family: var(--serif); font-size: 18px; font-weight: 600; margin: 0; }
+.cat-row .hd .d { color: var(--ink-2); font-size: 13px; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.pair .slot { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pair .lab { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-3); display: flex; gap: 8px; align-items: center; }
+.pair .lab .rec { color: var(--ok); font-weight: 700; }
+.pencil { font-family: var(--hand); font-size: 19px; color: var(--pencil); line-height: 1.15; }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.tbl-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 600; border-top: 0; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--ground); padding: 8px 14px; border-radius: 10px; font-size: 13px; box-shadow: var(--shadow); display: flex; gap: 10px; align-items: center; z-index: 20; }
+
+@media (max-width: 1100px) {
+  .window { grid-template-columns: minmax(0, 1fr); }
+  .side { display: none; }
+  .notes { position: static; }
+}
+@media (max-width: 760px) {
+  .pair, .grid2 { grid-template-columns: minmax(0, 1fr); }
+  .tiles { grid-template-columns: minmax(0, 1fr); }
+  .nl .r { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .feed { padding: 12px 10px 20px; }
+  .bar .c, .bar .disp { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Feed view: card catalogue</h1>
+      <p class="lede">A third layout next to Board and List. The feed turns everything open into a short, ordered stream of cards, each one a single thing to do with the next step one key away. All names, companies and emails here are made up.</p>
+    </div>
+    <div class="controls">
+      <span><span class="ctl-label">Cards</span><span class="seg" id="seg-variant">
+        <button type="button" data-v="rec" aria-pressed="true">Recommended</button>
+        <button type="button" data-v="A" aria-pressed="false">All A</button>
+        <button type="button" data-v="B" aria-pressed="false">All B</button>
+      </span></span>
+      <span><span class="ctl-label">Theme</span><span class="seg" id="seg-theme">
+        <button type="button" data-t="auto" aria-pressed="true">Auto</button>
+        <button type="button" data-t="light" aria-pressed="false">Light</button>
+        <button type="button" data-t="dark" aria-pressed="false">Dark</button>
+      </span></span>
+    </div>
+  </header>
+
+  <section class="window" aria-label="App mockup">
+    <nav class="side" aria-label="Sidebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="it on"><svg class="ico" viewBox="0 0 16 16"><path d="M2 8h12M2 4h12M2 12h8"/></svg>All open<span class="n">23</span></div>
+      <div class="it"><span class="dot" style="background:#3D7FE0;border-radius:50%"></span>Unread<span class="n">7</span></div>
+      <div class="it"><span class="dot" style="background:#5A7386;border-radius:50%"></span>To do<span class="n">9</span></div>
+      <div class="it"><span class="dot" style="background:#D9902F;border-radius:50%"></span>In progress<span class="n">3</span></div>
+      <div class="it"><span class="dot" style="background:#2F8FCF;border-radius:50%"></span>Waiting<span class="n">4</span></div>
+      <div class="it"><span class="dot" style="background:#8AA0B2;border-radius:50%"></span>Backlog<span class="n">212</span></div>
+      <div class="h">Projects</div>
+      <div class="it"><span class="dot" style="background:#E0782F"></span>Rénovation cuisine<span class="n">5</span></div>
+      <div class="it"><span class="dot" style="background:#5B8DEF"></span>Acme offsite<span class="n">3</span></div>
+      <div class="it"><span class="dot" style="background:#2E9A6B"></span>École<span class="n">2</span></div>
+      <div class="it"><span class="dot" style="background:#8A6FD1"></span>Appartement<span class="n">2</span></div>
+      <div class="it"><span class="dot" style="background:#C2568C"></span>Budget Q4<span class="n">1</span></div>
+    </nav>
+
+    <div class="main">
+      <div class="bar">
+        <span class="t">All open</span><span class="c">23</span><span class="sp"></span>
+        <span class="chip disp">Display</span>
+        <span class="seg" aria-label="Layout"><button type="button" aria-pressed="false">Board</button><button type="button" aria-pressed="false">List</button><button type="button" aria-pressed="true">Feed</button></span>
+      </div>
+      <div class="feed" id="feed" tabindex="0" aria-label="Feed, use j and k to move">
+        <div class="feed-inner" id="feed-inner"></div>
+      </div>
+    </div>
+
+    <aside class="notes" aria-label="Design notes">
+      <div class="hand">Design notes: not in the app</div>
+      <p class="small">Click a card or press <span class="kbd">j</span> <span class="kbd">k</span> in the feed. Try <span class="kbd">⏎</span>, <span class="kbd">e</span>, <span class="kbd">a</span> or <span class="kbd">l</span> to see a card leave.</p>
+      <div id="note-body"></div>
+      <div class="hand" style="font-size:19px">Keys in the feed</div>
+      <div class="keys">
+        <span class="kbd">j / k</span><span>Next / previous card</span>
+        <span class="kbd">⏎</span><span>Primary action</span>
+        <span class="kbd">1 2 3</span><span>Pick an option (decision cards)</span>
+        <span class="kbd">r</span><span>Reply / edit the draft</span>
+        <span class="kbd">⌘⏎</span><span>Send the draft as is</span>
+        <span class="kbd">y</span><span>Accept the AI's suggestion</span>
+        <span class="kbd">e</span><span>Done</span>
+        <span class="kbd">a</span><span>Archive</span>
+        <span class="kbd">l</span><span>Later (snooze, new)</span>
+        <span class="kbd">o</span><span>Open the conversation (new)</span>
+        <span class="kbd">i</span><span>Ask about this (new)</span>
+        <span class="kbd">⌘Z</span><span>Undo</span>
+      </div>
+    </aside>
+  </section>
+
+  <section class="cat" aria-labelledby="cat-h">
+    <div>
+      <h2 id="cat-h">Ten card types, two variants each</h2>
+      <p class="lede" style="color:var(--ink-2);margin-top:6px;max-width:70ch">Every card shares one anatomy: a kind label and the person, a title phrased as the thing to do, one line on why it matters now, the type's own body, then actions with their keys. The variants differ only in the body.</p>
+    </div>
+    <div id="catalogue" class="cat"></div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <h2>How the feed is built</h2>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Step</th><th>Who</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>Open items: Unread, To do, In progress, Waiting; Backlog only if a date or a reply brings it back</td><td><span class="w rule sig-w">Code</span></td><td>Always, instant</td></tr>
+          <tr><td>Per item: needs a reply, urgency, deadline, card type, automated, amount</td><td><span class="w jev sig-w">Jev</span></td><td>On arrival, ~250 ms, cached</td></tr>
+          <tr><td>Order and section: deadline, then urgency × sender weight, then age</td><td><span class="w rule sig-w">Code</span></td><td>Every refresh, &lt; 5 ms</td></tr>
+          <tr><td>Batch: automated + same kind → one clean-up card</td><td><span class="w rule sig-w">Code</span></td><td>Every refresh</td></tr>
+          <tr><td>Title, "why now", draft reply, digest summary, key points</td><td><span class="w big sig-w">AI</span></td><td>Lazily, when the card scrolls into view</td></tr>
+        </tbody>
+      </table></div>
+      <p class="pencil">The AI chooses the words; code chooses the order, so the order is stable and explainable.</p>
+    </div>
+    <div class="panel">
+      <h2>Sections</h2>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Section</th><th>Goes there when</th></tr></thead>
+        <tbody>
+          <tr><td>Now</td><td>Due within 48 h, or urgent and someone is waiting on you</td></tr>
+          <tr><td>Today</td><td>Due this week, a promise that falls due, a bill, an event tomorrow</td></tr>
+          <tr><td>This week</td><td>Needs you, no date</td></tr>
+          <tr><td>Waiting on others</td><td>Waiting status; rises to Today when overdue for that sender</td></tr>
+          <tr><td>Can wait</td><td>Batches, digests, FYI</td></tr>
+        </tbody>
+      </table></div>
+      <p class="pencil">Without AI: same sections from statuses and due dates, plain subject as title, no "why now" line.</p>
+    </div>
+  </section>
+</div>
+
+<script>
+/* Mockup data and renderers. Every person, company and email below is fictional. */
+const COLORS = { orange: "#E0782F", blue: "#5B8DEF", green: "#2E9A6B", purple: "#8A6FD1", pink: "#C2568C", sky: "#2F8FCF", slate: "#5A7386" };
+const I = {
+  spark: '<svg class="ico" viewBox="0 0 16 16"><path d="M8 1.5v4M8 10.5v4M1.5 8h4M10.5 8h4M3.8 3.8l2 2M10.2 10.2l2 2M12.2 3.8l-2 2M5.8 10.2l-2 2"/></svg>',
+  reply: '<svg class="ico" viewBox="0 0 16 16"><path d="M6 4L2 8l4 4M2 8h8a4 4 0 0 1 4 4"/></svg>',
+  fork: '<svg class="ico" viewBox="0 0 16 16"><path d="M8 14V8M8 8L3 3M8 8l5-5"/></svg>',
+  clock: '<svg class="ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>',
+  stack: '<svg class="ico" viewBox="0 0 16 16"><path d="M2 5l6-3 6 3-6 3zM2 8l6 3 6-3M2 11l6 3 6-3"/></svg>',
+  cal: '<svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M5 1.5v3M11 1.5v3"/></svg>',
+  paper: '<svg class="ico" viewBox="0 0 16 16"><path d="M3 2h7l3 3v9H3zM5.5 7h5M5.5 9.5h5M5.5 12h3"/></svg>',
+  hand: '<svg class="ico" viewBox="0 0 16 16"><path d="M3 8.5l3 3 7-7"/><path d="M2 14h12"/></svg>',
+  people: '<svg class="ico" viewBox="0 0 16 16"><circle cx="5.5" cy="5.5" r="2.5"/><circle cx="11.5" cy="6.5" r="2"/><path d="M1.5 14c0-2.5 2-4 4-4s4 1.5 4 4M10 10.3c2.2-.4 4.5.9 4.5 3.7"/></svg>',
+  doc: '<svg class="ico" viewBox="0 0 16 16"><path d="M4 1.5h5l3 3V14.5H4z"/><path d="M6 11.5c1-1.5 1.5-1.5 2 0s1.5.5 2-1"/></svg>',
+  euro: '<svg class="ico" viewBox="0 0 16 16"><path d="M12 4a5 5 0 1 0 0 8M2.5 7h7M2.5 9.5h6"/></svg>',
+  attach: '<svg class="ico" viewBox="0 0 16 16"><path d="M13 7.5l-5.2 5.2a3 3 0 0 1-4.3-4.2L9 3a2 2 0 0 1 2.8 2.8L6.6 11a1 1 0 0 1-1.4-1.4L10 4.8"/></svg>',
+  conv: '<svg class="ico" viewBox="0 0 16 16"><path d="M2 3h9v6H6l-3 2.5V9H2zM11 6h3v6h-1v2l-2.5-2H7"/></svg>',
+};
+const KIND = {
+  reply: { label: "Reply needed", icon: I.reply, c: "var(--accent)" },
+  decision: { label: "Decision", icon: I.fork, c: "#C2568C" },
+  waiting: { label: "Waiting on", icon: I.clock, c: "#2F8FCF" },
+  batch: { label: "Clean-up", icon: I.stack, c: "var(--ink-3)" },
+  date: { label: "Date", icon: I.cal, c: "var(--danger)" },
+  digest: { label: "Reading", icon: I.paper, c: "var(--ink-3)" },
+  promise: { label: "You promised", icon: I.hand, c: "var(--warn)" },
+  intro: { label: "New person", icon: I.people, c: "#8A6FD1" },
+  doc: { label: "To sign", icon: I.doc, c: "var(--ok)" },
+  bill: { label: "To pay", icon: I.euro, c: "var(--warn)" },
+};
+
+const CARDS = [
+  { id: "c1", kind: "decision", section: "now", rec: "B", who: "Marie Lefèvre", ini: "ML", av: COLORS.orange, project: ["Rénovation cuisine", COLORS.orange], age: "2 h", due: ["Thu 16 Oct", "due"], conv: "3 threads",
+    title: "Choose the kitchen floor tiles",
+    why: "Marie needs your pick by Thursday to order on time, and she asked again this morning.",
+    quote: "On part sur lequel ? Il me faut une réponse jeudi pour tenir le planning.",
+    options: [
+      { t: "Grès cérame gris", m: "42 €/m² · delivered in 3 weeks", rec: "Matches the quote you approved" },
+      { t: "Terre cuite", m: "58 €/m² · delivered in 6 weeks" },
+      { t: "Ask for samples", m: "Pushes the order back a week" } ],
+    sig: [["Asks you to choose", "jev", "0.94"], ["Deadline Thu 16 Oct", "jev", "extracted"], ["Conversation of 3 threads", "rule", "grouped"], ["Options and prices", "big", "on view"]] },
+  { id: "c2", kind: "reply", section: "now", rec: "A", who: "Thomas Bernard", ini: "TB", av: COLORS.blue, project: ["Acme offsite", COLORS.blue], age: "Yesterday", due: ["Fri 17 Oct", "due"],
+    title: "Confirm you'll present at the 21 Oct offsite",
+    why: "He locks the agenda on Friday and you're the last speaker who hasn't answered.",
+    them: "Can you take the 30-minute slot after lunch on the 21st? I need to lock the agenda by Friday.",
+    draft: "Hi Thomas, yes, count me in for the 2:00 pm slot on the 21st. I'll send a title and a short abstract by Thursday. Best, Camille",
+    sig: [["Needs a reply", "jev", "0.91"], ["Urgency", "jev", "0.78"], ["Deadline Fri 17 Oct", "jev", "extracted"], ["Draft", "big", "on view"]] },
+  { id: "c3", kind: "doc", section: "now", rec: "B", who: "Sophie Martin · Agence Martin", ini: "SM", av: COLORS.purple, project: ["Appartement", COLORS.purple], age: "3 d", due: ["Wed 15 Oct", "due"],
+    title: "Sign the lease amendment",
+    why: "It's due Wednesday, and it raises the rent from 1 November.",
+    file: "Avenant_bail_2026.pdf", pages: 4,
+    points: ["Rent goes from 1 240 € to 1 275 € on 1 Nov", "Service charges unchanged", "Sign page 4 and initial every page"],
+    sig: [["Attachment to sign", "jev", "0.88"], ["Deadline Wed 15 Oct", "jev", "extracted"], ["Key points", "big", "on view"]] },
+  { id: "c4", kind: "promise", section: "today", rec: "A", who: "Inès Garnier", ini: "IG", av: COLORS.pink, project: ["Budget Q4", COLORS.pink], age: "Thu", due: ["Today", "late"],
+    title: "Send Inès the Q3 figures",
+    why: "You said you'd send them by Monday. It's Monday.",
+    mine: ["Je t'envoie les chiffres du T3 ", "lundi au plus tard", "."], sent: "You, Thu 9 Oct",
+    found: "Q3-synthese.xlsx", foundWhere: "attached in your thread with Marc on Friday",
+    sig: [["Promise in a mail you sent", "jev", "0.86"], ["Due date resolved to today", "rule", "date"], ["Matching file", "rule", "search"]] },
+  { id: "c5", kind: "date", section: "today", rec: "B", who: "Mme Dubois · École Jules Ferry", ini: "ÉD", av: COLORS.green, project: ["École", COLORS.green], age: "2 wk", due: ["Tomorrow", "due"], backlog: true,
+    title: "Parent-teacher meeting, Tue 14 Oct at 6:00 pm",
+    why: "It's tomorrow, and it overlaps your dinner with Clara at 7:00 pm.",
+    sig: [["Event date and time", "jev", "extracted"], ["Back from Backlog: date within 48 h", "rule", "date"], ["Calendar overlap", "rule", "calendar"]] },
+  { id: "c6", kind: "bill", section: "today", rec: "A", who: "Caisse des écoles", ini: "CE", av: COLORS.slate, project: ["École", COLORS.green], age: "Today", due: ["Mon 20 Oct", "due"],
+    title: "Pay the school canteen for October",
+    why: "Due in 8 days. Last month you paid on the 18th.",
+    amount: "126,00 €", ref: "Invoice 2026-10-4471", method: "Online payment or bank transfer",
+    sig: [["Amount and due date", "jev", "extracted"], ["Not a direct debit", "jev", "0.83"], ["Habit: paid around the 18th", "rule", "history"]] },
+  { id: "c7", kind: "intro", section: "week", rec: "A", who: "Paul Girard", ini: "PG", av: COLORS.sky, project: null, age: "Sat",
+    title: "Paul introduced you to Léa Moreau",
+    why: "Paul asked you to reply this week. Léa is looking for a design partner in Lyon.",
+    person: { nm: "Léa Moreau", ini: "LM", av: COLORS.purple, rl: "Founder, Atelier Nord · Lyon", ctx: "First mail from her. Paul has written to you 41 times." },
+    sig: [["Introduction", "jev", "0.92"], ["New sender", "rule", "contacts"], ["Who she is", "big", "on view"]] },
+  { id: "c8", kind: "waiting", section: "waiting", rec: "A", who: "Karim Roux · Plomberie Roux", ini: "KR", av: COLORS.orange, project: ["Rénovation cuisine", COLORS.orange], age: "6 d", due: null,
+    title: "Plumber's quote",
+    why: "You asked 6 days ago. He usually answers within 2.",
+    days: 6, nudge: "Bonjour M. Roux, je reviens vers vous pour le devis de la cuisine. Pourriez-vous me l'envoyer d'ici vendredi ? Merci !",
+    sig: [["Waiting since Tue 6 Oct", "rule", "status"], ["His usual reply time: 2 days", "rule", "history"], ["Nudge draft", "big", "on Enter"]] },
+  { id: "c9", kind: "batch", section: "later", rec: "A", who: "14 automated mails", ini: "14", av: COLORS.slate, project: null, age: "Since Fri",
+    title: "Clear 14 automated mails",
+    why: "Receipts, alerts and promotions. None of them needs anything from you.",
+    groups: [["6", "Receipts", "Citymove rides · Maison & Co order 48211 · Pharmacie du Canal"], ["5", "Notifications", "3 comments on a shared doc · login alert · parcel delivered"], ["3", "Promotions", "Linéa, Atelier Sport, Voyages Bleus"]],
+    sig: [["Automated", "jev", "0.97 avg"], ["Same kind, grouped", "rule", "batch"], ["Suggested: Archive", "jev", "0.95"]] },
+  { id: "c10", kind: "digest", section: "later", rec: "B", who: "4 newsletters", ini: "4", av: COLORS.slate, project: null, age: "This week",
+    title: "Your 4 newsletters, in 4 lines",
+    why: "One item has a date that might interest you: a flea market on Saturday.",
+    items: [
+      ["Le Brief Éco", "The central bank holds its rates; flat prices are down 1.2% over a year."],
+      ["Quartier Libre", "Flea market rue des Lilas on Saturday 18 Oct, 9 am to 6 pm.", "cal"],
+      ["Design Notes", "An essay on calm interfaces: fewer badges, more defaults."],
+      ["Running Club 11", "Sunday's group run moves to 9:30 because of the half-marathon."] ],
+    sig: [["Newsletter", "jev", "0.98"], ["Summary", "big", "on view"], ["Date inside one item", "jev", "extracted"]] },
+];
+const SECTIONS = [
+  ["now", "Now", "Needs you before anything else"],
+  ["today", "Today", ""],
+  ["week", "This week", ""],
+  ["waiting", "Waiting on others", ""],
+  ["later", "Can wait", "Sweep these in one go"],
+];
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const kbd = (k) => `<span class="kbd">${k}</span>`;
+const btn = (label, key, cls = "", act = "") => `<button type="button" class="btn ${cls}" data-act="${act}">${label}${key ? " " + kbd(key) : ""}</button>`;
+const av = (ini, c, lg) => `<span class="av${lg ? " lg" : ""}" style="background:${c}" aria-hidden="true">${esc(ini)}</span>`;
+
+function head(c) {
+  const k = KIND[c.kind];
+  const proj = c.project ? `<span class="chip"><span class="dot" style="background:${c.project[1]};width:7px;height:7px;border-radius:2px"></span>${esc(c.project[0])}</span>` : "";
+  const due = c.due ? `<span class="chip ${c.due[1]}">${c.due[1] === "late" ? "Due " : "Due "}${esc(c.due[0])}</span>` : "";
+  const conv = c.conv ? `<span class="chip">${I.conv}${esc(c.conv)}</span>` : "";
+  const bl = c.backlog ? `<span class="chip ai">${I.spark}Back from Backlog</span>` : "";
+  return `<div class="head"><span class="kind" style="--kc:${k.c}">${k.icon}${k.label}</span>${av(c.ini, c.av)}<span class="who">${esc(c.who)}</span>${proj}${conv}${bl}<span class="sp"></span>${due}<span>${esc(c.age)}</span></div>`;
+}
+const title = (c) => `<div class="title">${esc(c.title)}</div>`;
+const why = (c) => `<div class="why">${I.spark}<span>${esc(c.why)}</span></div>`;
+const more = `<span class="sp"></span>${btn("Later", "l", "ghost", "later")}${btn("Ask", "i", "ghost", "ask")}`;
+
+/* Body + actions per type and variant. */
+const R = {
+  reply: {
+    A: (c) => `${why(c)}<div class="draft peek"><div class="lbl">${I.spark}Draft reply</div><div class="txt">${esc(c.draft)}</div></div>
+      <div class="acts">${btn("Send", "⌘⏎", "pri", "done")}${btn("Edit", "r")}${btn("Done", "e", "", "done")}${more}</div>`,
+    B: (c) => `${why(c)}<div class="bubbles"><div class="bub them"><span class="m">Thomas · Yesterday 18:12</span>${esc(c.them)}</div><div class="bub me"><span class="m">Draft · not sent</span>${esc(c.draft)}</div></div>
+      <div class="acts">${btn("Send", "⌘⏎", "pri", "done")}${btn("Edit", "r")}${btn("Done", "e", "", "done")}${more}</div>`,
+  },
+  decision: {
+    A: (c) => `${why(c)}<div class="quote">${esc(c.quote)}</div><div class="opts">${c.options.map((o, i) => btn(esc(o.t), String(i + 1), i === 0 ? "pri" : "", "done")).join("")}</div>
+      <div class="acts">${btn("Reply myself", "r")}${more}</div>`,
+    B: (c) => `${why(c)}<div class="tiles">${c.options.map((o, i) => `<button type="button" class="tile${o.rec ? " rec" : ""}" data-act="done"><span class="tt">${kbd(i + 1)}${esc(o.t)}</span><span class="mm">${esc(o.m)}</span>${o.rec ? `<span class="rr">${I.spark} ${esc(o.rec)}</span>` : ""}</button>`).join("")}</div>
+      <div class="acts"><span class="stamp">Picking an option drafts the reply to Marie for you to check.</span>${more}</div>`,
+  },
+  waiting: {
+    A: (c) => `<div class="slim"><div class="title">${esc(c.title)}</div><span class="stamp">No reply for ${c.days} days, he usually answers within 2.</span></div>
+      <div class="acts">${btn("Nudge", "⏎", "pri", "done")}${btn("Got it elsewhere", "e", "", "done")}<span class="sp"></span>${btn("Later", "l", "ghost", "later")}</div>`,
+    B: (c) => `${why(c)}<div><div class="dayline"><b class="sent"></b>${"<i></i><b></b>".repeat(c.days - 1)}<i></i><b class="now"></b></div><div class="daylbl"><span>You asked · Tue 6 Oct</span><span>Today · day ${c.days}</span></div></div>
+      <div class="draft peek"><div class="lbl">${I.spark}Nudge</div><div class="txt">${esc(c.nudge)}</div></div>
+      <div class="acts">${btn("Send nudge", "⌘⏎", "pri", "done")}${btn("Edit", "r")}${btn("Got it elsewhere", "e", "", "done")}${more}</div>`,
+  },
+  batch: {
+    A: (c) => `${why(c)}<div class="groups">${c.groups.map((g, i) => `<label class="grp"><input type="checkbox" id="${c.id}-g${i}" checked><span class="n">${g[0]}</span><span>${g[1]}</span><span class="ex">${esc(g[2])}</span></label>`).join("")}</div>
+      <div class="acts">${btn("Archive 14", "⏎", "pri", "done")}${btn("Go through them", "o")}${more}</div>`,
+    B: (c) => `${why(c)}<div class="deck">${c.groups.map((g, i) => `<div class="mini" style="top:${i * 26}px;transform:scale(${1 - (2 - i) * 0.03});z-index:${i}"><b>${g[0]} ${g[1].toLowerCase()}</b><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g[2])}</span></div>`).join("")}</div>
+      <div class="acts">${btn("Archive all", "⏎", "pri", "done")}${btn("Go through them", "o")}${more}</div>`,
+  },
+  date: {
+    A: (c) => `${why(c)}<div class="cal"><div class="tile-d"><div class="m">OCT</div><div class="d">14</div><div class="w">Tue</div></div><div class="meta"><span><b>6:00 pm to 7:30 pm</b> · Room 12, École Jules Ferry</span><span>Bring the signed report card.</span></div></div>
+      <div class="acts">${btn("Add to calendar", "⏎", "pri", "done")}${btn("Done", "e", "", "done")}${more}</div>`,
+    B: (c) => `${why(c)}<div class="agenda"><div class="row"><span class="h">17:00</span><span class="ev">Free</span></div><div class="row"><span class="h">18:00</span><span class="ev new"><b>Parent-teacher meeting</b> · 18:00 to 19:30</span></div><div class="row"><span class="h">19:00</span><span class="ev clash"><b>Dîner Clara</b> · 19:00 · overlaps by 30 min</span></div></div>
+      <div class="acts">${btn("Add to calendar", "⏎", "pri", "done")}${btn("Tell Clara I'll be late", "r")}${more}</div>`,
+  },
+  digest: {
+    A: (c) => `${why(c)}<ul class="digest">${c.items.map((x) => `<li>${esc(x[1])} <span class="s">${esc(x[0])}</span></li>`).join("")}</ul>
+      <div class="acts">${btn("Archive all 4", "⏎", "pri", "done")}${btn("Add Saturday's flea market", "")}${more}</div>`,
+    B: (c) => `${why(c)}<div class="nl">${c.items.map((x) => `<div class="r"><span class="s">${esc(x[0])}</span><span class="x">${esc(x[1])}</span>${x[2] ? `<button type="button" class="btn" style="height:24px">${I.cal}Add</button>` : `<span></span>`}</div>`).join("")}</div>
+      <div class="acts">${btn("Archive all 4", "⏎", "pri", "done")}${btn("Read in full", "o")}${more}</div>`,
+  },
+  promise: {
+    A: (c) => `${why(c)}<div class="quote" style="font-style:normal"><span class="stamp">${esc(c.sent)}</span><br>« ${esc(c.mine[0])}<em class="mark">${esc(c.mine[1])}</em>${esc(c.mine[2])} »</div>
+      <div class="fileline">${I.attach}<span><b>${esc(c.found)}</b>, ${esc(c.foundWhere)}</span></div>
+      <div class="acts">${btn("Reply with the file", "⏎", "pri", "done")}${btn("Ask for a day", "r")}${btn("Already sent", "e", "", "done")}${more}</div>`,
+    B: (c) => `${why(c)}<div class="checks"><label><input type="checkbox" id="${c.id}-1" checked> Find the Q3 figures <span class="stamp">${esc(c.found)}</span></label><label><input type="checkbox" id="${c.id}-2"> Write two lines of context</label><label><input type="checkbox" id="${c.id}-3"> Send to Inès</label></div>
+      <div class="acts">${btn("Draft it for me", "⏎", "pri", "done")}${btn("Already sent", "e", "", "done")}${more}</div>`,
+  },
+  intro: {
+    A: (c) => `${why(c)}<div class="person">${av(c.person.ini, c.person.av, true)}<div><div class="nm">${esc(c.person.nm)}</div><div class="rl">${esc(c.person.rl)}</div><div class="stamp">${esc(c.person.ctx)}</div></div></div>
+      <div class="acts">${btn("Reply to Léa, Paul in Bcc", "⏎", "pri", "done")}${btn("Save to People", "")}${btn("Not now", "a", "", "done")}${more}</div>`,
+    B: (c) => `${why(c)}<div class="tri"><div class="node">${av("Moi", "var(--accent)", true)}You</div><span class="ln"></span><div class="node">${av(c.ini, c.av, true)}Paul</div><span class="ln"></span><div class="node">${av(c.person.ini, c.person.av, true)}Léa · Atelier Nord</div></div>
+      <div class="acts">${btn("Reply to Léa, Paul in Bcc", "⏎", "pri", "done")}${btn("Not now", "a", "", "done")}${more}</div>`,
+  },
+  doc: {
+    A: (c) => `${why(c)}<div class="file"><div class="thumb"><i></i><i style="width:70%"></i><i></i><i style="width:85%"></i><i></i><i class="sig"></i></div><div class="meta" style="font-size:13px;color:var(--ink-2)"><b style="color:var(--ink)">${esc(c.file)}</b><br>${c.pages} pages · signature on page 4</div></div>
+      <div class="acts">${btn("Open to sign", "⏎", "pri")}${btn("Ask a question", "r")}${btn("Signed", "e", "", "done")}${more}</div>`,
+    B: (c) => `${why(c)}<ul class="points">${c.points.map((p) => `<li>${esc(p)}</li>`).join("")}</ul><div class="fileline">${I.attach}<span>${esc(c.file)} · ${c.pages} pages</span></div>
+      <div class="acts">${btn("Open to sign", "⏎", "pri")}${btn("Ask a question", "r")}${btn("Signed", "e", "", "done")}${more}</div>`,
+  },
+  bill: {
+    A: (c) => `${why(c)}<div class="ticket"><span class="amt">${esc(c.amount)}</span><span class="l">${esc(c.ref)}</span><span class="l">${esc(c.method)}</span></div>
+      <div class="acts">${btn("Open payment page", "⏎", "pri")}${btn("Paid", "e", "", "done")}${more}</div>`,
+    B: (c) => `<div class="moneyline"><span class="amt">${esc(c.amount)}</span><span class="stamp">${esc(c.ref)} · due Mon 20 Oct</span></div>
+      <div class="acts">${btn("Open payment page", "⏎", "pri")}${btn("Paid", "e", "", "done")}${more}</div>`,
+  },
+};
+
+function cardHTML(c, v, interactive) {
+  const slim = c.kind === "waiting" && v === "A";
+  const inner = slim ? `${head(c)}${R[c.kind][v](c)}` : `${head(c)}${title(c)}${R[c.kind][v](c)}`;
+  return `<article class="card" data-id="${c.id}"${interactive ? ' tabindex="-1"' : ""}>${inner}</article>`;
+}
+
+let variant = "rec";
+let focusId = null;
+const doneIds = new Set();
+const feed = document.getElementById("feed-inner");
+const pick = (c) => (variant === "rec" ? c.rec : variant);
+
+function renderFeed() {
+  const open = CARDS.filter((c) => !doneIds.has(c.id));
+  const n = (s) => open.filter((c) => c.section === s).length;
+  let h = `<div class="brief"><div><div class="date">Monday 12 October</div><p>${n("now")} things need you now and ${n("today")} more today. ${open.some((c) => c.id === "c9") ? "14 automated mails can go in one sweep." : "The automated mail is cleared."}</p><div class="counts"><span class="chip due">${n("now")} now</span><span class="chip">${n("today")} today</span><span class="chip">${n("waiting")} waiting on others</span><span class="chip ok" style="color:var(--ok)">${doneIds.size + 6} handled today</span></div></div></div>`;
+  for (const [key, name, hint] of SECTIONS) {
+    const cs = open.filter((c) => c.section === key);
+    if (!cs.length) continue;
+    h += `<div class="section-h">${name}<span class="n">${cs.length}</span><span class="rule"></span>${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
+    h += cs.map((c) => cardHTML(c, pick(c), true)).join("");
+  }
+  if (!open.length) h += `<div class="section-h">All clear<span class="rule"></span></div><p style="color:var(--ink-2)">Nothing left that needs you. New mail lands here as it arrives.</p>`;
+  feed.innerHTML = h;
+  if (!focusId || doneIds.has(focusId)) focusId = open[0]?.id ?? null;
+  paintFocus();
+}
+
+function paintFocus() {
+  feed.querySelectorAll(".card").forEach((el) => el.classList.toggle("focus", el.dataset.id === focusId));
+  const c = CARDS.find((x) => x.id === focusId);
+  const nb = document.getElementById("note-body");
+  if (!c) { nb.innerHTML = ""; return; }
+  const W = { jev: "Jev", rule: "Code", big: "AI" };
+  nb.innerHTML = `<div class="hand" style="font-size:19px">Why this card is here</div><div class="sig">${c.sig.map((s) => `<span>${esc(s[0])} <span style="color:var(--ink-3)">${esc(s[2])}</span></span><span class="w ${s[1]}">${W[s[1]]}</span>`).join("")}</div><p class="small" style="margin-top:8px">Variant shown: <b>${pick(c)}</b>. In the app, a small "Why?" link could show this in plain words, without numbers.</p>`;
+}
+
+function move(d) {
+  const ids = [...feed.querySelectorAll(".card")].map((e) => e.dataset.id);
+  if (!ids.length) return;
+  const i = Math.max(0, Math.min(ids.length - 1, ids.indexOf(focusId) + d));
+  focusId = ids[i];
+  paintFocus();
+  feed.querySelector(`.card[data-id="${focusId}"]`)?.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
+let toastTimer;
+function toast(msg, id) {
+  document.querySelector(".toast")?.remove();
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.innerHTML = `<span>${esc(msg)}</span>${id ? `<button type="button" class="btn" style="height:24px" data-undo="${id}">Undo ${kbd("⌘Z")}</button>` : ""}`;
+  document.body.appendChild(t);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.remove(), 3200);
+}
+
+/* A handled card slides out, leaves a green "Done · Undo" strip, which folds away; focus moves to the next card. */
+let lastDone = null;
+function finish(id, label) {
+  const el = feed.querySelector(`.card[data-id="${id}"]`);
+  if (!el || el.classList.contains("leaving")) return;
+  const ids = [...feed.querySelectorAll(".card")].map((e) => e.dataset.id);
+  const next = ids[ids.indexOf(id) + 1] ?? ids[ids.indexOf(id) - 1] ?? null;
+  el.classList.add("leaving");
+  setTimeout(() => {
+    const strip = document.createElement("div");
+    strip.className = "done-strip";
+    strip.innerHTML = `${I.hand}<span>${esc(label)}: ${esc(CARDS.find((c) => c.id === id).title)}</span><button type="button" data-undo="${id}">Undo</button>`;
+    el.replaceWith(strip);
+    requestAnimationFrame(() => requestAnimationFrame(() => strip.classList.add("gone")));
+    doneIds.add(id);
+    lastDone = id;
+    focusId = next;
+    setTimeout(() => { if (strip.isConnected) renderFeed(); }, 1250);
+    paintFocus();
+  }, 320);
+}
+function undo(id) { doneIds.delete(id); focusId = id; renderFeed(); toast("Restored"); }
+
+const LABELS = { done: "Done", archive: "Archived", later: "Snoozed until tomorrow" };
+document.addEventListener("click", (e) => {
+  const u = e.target.closest("[data-undo]");
+  if (u) { undo(u.dataset.undo); document.querySelector(".toast")?.remove(); return; }
+  const card = e.target.closest("#feed .card");
+  if (!card) return;
+  focusId = card.dataset.id;
+  paintFocus();
+  const b = e.target.closest("[data-act]");
+  if (b && b.dataset.act && LABELS[b.dataset.act]) finish(card.dataset.id, LABELS[b.dataset.act]);
+});
+
+document.getElementById("feed").addEventListener("keydown", (e) => {
+  if (e.metaKey && e.key === "z") { if (lastDone && doneIds.has(lastDone)) undo(lastDone); e.preventDefault(); return; }
+  if (e.metaKey && e.key === "Enter") { if (focusId) finish(focusId, "Sent"); e.preventDefault(); return; }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key;
+  if (k === "j" || k === "ArrowDown") move(1);
+  else if (k === "k" || k === "ArrowUp") move(-1);
+  else if (!focusId) return;
+  else if (k === "Enter" || k === "1" || k === "2" || k === "3") finish(focusId, "Done");
+  else if (k === "e") finish(focusId, "Done");
+  else if (k === "a") finish(focusId, "Archived");
+  else if (k === "l") finish(focusId, "Snoozed until tomorrow");
+  else if (k === "y") finish(focusId, "Suggestion accepted");
+  else if (k === "r") toast("Opens the draft for editing");
+  else if (k === "o") toast("Opens the full conversation on the right");
+  else if (k === "i") toast("Opens 'Ask about this' beside the card");
+  else return;
+  e.preventDefault();
+});
+
+/* Catalogue: both variants side by side with the recommendation. */
+const NOTES = {
+  reply: ["Draft peek", "Chat bubbles", "Two lines of the draft keep the feed dense. Bubbles read well but double the height."],
+  decision: ["Option buttons", "Option tiles with a pick", "Tiles carry price and delay, and the AI's pick has a reason. Worth the space for a real decision."],
+  waiting: ["One line", "Day track + nudge", "Waiting should stay quiet: one line, and the nudge draft opens on Enter."],
+  batch: ["Groups with checkboxes", "Stacked deck", "Groups show exactly what will be archived and let you untick one. Trust beats charm here."],
+  date: ["Calendar tile", "Day agenda", "The agenda shows the clash, which is the whole point. Fall back to the tile when nothing overlaps."],
+  digest: ["One summary", "One line per newsletter", "Per-newsletter lines keep the source and let a date become an Add button."],
+  promise: ["Your own words", "Checklist", "Quoting your sentence with the date highlighted is the most convincing reminder."],
+  intro: ["Person card", "Who knows whom", "The person card answers 'who is this' fastest. The diagram is nice but says less."],
+  doc: ["Page thumbnail", "Key points", "Three key points (the rent goes up) matter more than a picture of a page."],
+  bill: ["Amount first", "One line", "The amount is what you look for. The one-line version suits bills with no action."],
+};
+document.getElementById("catalogue").innerHTML = CARDS.map((c) => {
+  const k = KIND[c.kind], n = NOTES[c.kind];
+  const slot = (v, name) => `<div class="slot"><div class="lab">${v} · ${name}${c.rec === v ? '<span class="rec">Recommended</span>' : ""}</div>${cardHTML(c, v, false)}</div>`;
+  return `<div class="cat-row"><div class="hd"><h3>${k.label}</h3><span class="d">${esc(c.title)}</span></div><div class="pair">${slot("A", n[0])}${slot("B", n[1])}</div><p class="pencil">${esc(n[2])}</p></div>`;
+}).join("");
+
+/* Controls */
+function seg(id, attr, fn) {
+  const root = document.getElementById(id);
+  root.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    root.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    fn(b.dataset[attr]);
+  });
+}
+seg("seg-variant", "v", (v) => { variant = v; renderFeed(); });
+seg("seg-theme", "t", (t) => { if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t); });
+
+renderFeed();
+</script>
+</body>
+</html>
