@@ -587,8 +587,12 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .get("missing_only")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            for (mid, from_name, from_email, subject, body) in
-                st.thread_digest_inputs(&id, missing_only)?
+            // `message_id` limits the clean to the one message the reader is looking at.
+            let only = p.get("message_id").and_then(|v| v.as_str());
+            for (mid, from_name, from_email, subject, body) in st
+                .thread_digest_inputs(&id, missing_only)?
+                .into_iter()
+                .filter(|(mid, ..)| only.is_none_or(|o| o == mid))
             {
                 let from = if from_name.is_empty() {
                     from_email

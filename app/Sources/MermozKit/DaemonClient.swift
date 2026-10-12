@@ -191,8 +191,9 @@ public final class DaemonClient: Sendable {
     public func peopleStatus() async throws -> JobState { try await call("agent.people_status") }
 
     /// `missingOnly`: clean only messages without a stored version (never re-pays).
-    public func aiClean(thread id: String, missingOnly: Bool = false) async throws -> CleanResult {
-        try await call("agent.clean", Params().with("id", id).with("missing_only", missingOnly))
+    /// `message`: clean only that message of the thread.
+    public func aiClean(thread id: String, message: String? = nil, missingOnly: Bool = false) async throws -> CleanResult {
+        try await call("agent.clean", Params().with("id", id).with("message_id", message).with("missing_only", missingOnly))
     }
 
     public func aiTriage(status: String, limit: Int = 40) async throws -> TriageResult {

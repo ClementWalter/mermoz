@@ -121,13 +121,6 @@ struct IssueToolbar: View {
             }
 
             Spacer()
-            // ✦ re-cleans this thread with AI now (signatures, quotes, clutter; fills People).
-            Button { model.aiClean(thread.id) } label: {
-                if model.aiBusy.contains("clean:\(thread.id)") { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles") }
-            }
-            .buttonStyle(.plain).foregroundStyle(Theme.accent)
-            .disabled(model.aiBusy.contains("clean:\(thread.id)"))
-            .help("Rewrite the optimized version with AI (asks your AI again)").accessibilityLabel("Rewrite with AI")
             Button { model.markDoneSelected() } label: { Image(systemName: "checkmark.circle") }
                 .buttonStyle(.plain).foregroundStyle(Theme.text2)
                 .help("Done (e)").accessibilityLabel("Mark done")
@@ -238,17 +231,12 @@ struct CollapsedMessage: View {
     }
 }
 
-/// How a message is shown: as sent (rendered HTML), or the AI's clean version.
-enum ReadingMode: String {
-    case original, optimized
-}
-
 struct MessageCard: View {
     @Environment(AppModel.self) private var model
     let message: Message
     var onFold: () -> Void = {}
-    /// One choice for every message, remembered across launches.
-    @AppStorage("reading.mode") private var mode: ReadingMode = .original
+    /// This message's own Original / Optimized choice; other messages keep theirs.
+    private var mode: ReadingMode { model.readingModes[message: message.id] }
     @State private var showQuoted = false
     @State private var html: String?
     @State private var height: CGFloat = 200
@@ -285,7 +273,16 @@ struct MessageCard: View {
                     .help(showDetails ? "Hide details" : "Show everyone on this email")
                 }
                 Spacer()
-                Picker("", selection: $mode) {
+                if mode == .optimized, message.bodyClean != nil, let threadId = model.detail?.thread.id {
+                    // ✦ asks the AI again for this message only.
+                    Button { model.aiClean(threadId, message: message.id) } label: {
+                        if model.aiBusy.contains("clean:\(message.id)") { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles") }
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                    .disabled(model.aiBusy.contains("clean:\(message.id)"))
+                    .help("Rewrite this optimized version with AI (asks your AI again)").accessibilityLabel("Rewrite with AI")
+                }
+                Picker("", selection: Binding(get: { mode }, set: { model.readingModes[message: message.id] = $0 })) {
                     Text("Original").tag(ReadingMode.original)
                     Label("Optimized", systemImage: "sparkle").tag(ReadingMode.optimized)
                 }
@@ -360,18 +357,18 @@ struct MessageCard: View {
             bodyText(Text(clean.isEmpty ? AttributedString("(empty message)") : CleanText.attributed(clean)))
         } else if let threadId = model.detail?.thread.id {
             HStack(spacing: 8) {
-                if model.aiBusy.contains("optimize:\(threadId)") {
+                if model.aiBusy.contains("optimize:\(message.id)") {
                     ProgressView().controlSize(.small)
                     Text("Writing the optimized version…")
                 } else {
                     Image(systemName: "sparkle")
                     Text("No optimized version yet")
-                    Button("Make it") { model.optimize(threadId) }.buttonStyle(.link)
+                    Button("Make it") { model.optimize(threadId, message: message.id) }.buttonStyle(.link)
                 }
             }
             .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .task(id: threadId) { model.optimize(threadId) }
+            .task(id: message.id) { model.optimize(threadId, message: message.id) }
         }
     }
 

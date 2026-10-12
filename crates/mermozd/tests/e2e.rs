@@ -395,6 +395,45 @@ fn forced_clean_runs_without_auto_cleaning(synced: World) {
     );
 }
 
+/// "Audit report v2" with my reply sent, so the thread holds two messages to clean.
+fn two_message_thread(w: &World) -> Value {
+    let t = w.thread_by_subject("Audit report v2");
+    let d = w.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "ok" }),
+    );
+    w.ok("drafts.send", json!({ "id": d["id"] }));
+    w.wait_until("reply in thread", |w| {
+        w.ok("threads.get", json!({ "id": t["id"] }))["messages"]
+            .as_array()
+            .is_some_and(|m| m.len() == 2)
+    });
+    w.ok("threads.get", json!({ "id": t["id"] }))
+}
+
+#[rstest]
+fn forced_clean_covers_every_message_of_the_thread(synced: World) {
+    allow_ai(&synced);
+    let d = two_message_thread(&synced);
+    assert_eq!(
+        synced.ok("agent.clean", json!({ "id": d["thread"]["id"] }))["cleaned"],
+        2
+    );
+}
+
+#[rstest]
+fn clean_with_a_message_id_rewrites_only_that_message(synced: World) {
+    allow_ai(&synced);
+    let d = two_message_thread(&synced);
+    assert_eq!(
+        synced.ok(
+            "agent.clean",
+            json!({ "id": d["thread"]["id"], "message_id": d["messages"][0]["id"] })
+        )["cleaned"],
+        1
+    );
+}
+
 #[rstest]
 fn ai_people_clean_renames_the_directory(synced: World) {
     enable_agent(&synced);

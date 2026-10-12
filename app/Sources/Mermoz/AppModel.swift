@@ -79,7 +79,11 @@ final class AppModel {
     var boardDisplay: DisplayOptions = AppModel.loadDisplay("board") ?? DisplayOptions(grouping: .status)
     var triageResult: TriageResult?
     var peopleJob = JobState()
-    /// Keys of AI actions in flight ("clean:<thread>", "triage:<status>").
+    /// Original / Optimized, chosen per message and remembered across launches.
+    var readingModes: ReadingModes = AppModel.loadReadingModes() {
+        didSet { if let d = try? JSONEncoder().encode(readingModes) { UserDefaults.standard.set(d, forKey: "reading.modes") } }
+    }
+    /// Keys of AI actions in flight ("clean:<message>", "optimize:<message>", "triage:<status>").
     var aiBusy: Set<String> = []
     var threads: [ThreadSummary] = []
     var totalThreads = 0
@@ -488,6 +492,11 @@ final class AppModel {
         return try? JSONDecoder().decode(DisplayOptions.self, from: d)
     }
 
+    private static func loadReadingModes() -> ReadingModes {
+        guard let d = UserDefaults.standard.data(forKey: "reading.modes") else { return ReadingModes() }
+        return (try? JSONDecoder().decode(ReadingModes.self, from: d)) ?? ReadingModes()
+    }
+
     private static func saveDisplay(_ v: DisplayOptions, _ key: String) {
         if let d = try? JSONEncoder().encode(v) { UserDefaults.standard.set(d, forKey: "display.\(key)") }
     }
@@ -505,33 +514,32 @@ final class AppModel {
         }
     }
 
-    /// Re-cleans every message of a thread now (the ✦ button in a thread).
-    func aiClean(_ threadId: String) {
+    /// Rewrites one message's Optimized version now (the ✦ button on a message).
+    func aiClean(_ threadId: String, message messageId: String) {
         guard let client else { return }
-        aiBusy.insert("clean:\(threadId)")
+        aiBusy.insert("clean:\(messageId)")
         Task {
-            defer { aiBusy.remove("clean:\(threadId)") }
+            defer { aiBusy.remove("clean:\(messageId)") }
             do {
-                let r = try await client.aiClean(thread: threadId)
-                toast = "Cleaned \(r.cleaned) message\(r.cleaned == 1 ? "" : "s")"
+                _ = try await client.aiClean(thread: threadId, message: messageId)
                 if selectedThreadId == threadId, let d = try? await client.thread(threadId) { detail = d }
             } catch { report(error) }
         }
     }
 
-    /// Threads already sent for an Optimized version this session, so a failure (no AI
+    /// Messages already sent for an Optimized version this session, so a failure (no AI
     /// set up, quota) is not retried on every render.
     private var optimizeRequested: Set<String> = []
 
-    /// Builds the Optimized view of a thread's messages that don't have one yet. Stored
-    /// versions are reused forever; the AI is never asked twice for a message.
-    func optimize(_ threadId: String) {
-        guard let client, optimizeRequested.insert(threadId).inserted else { return }
-        aiBusy.insert("optimize:\(threadId)")
+    /// Builds a message's Optimized version if it has none. Stored versions are reused
+    /// forever; the AI is never asked twice for a message.
+    func optimize(_ threadId: String, message messageId: String) {
+        guard let client, optimizeRequested.insert(messageId).inserted else { return }
+        aiBusy.insert("optimize:\(messageId)")
         Task {
-            defer { aiBusy.remove("optimize:\(threadId)") }
+            defer { aiBusy.remove("optimize:\(messageId)") }
             do {
-                _ = try await client.aiClean(thread: threadId, missingOnly: true)
+                _ = try await client.aiClean(thread: threadId, message: messageId, missingOnly: true)
                 if selectedThreadId == threadId, let d = try? await client.thread(threadId) { detail = d }
             } catch { report(error) }
         }
