@@ -339,8 +339,19 @@ uncertain band), lead threads kept current by the store, one row per conversatio
 in lists and counts, status / project / read changes across a conversation,
 split and merge, conversation reading (messages, people, files, links), a files
 list across the mailbox, and "Chat about this" over the whole conversation
-(`docs/protocol.md`). Not built yet: projects suggested to a joining thread and
-few-shot examples from past splits.
+(`docs/protocol.md`).
+
+App: list rows and board cards are conversations ("3 threads"); the reading pane
+is the chat with Messages / People / Docs / Links / Photos tabs, a marker per
+Gmail thread with "Not the same conversation", the reply target named above the
+composer, and Chat about this over the whole conversation. ⇧M or the row menu
+joins selected conversations. The sidebar's Browse section holds People, Docs
+(every shared file) and Feeds. The Docs tab merges attachments with files linked
+from other sources (a second source plugs in without changing the tab). The demo
+data (`seed_demo`) includes a three-thread conversation and a feed.
+
+Not built yet: projects suggested to a joining thread and few-shot examples from
+past splits.
 
 ## UI
 

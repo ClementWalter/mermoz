@@ -1,4 +1,6 @@
-/// Reading pane: issue chips, summary, messages (older collapsed), attachments, reply bar.
+/// Reading pane: one conversation as a chat. Its Gmail threads read as one stream of
+/// messages, newest at the bottom, with tabs for its people, docs, links and photos.
+import AppKit
 import MermozKit
 import SwiftUI
 
@@ -8,41 +10,342 @@ struct ThreadDetailView: View {
     /// Messages shown in full; the latest starts open and every one folds on header click.
     @State private var expanded: Set<String> = []
 
+    private var conversation: Conversation {
+        detail.conversation ?? Conversation(id: detail.thread.id, threads: [detail.thread])
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             IssueToolbar(thread: detail.thread)
             Divider().overlay(Theme.line)
             if let sg = model.appliedSuggestion[detail.thread.id] { AppliedSuggestionBar(threadId: detail.thread.id, suggestion: sg) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 6) {
-                        Text(detail.thread.number)
-                        Text("·")
-                        Text(model.accounts.first { $0.id == detail.thread.accountId }?.email ?? "")
-                        Text("·")
-                        Text("\(detail.messages.count) message\(detail.messages.count == 1 ? "" : "s")")
-                    }
-                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.text3)
-                    Text(detail.thread.subject.isEmpty ? "(no subject)" : detail.thread.subject)
-                        .font(.system(size: 19, weight: .semibold))
-                        .textSelection(.enabled)
-                    if let s = detail.thread.summary, !s.isEmpty { SummaryBox(summary: s, next: detail.thread.nextAction) }
-                    ForEach(Array(detail.messages.enumerated()), id: \.element.id) { i, m in
-                        if expanded.contains(m.id) {
-                            MessageCard(message: m) { expanded.remove(m.id) }
-                        } else {
-                            CollapsedMessage(message: m).onTapGesture { expanded.insert(m.id) }
-                        }
-                    }
-                }
-                .padding(.horizontal, 26).padding(.vertical, 18)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ConversationHeader(detail: detail, conversation: conversation)
+            Divider().overlay(Theme.line)
+            switch model.conversationTab {
+            case .messages:
+                chat
+                ReplyBar(target: model.replyTarget(detail).subject, threads: conversation.threads.count)
+            case .people:
+                ConversationPeopleTab(people: conversation.people)
+            case .docs:
+                ConversationDocsTab(entries: DocEntry.merged(attachments: conversation.docs, linked: model.linkedDocs(for: detail)))
+            case .links:
+                ConversationLinksTab(links: conversation.links)
+            case .photos:
+                ConversationPhotosTab(photos: conversation.photos)
             }
-            ReplyBar()
         }
         .foregroundStyle(Theme.text)
         .onAppear { expanded = Set(detail.messages.suffix(1).map(\.id)) }
         .onChange(of: detail.thread.id) { expanded = Set(detail.messages.suffix(1).map(\.id)) }
+    }
+
+    private var chat: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let s = detail.thread.summary, !s.isEmpty { SummaryBox(summary: s, next: detail.thread.nextAction) }
+                    ForEach(Timeline.items(detail.messages, threads: conversation.threads)) { item in
+                        switch item {
+                        case let .marker(threadId, subject, date, joined):
+                            ThreadMarker(threadId: threadId, subject: subject, date: date, joined: joined)
+                        case let .message(m):
+                            MessageBubble(message: m, expanded: expanded.contains(m.id)) {
+                                if expanded.contains(m.id) { expanded.remove(m.id) } else { expanded.insert(m.id) }
+                            }
+                            .id(m.id)
+                        }
+                    }
+                }
+                .padding(.horizontal, 22).padding(.vertical, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // A chat opens on its latest message.
+            .onAppear { if let last = detail.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
+            .onChange(of: detail.messages.count) { if let last = detail.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
+        }
+    }
+}
+
+/// Title, who is in it, and the tabs about this conversation.
+struct ConversationHeader: View {
+    @Environment(AppModel.self) private var model
+    let detail: ThreadDetail
+    let conversation: Conversation
+
+    var body: some View {
+        @Bindable var model = model
+        VStack(alignment: .leading, spacing: 8) {
+            Text(detail.thread.subject.isEmpty ? "(no subject)" : detail.thread.subject)
+                .font(.system(size: 17, weight: .semibold))
+                .textSelection(.enabled)
+                .lineLimit(2)
+            Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
+            HStack(spacing: 2) {
+                ForEach(ConversationTab.allCases, id: \.self) { tab in
+                    Button { model.conversationTab = tab } label: {
+                        HStack(spacing: 4) {
+                            Text(tab.rawValue)
+                            if let n = count(tab), n > 0 { Text("\(n)").foregroundStyle(Theme.text3) }
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(model.conversationTab == tab ? Theme.accent : Theme.text2)
+                        .padding(.horizontal, 9).frame(height: 24)
+                        .background(model.conversationTab == tab ? Theme.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 7))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var subtitle: String {
+        var parts = [conversation.people.prefix(3).map(\.display).joined(separator: ", ")].filter { !$0.isEmpty }
+        let n = conversation.threads.count
+        if n > 1 { parts.append("\(n) email threads") }
+        parts.append("\(detail.messages.count) message\(detail.messages.count == 1 ? "" : "s")")
+        if model.accounts.count > 1, let a = model.accounts.first(where: { $0.id == detail.thread.accountId }) { parts.append(a.email) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func count(_ tab: ConversationTab) -> Int? {
+        switch tab {
+        case .messages: nil
+        case .people: conversation.people.count
+        case .docs: conversation.docs.count
+        case .links: conversation.links.count
+        case .photos: conversation.photos.count
+        }
+    }
+}
+
+/// Where another Gmail thread starts in the chat. A thread added to the conversation
+/// can be taken out with one click.
+struct ThreadMarker: View {
+    @Environment(AppModel.self) private var model
+    let threadId: String
+    let subject: String
+    let date: Int64
+    let joined: Bool
+
+    var body: some View {
+        VStack(spacing: 5) {
+            if joined {
+                HStack(spacing: 8) {
+                    Text("Added from another email")
+                    Button("Not the same conversation") { model.splitThread(threadId) }
+                        .buttonStyle(.link)
+                        .help("Show this email on its own again")
+                }
+                .font(.system(size: 11.5)).foregroundStyle(Theme.text2)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(Theme.accentSoft.opacity(0.7), in: Capsule())
+            }
+            Text("\(Format.short(date)) · \(subject.isEmpty ? "(no subject)" : subject)")
+                .font(.system(size: 11)).foregroundStyle(Theme.text3).lineLimit(1)
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .overlay(Capsule().strokeBorder(Theme.line))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+    }
+}
+
+/// One message as a chat bubble: the user's on the right. Folded bubbles show a few
+/// lines; an open one is the full message with its Original / Optimized choice.
+struct MessageBubble: View {
+    let message: Message
+    let expanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if message.isFromMe { Spacer(minLength: 56) }
+            Group {
+                if expanded {
+                    MessageCard(message: message, tint: message.isFromMe ? Theme.accentSoft : .white, onFold: toggle)
+                } else {
+                    FoldedBubble(message: message).onTapGesture(perform: toggle)
+                }
+            }
+            if !message.isFromMe { Spacer(minLength: 56) }
+        }
+    }
+}
+
+struct FoldedBubble: View {
+    let message: Message
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            if !message.isFromMe { Avatar(name: message.from.display) }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 12, weight: .semibold))
+                    Text(Format.short(message.date)).font(.system(size: 11)).foregroundStyle(Theme.text3)
+                    if !message.attachments.isEmpty {
+                        Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(Theme.text3)
+                    }
+                }
+                Text((message.bodyClean ?? message.displayBody).trimmingCharacters(in: .whitespacesAndNewlines))
+                    .font(.system(size: 13)).foregroundStyle(Theme.text.opacity(0.88))
+                    .lineLimit(4)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(message.isFromMe ? Theme.accentSoft : Color.white, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color(hex: "#E3EDF6")))
+        .contentShape(Rectangle())
+        .help("Show the whole message")
+    }
+}
+
+/// Everyone in the conversation; a click opens them in People.
+struct ConversationPeopleTab: View {
+    @Environment(AppModel.self) private var model
+    let people: [ConversationPerson]
+
+    var body: some View {
+        TabList(empty: "No one else in this conversation", isEmpty: people.isEmpty) {
+            ForEach(people) { p in
+                Button { model.showPerson(p.email) } label: {
+                    HStack(spacing: 10) {
+                        Avatar(name: p.display)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(p.display).font(.system(size: 13, weight: .semibold))
+                            Text(p.role.isEmpty ? p.email : p.role).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
+                        }
+                        Spacer()
+                        if p.messages > 0 {
+                            Text("\(p.messages) message\(p.messages == 1 ? "" : "s")").font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+/// Attachments and files linked from elsewhere, newest first.
+struct ConversationDocsTab: View {
+    @Environment(AppModel.self) private var model
+    let entries: [DocEntry]
+
+    var body: some View {
+        TabList(empty: "No files in this conversation", isEmpty: entries.isEmpty) {
+            ForEach(entries) { e in
+                switch e {
+                case let .attachment(f):
+                    Button { model.openAttachment(f.attachment) } label: { FileRow(file: f) }.buttonStyle(.plain)
+                case let .linked(_, title, url, from, date):
+                    Button { if let u = URL(string: url) { NSWorkspace.shared.open(u) } } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "doc.text").foregroundStyle(Theme.accent).frame(width: 26)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(title).font(.system(size: 13)).lineLimit(1)
+                                Text("\(from) · \(Format.short(date))").font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 7)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+struct ConversationLinksTab: View {
+    @Environment(AppModel.self) private var model
+    let links: [SharedLink]
+
+    var body: some View {
+        TabList(empty: "No links in this conversation", isEmpty: links.isEmpty) {
+            ForEach(links) { l in
+                Button { model.openLink(l) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "link").foregroundStyle(Theme.accent)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(l.short).font(.system(size: 13)).lineLimit(1)
+                            Text("\(l.from) · \(Format.short(l.date))").font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(l.url)
+            }
+        }
+    }
+}
+
+struct ConversationPhotosTab: View {
+    @Environment(AppModel.self) private var model
+    let photos: [SharedFile]
+
+    var body: some View {
+        if photos.isEmpty {
+            TabList(empty: "No photos in this conversation", isEmpty: true) { EmptyView() }
+        } else {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
+                    ForEach(photos) { p in
+                        Button { model.openAttachment(p.attachment) } label: { PhotoThumb(file: p) }.buttonStyle(.plain)
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+}
+
+/// A photo from the mailbox's local copy, loaded when it scrolls into view.
+struct PhotoThumb: View {
+    @Environment(AppModel.self) private var model
+    let file: SharedFile
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10).fill(Theme.accentSoft.opacity(0.6))
+            if let image {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                Image(systemName: "photo").foregroundStyle(Theme.text3)
+            }
+        }
+        .frame(height: 120)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .help("\(file.filename) · \(file.from)")
+        .task(id: file.id) {
+            if let f = try? await model.client?.attachment(file.id) { image = NSImage(contentsOfFile: f.path) }
+        }
+    }
+}
+
+/// A tab's scrolling list, or a quiet line when it has nothing.
+struct TabList<Content: View>: View {
+    let empty: String
+    let isEmpty: Bool
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if isEmpty {
+            Text(empty).font(.system(size: 12.5)).foregroundStyle(Theme.text3)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView { LazyVStack(alignment: .leading, spacing: 0) { content() }.padding(.vertical, 8) }
+        }
     }
 }
 
@@ -237,7 +540,11 @@ struct CollapsedMessage: View {
 struct MessageCard: View {
     @Environment(AppModel.self) private var model
     let message: Message
+    /// The bubble's color: the user's own messages are tinted.
+    var tint: Color = .white
     var onFold: () -> Void = {}
+    /// The Gmail thread the message belongs to, for asking the AI about it.
+    private var threadId: String? { message.threadId ?? model.detail?.thread.id }
     /// This message's own Original / Optimized choice; other messages keep theirs.
     private var mode: ReadingMode { model.readingModes[message: message.id] }
     @State private var showQuoted = false
@@ -276,7 +583,7 @@ struct MessageCard: View {
                     .help(showDetails ? "Hide details" : "Show everyone on this email")
                 }
                 Spacer()
-                if mode == .optimized, message.bodyClean != nil, let threadId = model.detail?.thread.id {
+                if mode == .optimized, message.bodyClean != nil, let threadId {
                     // ✦ asks the AI again for this message only.
                     Button { model.aiClean(threadId, message: message.id) } label: {
                         if model.aiBusy.contains("clean:\(message.id)") { ProgressView().controlSize(.mini) } else { Image(systemName: "sparkles") }
@@ -310,7 +617,7 @@ struct MessageCard: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 14)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+        .background(tint, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: "#E3EDF6")))
         .task(id: "\(mode)-\(showQuoted)-\(loadImages)") {
             if mode == .original, message.hasHtml, let body = await model.html(for: message.id, full: showQuoted, images: loadImages) {
@@ -358,7 +665,7 @@ struct MessageCard: View {
     @ViewBuilder private var optimized: some View {
         if let clean = message.bodyClean {
             bodyText(Text(clean.isEmpty ? AttributedString("(empty message)") : CleanText.attributed(clean)))
-        } else if let threadId = model.detail?.thread.id {
+        } else if let threadId {
             HStack(spacing: 8) {
                 if model.aiBusy.contains("optimize:\(message.id)") {
                     ProgressView().controlSize(.small)
@@ -426,6 +733,9 @@ struct AttachmentChip: View {
 
 struct ReplyBar: View {
     @Environment(AppModel.self) private var model
+    /// Subject of the Gmail thread the reply goes to, named when there are several.
+    var target = ""
+    var threads = 1
 
     var body: some View {
         Button { model.startReply() } label: {
@@ -433,6 +743,9 @@ struct ReplyBar: View {
                 Text("Reply…").foregroundStyle(Theme.text3)
                 KeyHint("R")
                 Spacer()
+                if threads > 1, !target.isEmpty {
+                    Text("Replies to “\(target)”").font(.system(size: 11.5)).foregroundStyle(Theme.text3).lineLimit(1)
+                }
             }
             .padding(.horizontal, 14)
             .frame(height: 42)

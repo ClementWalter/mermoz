@@ -15,6 +15,19 @@ enum SidebarSelection: Hashable {
     case label(String, String)
     /// The directory built from signatures.
     case people
+    /// Automated senders and mailing lists, one conversation each.
+    case feeds
+    /// Files shared in every conversation.
+    case docs
+}
+
+/// Tabs of the reading pane, about the open conversation.
+enum ConversationTab: String, CaseIterable {
+    case messages = "Messages"
+    case people = "People"
+    case docs = "Docs"
+    case links = "Links"
+    case photos = "Photos"
 }
 
 enum LayoutMode: String, CaseIterable {
@@ -101,6 +114,11 @@ final class AppModel {
     private var anchorId: String?
     var detail: ThreadDetail?
     var compose: ComposeContext?
+    /// The reading pane's tab; back to Messages when another conversation opens.
+    var conversationTab: ConversationTab = .messages
+    /// Files shared anywhere (sidebar › Docs) and the filter typed above them.
+    var files: [SharedFile] = []
+    var fileQuery = ""
 
     var reviewDrafts: [Draft] = []
     var selectedDraftId: String?
@@ -154,8 +172,8 @@ final class AppModel {
         switch selection {
         case let .status(k): kind = .status(k)
         case .project, .label: kind = .mailbox
-        case .account: kind = .open
-        case .people: return nil
+        case .account, .feeds: kind = .open
+        case .people, .docs: return nil
         }
         return ViewStatuses.visible(kind, all: statuses.map(\.key), open: openStatuses.map(\.key), board: layout == .board)
     }
@@ -268,6 +286,10 @@ final class AppModel {
             await loadContacts()
             return
         }
+        if selection == .docs {
+            await loadFiles()
+            return
+        }
         if isReview && layout == .list {
             do {
                 reviewDrafts = try await client.drafts(state: "review")
@@ -288,8 +310,10 @@ final class AppModel {
         case let .project(id): project = id
         case let .account(id): accountId = id
         case let .label(acc, id): accountId = acc; labelId = id
-        case .people: return
+        case .feeds: break
+        case .people, .docs: return
         }
+        let kind: [String]? = selection == .feeds ? ["feed", "list"] : nil
         do {
             var fetched: [ThreadSummary] = []
             var total = 0
@@ -297,9 +321,9 @@ final class AppModel {
                 // One page per column, so every status shows its own newest threads and real size.
                 try await withThrowingTaskGroup(of: (Int, ThreadPage).self) { group in
                     for (i, k) in sts.enumerated() {
-                        group.addTask { [client, project, accountId, order, reverse] in
+                        group.addTask { [client, project, accountId, order, reverse, kind] in
                             (i, try await client.threads(status: [k], project: project, accountId: accountId, order: order,
-                                                         reverse: reverse, limit: 150))
+                                                         reverse: reverse, limit: 150, kind: kind))
                         }
                     }
                     var pages: [(Int, ThreadPage)] = []
@@ -313,9 +337,10 @@ final class AppModel {
                 // A refresh keeps the pages already scrolled through.
                 let limit = layout == .board ? 600 : max(300, threads.count)
                 pageQuery = PageQuery(statuses: statuses, project: project, accountId: accountId, labelId: labelId, order: order,
-                                      reverse: reverse, suggested: suggestionReview)
+                                      reverse: reverse, suggested: suggestionReview, kind: kind)
                 let page = try await client.threads(status: statuses, project: project, accountId: accountId, labelId: labelId,
-                                                    order: order, reverse: reverse, limit: limit, suggested: suggestionReview)
+                                                    order: order, reverse: reverse, limit: limit, suggested: suggestionReview,
+                                                    kind: kind)
                 fetched = page.threads
                 total = page.total
             }
@@ -346,6 +371,7 @@ final class AppModel {
         var order: String
         var reverse: Bool
         var suggested: SuggestionReview?
+        var kind: [String]?
     }
 
     private var pageQuery: PageQuery?
@@ -361,7 +387,7 @@ final class AppModel {
             do {
                 let page = try await client.threads(status: q.statuses, project: q.project, accountId: q.accountId, labelId: q.labelId,
                                                     order: q.order, reverse: q.reverse, limit: 300, offset: offset,
-                                                    suggested: q.suggested)
+                                                    suggested: q.suggested, kind: q.kind)
                 let known = Set(threads.map(\.id))
                 threads += page.threads.filter { !known.contains($0.id) }
                 totalThreads = page.total
@@ -573,7 +599,7 @@ final class AppModel {
             defer { aiBusy.remove("clean:\(messageId)") }
             do {
                 _ = try await client.aiClean(thread: threadId, message: messageId)
-                if selectedThreadId == threadId, let d = try? await client.thread(threadId) { detail = d }
+                await reloadDetail()
             } catch { report(error) }
         }
     }
@@ -591,7 +617,7 @@ final class AppModel {
             defer { aiBusy.remove("optimize:\(messageId)") }
             do {
                 _ = try await client.aiClean(thread: threadId, message: messageId, missingOnly: true)
-                if selectedThreadId == threadId, let d = try? await client.thread(threadId) { detail = d }
+                await reloadDetail()
             } catch { report(error) }
         }
     }
@@ -621,7 +647,7 @@ final class AppModel {
             focus = true
         } else if case .label = selection {
             statuses = []
-        } else if selection != .people, effectiveDisplay.grouping == .status {
+        } else if selection != .people, selection != .docs, effectiveDisplay.grouping == .status {
             // Grouped by status: a bar per status group or board column.
             statuses = viewStatuses ?? []
         }
@@ -688,6 +714,7 @@ final class AppModel {
             multiSelection = []
             anchorId = id
         }
+        if id != selectedThreadId { conversationTab = .messages }
         selectedThreadId = id
         compose = nil
         guard let id, let client else { detail = nil; return }
@@ -1095,8 +1122,10 @@ final class AppModel {
                 cc = (last.to + last.cc).map(\.email).filter { $0.lowercased() != myAccount && $0.lowercased() != last.from.email.lowercased() }
             }
         }
-        let subj = d.thread.subject.lowercased().hasPrefix("re:") ? d.thread.subject : "Re: \(d.thread.subject)"
-        compose = ComposeContext(threadId: d.thread.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj)
+        // In a conversation the reply goes to the Gmail thread of its latest message.
+        let target = replyTarget(d)
+        let subj = target.subject.lowercased().hasPrefix("re:") ? target.subject : "Re: \(target.subject)"
+        compose = ComposeContext(threadId: target.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj)
     }
 
     func startNew() {
@@ -1359,7 +1388,9 @@ final class AppModel {
         switch e {
         case let .threadsChanged(ids):
             scheduleRefresh()
-            if let sel = selectedThreadId, ids.contains(sel), compose == nil {
+            // Any thread of the open conversation changing (one joining, too) refreshes it.
+            let shown = Set([selectedThreadId].compactMap { $0 } + (detail?.conversation?.threads.map(\.id) ?? []))
+            if let sel = selectedThreadId, !shown.isDisjoint(with: ids), compose == nil {
                 Task {
                     if let d = try? await client?.thread(sel), selectedThreadId == sel, d != detail { detail = d }
                 }

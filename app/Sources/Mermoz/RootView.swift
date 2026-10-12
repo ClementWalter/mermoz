@@ -63,6 +63,10 @@ struct MainLayout: View {
                 PeopleListView().frame(width: listWidth)
                 ResizeHandle(width: $listWidth, range: 300...760)
                 ContactDetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.selection == .docs {
+                DocsListView().frame(width: listWidth)
+                ResizeHandle(width: $listWidth, range: 300...760)
+                DetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.layout == .board && !model.isReview {
                 BoardView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -154,7 +158,7 @@ struct EmptyDetail: View {
             Image(systemName: model.isReview ? "checkmark.seal" : "tray")
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(Theme.text3)
-            Text(model.isReview ? "Nothing waiting for your approval" : "Select a thread")
+            Text(model.isReview ? "Nothing waiting for your approval" : "Select a conversation")
                 .foregroundStyle(Theme.text3)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

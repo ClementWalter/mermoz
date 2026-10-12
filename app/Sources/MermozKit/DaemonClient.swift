@@ -101,21 +101,45 @@ public final class DaemonClient: Sendable {
         try await call("projects.create", Params().with("name", name).with("color", color))
     }
 
-    public func counts() async throws -> Counts { try await call("counts") }
+    /// Open conversations per status, project, account and priority (threads with `conversations: false`).
+    public func counts(conversations: Bool = true) async throws -> Counts {
+        try await call("counts", Params().with("conversations", conversations))
+    }
 
     public func threads(status: [String]? = nil, project: String? = nil, accountId: String? = nil,
                         labelId: String? = nil, priority: [Int]? = nil, order: String? = nil, reverse: Bool = false,
-                        limit: Int = 300, offset: Int = 0, suggested: SuggestionReview? = nil) async throws -> ThreadPage {
+                        limit: Int = 300, offset: Int = 0, suggested: SuggestionReview? = nil,
+                        conversations: Bool = true, kind: [String]? = nil) async throws -> ThreadPage {
+        // `conversations`: one row per conversation, the thread leading it.
         var p = Params()
             .with("status", status).with("project", project).with("account_id", accountId).with("label_id", labelId).with("order", order)
             .with("priority", priority).with("reverse", reverse).with("limit", limit).with("offset", offset)
+            .with("conversations", conversations).with("kind", kind)
         if let suggested {
             p = suggested.group.map { p.with("suggested", TargetParam(status: $0.status, projects: $0.projects)) } ?? p.with("suggested", true)
         }
         return try await call("threads.list", p)
     }
 
-    public func thread(_ id: String) async throws -> ThreadDetail { try await call("threads.get", Params().with("id", id)) }
+    /// A thread with every message of its conversation (or only its own with `conversation: false`).
+    public func thread(_ id: String, conversation: Bool = true) async throws -> ThreadDetail {
+        try await call("threads.get", Params().with("id", id).with("conversation", conversation))
+    }
+
+    /// Takes a thread out of its conversation for good.
+    public func splitConversation(_ threadId: String) async throws {
+        try await callVoid("conversations.split", Params().with("id", threadId))
+    }
+
+    /// Joins the conversations of these threads into one.
+    public func mergeConversations(_ threadIds: [String]) async throws {
+        try await callVoid("conversations.merge", Params().with("ids", threadIds))
+    }
+
+    /// Files shared anywhere, newest first.
+    public func files(query: String? = nil, limit: Int = 300) async throws -> [SharedFile] {
+        try await call("files.list", Params().with("query", query).with("limit", limit))
+    }
 
     public func updateThreads(ids: [String], status: String? = nil, priority: Int? = nil,
                               addProjects: [String] = [], removeProjects: [String] = [],

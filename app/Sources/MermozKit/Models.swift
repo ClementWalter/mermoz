@@ -46,6 +46,15 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable, Hashabl
     public var nextAction: String?
     /// The AI's pending prediction, until the thread is read or decided.
     public var suggestion: Suggestion?
+    /// The conversation this Gmail thread leads or belongs to; optional so older daemons decode.
+    public var conversationId: String?
+    /// "person", "feed" (automated sender) or "list" (mailing list).
+    public var conversationKind: String?
+    /// Gmail threads in the conversation, this one included.
+    public var conversationThreads: Int?
+
+    /// More than one Gmail thread reads as this one row.
+    public var groupsThreads: Bool { (conversationThreads ?? 1) > 1 }
 
     public init(id: String, number: String, accountId: String, subject: String, snippet: String,
                 participants: [String], lastFrom: String, lastDate: Int64, unread: Bool,
@@ -132,6 +141,8 @@ public struct Attachment: Codable, Sendable, Identifiable, Equatable, Hashable {
 
 public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var id: String
+    /// Its Gmail thread, inside a conversation of several.
+    public var threadId: String?
     public var from: Address
     public var to: [Address]
     public var cc: [Address]
@@ -161,6 +172,8 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
 public struct ThreadDetail: Codable, Sendable, Equatable {
     public var thread: ThreadSummary
     public var messages: [Message]
+    /// Present when the whole conversation was asked for.
+    public var conversation: Conversation?
 }
 
 public struct Status: Codable, Sendable, Identifiable, Equatable, Hashable {
@@ -283,6 +296,8 @@ public struct Counts: Codable, Sendable, Equatable {
     public var account: [String: Int]
     /// Open threads per priority ("0"…"4"); optional so older daemons still decode.
     public var priority: [String: Int]?
+    /// Open feeds and lists ("feed", "list"), counted per conversation.
+    public var kind: [String: Int]?
 
     public init(status: [String: Int] = [:], project: [String: Int] = [:], account: [String: Int] = [:]) {
         self.status = status; self.project = project; self.account = account

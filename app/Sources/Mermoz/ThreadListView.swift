@@ -101,7 +101,7 @@ extension ThreadListView {
 /// Single-key shortcuts, handled for the whole main window (see `install`) so they
 /// work wherever the focus is: list, board or a message being read.
 enum ThreadKeys {
-    static let characters = "jkeay#usmprct?/x"
+    static let characters = "jkeay#usmMprct?/x"
 
     /// Routes key presses to the shortcuts unless the user is typing in a field, a
     /// draft is open, or another window (Settings) is in front.
@@ -135,6 +135,7 @@ enum ThreadKeys {
         case "s": if model.selectedThreadId != nil { model.paletteMode = .status }
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
         case "m": if model.selectedThreadId != nil { model.paletteMode = .project }
+        case "M": model.mergeSelected()
         case "r": model.startReply()
         case "c": model.startNew()
         case "t": if model.selectedThreadId != nil { model.toggleChat() }
@@ -194,6 +195,11 @@ struct ListHeader: View {
             Text(model.accounts.first { $0.id == id }?.email ?? "Account").font(.system(size: 15, weight: .semibold)).lineLimit(1)
         case .people:
             Text("People").font(.system(size: 15, weight: .semibold))
+        case .feeds:
+            Image(systemName: "dot.radiowaves.up.forward").font(.system(size: 12)).foregroundStyle(Theme.text2)
+            Text("Feeds").font(.system(size: 15, weight: .semibold))
+        case .docs:
+            Text("Docs").font(.system(size: 15, weight: .semibold))
         case let .label(acc, id):
             Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(Theme.text2)
             Text(model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label")
@@ -378,6 +384,7 @@ struct ThreadRow: View {
                 if thread.hasAttachments {
                     Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(Theme.text3)
                 }
+                ThreadCountPill(thread: thread)
                 Spacer(minLength: 4)
                 if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg, threadId: thread.id) }
                 ProjectChips(names: thread.projects)
@@ -404,5 +411,31 @@ struct ThreadRow: View {
         .overlay(alignment: .top) { Rectangle().fill(Theme.line.opacity(0.8)).frame(height: 1) }
         .contentShape(Rectangle())
         .draggable(model.dragPayload(thread.id))
+        .contextMenu { ConversationMenu() }
+    }
+}
+
+/// "3 threads": this row reads several Gmail threads as one conversation.
+struct ThreadCountPill: View {
+    let thread: ThreadSummary
+
+    var body: some View {
+        if thread.groupsThreads, let n = thread.conversationThreads {
+            Text("\(n) threads")
+                .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.accent)
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Theme.accentSoft, in: Capsule())
+                .help("\(n) emails on the same subject with the same people, read as one conversation")
+        }
+    }
+}
+
+/// Right-click on a row or card: join the selected conversations.
+struct ConversationMenu: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Button("Join into one conversation (⇧M)") { model.mergeSelected() }
+            .disabled(model.targetIds.count < 2)
     }
 }

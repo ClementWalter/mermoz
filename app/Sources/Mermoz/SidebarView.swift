@@ -56,10 +56,19 @@ struct SidebarView: View {
                             StatusRow(status: s, count: model.key(s))
                         }
                     }
-                    section("Directory") {
+                    section("Browse") {
                         row(.people, count: nil) {
                             Image(systemName: "person.2").font(.system(size: 11)).foregroundStyle(Theme.text2)
                             Text("People")
+                        }
+                        row(.docs, count: nil) {
+                            Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(Theme.text2)
+                            Text("Docs")
+                        }
+                        // Automated senders and mailing lists, one conversation each.
+                        row(.feeds, count: model.feedCount) {
+                            Image(systemName: "dot.radiowaves.up.forward").font(.system(size: 11)).foregroundStyle(Theme.text2)
+                            Text("Feeds")
                         }
                     }
                     VStack(alignment: .leading, spacing: 1) {

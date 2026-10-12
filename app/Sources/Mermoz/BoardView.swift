@@ -72,6 +72,8 @@ struct BoardView: View {
         case let .project(id): model.project(id)?.name ?? "Project"
         case let .account(id): model.accounts.first { $0.id == id }?.email ?? "Account"
         case .people: "People"
+        case .feeds: "Feeds"
+        case .docs: "Docs"
         case let .label(acc, id): model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label"
         }
     }
@@ -164,6 +166,7 @@ struct BoardCard: View {
             HStack(spacing: 6) {
                 if thread.priority > 0 { PriorityIcon(priority: thread.priority) }
                 Text(thread.number).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.text3)
+                ThreadCountPill(thread: thread)
                 Spacer()
                 if let due = thread.due { Chip(small: true) { Text("Due \(Format.due(due))") } } else {
                     Text(Format.short(thread.lastDate)).font(.system(size: 11)).foregroundStyle(Theme.text3)
@@ -196,6 +199,7 @@ struct BoardCard: View {
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(selected ? Theme.accent : Color.white, lineWidth: selected ? 2 : 1))
         .contentShape(Rectangle())
         .draggable(model.dragPayload(thread.id))
+        .contextMenu { ConversationMenu() }
     }
 }
 
