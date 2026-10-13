@@ -117,3 +117,97 @@ func everyKindIsABubble(kind: String) {
 @Test func blindCopiesAreListedLast() {
     #expect(Recipients.line(to: [nora], cc: [], bcc: [sam]) == "to Nora Lind, bcc Sam Ito")
 }
+
+// ---- compact chat bubble vs. the whole email ----------------------------------------
+
+private let signed = "Here is the plan.\n\nNora Lind\nnora@agency.example\n+33 6 12 34 56 78"
+
+private func emailWithSignature() -> Message {
+    var m = message(text: signed, new: "Here is the plan.",
+                    attachments: [MermozKit.Attachment(id: "b", filename: "notes.pdf", mime: "application/pdf", size: 1)])
+    m.to = [nora]
+    m.cc = [sam]
+    return m
+}
+
+@Test func aCompactBubbleHasNoRecipients() {
+    #expect(BubbleParts.compact(emailWithSignature()).recipients == nil)
+}
+
+@Test func aCompactBubbleHasNoSignature() {
+    #expect(BubbleParts.compact(emailWithSignature()).text == "Here is the plan.")
+}
+
+@Test func aCompactBubbleHasNoControls() {
+    #expect(!BubbleParts.compact(emailWithSignature()).controls)
+}
+
+@Test func aCompactBubbleCountsItsFilesInsteadOfChips() {
+    #expect(BubbleParts.compact(emailWithSignature()).fileCount == 1)
+}
+
+@Test func aCompactBubbleShowsPastedImagesAsThumbnails() {
+    let m = message(attachments: [MermozKit.Attachment(id: "a", filename: "chart.png", mime: "image/png", size: 1, inline: true)])
+    #expect(BubbleParts.compact(m).thumbnails.count == 1)
+}
+
+@Test func theWholeEmailNamesItsRecipients() {
+    #expect(BubbleParts.expanded(emailWithSignature()).recipients == "to Nora Lind, cc Sam Ito")
+}
+
+@Test func theWholeEmailKeepsItsSignature() {
+    #expect(BubbleParts.expanded(emailWithSignature()).text == signed)
+}
+
+@Test func theWholeEmailHasItsControls() {
+    #expect(BubbleParts.expanded(emailWithSignature()).controls)
+}
+
+@Test func theWholeEmailListsItsFiles() {
+    #expect(BubbleParts.expanded(emailWithSignature()).chips.map(\.filename) == ["notes.pdf"])
+}
+
+@Test func shortMessagesAreNotClamped() {
+    #expect(!BubbleParts.clampsCompact("See you Monday."))
+}
+
+@Test func messagesOverEightLinesAreClamped() {
+    #expect(BubbleParts.clampsCompact((1...9).map { "line \($0)" }.joined(separator: "\n")))
+}
+
+@Test func quotedHistoryFoldsInTheWholeEmail() {
+    #expect(MessageBody.withoutQuotes("See you.\n\nOn Sun, Oct 4, Nora wrote:\n> Lunch?") == "See you.")
+}
+
+@Test func frenchQuoteOpenersFoldToo() {
+    #expect(MessageBody.withoutQuotes("D'accord.\nLe 4 oct. 2026, Nora a écrit :\n> Déjeuner ?") == "D'accord.")
+}
+
+// ---- runs ---------------------------------------------------------------------------
+
+private func said(_ id: String, by email: String, at minutes: Int64, mine: Bool = false) -> TimelineItem {
+    .message(Message(id: id, threadId: "t", from: Address(name: "", email: email), to: [], cc: [], bcc: nil,
+                     date: minutes * 60_000, subject: "", bodyText: "x", bodyNew: "x", hasQuoted: nil, bodyClean: nil,
+                     hasHtml: false, isFromMe: mine, attachments: [], auth: nil))
+}
+
+@Test func theFirstMessageStartsARun() {
+    #expect(ChatRuns.startsRun([said("a", by: "nora@x", at: 0)]) == ["a"])
+}
+
+@Test func consecutiveMessagesFromOnePersonShareARun() {
+    #expect(ChatRuns.startsRun([said("a", by: "nora@x", at: 0), said("b", by: "Nora@X", at: 5)]) == ["a"])
+}
+
+@Test func anotherSenderStartsARun() {
+    #expect(ChatRuns.startsRun([said("a", by: "nora@x", at: 0), said("b", by: "me@x", at: 5, mine: true)]) == ["a", "b"])
+}
+
+@Test func aLongPauseStartsARun() {
+    #expect(ChatRuns.startsRun([said("a", by: "nora@x", at: 0), said("b", by: "nora@x", at: 240)]) == ["a", "b"])
+}
+
+@Test func aThreadMarkerStartsARun() {
+    let items = [said("a", by: "nora@x", at: 0), .marker(threadId: "t2", subject: "s", date: 1, joined: true), said("b", by: "nora@x", at: 5)]
+    #expect(ChatRuns.startsRun(items) == ["a", "b"])
+}

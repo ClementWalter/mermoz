@@ -40,26 +40,49 @@ struct ThreadDetailView: View {
     }
 
     private var chat: some View {
-        ScrollViewReader { proxy in
+        let items = Timeline.items(detail.messages, threads: conversation.threads)
+        let runs = ChatRuns.startsRun(items)
+        return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     if let s = detail.thread.summary, !s.isEmpty { SummaryBox(summary: s, next: detail.thread.nextAction) }
-                    ForEach(Timeline.items(detail.messages, threads: conversation.threads)) { item in
+                    ForEach(items) { item in
                         switch item {
                         case let .marker(threadId, subject, date, joined):
                             ThreadMarker(threadId: threadId, subject: subject, date: date, joined: joined)
                         case let .message(m):
-                            MessageBubble(message: m, kind: conversation.kind).id(m.id)
+                            MessageRow(message: m, firstOfRun: runs.contains(m.id), kind: conversation.kind).id(m.id)
                         }
                     }
                 }
                 .padding(.horizontal, 22).padding(.vertical, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // ↑/↓ move between messages, Enter opens or folds the one in focus.
+            .focusable()
+            .focusEffectDisabled()
+            .onKeyPress(.upArrow) { moveFocus(-1, proxy); return .handled }
+            .onKeyPress(.downArrow) { moveFocus(1, proxy); return .handled }
+            .onKeyPress(.return) {
+                guard let id = model.focusedMessageId else { return .ignored }
+                model.toggleMessage(id)
+                return .handled
+            }
             // A chat opens on its latest message.
             .onAppear { if let last = detail.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
             .onChange(of: detail.messages.count) { if let last = detail.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
         }
+    }
+}
+
+extension ThreadDetailView {
+    private func moveFocus(_ delta: Int, _ proxy: ScrollViewProxy) {
+        let ids = detail.messages.sorted { $0.date < $1.date }.map(\.id)
+        guard !ids.isEmpty else { return }
+        let at = model.focusedMessageId.flatMap { ids.firstIndex(of: $0) } ?? (delta > 0 ? -1 : ids.count)
+        let next = ids[min(max(at + delta, 0), ids.count - 1)]
+        model.focusedMessageId = next
+        withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(next, anchor: .center) }
     }
 }
 
@@ -150,11 +173,100 @@ struct ThreadMarker: View {
     }
 }
 
-/// One message as a chat bubble, the user's on the right: the same layout for every
-/// conversation (feeds and lists only get a compact header). The email's own text shows
-/// at once and in full; its formatted version replaces it once loaded; the AI's clean
-/// version only when the reader picks Optimized for this message.
-struct MessageBubble: View {
+/// One message as the chat shows it by default: a light bubble with only what the
+/// message adds (quoted history and signature folded locally), the user's on the right.
+/// The name and time show on the first bubble of a run. A click opens the whole email.
+struct CompactBubble: View {
+    @Environment(AppModel.self) private var model
+    let message: Message
+    let firstOfRun: Bool
+    /// "Show more" pressed on a long message.
+    @State private var showAll = false
+
+    private var parts: BubbleParts { BubbleParts.compact(message) }
+    private var focused: Bool { model.focusedMessageId == message.id }
+
+    var body: some View {
+        let mine = message.isFromMe
+        HStack(alignment: .top, spacing: 8) {
+            if mine { Spacer(minLength: 72) }
+            if !mine {
+                if firstOfRun { Avatar(name: message.from.display, size: 26) } else { Color.clear.frame(width: 26, height: 1) }
+            }
+            VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
+                if firstOfRun {
+                    HStack(spacing: 6) {
+                        Text(mine ? "You" : message.from.display).font(.system(size: 12, weight: .semibold))
+                        Text(Format.short(message.date)).font(.system(size: 11)).foregroundStyle(Theme.text3)
+                    }
+                }
+                bubble
+            }
+            if !mine { Spacer(minLength: 72) }
+        }
+        .padding(.top, firstOfRun ? 6 : 0)
+    }
+
+    private var bubble: some View {
+        let clamped = !showAll && BubbleParts.clampsCompact(parts.text)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(parts.text.isEmpty ? "(empty message)" : parts.text)
+                .font(.system(size: 13.5)).lineSpacing(2.5)
+                .foregroundStyle(Theme.text.opacity(0.92))
+                .lineLimit(clamped ? 8 : nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .mask(alignment: .bottom) {
+                    // A long message fades out at its eighth line; "Show more" lets it all in.
+                    LinearGradient(colors: [.black, .black, clamped ? .clear : .black], startPoint: .top, endPoint: .bottom)
+                }
+            if clamped {
+                Button("Show more") { showAll = true }.buttonStyle(.link).font(.system(size: 12))
+            }
+            if !parts.thumbnails.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(parts.thumbnails) { a in
+                        PhotoThumb(file: SharedFile(id: a.id, filename: a.filename, mime: a.mime, size: a.size, messageId: message.id,
+                                                    threadId: message.threadId ?? "", from: "", date: message.date))
+                            .frame(width: 96)
+                    }
+                }
+            }
+            if parts.fileCount > 0 {
+                Label("\(parts.fileCount)", systemImage: "paperclip").font(.system(size: 11)).foregroundStyle(Theme.text3)
+                    .help("\(parts.fileCount) file\(parts.fileCount == 1 ? "" : "s") attached: open the email to see them")
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(message.isFromMe ? Theme.accentSoft : Color.white, in: RoundedRectangle(cornerRadius: 15))
+        .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(focused ? Theme.accent.opacity(0.6) : Color(hex: "#E3EDF6"),
+                                                                    lineWidth: focused ? 1.5 : 1))
+        .contentShape(Rectangle())
+        .onTapGesture { model.toggleMessage(message.id) }
+        .help("Open the whole email")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// A message at either level: its compact bubble, or the whole email once opened.
+struct MessageRow: View {
+    @Environment(AppModel.self) private var model
+    let message: Message
+    let firstOfRun: Bool
+    var kind: String?
+
+    var body: some View {
+        if model.expandedMessages.contains(message.id) {
+            ExpandedMessage(message: message, kind: kind)
+        } else {
+            CompactBubble(message: message, firstOfRun: firstOfRun)
+        }
+    }
+}
+
+/// The whole email, opened in place from its bubble: who it went to, the seal, the
+/// Original / Optimized choice, View source, the full body and its files. Clicking its
+/// header (or Esc) folds it back into the chat.
+struct ExpandedMessage: View {
     @Environment(AppModel.self) private var model
     let message: Message
     var kind: String?
@@ -192,6 +304,9 @@ struct MessageBubble: View {
     private var bubble: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
+                .contentShape(Rectangle())
+                .onTapGesture { model.toggleMessage(message.id) }
+                .help("Fold back into the chat")
             if !compact {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showDetails.toggle() } } label: {
                     HStack(spacing: 4) {
@@ -248,6 +363,7 @@ struct MessageBubble: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.text3)
             if !message.isFromMe { Avatar(name: message.from.display) }
             Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 13, weight: .semibold))
             SenderSeal(message: message)

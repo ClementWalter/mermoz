@@ -127,6 +127,10 @@ final class AppModel {
     var compose: ComposeContext?
     /// The reading pane's tab; back to Messages when another conversation opens.
     var conversationTab: ConversationTab = .messages
+    /// Messages opened as the whole email; the rest read as chat bubbles.
+    var expandedMessages: Set<String> = []
+    /// The message ↑/↓ moved to, which Enter opens.
+    var focusedMessageId: String?
     /// Files shared anywhere (sidebar › Docs) and the filter typed above them.
     var files: [SharedFile] = []
     var fileQuery = ""
@@ -648,7 +652,11 @@ final class AppModel {
             multiSelection = []
             anchorId = id
         }
-        if id != selectedThreadId { conversationTab = .messages }
+        if id != selectedThreadId {
+            conversationTab = .messages
+            expandedMessages = []
+            focusedMessageId = nil
+        }
         selectedThreadId = id
         compose = nil
         guard let id, let client else { detail = nil; return }
@@ -783,6 +791,9 @@ final class AppModel {
             feedLaterCard = nil
         } else if paletteMode != nil {
             paletteMode = nil
+        } else if !expandedMessages.isEmpty {
+            // Esc folds opened emails back into the chat first.
+            expandedMessages = []
         } else if chatOpen {
             chatOpen = false
         } else if !multiSelection.isEmpty {

@@ -21,8 +21,20 @@ public enum MessageBody {
     public static func shown(_ m: Message, mode: ReadingMode, htmlReady: Bool, showQuoted: Bool) -> BodyShown {
         if mode == .optimized, let clean = m.bodyClean { return .clean(clean) }
         if mode == .original, m.hasHtml, htmlReady { return .html }
-        let text = showQuoted ? m.bodyText : m.displayBody
+        // The whole email keeps its signature; quoted history stays behind its fold.
+        let text = showQuoted ? m.bodyText : withoutQuotes(m.bodyText)
         return .text(text.isEmpty ? m.bodyText : text)
+    }
+
+    /// The text above the quoted history: the first "> " line or "On … wrote:" opener.
+    public static func withoutQuotes(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let cut = lines.firstIndex { l in
+            let t = l.trimmingCharacters(in: .whitespaces).lowercased()
+            return t.hasPrefix(">") || ((t.hasPrefix("on ") || t.hasPrefix("le ")) && (t.hasSuffix("wrote:") || t.hasSuffix("écrit :") || t.hasSuffix("écrit:")))
+        }
+        guard let cut else { return text }
+        return lines[..<cut].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The text cut at a line or word boundary before `limit`, and whether it was cut.
@@ -66,5 +78,64 @@ public enum Recipients {
             .filter { !$0.1.isEmpty }
             .map { "\($0.0) \($0.1)" }
         return parts.isEmpty ? "to undisclosed recipients" : parts.joined(separator: ", ")
+    }
+}
+
+/// What a message shows at each of the two levels of the reading pane. Compact: a light
+/// chat bubble with only what the message adds. Expanded: the whole email.
+public struct BubbleParts: Equatable, Sendable {
+    /// "to Nora, cc Sam" (expanded only).
+    public var recipients: String?
+    public var text: String
+    /// The Original / Optimized choice and the "···" menu (expanded only).
+    public var controls: Bool
+    /// Files sent along, as chips (expanded only).
+    public var chips: [Attachment]
+    /// Pasted images, as small thumbnails (compact only; expanded renders them in place).
+    public var thumbnails: [Attachment]
+    /// Files sent along, counted on a compact bubble.
+    public var fileCount: Int
+
+    /// The message's new text only: quoted history and signature already folded locally.
+    public static func compact(_ m: Message) -> BubbleParts {
+        let new = m.displayBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = new.isEmpty ? m.bodyText.trimmingCharacters(in: .whitespacesAndNewlines) : new
+        return BubbleParts(recipients: nil, text: text, controls: false, chips: [],
+                           thumbnails: MessageBody.inlineImages(m), fileCount: MessageBody.chips(m).count)
+    }
+
+    /// The whole email: recipients, controls, its full text (signature included) and chips.
+    public static func expanded(_ m: Message) -> BubbleParts {
+        BubbleParts(recipients: Recipients.line(to: m.to, cc: m.cc, bcc: m.bcc ?? []), text: m.bodyText,
+                    controls: true, chips: MessageBody.chips(m), thumbnails: [], fileCount: 0)
+    }
+
+    /// Compact text longer than about eight lines starts clamped, behind "Show more".
+    public static func clampsCompact(_ text: String) -> Bool {
+        text.count > 700 || text.split(separator: "\n", omittingEmptySubsequences: false).count > 8
+    }
+}
+
+/// Consecutive messages from the same person read as one run, like a messaging app:
+/// only the first shows the name, avatar and time.
+public enum ChatRuns {
+    /// A new run starts after a thread marker, with another sender, or after 3 hours.
+    public static func startsRun(_ items: [TimelineItem]) -> Set<String> {
+        var out = Set<String>()
+        var previous: Message?
+        for item in items {
+            switch item {
+            case .marker:
+                previous = nil
+            case let .message(m):
+                let same = previous.map {
+                    $0.isFromMe == m.isFromMe && $0.from.email.lowercased() == m.from.email.lowercased()
+                        && m.date - $0.date < 3 * 3_600_000
+                } ?? false
+                if !same { out.insert(m.id) }
+                previous = m
+            }
+        }
+        return out
     }
 }

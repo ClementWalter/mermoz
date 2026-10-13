@@ -5,6 +5,12 @@ import Foundation
 import MermozKit
 
 extension AppModel {
+    /// Opens a message's whole email in place, or folds it back into its chat bubble.
+    func toggleMessage(_ id: String) {
+        focusedMessageId = id
+        if expandedMessages.contains(id) { expandedMessages.remove(id) } else { expandedMessages.insert(id) }
+    }
+
     /// Open feeds and mailing lists, for the sidebar.
     var feedCount: Int? {
         let n = (counts.kind ?? [:]).values.reduce(0, +)

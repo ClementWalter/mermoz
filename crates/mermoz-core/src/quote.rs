@@ -114,10 +114,71 @@ pub fn strip_signature(text: &str) -> (String, bool) {
             break;
         }
     }
+    if cut == lines.len() {
+        cut = contact_block(&lines).unwrap_or(cut);
+    }
     if cut == lines.len() || lines[..cut].iter().all(|l| l.trim().is_empty()) {
         return (text.trim_end().to_string(), false);
     }
     (lines[..cut].join("\n").trim_end().to_string(), true)
+}
+
+/// A line of contact details: an address, a phone number or a web page on its own.
+fn is_contact_line(line: &str) -> bool {
+    let t = line.trim();
+    let low = t.to_lowercase();
+    let words = t.split_whitespace().count();
+    let email = t.contains('@') && t.contains('.') && words <= 4;
+    let web = (low.starts_with("http") || low.starts_with("www.") || low.contains("linkedin.com/"))
+        && words <= 2;
+    // "Tél : +33 6 12 34 56 78", "M. 06.12.34.56.78": a label, then digits.
+    let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
+    let rest = t.trim_start_matches(|c: char| {
+        c.is_alphabetic() || c == '.' || c == ':' || c == ' ' || c == '(' || c == ')'
+    });
+    let phone = digits >= 8
+        && t.len() <= 40
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_digit() || " +.-()/".contains(c));
+    email || web || phone
+}
+
+/// A short line a signature carries: a name, a title, a company.
+fn is_name_line(line: &str) -> bool {
+    let t = line.trim();
+    let words = t.split_whitespace().count();
+    (1..=6).contains(&words)
+        && t.chars().count() <= 50
+        && !t.ends_with([',', '.', '!', '?', ':', ';'])
+}
+
+/// Where a trailing block of contact details starts ("Name / email / +33 phone"): at
+/// least two lines, one of them an address, phone or web page, after some content.
+fn contact_block(lines: &[&str]) -> Option<usize> {
+    let mut start = lines.len();
+    let (mut kept, mut strong) = (0, 0);
+    for i in (0..lines.len()).rev() {
+        let l = lines[i];
+        if l.trim().is_empty() {
+            if kept > 0 && i > 0 && lines[i - 1].trim().is_empty() {
+                break;
+            }
+            continue;
+        }
+        let contact = is_contact_line(l);
+        if !contact && !is_name_line(l) {
+            break;
+        }
+        strong += contact as usize;
+        kept += 1;
+        start = i;
+        if kept >= 6 {
+            break;
+        }
+    }
+    let content_before = lines[..start].iter().any(|l| !l.trim().is_empty());
+    (kept >= 2 && strong >= 1 && content_before).then_some(start)
 }
 
 /// What a reader needs: new content without quoted history, signature or boilerplate.
@@ -339,5 +400,37 @@ mod tests {
     #[rstest]
     fn html_without_marker_is_untouched() {
         assert!(!split_html("<p>Hello</p>").1);
+    }
+
+    #[rstest]
+    #[case::name_email_phone(
+        "Here is the plan.\n\nNora Lind\nnora@agency.example\n+33 6 12 34 56 78",
+        "Here is the plan."
+    )]
+    #[case::labelled_phone(
+        "See you then.\n\nNora Lind\nAgence Lind\nTél : +33 6 12 34 56 78",
+        "See you then."
+    )]
+    #[case::sign_off_kept(
+        "Thanks for the quick answer.\n\nMerci,\nNora Lind\nnora@agency.example",
+        "Thanks for the quick answer.\n\nMerci,"
+    )]
+    #[case::website(
+        "Draft attached.\n\nSam Ito\nStudio Ito\nwww.studio.example",
+        "Draft attached."
+    )]
+    #[case::dash_delimiter("Talk soon.\n--\nSam", "Talk soon.")]
+    fn trailing_contact_blocks_are_signatures(#[case] text: &str, #[case] want: &str) {
+        assert_eq!(strip_signature(text).0, want);
+    }
+
+    #[rstest]
+    #[case::bare_name_sign_off("Let's talk tomorrow.\nNora")]
+    #[case::one_link("Here is the booking page:\nhttps://notary.example/booking")]
+    #[case::only_a_phone("+33 6 12 34 56 78")]
+    #[case::number_in_a_sentence("Call me at +33 6 12 34 56 78 after five.")]
+    #[case::short_list("Agenda:\nBudget\nHiring\nOffice move")]
+    fn content_is_not_mistaken_for_a_signature(#[case] text: &str) {
+        assert_eq!(strip_signature(text).0, text);
     }
 }
