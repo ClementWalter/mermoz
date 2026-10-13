@@ -74,6 +74,17 @@ private func message(body: String, new: String? = nil) -> Message {
     #expect(cache.sizeHits == 1)
 }
 
+@Test func aShownBubbleReusesItsLayout() {
+    let cache = BubbleTextCache()
+    let first = cache.layout(id: "m1", text: "See you at nine.", style: style, width: 300, maxLines: 0)
+    #expect(cache.layout(id: "m1", text: "See you at nine.", style: style, width: 300, maxLines: 0) === first)
+}
+
+@Test func aCachedLayoutIsReadyToDraw() {
+    let laid = BubbleTextCache().layout(id: "m1", text: "See you at nine.", style: style, width: 300, maxLines: 0)
+    #expect(laid.manager.numberOfGlyphs == 16)
+}
+
 @Test func linksInBubbleTextCanBeClicked() {
     let s = BubbleTextCache().attributed(id: "m1", text: "Plans at https://example.com/plans today", style: style)
     #expect(s.attribute(.link, at: 12, effectiveRange: nil) != nil)
