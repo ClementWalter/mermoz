@@ -11,12 +11,6 @@ extension AppModel {
         if expandedMessages.contains(id) { expandedMessages.remove(id) } else { expandedMessages.insert(id) }
     }
 
-    /// Open feeds and mailing lists, for the sidebar.
-    var feedCount: Int? {
-        let n = (counts.kind ?? [:]).values.reduce(0, +)
-        return n > 0 ? n : nil
-    }
-
     /// Fetches the open conversation again (after an AI rewrite, a split, new mail).
     func reloadDetail() async {
         guard let id = selectedThreadId, let client else { return }
@@ -40,7 +34,7 @@ extension AppModel {
                 toast = "Moved to its own conversation"
                 await reloadDetail()
                 await loadList()
-                await refreshCounts()
+                refreshCounts()
             } catch { report(error) }
         }
     }
@@ -58,7 +52,7 @@ extension AppModel {
                 toast = "Joined into one conversation"
                 multiSelection = []
                 await loadList()
-                await refreshCounts()
+                refreshCounts()
                 await reloadDetail()
             } catch { report(error) }
         }

@@ -159,6 +159,29 @@ fn main() {
         p95: pct(&mut counts, 0.95),
         budget: Duration::from_millis(16),
     });
+    // Counts right after a write that moves one, as when reading an email: a full recount.
+    let mut recount: Vec<Duration> = (0..50)
+        .map(|k| {
+            store
+                .update_threads(
+                    &ids[..1],
+                    &mermoz_core::store::ThreadPatch {
+                        // Alternates, so every write really moves a count.
+                        priority: Some(if k % 2 == 0 { 3 } else { 0 }),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let t = Instant::now();
+            store.counts(true).unwrap();
+            t.elapsed()
+        })
+        .collect();
+    checks.push(Check {
+        name: "sidebar counts after a change",
+        p95: pct(&mut recount, 0.95),
+        budget: Duration::from_millis(16),
+    });
     // A busy feed: 150 open threads on top of the mailbox's own open ones.
     store
         .update_threads(
@@ -203,7 +226,7 @@ fn main() {
         let ok = c.p95 <= c.budget;
         failed |= !ok;
         eprintln_info(&format!(
-            "{} {:<24} p95 {:>8.2} ms  (budget {} ms)",
+            "{} {:<29} p95 {:>8.2} ms  (budget {} ms)",
             if ok { "ok  " } else { "MISS" },
             c.name,
             c.p95.as_secs_f64() * 1000.0,

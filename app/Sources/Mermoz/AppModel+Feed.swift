@@ -200,7 +200,7 @@ extension AppModel {
         Task {
             do {
                 try await client.updateThreads(ids: ids, status: status)
-                await refreshCounts()
+                refreshCounts()
             } catch {
                 report(error)
                 await loadFeed()

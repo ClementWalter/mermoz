@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 mod conversations;
+mod counts;
 pub use conversations::{GroupingPlan, PairCandidate};
 
 mod feed;
@@ -105,6 +106,7 @@ const MIGRATIONS: &[&str] = &[
     CLEAR_FLOOD,
     FEED,
     INLINE_PARTS,
+    counts::MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
@@ -907,6 +909,7 @@ pub struct Store {
     /// Reads for the background router, so its history scans never queue the UI's reads.
     bg: Mutex<Connection>,
     blobs: PathBuf,
+    counts_cache: Mutex<counts::CountsCache>,
 }
 
 const THREAD_COLS: &str = "t.id, t.number, t.account_id, t.subject, t.snippet, t.participants, t.last_from, t.last_date, \
@@ -1112,6 +1115,7 @@ impl Store {
             r: Mutex::new(reader()?),
             bg: Mutex::new(reader()?),
             blobs: blobs.to_path_buf(),
+            counts_cache: Default::default(),
         };
         store.seed()?;
         store.backfill_snippets()?;
@@ -2526,62 +2530,6 @@ impl Store {
         )
         .optional()?
         .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))
-    }
-
-    /// Open threads per status, project, account and priority; with `conversations`,
-    /// open conversations instead (one per lead thread), plus feeds and lists by kind.
-    pub fn counts(&self, conversations: bool) -> Result<serde_json::Value> {
-        let r = self.r.lock().unwrap();
-        let open = if conversations {
-            "t.conv_lead = 1 AND t.status IN (SELECT key FROM statuses WHERE archived = 0)"
-        } else {
-            "t.status IN (SELECT key FROM statuses WHERE archived = 0)"
-        };
-        let mut status = serde_json::Map::new();
-        let mut st = r.prepare_cached(&format!(
-            "SELECT t.status, COUNT(*) FROM threads t WHERE {open} GROUP BY t.status"
-        ))?;
-        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-            let (k, n) = row?;
-            status.insert(k, n.into());
-        }
-        let mut project = serde_json::Map::new();
-        let mut st = r.prepare_cached(&format!(
-            "SELECT tp.name, COUNT(*) FROM thread_projects tp JOIN threads t ON t.id = tp.thread_id WHERE {open} GROUP BY tp.name"
-        ))?;
-        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-            let (k, n) = row?;
-            project.insert(k, n.into());
-        }
-        let mut account = serde_json::Map::new();
-        let mut st = r.prepare_cached(&format!(
-            "SELECT t.account_id, COUNT(*) FROM threads t WHERE {open} GROUP BY t.account_id"
-        ))?;
-        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-            let (k, n) = row?;
-            account.insert(k, n.into());
-        }
-        let mut priority = serde_json::Map::new();
-        let mut st = r.prepare_cached(&format!(
-            "SELECT t.priority, COUNT(*) FROM threads t WHERE {open} GROUP BY t.priority"
-        ))?;
-        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
-            let (k, n) = row?;
-            priority.insert(k.to_string(), n.into());
-        }
-        let mut kind = serde_json::Map::new();
-        if conversations {
-            let mut st = r.prepare_cached(&format!(
-                "SELECT t.conv_kind, COUNT(*) FROM threads t WHERE {open} AND t.conv_kind != 'person' GROUP BY t.conv_kind"
-            ))?;
-            for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-                let (k, n) = row?;
-                kind.insert(k, n.into());
-            }
-        }
-        Ok(
-            serde_json::json!({ "status": status, "project": project, "account": account, "priority": priority, "kind": kind }),
-        )
     }
 
     /// Full-text search, most recent matching threads first. FTS rowids are

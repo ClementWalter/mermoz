@@ -1,4 +1,7 @@
 /// Glass sidebar: search/ask, workflow statuses, projects (Gmail labels), accounts, sync state.
+///
+/// The sidebar's body reads no counts, selection or sync progress: each badge observes its
+/// own count cell and each row its own selection, so reading an email redraws one badge.
 import MermozKit
 import SwiftUI
 
@@ -11,19 +14,11 @@ struct SidebarView: View {
     @State private var deleting: Project?
     @AppStorage("sidebar.projectsOpen") private var projectsOpen = true
 
-    private var projectNames: Set<String> { Set(model.projects.map(\.name)) }
-    private var projectParents: Set<String> { ProjectTree.parents(among: model.projects.map(\.name)) }
-
     /// Folded projects, kept across launches (JSON array of names; names may hold commas).
     @AppStorage("sidebar.collapsedProjects") private var collapsedJSON = "[]"
 
     private var collapsed: Set<String> {
         Set((try? JSONDecoder().decode([String].self, from: Data(collapsedJSON.utf8))) ?? [])
-    }
-
-    private var visibleProjects: [Project] {
-        let shown = Set(ProjectTree.visible(model.projects.map(\.name), collapsed: collapsed))
-        return model.projects.filter { shown.contains($0.name) }
     }
 
     private func toggleFold(_ name: String) {
@@ -33,6 +28,13 @@ struct SidebarView: View {
     }
 
     var body: some View {
+        // Computed once per body, not once per project row.
+        let names = model.projects.map(\.name)
+        let projectNames = Set(names)
+        let projectParents = ProjectTree.parents(among: names)
+        let collapsed = collapsed
+        let shown = Set(ProjectTree.visible(names, collapsed: collapsed))
+        let visibleProjects = model.projects.filter { shown.contains($0.name) }
         VStack(alignment: .leading, spacing: 14) {
             Button { model.paletteMode = .search } label: {
                 HStack(spacing: 8) {
@@ -53,30 +55,17 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     section("Workflow") {
                         ForEach(model.statuses) { s in
-                            StatusRow(status: s, count: model.key(s))
+                            StatusRow(status: s, count: closedStatusKeys.contains(s.key) ? nil
+                                : model.countCells.cell(s.key == "review" ? .reviewBadge : .status(s.key)))
                         }
                     }
                     section("Browse") {
-                        // One email at a time with the AI's suggestion.
-                        if model.sortInfo.configured || model.sortInfo.toSort > 0 {
-                            row(.sort, count: model.sortInfo.toSort > 0 ? model.sortInfo.toSort : nil) {
-                                Image(systemName: "sparkles").font(.system(size: 11)).foregroundStyle(Theme.accent)
-                                Text("Sort")
-                            }
-                        }
-                        row(.people, count: nil) {
-                            Image(systemName: "person.2").font(.system(size: 11)).foregroundStyle(Theme.text2)
-                            Text("People")
-                        }
-                        row(.docs, count: nil) {
-                            Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(Theme.text2)
-                            Text("Docs")
-                        }
+                        SortSidebarRow()
+                        SidebarRow(sel: .people, title: "People", icon: .symbol("person.2", Theme.text2))
+                        SidebarRow(sel: .docs, title: "Docs", icon: .symbol("doc.on.doc", Theme.text2))
                         // Automated senders and mailing lists, one conversation each.
-                        row(.feeds, count: model.feedCount) {
-                            Image(systemName: "dot.radiowaves.up.forward").font(.system(size: 11)).foregroundStyle(Theme.text2)
-                            Text("Feeds")
-                        }
+                        SidebarRow(sel: .feeds, title: "Feeds", icon: .symbol("dot.radiowaves.up.forward", Theme.text2),
+                                   count: model.countCells.cell(.feeds))
                     }
                     VStack(alignment: .leading, spacing: 1) {
                         // Projects are the user's Gmail labels, nested with "/".
@@ -114,10 +103,8 @@ struct SidebarView: View {
                                         } else {
                                             Color.clear.frame(width: 14, height: 28)
                                         }
-                                        row(.project(p.id), count: model.counts.project[p.id]) {
-                                            RoundedRectangle(cornerRadius: 3).fill(Color(hex: p.color)).frame(width: 9, height: 9)
-                                            Text(place.label).lineLimit(1)
-                                        }
+                                        SidebarRow(sel: .project(p.id), title: place.label, icon: .square(Color(hex: p.color)),
+                                                   count: model.countCells.cell(.project(p.id)))
                                     }
                                     .padding(.leading, CGFloat(place.depth) * 14)
                                     .modifier(DropIntoProject(project: p.id))
@@ -155,25 +142,15 @@ struct SidebarView: View {
                     }
                     section("Accounts") {
                         ForEach(model.accounts) { a in
-                            row(.account(a.id), count: model.counts.account[a.id]) {
-                                Circle().fill(Theme.accountColor(a.id, among: model.accounts)).frame(width: 8, height: 8)
-                                Text(a.email).lineLimit(1).truncationMode(.middle)
-                            }
+                            SidebarRow(sel: .account(a.id), title: a.email, icon: .dot(Theme.accountColor(a.id, among: model.accounts)),
+                                       count: model.countCells.cell(.account(a.id)), middle: true)
                         }
                     }
                 }
             }
             .scrollIndicators(.never)
 
-            HStack(spacing: 7) {
-                Circle().fill(model.syncLine.hasPrefix("Synced") ? Theme.ok : Theme.accent).frame(width: 7, height: 7)
-                Text(model.syncLine).lineLimit(1)
-            }
-            .font(.system(size: 11.5))
-            .foregroundStyle(Theme.text2)
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            SyncFooter()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 12)
@@ -198,43 +175,14 @@ struct SidebarView: View {
             content()
         }
     }
-
-    private func row<L: View>(_ sel: SidebarSelection, count: Int?, @ViewBuilder label: () -> L) -> some View {
-        let on = model.selection == sel
-        // The sidebar's Sort covers every open column, whatever column was sorted last.
-        return Button { if sel == .sort { model.openSort() } else { model.select(sel) } } label: {
-            HStack(spacing: 9) {
-                label()
-                Spacer(minLength: 4)
-                if let count, count > 0 {
-                    Text(count.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
-                }
-            }
-            .font(.system(size: 13, weight: on ? .semibold : .regular))
-            .foregroundStyle(Theme.text)
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .background(on ? Theme.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-extension AppModel {
-    /// Sidebar badge: review counts drafts awaiting approval, others count threads.
-    func key(_ s: Status) -> Int? {
-        if s.key == "review" { return max(reviewDrafts.count, counts.status["review"] ?? 0) }
-        if closedStatusKeys.contains(s.key) { return nil }
-        return counts.status[s.key]
-    }
 }
 
 /// A status in the sidebar: click to open, drag to reorder, drop thread cards on it.
 struct StatusRow: View {
     @Environment(AppModel.self) private var model
     let status: Status
-    let count: Int?
+    /// Nil for closed statuses, which show no badge.
+    let count: CountCell?
     @State private var targeted = false
 
     var body: some View {
@@ -243,9 +191,7 @@ struct StatusRow: View {
             StatusIcon(key: status.key, color: Color(hex: status.color))
             Text(status.name)
             Spacer(minLength: 4)
-            if let count, count > 0 {
-                Text(count.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
-            }
+            if let count { CountBadge(cell: count) }
         }
         .font(.system(size: 13, weight: on ? .semibold : .regular))
         .foregroundStyle(Theme.text)
@@ -305,5 +251,112 @@ struct KeyHint: View {
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(Color.white.opacity(0.85), in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.line))
+    }
+}
+
+/// A count on a sidebar row; it observes only its own cell and never animates.
+struct CountBadge: View {
+    let cell: CountCell
+
+    var body: some View {
+        if let n = cell.value, n > 0 {
+            Text(n.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
+                .contentTransition(.identity)
+                .transaction { $0.animation = nil }
+        }
+    }
+}
+
+/// What sits before a sidebar row's title.
+enum SidebarIcon: Equatable {
+    case symbol(String, Color)
+    case dot(Color)
+    case square(Color)
+}
+
+/// A plain sidebar row. Inputs are plain values (no closures) so SwiftUI can tell an
+/// unchanged row apart and skip it; the highlight reads the selection here, not in the list.
+struct SidebarRow: View, Equatable {
+    @Environment(AppModel.self) private var model
+    let sel: SidebarSelection
+    let title: String
+    let icon: SidebarIcon
+    var count: CountCell?
+    /// Emails keep both ends readable; project names keep their start.
+    var middle = false
+
+    nonisolated static func == (a: SidebarRow, b: SidebarRow) -> Bool {
+        a.sel == b.sel && a.title == b.title && a.icon == b.icon && a.count === b.count && a.middle == b.middle
+    }
+
+    var body: some View {
+        let on = model.selection == sel
+        Button { model.select(sel) } label: {
+            HStack(spacing: 9) {
+                switch icon {
+                case let .symbol(name, color): Image(systemName: name).font(.system(size: 11)).foregroundStyle(color)
+                case let .dot(color): Circle().fill(color).frame(width: 8, height: 8)
+                case let .square(color): RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 9, height: 9)
+                }
+                Text(title).lineLimit(1).truncationMode(middle ? .middle : .tail)
+                Spacer(minLength: 4)
+                if let count { CountBadge(cell: count) }
+            }
+            .font(.system(size: 13, weight: on ? .semibold : .regular))
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(on ? Theme.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Browse › Sort, shown once the AI sorts or mail waits; observes only the Sort figures.
+struct SortSidebarRow: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let info = model.sortInfo
+        let on = model.selection == .sort
+        // One email at a time with the AI's suggestion, across every open column.
+        if info.configured || info.toSort > 0 {
+            Button { model.openSort() } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "sparkles").font(.system(size: 11)).foregroundStyle(Theme.accent)
+                    Text("Sort")
+                    Spacer(minLength: 4)
+                    if info.toSort > 0 {
+                        Text(info.toSort.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
+                    }
+                }
+                .font(.system(size: 13, weight: on ? .semibold : .regular))
+                .foregroundStyle(Theme.text)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(on ? Theme.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+/// Sync state at the foot of the sidebar; download progress redraws only this line.
+struct SyncFooter: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let line = model.syncLine
+        HStack(spacing: 7) {
+            Circle().fill(line.hasPrefix("Synced") ? Theme.ok : Theme.accent).frame(width: 7, height: 7)
+            Text(line).lineLimit(1)
+        }
+        .font(.system(size: 11.5))
+        .foregroundStyle(Theme.text2)
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
     }
 }

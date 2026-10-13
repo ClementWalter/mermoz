@@ -88,7 +88,10 @@ final class AppModel {
     var appliedSuggestion: [String: Suggestion] = [:]
     var agentStates: [String: AgentState] = [:]
     var login = LoginState(running: false, error: nil)
-    var counts = Counts()
+    /// One observable cell per badge, so a moved count redraws its badge alone.
+    @ObservationIgnored let countCells = CountCells()
+    /// Count refreshes merge: one in flight, asks within 100 ms folded into one fetch.
+    @ObservationIgnored lazy var countsRefresh = RefreshCoalescer { [weak self] in await self?.fetchCounts() }
     var agentsMaySend = false
     var feedback: [FeedbackEntry] = []
     var syncProgress: [String: (synced: Int, total: Int)] = [:]
@@ -283,26 +286,36 @@ final class AppModel {
         async let l = client.labels()
         async let st = client.settings()
         do {
-            accounts = try await a
-            statuses = try await s.sorted { $0.order < $1.order }
-            projects = try await p
-            labels = try await l
+            // Assigning an equal value still invalidates every view reading it.
+            let (na, ns, np, nl) = try await (a, s.sorted { $0.order < $1.order }, p, l)
+            if na != accounts { accounts = na }
+            if ns != statuses { statuses = ns }
+            if np != projects { projects = np }
+            if nl != labels { labels = nl }
             agentsMaySend = try await st.agentsMaySend
         } catch {
             report(error)
         }
-        await refreshCounts()
+        refreshCounts()
         await loadList()
         await refreshDriveStatus()
     }
 
-    func refreshCounts() async {
+    /// Asks for fresh sidebar counts; opens, events and edits in a burst share one fetch.
+    func refreshCounts() { countsRefresh.request() }
+
+    private func fetchCounts() async {
         guard let client else { return }
         do {
-            let c = try await client.counts()
-            if c != counts { counts = c }
-            let r = try await client.drafts(state: "review")
-            if r != reviewDrafts { reviewDrafts = r }
+            async let c = client.counts()
+            async let r = client.drafts(state: "review")
+            let (fresh, review) = try await (c, r)
+            if review != reviewDrafts { reviewDrafts = review }
+            let feeds = (fresh.kind ?? [:]).values.reduce(0, +)
+            countCells.apply(fresh, extra: [
+                .reviewBadge: max(review.count, fresh.status["review"] ?? 0),
+                .feeds: feeds > 0 ? feeds : nil,
+            ])
         } catch { report(error) }
     }
 
@@ -559,10 +572,10 @@ final class AppModel {
         let allOpen: Bool = { if case .status = selection { return layout == .board } else { return false } }()
         guard allOpen else { return g.all.count }
         switch g.field {
-        case .status: return counts.status[g.key] ?? g.all.count
-        case .priority: return counts.priority?[g.key] ?? g.all.count
-        case .project: return counts.project[g.key] ?? g.all.count
-        case .account: return counts.account[g.key] ?? g.all.count
+        case .status: return countCells.value(.status(g.key)) ?? g.all.count
+        case .priority: return countCells.value(.priority(g.key)) ?? g.all.count
+        case .project: return countCells.value(.project(g.key)) ?? g.all.count
+        case .account: return countCells.value(.account(g.key)) ?? g.all.count
         case .none: return g.all.count
         }
     }
@@ -682,7 +695,7 @@ final class AppModel {
                     } else {
                         setLocal(id) { $0.unread = false }
                     }
-                    await refreshCounts()
+                    refreshCounts()
                 }
             } catch { report(error) }
         }
@@ -696,7 +709,7 @@ final class AppModel {
             do {
                 try await client.acceptSuggestions(ids)
                 toast = ids.count == 1 ? "Done as suggested" : "Accepted \(ids.count) suggestions"
-                await refreshCounts()
+                refreshCounts()
                 await loadList()
             } catch { report(error) }
         }
@@ -873,7 +886,7 @@ final class AppModel {
             do {
                 try await client.updateThreads(ids: ids, status: status, priority: priority,
                                                addProjects: addProjects, removeProjects: removeProjects, due: due)
-                await refreshCounts()
+                refreshCounts()
             } catch {
                 threads = before
                 totalThreads = beforeTotal
@@ -894,7 +907,7 @@ final class AppModel {
         Task {
             do {
                 for id in ids { try await client.markRead(id, read: false) }
-                await refreshCounts()
+                refreshCounts()
             } catch { report(error) }
         }
     }
@@ -956,7 +969,7 @@ final class AppModel {
                                                    addProjects: plan.addProjects, removeProjects: plan.removeProjects, due: due)
                 }
                 toast = "Undid \(entry.label)"
-                await refreshCounts()
+                refreshCounts()
                 await loadList()
                 if let id = selectedThreadId, entry.before.contains(where: { $0.id == id }) { open(id, record: false) }
             } catch { report(error) }
@@ -1019,7 +1032,7 @@ final class AppModel {
                 try await client.deleteProject(id)
                 projects.removeAll { $0.id == id }
                 if selection == .project(id) { select(.status("unread")) } else { await loadList() }
-                await refreshCounts()
+                refreshCounts()
             } catch { report(error) }
         }
     }
@@ -1123,7 +1136,7 @@ final class AppModel {
             compose = nil
             toast = "Sent"
             if let tid = c.threadId, selectedThreadId == tid { open(tid) }
-            await refreshCounts()
+            refreshCounts()
             return true
         } catch {
             report(error)
@@ -1159,7 +1172,7 @@ final class AppModel {
     private func afterReview(_ d: Draft) {
         reviewDrafts.removeAll { $0.id == d.id }
         selectedDraftId = reviewDrafts.first?.id
-        Task { await refreshCounts() }
+        refreshCounts()
     }
 
     // MARK: directory
@@ -1383,7 +1396,7 @@ final class AppModel {
             if selection == .people { Task { await loadContacts() } }
             if peopleJob.running { Task { if let j = try? await client?.peopleStatus() { peopleJob = j } } }
         case .draftsChanged:
-            Task { await refreshCounts(); if isReview { await loadList() } }
+            Task { refreshCounts(); if isReview { await loadList() } }
         case .suggestionsChanged:
             Task { await refreshSortInfo() }
         case .feedChanged:
@@ -1405,7 +1418,7 @@ final class AppModel {
             // Initial sync emits a burst every few seconds; refresh at most once a second.
             try? await Task.sleep(for: .milliseconds(1000))
             guard !Task.isCancelled else { return }
-            await refreshCounts()
+            refreshCounts()
             // New labels appear as the import reaches older mail.
             if let l = try? await client?.labels(), l != labels { labels = l }
             await loadList()
