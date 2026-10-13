@@ -7,8 +7,9 @@ struct MermozApp: App {
     @State private var model = AppModel()
 
     init() {
-        // SwiftPM executables launch as background tools unless promoted to a regular app.
-        NSApplication.shared.setActivationPolicy(.regular)
+        // SwiftPM executables launch as background tools unless promoted to a regular app;
+        // the perf harness stays a background app so it never takes the user's focus.
+        NSApplication.shared.setActivationPolicy(PerfHarness.enabled ? .accessory : .regular)
     }
 
     var body: some Scene {
@@ -17,8 +18,11 @@ struct MermozApp: App {
                 .environment(model)
                 .preferredColorScheme(.light)
                 .frame(minWidth: 980, minHeight: 620)
-                .task { await model.start() }
-                .onAppear { NSApplication.shared.activate() }
+                .task {
+                    await model.start()
+                    await PerfHarness.run(model)
+                }
+                .onAppear { if !PerfHarness.enabled { NSApplication.shared.activate() } }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -57,7 +61,7 @@ struct MermozApp: App {
                 // Disabled while writing or searching, so ⌘⌫ keeps deleting text in fields.
                 Button("Delete") { model.moveSelected(to: "deleted") }
                     .keyboardShortcut(.delete, modifiers: [.command])
-                    .disabled(model.selectedThreadId == nil || model.compose != nil || model.paletteMode != nil)
+                    .disabled(!model.hasSelection || model.compose != nil || model.paletteMode != nil)
                 Divider()
                 Button("Keyboard Shortcuts") { model.showShortcuts.toggle() }.keyboardShortcut("/")
                 Divider()

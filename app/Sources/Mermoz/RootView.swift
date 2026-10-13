@@ -75,14 +75,14 @@ struct MainLayout: View {
             } else if model.showsFeed {
                 FeedView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .inspector(isPresented: Binding(get: { model.selectedThreadId != nil || model.compose != nil },
+                    .inspector(isPresented: Binding(get: { model.hasSelection || model.compose != nil },
                                                     set: { if !$0 { model.open(nil); model.compose = nil } })) {
                         DetailPane().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
                     }
             } else if model.layout == .board && !model.isReview {
                 BoardView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .inspector(isPresented: Binding(get: { model.selectedThreadId != nil || model.compose != nil },
+                    .inspector(isPresented: Binding(get: { model.hasSelection || model.compose != nil },
                                                     set: { if !$0 { model.open(nil); model.compose = nil } })) {
                         DetailPane().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
                     }

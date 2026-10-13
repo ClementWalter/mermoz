@@ -23,35 +23,14 @@ struct ThreadListView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            ForEach(model.groups) { g in
-                                Section {
-                                    if g.subgroups.isEmpty {
-                                        rows(g.threads, in: g.id)
-                                    } else {
-                                        ForEach(g.subgroups) { sub in
-                                            SubGroupHeader(group: sub)
-                                            rows(sub.threads, in: g.id + "/" + sub.id)
-                                        }
-                                    }
-                                } header: {
-                                    if g.field != .none { GroupHeaderView(group: g, total: model.groupTotal(g)) }
-                                }
-                            }
-                            if model.totalThreads > model.threads.count {
-                                // Reaching the end loads the next page.
-                                HStack(spacing: 8) {
-                                    ProgressView().controlSize(.small)
-                                    Text("Loading more · \(model.threads.count) of \(model.totalThreads.formatted())")
-                                }
-                                .font(.system(size: 11.5)).foregroundStyle(Theme.text3).padding(12)
-                                .onAppear { model.loadMore() }
-                            }
+                        ThreadListRows(groups: model.groups, loaded: model.threads.count, total: model.totalThreads) {
+                            focused = true
                         }
+                        .equatable()
+                        .scrollTargetLayout()
                     }
-                    .onChange(of: model.selectedThreadId) { _, id in
-                        if let id, let anchor = model.rowAnchor(for: id) { withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(anchor) } }
-                    }
+                    .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.99) { model.visibleRows = Set($0) }
+                    .background { SelectionScroller(proxy: proxy) }
                 }
             }
         }
@@ -80,17 +59,59 @@ struct ThreadListView: View {
     }
 }
 
-extension ThreadListView {
+/// The list's rows. Its inputs are plain values, so a parent redraw that leaves the
+/// groups as they were skips it; the selection reaches rows through their own flags.
+struct ThreadListRows: View, Equatable {
+    @Environment(AppModel.self) private var model
+    let groups: [ThreadGroup]
+    let loaded: Int
+    let total: Int
+    /// Gives the keyboard back to the list after a click.
+    let refocus: () -> Void
+
+    nonisolated static func == (a: ThreadListRows, b: ThreadListRows) -> Bool {
+        a.groups == b.groups && a.loaded == b.loaded && a.total == b.total
+    }
+
+    var body: some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            ForEach(groups) { g in
+                Section {
+                    if g.subgroups.isEmpty {
+                        rows(g.threads, in: g.id)
+                    } else {
+                        ForEach(g.subgroups) { sub in
+                            SubGroupHeader(group: sub)
+                            rows(sub.threads, in: g.id + "/" + sub.id)
+                        }
+                    }
+                } header: {
+                    if g.field != .none { GroupHeaderView(group: g) }
+                }
+            }
+            if total > loaded {
+                // Reaching the end loads the next page.
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading more · \(loaded) of \(total.formatted())")
+                }
+                .font(.system(size: 11.5)).foregroundStyle(Theme.text3).padding(12)
+                .onAppear { model.loadMore() }
+            }
+        }
+    }
+
     /// A thread in two project groups appears in both: each copy gets its own id, or
     /// SwiftUI draws only one and leaves an empty slot.
     private func rows(_ threads: [ThreadSummary], in group: String) -> some View {
         ForEach(threads) { t in
-            ThreadRow(thread: t, selected: model.isSelected(t.id))
+            ThreadRow(thread: t, selection: model.selectionCells.flag(t.id))
+                .equatable()
                 .id(group + "|" + t.id)
                 .onTapGesture {
                     let mods = NSEvent.modifierFlags
                     model.click(t.id, shift: mods.contains(.shift), command: mods.contains(.command))
-                    focused = true
+                    refocus()
                 }
         }
     }
@@ -252,9 +273,10 @@ struct GroupLabel: View {
 struct GroupHeaderView: View {
     @Environment(AppModel.self) private var model
     let group: ThreadGroup
-    let total: Int
 
     var body: some View {
+        // Read here, so a count moving redraws this header alone.
+        let total = model.groupTotal(group)
         HStack(spacing: 8) {
             GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
             Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
@@ -340,12 +362,35 @@ struct DisplayMenu: View {
     }
 }
 
-struct ThreadRow: View {
+/// Keeps the selected row in view. It alone observes the selected id, so a j/k step
+/// does not redraw the list around it.
+struct SelectionScroller: View {
     @Environment(AppModel.self) private var model
-    let thread: ThreadSummary
-    let selected: Bool
+    let proxy: ScrollViewProxy
 
     var body: some View {
+        Color.clear
+            .onChange(of: model.selectedThreadId) { _, id in
+                // Only to reveal a row not fully shown, and without animation: a scroll
+                // lays the list out again, an animated one on every frame of it.
+                if let id, let anchor = model.rowAnchor(for: id), !model.visibleRows.contains(anchor) { proxy.scrollTo(anchor) }
+            }
+    }
+}
+
+struct ThreadRow: View, Equatable {
+    @Environment(AppModel.self) private var model
+    let thread: ThreadSummary
+    /// The row's own selection flag (nil: never selected, as in People), so stepping
+    /// redraws only the rows it leaves and reaches.
+    var selection: SelectionFlag?
+
+    nonisolated static func == (a: ThreadRow, b: ThreadRow) -> Bool {
+        a.thread == b.thread && a.selection === b.selection
+    }
+
+    var body: some View {
+        let selected = selection?.on ?? false
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 // Unread is carried by a dot plus weight; read rows stay quiet so unread ones stand out.

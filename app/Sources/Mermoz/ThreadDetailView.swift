@@ -21,7 +21,7 @@ struct ThreadDetailView: View {
             Divider().overlay(Theme.line)
             switch model.conversationTab {
             case .messages:
-                chat
+                ChatStream(detail: detail, conversation: conversation)
                 ReplyBar(target: model.replyTarget(detail).subject, threads: conversation.threads.count)
             case .people:
                 ConversationPeopleTab(people: conversation.people)
@@ -38,20 +38,38 @@ struct ThreadDetailView: View {
         // Drive previews, the Docs tab's Drive files and saved attachments; again on new mail.
         .task(id: "\(detail.thread.id)-\(detail.messages.count)") { await model.loadDrive(threadId: detail.thread.id) }
     }
+}
 
-    private var chat: some View {
-        let items = Timeline.items(detail.messages, threads: conversation.threads)
+/// The messages of one conversation as a chat. A long conversation opens on its latest
+/// messages; the earlier ones join on request, so opening it lays out a screenful.
+struct ChatStream: View {
+    @Environment(AppModel.self) private var model
+    let detail: ThreadDetail
+    let conversation: Conversation
+    /// Messages shown when a conversation opens.
+    static let opening = 12
+
+    var body: some View {
+        let all = Timeline.items(detail.messages, threads: conversation.threads)
+        let (items, hidden) = model.chatShowsAll ? (all, 0) : Timeline.recent(all, keep: Self.opening)
         let runs = ChatRuns.startsRun(items)
-        return ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     if let s = detail.thread.summary, !s.isEmpty { SummaryBox(summary: s, next: detail.thread.nextAction) }
-                    ForEach(items) { item in
+                    if hidden > 0 {
+                        Button("Show \(hidden) earlier message\(hidden == 1 ? "" : "s")") { model.chatShowsAll = true }
+                            .buttonStyle(.link).font(.system(size: 12))
+                            .frame(maxWidth: .infinity).padding(.vertical, 6)
+                    }
+                    // Rows are keyed by place, not message: the next conversation reuses
+                    // these views and SwiftUI updates them rather than building new ones.
+                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                         switch item {
                         case let .marker(threadId, subject, date, joined):
                             ThreadMarker(threadId: threadId, subject: subject, date: date, joined: joined)
                         case let .message(m):
-                            MessageRow(message: m, firstOfRun: runs.contains(m.id), kind: conversation.kind).id(m.id)
+                            MessageRow(message: m, firstOfRun: runs.contains(m.id), kind: conversation.kind)
                         }
                     }
                 }
@@ -68,21 +86,26 @@ struct ThreadDetailView: View {
                 model.toggleMessage(id)
                 return .handled
             }
-            // A chat opens on its latest message.
-            .onAppear { if let last = detail.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
-            .onChange(of: detail.messages.count) { if let last = detail.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
+            // A chat opens on its latest message. The anchor places it there without laying
+            // out every bubble above, which scrolling to the last one would.
+            .defaultScrollAnchor(.bottom)
+            // Another conversation, or new mail in this one, shows its latest message.
+            .onChange(of: "\(detail.thread.id)/\(detail.messages.count)") { proxy.scrollTo(items.count - 1, anchor: .bottom) }
         }
     }
-}
 
-extension ThreadDetailView {
     private func moveFocus(_ delta: Int, _ proxy: ScrollViewProxy) {
         let ids = detail.messages.sorted { $0.date < $1.date }.map(\.id)
         guard !ids.isEmpty else { return }
         let at = model.focusedMessageId.flatMap { ids.firstIndex(of: $0) } ?? (delta > 0 ? -1 : ids.count)
-        let next = ids[min(max(at + delta, 0), ids.count - 1)]
-        model.focusedMessageId = next
-        withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(next, anchor: .center) }
+        let i = min(max(at + delta, 0), ids.count - 1)
+        // Stepping above the latest messages brings the earlier ones in.
+        if i < ids.count - Self.opening { model.chatShowsAll = true }
+        model.focusedMessageId = ids[i]
+        let all = Timeline.items(detail.messages, threads: conversation.threads)
+        let shown = model.chatShowsAll ? all : Timeline.recent(all, keep: Self.opening).items
+        guard let row = shown.firstIndex(where: { $0.id == ids[i] }) else { return }
+        withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(row, anchor: .center) }
     }
 }
 
@@ -180,13 +203,11 @@ struct CompactBubble: View {
     @Environment(AppModel.self) private var model
     let message: Message
     let firstOfRun: Bool
-    /// "Show more" pressed on a long message.
-    @State private var showAll = false
 
-    private var parts: BubbleParts { BubbleParts.compact(message) }
     private var focused: Bool { model.focusedMessageId == message.id }
 
     var body: some View {
+        let parts = BubbleParts.compact(message)
         let mine = message.isFromMe
         HStack(alignment: .top, spacing: 8) {
             if mine { Spacer(minLength: 72) }
@@ -200,27 +221,26 @@ struct CompactBubble: View {
                         Text(Format.short(message.date)).font(.system(size: 11)).foregroundStyle(Theme.text3)
                     }
                 }
-                bubble
+                bubble(parts)
             }
             if !mine { Spacer(minLength: 72) }
         }
         .padding(.top, firstOfRun ? 6 : 0)
     }
 
-    private var bubble: some View {
-        let clamped = !showAll && BubbleParts.clampsCompact(parts.text)
+    private func bubble(_ parts: BubbleParts) -> some View {
+        let clamped = !model.shownInFull.contains(message.id) && BubbleParts.clampsCompact(parts.text)
+        // A clamped bubble lays out only its opening, not the whole long email.
+        let text = clamped ? BubbleParts.opening(parts.text) : parts.text
         return VStack(alignment: .leading, spacing: 6) {
-            Text(parts.text.isEmpty ? "(empty message)" : parts.text)
+            Text(text.isEmpty ? "(empty message)" : text)
                 .font(.system(size: 13.5)).lineSpacing(2.5)
                 .foregroundStyle(Theme.text.opacity(0.92))
                 .lineLimit(clamped ? 8 : nil)
                 .fixedSize(horizontal: false, vertical: true)
-                .mask(alignment: .bottom) {
-                    // A long message fades out at its eighth line; "Show more" lets it all in.
-                    LinearGradient(colors: [.black, .black, clamped ? .clear : .black], startPoint: .top, endPoint: .bottom)
-                }
+                .modifier(FadeOut(on: clamped))
             if clamped {
-                Button("Show more") { showAll = true }.buttonStyle(.link).font(.system(size: 12))
+                Button("Show more") { model.shownInFull.insert(message.id) }.buttonStyle(.link).font(.system(size: 12))
             }
             if !parts.thumbnails.isEmpty {
                 HStack(spacing: 6) {
@@ -1002,6 +1022,22 @@ struct MessageDetails: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// A long message fades out at its eighth line; "Show more" lets it all in. Short ones
+/// get no mask, which would cost an offscreen pass per bubble.
+struct FadeOut: ViewModifier {
+    let on: Bool
+
+    func body(content: Content) -> some View {
+        if on {
+            content.mask(alignment: .bottom) {
+                LinearGradient(colors: [.black, .black, .clear], startPoint: .top, endPoint: .bottom)
+            }
+        } else {
+            content
         }
     }
 }

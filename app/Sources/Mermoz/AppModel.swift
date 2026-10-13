@@ -121,9 +121,17 @@ final class AppModel {
     var aiBusy: Set<String> = []
     var threads: [ThreadSummary] = []
     var totalThreads = 0
-    var selectedThreadId: String?
+    var selectedThreadId: String? {
+        didSet { if selectedThreadId != oldValue { selectionMoved() } }
+    }
     /// Threads selected together with ⇧ or ⌘; empty means only `selectedThreadId`.
-    var multiSelection: [String] = []
+    var multiSelection: [String] = [] {
+        didSet { if multiSelection != oldValue { selectionMoved() } }
+    }
+    /// Whether a thread is open; menus read this, not the id, so j/k leaves them alone.
+    private(set) var hasSelection = false
+    /// One flag per row, so a j/k step redraws the two rows it moves between.
+    @ObservationIgnored let selectionCells = SelectionCells()
     /// Where a ⇧-range starts.
     private var anchorId: String?
     var detail: ThreadDetail?
@@ -132,6 +140,10 @@ final class AppModel {
     var conversationTab: ConversationTab = .messages
     /// Messages opened as the whole email; the rest read as chat bubbles.
     var expandedMessages: Set<String> = []
+    /// Long bubbles whose "Show more" was pressed.
+    var shownInFull: Set<String> = []
+    /// The open chat shows its earlier messages too, not only the latest ones.
+    var chatShowsAll = false
     /// The message ↑/↓ moved to, which Enter opens.
     var focusedMessageId: String?
     /// Files shared anywhere (sidebar › Docs) and the filter typed above them.
@@ -162,7 +174,9 @@ final class AppModel {
 
     /// Addresses seen in opened threads; feeds the compose recipient check.
     var checker = RecipientChecker()
+    /// Every address seen in opened mail, once each.
     private var seenAddresses: [Address] = []
+    @ObservationIgnored private var seenKeys: Set<String> = []
 
     private(set) var client: DaemonClient?
     /// Google Drive state (AppModel+Drive.swift).
@@ -196,6 +210,12 @@ final class AppModel {
     var feedLaterCard: String?
     var feedRefreshTask: Task<Void, Never>?
     var feedTextsTask: Task<Void, Never>?
+    /// Loads the open conversation; a newer selection cancels it.
+    @ObservationIgnored var detailTask: Task<Void, Never>?
+    /// How long j/k wait for the next key before loading the pane.
+    static let settleMs = 60
+    /// Rows the list shows in full right now; the selection scrolls only to reach others.
+    @ObservationIgnored var visibleRows: Set<String> = []
     /// Opens the focused card's mail once j/k pause.
     var feedPaneTask: Task<Void, Never>?
     /// When the Feed started opening, until its first card is on screen.
@@ -595,9 +615,9 @@ final class AppModel {
         let next = cols[nc][nr].id
         if extend, let anchor = anchorId ?? selectedThreadId {
             multiSelection = SelectionRange.between(orderIds, anchor: anchor, target: next)
-            open(next, record: false, keepSelection: true)
+            open(next, record: false, keepSelection: true, settle: true)
         } else {
-            open(next, record: false)
+            open(next, record: false, settle: true)
         }
     }
 
@@ -662,22 +682,30 @@ final class AppModel {
     // MARK: thread
 
     /// `record: false` for keyboard stepping (j/k, arrows): it updates the current history
-    /// entry instead of stacking one per thread.
-    func open(_ id: String?, record: Bool = true, keepSelection: Bool = false) {
+    /// entry instead of stacking one per thread. `settle`: the row is selected at once and
+    /// its conversation loads once the keys pause, so holding j never draws passing panes.
+    func open(_ id: String?, record: Bool = true, keepSelection: Bool = false, settle: Bool = false) {
         if record, id != selectedThreadId { recordHistory() }
+        // Writing an equal value still redraws every view reading it, so each is guarded.
         if !keepSelection {
-            multiSelection = []
+            if !multiSelection.isEmpty { multiSelection = [] }
             anchorId = id
         }
         if id != selectedThreadId {
-            conversationTab = .messages
-            expandedMessages = []
-            focusedMessageId = nil
+            if conversationTab != .messages { conversationTab = .messages }
+            if !expandedMessages.isEmpty { expandedMessages = [] }
+            if chatShowsAll { chatShowsAll = false }
+            if focusedMessageId != nil { focusedMessageId = nil }
         }
-        selectedThreadId = id
-        compose = nil
+        if id != selectedThreadId { selectedThreadId = id }
+        if compose != nil { compose = nil }
+        detailTask?.cancel()
         guard let id, let client else { detail = nil; return }
-        Task {
+        detailTask = Task {
+            if settle {
+                try? await Task.sleep(for: .milliseconds(Self.settleMs))
+                guard !Task.isCancelled else { return }
+            }
             do {
                 let d = try await client.thread(id)
                 guard selectedThreadId == id else { return }
@@ -846,8 +874,17 @@ final class AppModel {
     }
 
     private func learnAddresses(from d: ThreadDetail) {
-        for m in d.messages { seenAddresses.append(m.from); seenAddresses += m.to; seenAddresses += m.cc }
+        let fresh = d.messages.flatMap { [$0.from] + $0.to + $0.cc }.filter { seenKeys.insert($0.email.lowercased()).inserted }
+        // Rebuilt only when this conversation brings someone new.
+        guard !fresh.isEmpty else { return }
+        seenAddresses += fresh
         checker = RecipientChecker(addresses: seenAddresses)
+    }
+
+    private func selectionMoved() {
+        let ids = multiSelection.isEmpty ? Set([selectedThreadId].compactMap { $0 }) : Set(multiSelection)
+        selectionCells.select(ids)
+        if hasSelection != (selectedThreadId != nil) { hasSelection = selectedThreadId != nil }
     }
 
     private func setLocal(_ id: String, _ f: (inout ThreadSummary) -> Void) {

@@ -117,7 +117,7 @@ struct ContactDetailPane: View {
                         Text("Conversations").font(.system(size: 11, weight: .semibold)).kerning(0.6).textCase(.uppercase).foregroundStyle(Theme.text3)
                         VStack(spacing: 0) {
                             ForEach(d.threads) { t in
-                                ThreadRow(thread: t, selected: false)
+                                ThreadRow(thread: t)
                                     .onTapGesture { model.reveal(t) }
                             }
                         }

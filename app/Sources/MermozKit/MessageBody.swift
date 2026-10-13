@@ -112,7 +112,17 @@ public struct BubbleParts: Equatable, Sendable {
 
     /// Compact text longer than about eight lines starts clamped, behind "Show more".
     public static func clampsCompact(_ text: String) -> Bool {
-        text.count > 700 || text.split(separator: "\n", omittingEmptySubsequences: false).count > 8
+        text.utf8.count > 700 && text.count > 700 || text.split(separator: "\n", omittingEmptySubsequences: false).count > 8
+    }
+
+    /// What a clamped bubble shows: enough of the start to fill its eight lines (at most
+    /// ten lines and 900 characters), so the rest of a long email is never laid out.
+    public static func opening(_ text: String) -> String {
+        var out = Substring(text.prefix(900))
+        if let tenth = out.indices.lazy.filter({ out[$0] == "\n" }).dropFirst(9).first {
+            out = out[..<tenth]
+        }
+        return String(out)
     }
 }
 

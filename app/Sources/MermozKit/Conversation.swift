@@ -118,6 +118,24 @@ public enum TimelineItem: Equatable, Identifiable, Sendable {
 }
 
 public enum Timeline {
+    /// The last `keep` messages with their thread markers, and how many messages are left
+    /// out before them.
+    public static func recent(_ items: [TimelineItem], keep: Int) -> (items: [TimelineItem], hidden: Int) {
+        let isMessage: (TimelineItem) -> Bool = { if case .message = $0 { true } else { false } }
+        let total = items.filter(isMessage).count
+        guard total > keep else { return (items, 0) }
+        var seen = 0
+        var start = items.count
+        for (i, item) in items.enumerated().reversed() {
+            if isMessage(item) {
+                if seen == keep { break }
+                seen += 1
+            }
+            start = i
+        }
+        return (Array(items[start...]), total - keep)
+    }
+
     /// Messages in date order, with a marker each time the Gmail thread changes. A lone
     /// thread gets no marker: the chat reads like a plain conversation.
     public static func items(_ messages: [Message], threads: [ThreadSummary]) -> [TimelineItem] {
