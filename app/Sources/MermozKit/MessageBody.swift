@@ -98,7 +98,7 @@ public struct BubbleParts: Equatable, Sendable {
 
     /// The message's new text only: quoted history and signature already folded locally.
     public static func compact(_ m: Message) -> BubbleParts {
-        let new = withoutLinkLines(m.displayBody)
+        let new = withoutLinkLines(plainMarkdown(m.displayBody))
         let text = new.isEmpty ? withoutLinkLines(m.bodyText) : new
         return BubbleParts(recipients: nil, text: text, controls: false, chips: [],
                            thumbnails: MessageBody.inlineImages(m), fileCount: MessageBody.chips(m).count)
@@ -112,6 +112,32 @@ public struct BubbleParts: Equatable, Sendable {
 
     /// A bubble never opens on a bare link ("view in browser", tracking): lines that are
     /// only a URL are left to the whole email.
+    /// Words from Markdown-like text: pictures dropped, "[text](url)" read as "text",
+    /// rules, heading and emphasis marks removed. A bubble never shows the syntax.
+    public static func plainMarkdown(_ text: String) -> String {
+        var s = text
+        s = s.replacing(/!\[[^\]]*\]\([^)\s]*\)/, with: "")
+        s = s.replacing(/\[([^\]]*)\]\([^)\s]+\)/) { m in
+            String(m.output.1).trimmingCharacters(in: .whitespaces)
+        }
+        return s.components(separatedBy: "\n")
+            .filter { l in
+                let t = l.trimmingCharacters(in: .whitespaces)
+                return !(t.count >= 3 && t.allSatisfy { "-*_= ".contains($0) })
+            }
+            .map { l -> String in
+                var t = l
+                let trimmed = l.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("#") {
+                    t = String(trimmed.drop { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+                }
+                return t.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
+            }
+            .joined(separator: "\n")
+            .replacing(/\n{3,}/, with: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public static func withoutLinkLines(_ text: String) -> String {
         text.components(separatedBy: "\n")
             .filter { l in

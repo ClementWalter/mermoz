@@ -1101,6 +1101,10 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
                 (text, true)
             }
         };
+        // Some senders' plain parts are Markdown: a bubble shows its words, never its syntax.
+        if m.body_new.contains("](") || m.body_new.contains("---") || m.body_new.contains("**") {
+            m.body_new = crate::newsletter::plain_markdown(&m.body_new);
+        }
         m.attachments = st
             .query_map([&m.id], |r| {
                 Ok(AttachmentInfo {

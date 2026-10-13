@@ -220,3 +220,24 @@ private func said(_ id: String, by email: String, at minutes: Int64, mine: Bool 
 @Test func linksInsideSentencesStayInTheBubble() {
     #expect(BubbleParts.withoutLinkLines("Book on https://notary.example/rdv today") == "Book on https://notary.example/rdv today")
 }
+
+// ---- Markdown never shows as syntax -------------------------------------------------
+
+private let sportsMail = "![Email header](https://static.club.example/emails/email-header.jpg)\n\n---\n\n[ ![](https://media2.club.example/team/42/logo/abc.png) ](https://club.example/team/42)\n\n## Match ce samedi à 10h\n\nBonjour, **le match** est confirmé. [Répondre](https://club.example/r/1) avant jeudi."
+
+@Test(arguments: ["![", "](", "---", "**", "## "])
+func compactTextHasNoMarkdownSyntax(mark: String) {
+    #expect(!BubbleParts.compact(message(text: sportsMail, new: sportsMail)).text.contains(mark))
+}
+
+@Test func compactTextOpensOnTheHeadline() {
+    #expect(BubbleParts.compact(message(text: sportsMail, new: sportsMail)).text.hasPrefix("Match ce samedi à 10h"))
+}
+
+@Test func markdownLinksReadAsTheirWords() {
+    #expect(BubbleParts.plainMarkdown("[Répondre](https://club.example/r/1) avant jeudi.") == "Répondre avant jeudi.")
+}
+
+@Test func bracketsWithoutALinkStay() {
+    #expect(BubbleParts.plainMarkdown("Prix [indicatif] : 10 €") == "Prix [indicatif] : 10 €")
+}

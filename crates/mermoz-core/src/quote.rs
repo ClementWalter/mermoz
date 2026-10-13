@@ -267,6 +267,9 @@ pub fn snippet(body: &str) -> String {
     // A newsletter dump opens on its "view in browser" link: preview its content instead.
     let text = if crate::newsletter::degraded(&text) {
         crate::newsletter::clean(&text)
+    } else if text.contains("](") || text.contains("---") || text.contains("**") {
+        // Markdown plain parts preview as words, never as syntax.
+        crate::newsletter::plain_markdown(&text)
     } else {
         text
     };

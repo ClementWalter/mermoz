@@ -157,6 +157,8 @@ fn without_tracking_links(line: &str) -> String {
 /// The readable part of a bulk mail's text: preamble links, tracking links, image
 /// names and the footer removed, blank runs folded, starting at its first real line.
 pub fn clean(text: &str) -> String {
+    let text = plain_markdown(text);
+    let text = text.as_str();
     let text: String = text
         .chars()
         .filter(|c| !INVISIBLE.contains(c) || *c == '\u{00A0}')
@@ -313,6 +315,99 @@ pub fn readable(plain: &str, html: Option<&str>) -> String {
     }
 }
 
+/// Index of the `)` closing a `(` at `open`, if the parenthesis holds a link.
+fn link_end(chars: &[char], open: usize) -> Option<usize> {
+    if chars.get(open) != Some(&'(') {
+        return None;
+    }
+    let mut depth = 0;
+    for (k, c) in chars.iter().enumerate().skip(open).take(2000) {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            ' ' if depth == 1 && k > open + 1 && !chars[open + 1..k].contains(&'"') => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Index of the `]` closing a `[` at `open` (nested brackets allowed, a few lines long).
+fn bracket_end(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (k, c) in chars.iter().enumerate().skip(open).take(600) {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Plain words from Markdown-like text some senders put in their plain part (and the
+/// AI's clean version uses): images dropped, `[text](url)` read as "text", rules,
+/// heading marks and emphasis marks removed.
+pub fn plain_markdown(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // ![alt](url): a picture, never text.
+        if chars[i] == '!'
+            && chars.get(i + 1) == Some(&'[')
+            && let Some(close) = bracket_end(&chars, i + 1)
+            && let Some(end) = link_end(&chars, close + 1)
+        {
+            i = end + 1;
+            continue;
+        }
+        // [text](url): its words; the inner text is read the same way (it may hold an image).
+        if chars[i] == '['
+            && let Some(close) = bracket_end(&chars, i)
+            && let Some(end) = link_end(&chars, close + 1)
+        {
+            let inner: String = chars[i + 1..close].iter().collect();
+            out.push_str(plain_markdown(&inner).trim());
+            i = end + 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    let mut folded: Vec<String> = vec![];
+    for l in out.lines() {
+        let t = l.trim();
+        // Horizontal rules: "---", "***", "___", "- - -".
+        if t.len() >= 3 && t.chars().all(|c| "-*_= ".contains(c)) {
+            continue;
+        }
+        let l = if t.starts_with('#') || t.starts_with("> ") {
+            t.trim_start_matches(['#', '>']).trim_start().to_string()
+        } else {
+            l.to_string()
+        };
+        let l = l.replace("**", "").replace("__", "");
+        if l.trim().is_empty() && folded.last().is_none_or(|p: &String| p.trim().is_empty()) {
+            continue;
+        }
+        folded.push(l.trim_end().to_string());
+    }
+    folded.join("\n").trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +559,56 @@ mod tests {
             readable("Votre relevé est disponible.", Some(HTML)),
             "Votre relevé est disponible."
         );
+    }
+
+    const SPORTS: &str = "![Email header](https://static.club.example/emails/email-header.jpg)\n\n---\n\n[ ![](https://media2.club.example/team/42/logo/abc.png) ](https://club.example/team/42)\n\n## Match ce samedi à 10h\n\nBonjour, **le match contre Les Aigles** est confirmé. [Répondre à la convocation](https://club.example/r/123) avant jeudi.\n\n---\n\nÀ samedi !";
+
+    #[rstest]
+    fn markdown_images_are_dropped() {
+        assert!(!plain_markdown(SPORTS).contains("!["));
+    }
+
+    #[rstest]
+    fn markdown_links_read_as_their_words() {
+        assert!(plain_markdown(SPORTS).contains("Répondre à la convocation avant jeudi."));
+    }
+
+    #[rstest]
+    fn markdown_rules_are_dropped() {
+        assert!(!plain_markdown(SPORTS).lines().any(|l| l.trim() == "---"));
+    }
+
+    #[rstest]
+    #[case::link_syntax("](")]
+    #[case::bold("**")]
+    #[case::heading("## ")]
+    #[case::image("![")]
+    fn no_markdown_syntax_is_left(#[case] mark: &str) {
+        assert!(!plain_markdown(SPORTS).contains(mark));
+    }
+
+    #[rstest]
+    fn the_first_line_is_the_headline() {
+        assert_eq!(
+            plain_markdown(SPORTS).lines().next(),
+            Some("Match ce samedi à 10h")
+        );
+    }
+
+    #[rstest]
+    fn the_sports_mail_reads_cleanly_in_a_bubble() {
+        assert!(readable(SPORTS, None).starts_with("Match ce samedi à 10h"));
+    }
+
+    #[rstest]
+    #[case::brackets_without_link("Prix [indicatif] : 10 €", "Prix [indicatif] : 10 €")]
+    #[case::bare_link(
+        "Voir https://club.example/r/1 ici",
+        "Voir https://club.example/r/1 ici"
+    )]
+    #[case::dash_in_a_sentence("Score: 3 - 2", "Score: 3 - 2")]
+    #[case::parenthesis_after_brackets("Voir [annexe] (page 3)", "Voir [annexe] (page 3)")]
+    fn ordinary_text_is_untouched(#[case] text: &str, #[case] want: &str) {
+        assert_eq!(plain_markdown(text), want);
     }
 }
