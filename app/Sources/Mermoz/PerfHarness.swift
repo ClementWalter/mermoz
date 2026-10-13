@@ -41,6 +41,19 @@ enum PerfHarness {
         return u + s
     }
 
+    private typealias SelfCounts = @convention(c) (Int32, UnsafeMutableRawPointer, Int) -> Int32
+    private static let selfCounts: SelfCounts? = dlsym(dlopen(nil, RTLD_NOW), "thread_selfcounts")
+        .map { unsafeBitCast($0, to: SelfCounts.self) }
+
+    /// Instructions the calling thread has retired, in millions: the same work counts the
+    /// same on an efficiency or a performance core, unlike CPU time.
+    static func threadInstructions() -> Double {
+        guard let selfCounts else { return 0 }
+        var counts: (UInt64, UInt64) = (0, 0)
+        guard withUnsafeMutableBytes(of: &counts, { selfCounts(1, $0.baseAddress!, 16) }) == 0 else { return 0 }
+        return Double(counts.0) / 1e6
+    }
+
     /// Lays out and draws every window now, even one another app covers.
     private static func flush() {
         for w in NSApp.windows where w.isVisible {
@@ -57,8 +70,9 @@ enum PerfHarness {
     /// Wall time from the step until the pane held the selected thread's messages.
     private static var paneReady: Double?
 
-    private static func window(gap: Duration, _ action: () -> Void) async -> (action: Double, first: Double, total: Double) {
+    private static func window(gap: Duration, _ action: () -> Void) async -> (action: Double, first: Double, total: Double, minstr: Double) {
         let t0 = threadCPU()
+        let i0 = threadInstructions()
         detailAt = nil
         paneReady = nil
         if let model = watched {
@@ -86,7 +100,7 @@ enum PerfHarness {
         let left = gap - (ContinuousClock.now - wall)
         if left > .zero { try? await Task.sleep(for: left) }
         flush()
-        return (acted, first, threadCPU() - t0)
+        return (acted, first, threadCPU() - t0, threadInstructions() - i0)
     }
 
     /// Renders the main window's layer tree (what SwiftUI drew) to a PNG, without capturing
@@ -166,8 +180,15 @@ enum PerfHarness {
         let step = await scenario(model)
         try? await Task.sleep(for: .seconds(2))
         var idle: [Double] = []
-        for _ in 0..<10 { idle.append(await window(gap: gap) {}.total) }
+        var idleInstr: [Double] = []
+        for _ in 0..<10 {
+            let w = await window(gap: gap) {}
+            idle.append(w.total)
+            idleInstr.append(w.minstr)
+        }
         let base = pct(idle, 0.5)
+        let baseInstr = pct(idleInstr, 0.5)
+        var instrs: [Double] = []
         var costs: [Double] = []
         var firsts: [Double] = []
         var actions: [Double] = []
@@ -177,6 +198,7 @@ enum PerfHarness {
         for _ in 0..<n {
             let c = await window(gap: gap, step)
             costs.append(max(0, c.total - base))
+            instrs.append(max(0, c.minstr - baseInstr))
             firsts.append(c.first)
             actions.append(c.action)
             if let d = detailAt { beforeDetail.append(d) }
@@ -187,8 +209,10 @@ enum PerfHarness {
             "before_detail_median_ms": pct(beforeDetail, 0.5),
             "pane_ready_median_ms": pct(ready, 0.5), "pane_ready_p95_ms": pct(ready, 0.95), "pane_ready_count": Double(ready.count),
             "median_ms": pct(costs, 0.5), "p95_ms": pct(costs, 0.95), "mean_ms": costs.reduce(0, +) / Double(max(n, 1)),
+            "minstr_median": pct(instrs, 0.5), "minstr_p95": pct(instrs, 0.95),
             "first_median_ms": pct(firsts, 0.5), "first_p95_ms": pct(firsts, 0.95), "action_median_ms": pct(actions, 0.5),
             "bubble_size_hits": Double(BubbleTextCache.shared.sizeHits), "bubble_size_misses": Double(BubbleTextCache.shared.sizeMisses),
+            "bubble_main_misses": Double(BubbleTextCache.shared.mainMisses),
             "visible_rows": Double(model.visibleRows.count), "visible_cards": Double(model.feedFullyVisible.count),
         ]
         log.info("perf: \(result.description, privacy: .public)")

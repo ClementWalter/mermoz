@@ -41,6 +41,57 @@ public enum NearDuplicate {
     }
 }
 
+/// One name and one avatar per person, whatever case or variant each message's From
+/// line carries ("aude walter", "Aude Walter").
+public enum SenderIdentity {
+    /// Who a message is from, for avatar colors and runs: the lowercased address.
+    public static func key(_ a: Address) -> String { a.email.lowercased() }
+
+    /// The name to show for each sender key: the conversation's directory name, else the
+    /// best-cased variant the messages carry (mixed case over all lower or all upper,
+    /// then the most frequent, then the first seen).
+    public static func names(_ messages: [Message], people: [ConversationPerson]) -> [String: String] {
+        var seen: [String: [(name: String, count: Int)]] = [:]
+        for m in messages where !m.from.name.isEmpty {
+            let k = key(m.from)
+            var variants = seen[k] ?? []
+            if let i = variants.firstIndex(where: { $0.name == m.from.name }) {
+                variants[i].count += 1
+            } else {
+                variants.append((m.from.name, 1))
+            }
+            seen[k] = variants
+        }
+        var out: [String: String] = [:]
+        for (k, variants) in seen {
+            // Only a strictly better variant wins: on a tie the first seen stays.
+            var best = variants[0]
+            for v in variants.dropFirst() where (casing(v.name), v.count) > (casing(best.name), best.count) { best = v }
+            out[k] = best.name
+        }
+        for p in people where !p.name.isEmpty { out[p.email.lowercased()] = p.name }
+        return out
+    }
+
+    /// 2: mixed case, 1: all upper, 0: all lower (or no letters).
+    static func casing(_ name: String) -> Int {
+        let upper = name.contains(where: \.isUppercase), lower = name.contains(where: \.isLowercase)
+        return upper && lower ? 2 : upper ? 1 : 0
+    }
+
+    /// Up to two initials of a name, "?" when it has none.
+    public static func initials(_ name: String) -> String {
+        let s = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+        return s.isEmpty ? "?" : s
+    }
+
+    /// An avatar color index for a sender key, the same across launches (a sum of code
+    /// points: String.hashValue is seeded per launch).
+    public static func colorIndex(_ key: String, count: Int) -> Int {
+        key.unicodeScalars.reduce(0) { $0 &+ Int($1.value) } % max(count, 1)
+    }
+}
+
 /// A row the app draws in SwiftUI.
 public enum HostedRow: Sendable {
     case summary
@@ -50,11 +101,14 @@ public enum HostedRow: Sendable {
 public enum ChatRows {
     /// The chat's rows and the SwiftUI views it needs, by key. `time` formats a date.
     /// `summary`: the AI's summary on top, when there is one.
+    /// `people`: the conversation's directory, for the names senders show under.
     public static func build(items: [TimelineItem], hidden: Int, summary: String?, expanded: Set<String>,
-                             shownInFull: Set<String>, focused: String?, time: (Int64) -> String)
+                             shownInFull: Set<String>, focused: String?, people: [ConversationPerson] = [],
+                             time: (Int64) -> String)
         -> (rows: [ChatRowSpec], hosted: [String: HostedRow])
     {
         let runs = ChatRuns.startsRun(items)
+        let names = SenderIdentity.names(items.compactMap { if case let .message(m) = $0 { m } else { nil } }, people: people)
         var rows: [ChatRowSpec] = []
         var hosted: [String: HostedRow] = [:]
         if let summary, !summary.isEmpty {
@@ -86,8 +140,10 @@ public enum ChatRows {
                        let changed = NearDuplicate.differences(previous: p.text, current: parts.text) {
                         note = NearDuplicate.note(changed)
                     }
+                    let key = SenderIdentity.key(m.from)
                     rows.append(.bubble(BubbleSpec(
-                        id: m.id, content: content, mine: m.isFromMe, firstOfRun: first, sender: m.from.display,
+                        id: m.id, content: content, mine: m.isFromMe, firstOfRun: first, sender: names[key] ?? m.from.display,
+                        senderKey: key,
                         time: time(m.date), focused: focused == m.id, files: parts.fileCount, note: note,
                         thumbnails: parts.thumbnails.map(\.id))))
                 }

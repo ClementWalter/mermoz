@@ -65,14 +65,26 @@ public final class BubbleTextCache: @unchecked Sendable {
     private let lock = NSLock()
     private var strings: [TextKey: NSAttributedString] = [:]
     private var layouts: [SizeKey: BubbleTextLayout.Laid] = [:]
-    /// The width and style bubbles were last laid out at, to measure ahead at.
-    private var last: (width: CGFloat, style: BubbleTextStyle)?
+    /// What a layout is for: each kind of text measures ahead at its own widths and style.
+    public enum Use: Hashable, Sendable {
+        case bubble
+        /// The conversation's subject over the chat.
+        case title
+    }
+
+    /// Widths each kind of text was recently laid out at (a chat's own and others'
+    /// bubbles differ), most recent first, with its style and line limit.
+    private var recent: [Use: (widths: [CGFloat], style: BubbleTextStyle, maxLines: Int)] = [:]
+    /// Distinct widths remembered for measuring ahead.
+    static let recentWidths = 3
     /// Entries kept before the caches start over; a few conversations' worth many times.
     private let limit: Int
     public private(set) var sizeHits = 0
     public private(set) var sizeMisses = 0
+    /// Misses on the main thread: text laid out while a conversation is on its way to screen.
+    public private(set) var mainMisses = 0
 
-    public init(limit: Int = 1500) { self.limit = limit }
+    public init(limit: Int = 4000) { self.limit = limit }
 
     private static let links = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
@@ -96,14 +108,16 @@ public final class BubbleTextCache: @unchecked Sendable {
     }
 
     /// The text laid out at `width`, ready to draw: made once, then reused.
-    public func layout(id: String, text: String, style: BubbleTextStyle, width: CGFloat, maxLines: Int) -> BubbleTextLayout.Laid {
+    public func layout(id: String, text: String, style: BubbleTextStyle, width: CGFloat, maxLines: Int,
+                       use: Use = .bubble) -> BubbleTextLayout.Laid {
         let width = min(max(width, Self.minWidth), Self.idealWidth)
         let key = SizeKey(text: TextKey(id: id, text: text, style: style), width: Int(width.rounded(.down)), maxLines: maxLines)
         lock.lock()
         // Probes for the ideal (unbounded) or minimum size are not the bubble's width.
-        if width > Self.minWidth, width < Self.idealWidth { last = (width, style) }
+        if width > Self.minWidth, width < Self.idealWidth { remember(CGFloat(key.width), style, maxLines, for: use) }
         if let s = layouts[key] { sizeHits += 1; lock.unlock(); return s }
         sizeMisses += 1
+        if Thread.isMainThread { mainMisses += 1 }
         lock.unlock()
         let s = Self.lay(attributed(id: id, text: text, style: style), width: CGFloat(key.width), maxLines: maxLines)
         lock.lock()
@@ -113,18 +127,45 @@ public final class BubbleTextCache: @unchecked Sendable {
         return s
     }
 
-    /// Builds and measures these bubbles at the last width and style used, so opening
+    /// Builds and measures these bubbles at the widths and style recently used, so opening
     /// their conversation finds both ready. Call off the main thread.
     public func prepare(_ items: [(id: String, content: BubbleContent)]) {
         lock.lock()
-        let at = last
+        let at = recent[.bubble]
         lock.unlock()
         guard let at else { return }
         for item in items {
-            for w in [at.width, Self.idealWidth] {
+            for w in at.widths + [Self.idealWidth] {
                 _ = size(id: item.id, text: item.content.text, style: at.style, width: w, maxLines: item.content.maxLines)
             }
         }
+    }
+
+    /// Builds and measures a conversation's subject at the width and style titles were
+    /// last shown at. Call off the main thread.
+    public func prepareTitle(_ text: String) {
+        lock.lock()
+        let at = recent[.title]
+        lock.unlock()
+        guard let at, let width = at.widths.first else { return }
+        _ = layout(id: Self.titleId, text: text, style: at.style, width: width, maxLines: at.maxLines, use: .title)
+    }
+
+    /// The cache id every subject title is kept under.
+    public static let titleId = "title"
+
+    /// Called under `lock`: most recent width first; a new style or line limit starts over.
+    private func remember(_ width: CGFloat, _ style: BubbleTextStyle, _ maxLines: Int, for use: Use) {
+        // Bubbles carry their own line limit; a title's is fixed.
+        let lines = use == .bubble ? 0 : maxLines
+        guard let r = recent[use], r.style == style, r.maxLines == lines else {
+            recent[use] = ([width], style, lines)
+            return
+        }
+        guard r.widths.first != width else { return }
+        var widths = r.widths.filter { $0 != width }
+        widths.insert(width, at: 0)
+        recent[use] = (Array(widths.prefix(Self.recentWidths)), style, lines)
     }
 
     /// The width asked when SwiftUI wants the text's natural, unwrapped size.

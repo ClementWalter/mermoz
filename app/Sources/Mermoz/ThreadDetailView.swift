@@ -57,6 +57,7 @@ struct ChatStream: View {
         let built = ChatRows.build(
             items: items, hidden: hidden, summary: detail.thread.summary,
             expanded: model.expandedMessages, shownInFull: model.shownInFull, focused: model.focusedMessageId,
+            people: conversation.people,
             time: Format.short)
         let rows = built.rows
         var hosted: [String: AnyView] = [:]
@@ -228,7 +229,7 @@ struct CompactBubble: View {
         HStack(alignment: .top, spacing: 8) {
             if mine { Spacer(minLength: 72) }
             if !mine {
-                if firstOfRun { Avatar(name: message.from.display, size: 26) } else { Color.clear.frame(width: 26, height: 1) }
+                if firstOfRun { Avatar(name: message.from.display, key: SenderIdentity.key(message.from), size: 26) } else { Color.clear.frame(width: 26, height: 1) }
             }
             VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
                 if firstOfRun {
@@ -423,7 +424,7 @@ struct ExpandedMessage: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.text3)
-            if !message.isFromMe { Avatar(name: message.from.display) }
+            if !message.isFromMe { Avatar(name: message.from.display, key: SenderIdentity.key(message.from)) }
             Text(message.isFromMe ? "You" : message.from.display).font(.system(size: 13, weight: .semibold))
             SenderSeal(message: message)
             Text(Format.long(message.date)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
@@ -571,7 +572,7 @@ struct ConversationPeopleTab: View {
             ForEach(people) { p in
                 Button { model.showPerson(p.email) } label: {
                     HStack(spacing: 10) {
-                        Avatar(name: p.display)
+                        Avatar(name: p.display, key: p.email.lowercased())
                         VStack(alignment: .leading, spacing: 1) {
                             Text(p.display).font(.system(size: 13, weight: .semibold))
                             Text(p.role.isEmpty ? p.email : p.role).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
@@ -859,20 +860,20 @@ struct SummaryBox: View {
 
 struct Avatar: View {
     let name: String
+    /// Who it is, for the color (SenderIdentity.key); the name when not given.
+    var key: String?
     var me = false
     var size: CGFloat = 28
 
     var body: some View {
-        let initials = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+        let index = SenderIdentity.colorIndex(key ?? name.lowercased(), count: Theme.accountPalette.count)
         Circle()
-            .fill(me ? Theme.text.opacity(0.8) : Color(hex: Theme.accountPalette[stableHash % Theme.accountPalette.count]))
-            .overlay(Text(me ? "You" : (initials.isEmpty ? "?" : initials))
+            .fill(me ? Theme.text.opacity(0.8) : Color(hex: Theme.accountPalette[index]))
+            .overlay(Text(me ? "You" : SenderIdentity.initials(name))
                 .font(.system(size: (me ? 9 : 11) * size / 28, weight: .bold)).foregroundStyle(.white))
             .frame(width: size, height: size)
     }
 
-    /// String.hashValue is seeded per launch; colors must stay the same across launches.
-    private var stableHash: Int { name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) } }
 }
 
 /// File badge, name and size; with `onRemove`, an × to take it out (composer).
@@ -1087,7 +1088,8 @@ struct SelectableTitle: NSViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView v: SelectableBubbleText, context: Context) -> CGSize? {
         let width = proposal.width.map { $0.isFinite ? $0 : BubbleTextCache.idealWidth } ?? BubbleTextCache.idealWidth
-        let laid = BubbleTextCache.shared.layout(id: "title", text: text, style: style(context.environment), width: width, maxLines: 2)
+        let laid = BubbleTextCache.shared.layout(id: BubbleTextCache.titleId, text: text, style: style(context.environment),
+                                                 width: width, maxLines: 2, use: .title)
         v.show(laid)
         return laid.size
     }

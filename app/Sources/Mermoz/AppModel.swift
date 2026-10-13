@@ -738,9 +738,11 @@ final class AppModel {
                 // shows; the chat then finds every piece in the caches.
                 let full = shownInFull
                 let messages = d.messages
+                let subject = d.thread.subject.isEmpty ? "(no subject)" : d.thread.subject
                 await Task.detached(priority: .userInitiated) {
                     let bubbles = messages.map { (id: $0.id, content: BubbleContent.compact($0, showAll: full.contains($0.id))) }
                     BubbleTextCache.shared.prepare(bubbles)
+                    BubbleTextCache.shared.prepareTitle(subject)
                 }.value
                 guard selectedThreadId == id else { return }
                 detail = d

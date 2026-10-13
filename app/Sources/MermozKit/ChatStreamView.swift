@@ -16,6 +16,8 @@ public struct BubbleSpec: Equatable, Sendable {
     /// First of a run: shows the avatar, the name and the time.
     public var firstOfRun: Bool
     public var sender: String
+    /// Who sent it, for the avatar color: the same for every variant of their name.
+    public var senderKey: String
     public var time: String
     public var focused: Bool
     /// Files sent along, counted under the text (📎 n).
@@ -25,10 +27,10 @@ public struct BubbleSpec: Equatable, Sendable {
     /// Pasted images (attachment ids), shown as thumbnails under the text.
     public var thumbnails: [String]
 
-    public init(id: String, content: BubbleContent, mine: Bool, firstOfRun: Bool, sender: String, time: String,
-                focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = []) {
+    public init(id: String, content: BubbleContent, mine: Bool, firstOfRun: Bool, sender: String, senderKey: String? = nil,
+                time: String, focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = []) {
         self.id = id; self.content = content; self.mine = mine; self.firstOfRun = firstOfRun
-        self.sender = sender; self.time = time; self.focused = focused; self.files = files; self.note = note
+        self.sender = sender; self.senderKey = senderKey ?? sender.lowercased(); self.time = time; self.focused = focused; self.files = files; self.note = note
         self.thumbnails = thumbnails
     }
 }
@@ -207,7 +209,8 @@ open class SelectableBubbleText: NSTextView {
 final class BubbleRowView: NSView {
     let text = SelectableBubbleText.make()
     private let fade = FadeView()
-    private let more = NSButton(title: "Show more", target: nil, action: nil)
+    /// "Show more", made the first time this view shows a clamped bubble.
+    private var more: NSButton?
     private(set) var spec: BubbleSpec?
     private var colors = ChatColors.plain
     var onShowMore: (() -> Void)?
@@ -220,11 +223,6 @@ final class BubbleRowView: NSView {
         super.init(frame: .zero)
         addSubview(text)
         addSubview(fade)
-        more.isBordered = false
-        more.target = self
-        more.action = #selector(showMore)
-        more.setAccessibilityLabel("Show more")
-        addSubview(more)
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         toolTip = "Open the whole email"
@@ -233,6 +231,29 @@ final class BubbleRowView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     @objc private func showMore() { onShowMore?() }
+
+    /// The "Show more" button in the accent color, made once and retitled only when the
+    /// color changes.
+    private func showMoreButton(accent: NSColor) -> NSButton {
+        let b = more ?? {
+            let b = NSButton(title: "", target: self, action: #selector(showMore))
+            b.isBordered = false
+            b.setAccessibilityLabel("Show more")
+            addSubview(b)
+            more = b
+            return b
+        }()
+        if moreAccent != accent {
+            moreAccent = accent
+            b.attributedTitle = NSAttributedString(string: "Show more", attributes: [
+                .font: NSFont.systemFont(ofSize: 12), .foregroundColor: accent,
+            ])
+            b.sizeToFit()
+        }
+        return b
+    }
+
+    private var moreAccent: NSColor?
 
     func configure(_ spec: BubbleSpec, laid: BubbleTextLayout.Laid, width: CGFloat, colors: ChatColors, onClick: @escaping () -> Void) {
         self.spec = spec
@@ -252,14 +273,11 @@ final class BubbleRowView: NSView {
         text.frame = CGRect(x: x + ChatMetrics.inset.width, y: top + ChatMetrics.inset.height,
                             width: laid.size.width, height: laid.size.height)
         fade.isHidden = !spec.content.clamped
-        more.isHidden = !spec.content.clamped
+        more?.isHidden = !spec.content.clamped
         if spec.content.clamped {
             fade.color = spec.mine ? colors.mineBackground : colors.theirsBackground
             fade.frame = CGRect(x: text.frame.minX, y: text.frame.maxY - 22, width: text.frame.width, height: 22)
-            more.attributedTitle = NSAttributedString(string: "Show more", attributes: [
-                .font: NSFont.systemFont(ofSize: 12), .foregroundColor: colors.accent,
-            ])
-            more.sizeToFit()
+            let more = showMoreButton(accent: colors.accent)
             more.frame.origin = CGPoint(x: text.frame.minX, y: text.frame.maxY + 3)
         }
         setAccessibilityLabel("Message from \(spec.mine ? "you" : spec.sender)"
@@ -287,7 +305,7 @@ final class BubbleRowView: NSView {
             } else {
                 name.draw(at: CGPoint(x: bubbleRect.minX, y: y))
                 time.draw(at: CGPoint(x: bubbleRect.minX + name.size().width + 6, y: y + 1))
-                drawAvatar(spec.sender, in: CGRect(x: ChatMetrics.sidePadding, y: y, width: ChatMetrics.avatar, height: ChatMetrics.avatar))
+                drawAvatar(spec.sender, key: spec.senderKey, in: CGRect(x: ChatMetrics.sidePadding, y: y, width: ChatMetrics.avatar, height: ChatMetrics.avatar))
             }
         }
         if let note = spec.note {
@@ -351,13 +369,10 @@ final class BubbleRowView: NSView {
             .draw(at: CGPoint(x: x + 16, y: y))
     }
 
-    private func drawAvatar(_ name: String, in rect: CGRect) {
-        // A sum of code points, not hashValue: the color stays the same across launches.
-        let hash = name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
-        colors.avatars[hash % max(colors.avatars.count, 1)].setFill()
+    private func drawAvatar(_ name: String, key: String, in rect: CGRect) {
+        if !colors.avatars.isEmpty { colors.avatars[SenderIdentity.colorIndex(key, count: colors.avatars.count)].setFill() }
         NSBezierPath(ovalIn: rect).fill()
-        let initials = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
-        let label = NSAttributedString(string: initials.isEmpty ? "?" : initials, attributes: [
+        let label = NSAttributedString(string: SenderIdentity.initials(name), attributes: [
             .font: NSFont.systemFont(ofSize: 11 * rect.width / 28, weight: .bold), .foregroundColor: NSColor.white,
         ])
         let s = label.size()
@@ -494,14 +509,28 @@ public final class ChatStreamView: NSScrollView {
         document.needsLayout = true
     }
 
-    /// Rows whose kind changed get a new view; the others are reconfigured in place.
+    /// Bubble and marker views no row uses: hidden in the document, handed out before a
+    /// new one is made, so stepping through conversations builds no views.
+    private var spareBubbles: [BubbleRowView] = []
+    private var spareMarkers: [MarkerRowView] = []
+    /// Bubble views made ahead, in idle time, once the stream first shows.
+    static let warmBubbles = 16
+    private var warmed = false
+
+    /// Rows whose kind changed get a view from the spares (or a new one); the others are
+    /// reconfigured in place.
     private func rebuildViews() {
         var next: [NSView] = []
-        // Bubble views not kept at their place are handed to the rows that need one.
-        var spare = views.enumerated().compactMap { i, v -> BubbleRowView? in
-            guard let b = v as? BubbleRowView else { return nil }
-            if i < rows.count, case .bubble = rows[i] { return nil }
-            return b
+        // Bubble and marker views not kept at their place go to the spares first.
+        for (i, v) in views.enumerated() {
+            let kept: Bool
+            switch i < rows.count ? rows[i] : nil {
+            case .bubble?: kept = v is BubbleRowView
+            case .marker?: kept = v is MarkerRowView
+            default: kept = false
+            }
+            guard !kept else { continue }
+            if let b = v as? BubbleRowView { spareBubbles.append(b) } else if let m = v as? MarkerRowView { spareMarkers.append(m) }
         }
         for (i, row) in rows.enumerated() {
             let old = i < views.count ? views[i] : nil
@@ -509,9 +538,9 @@ public final class ChatStreamView: NSScrollView {
             case .earlier:
                 next.append((old as? NSButton) ?? makeEarlierButton())
             case .bubble:
-                next.append((old as? BubbleRowView) ?? (spare.isEmpty ? BubbleRowView() : spare.removeFirst()))
+                next.append((old as? BubbleRowView) ?? spareBubbles.popLast() ?? BubbleRowView())
             case .marker:
-                next.append((old as? MarkerRowView) ?? MarkerRowView())
+                next.append((old as? MarkerRowView) ?? spareMarkers.popLast() ?? MarkerRowView())
             case let .hosted(key):
                 if let h = old as? HostedRowView, h.key == key {
                     next.append(h)
@@ -526,10 +555,36 @@ public final class ChatStreamView: NSScrollView {
                 }
             }
         }
-        for v in views where !next.contains(where: { $0 === v }) { v.removeFromSuperview() }
-        for v in next where v.superview !== document { document.addSubview(v) }
+        let used = Set(next.map(ObjectIdentifier.init))
+        for v in views where !used.contains(ObjectIdentifier(v)) {
+            if v is BubbleRowView || v is MarkerRowView { v.isHidden = true } else { v.removeFromSuperview() }
+        }
+        for v in next {
+            if v.superview !== document { document.addSubview(v) }
+            if v.isHidden { v.isHidden = false }
+        }
         views = next
+        warmUp()
     }
+
+    /// Makes spare bubble views after the first conversation shows, off the step itself.
+    private func warmUp() {
+        guard !warmed else { return }
+        warmed = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let missing = Self.warmBubbles - self.views.count { $0 is BubbleRowView } - self.spareBubbles.count
+            for _ in 0..<max(0, missing) {
+                let b = BubbleRowView()
+                b.isHidden = true
+                self.document.addSubview(b)
+                self.spareBubbles.append(b)
+            }
+        }
+    }
+
+    /// Views kept hidden for later rows, for tests.
+    public var spareCount: Int { spareBubbles.count + spareMarkers.count }
 
     private func makeEarlierButton() -> NSButton {
         let b = NSButton(title: "", target: self, action: #selector(showEarlier))
@@ -627,6 +682,20 @@ public final class ChatStreamView: NSScrollView {
         return nil
     }
 
+    /// The spec a message's bubble is drawn from.
+    public func bubbleSpec(_ id: String) -> BubbleSpec? {
+        for (row, v) in zip(rows, views) {
+            if case let .bubble(b) = row, b.id == id { return (v as? BubbleRowView)?.spec }
+        }
+        return nil
+    }
+
+    /// The avatar color a bubble row draws, if it shows one.
+    public func avatarColor(_ id: String) -> NSColor? {
+        guard let spec = bubbleSpec(id), spec.firstOfRun, !spec.mine, !colors.avatars.isEmpty else { return nil }
+        return colors.avatars[SenderIdentity.colorIndex(spec.senderKey, count: colors.avatars.count)]
+    }
+
     /// The text view drawing a message's bubble.
     public func bubbleText(_ id: String) -> SelectableBubbleText? {
         for (row, v) in zip(rows, views) {
@@ -687,6 +756,8 @@ final class MarkerRowView: NSView {
     private var colors = ChatColors.plain
     private let split = NSButton(title: "Not the same conversation", target: nil, action: nil)
     private var onSplit: (() -> Void)?
+    /// The color the link was last titled in.
+    private var splitAccent: NSColor?
 
     override var isFlipped: Bool { true }
 
@@ -715,10 +786,13 @@ final class MarkerRowView: NSView {
         self.colors = colors
         self.onSplit = onSplit
         split.isHidden = !spec.joined
-        split.attributedTitle = NSAttributedString(string: "Not the same conversation", attributes: [
-            .font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: colors.accent,
-        ])
-        split.sizeToFit()
+        if spec.joined, splitAccent != colors.accent {
+            splitAccent = colors.accent
+            split.attributedTitle = NSAttributedString(string: "Not the same conversation", attributes: [
+                .font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: colors.accent,
+            ])
+            split.sizeToFit()
+        }
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
         setAccessibilityLabel((spec.joined ? "Added from another email. " : "") + spec.line)

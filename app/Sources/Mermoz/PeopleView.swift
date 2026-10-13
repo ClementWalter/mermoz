@@ -66,7 +66,7 @@ struct ContactRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Avatar(name: contact.display)
+            Avatar(name: contact.display, key: contact.email.lowercased())
             VStack(alignment: .leading, spacing: 2) {
                 Text(contact.display).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Text(contact.role.isEmpty ? contact.email : contact.role).font(.system(size: 12)).foregroundStyle(Theme.text2).lineLimit(1)
@@ -95,7 +95,7 @@ struct ContactDetailPane: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(spacing: 14) {
-                            Avatar(name: d.contact.display).scaleEffect(1.6).frame(width: 48, height: 48)
+                            Avatar(name: d.contact.display, key: d.contact.email.lowercased()).scaleEffect(1.6).frame(width: 48, height: 48)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(d.contact.display).font(.system(size: 19, weight: .semibold))
                                 if !d.contact.role.isEmpty { Text(d.contact.role).foregroundStyle(Theme.text2) }
