@@ -11,7 +11,7 @@ struct ShortcutsOverlay: View {
         ("Write", [("r", "Reply"), ("c", "New message"), ("t", "Chat about this"), ("⌘↩", "Send / approve"), ("Esc", "Discard draft")]),
         ("Help", [("? or ⌘/", "Show this help")]),
         ("Feed", [("↩", "Do what the card says"), ("1 2 3", "Pick an option"), ("l", "Later: tomorrow morning"),
-                  ("⇧L", "Later: pick a day"), ("o", "Open the mail"), ("t", "Ask about this")]),
+                  ("⇧L", "Later: pick a day"), ("d / ⌫", "Delete"), ("o", "Open the mail"), ("t", "Ask about this")]),
     ]
 
     var body: some View {

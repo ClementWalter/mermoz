@@ -281,3 +281,40 @@ func dueInWords(date: String, want: String) {
     let f = try RPCCoding.decoder().decode(Feed.self, from: Data(#"{"sections":[],"open":0,"judged":0,"sorting":false,"paused":"credits"}"#.utf8))
     #expect(f.paused == "credits")
 }
+
+// MARK: keys
+
+@Test(arguments: ["d", "\u{7f}", "\u{f728}", "#"])
+func deleteKeysDelete(key: String) {
+    #expect(FeedKeyMap.action(key) == .delete)
+}
+
+@Test func theFeedListensForD() {
+    #expect(FeedKeyMap.characters.contains("d"))
+}
+
+@Test func archiveStaysOnA() {
+    #expect(FeedKeyMap.action("a") == .archive)
+}
+
+@Test func shiftLPicksADay() {
+    #expect(FeedKeyMap.action("l", shift: true) == .laterPickDay)
+}
+
+// MARK: duplicate lines
+
+@Test func aWhyRepeatingTheGistIsADuplicate() {
+    #expect(FeedWords.nearDuplicate("Spring sale: 30% off all shoes until Sunday.", "Spring sale, 30% off all shoes until Sunday!"))
+}
+
+@Test func aWhyContainedInTheGistIsADuplicate() {
+    #expect(FeedWords.nearDuplicate("30% off all shoes", "Spring sale: 30% off all shoes until Sunday."))
+}
+
+@Test func differentLinesAreKept() {
+    #expect(!FeedWords.nearDuplicate("Marie needs your pick by Friday.", "On part sur le grès cérame gris ou la terre cuite ?"))
+}
+
+@Test func aMissingWhyIsNoDuplicate() {
+    #expect(!FeedWords.nearDuplicate(nil, "Anything"))
+}

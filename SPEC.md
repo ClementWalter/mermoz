@@ -459,7 +459,8 @@ header counts what is left.
 **Keys.** Same as the rest of the app: j/k move, e Done, a Archive, y accept, r
 reply, ⌘Z undo, t ask about this (the "Chat about this" panel). New in the feed:
 ↩ runs the card's primary action, 1–3 pick an option, l Later (until tomorrow
-morning), ⇧L Later until a chosen day. Like a row in the List, clicking a card or
+morning), ⇧L Later until a chosen day, d or ⌫ Delete (to the Trash, undoable; a
+visible button on automatic mail and newsletters). Like a row in the List, clicking a card or
 moving to it with j/k shows its mail in the reading pane (the pane follows once the
 keys pause); the card's own action stays on its button and on ↩. A handled
 card slides out, leaves a short "Done · Undo" strip that folds away, and focus

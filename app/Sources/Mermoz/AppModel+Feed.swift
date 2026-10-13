@@ -178,6 +178,11 @@ extension AppModel {
         setStatus(of: card, ids: card.threadIds.filter { !feedKept.contains($0) }, to: card.isBatch ? "archive" : "done")
     }
 
+    /// d / ⌫: to the Trash, like ⌫ elsewhere; the strip says "Deleted · Undo".
+    func delete(_ card: FeedCard) {
+        setStatus(of: card, ids: card.threadIds.filter { !feedKept.contains($0) }, to: "deleted")
+    }
+
     func archive(_ card: FeedCard) {
         setStatus(of: card, ids: card.threadIds.filter { !feedKept.contains($0) }, to: "archive")
         teach(card)

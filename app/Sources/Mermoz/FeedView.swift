@@ -224,13 +224,18 @@ struct CardBody: View {
     @Environment(AppModel.self) private var model
     let card: FeedCard
 
+    /// The mail's gist under the card, unless it repeats the "why" line just above.
+    private func gist(_ text: String) -> some View {
+        Quote(text: FeedWords.nearDuplicate(card.why ?? card.texts?.why, text) ? "" : text)
+    }
+
     var body: some View {
         switch card.kind {
         case .reply, .promise, .intro:
             if card.kind == .intro { PersonLine(card: card) }
-            if let d = card.texts?.draft, !d.isEmpty { DraftPeek(label: "Draft reply", text: d) } else { Quote(text: card.thread.snippet) }
+            if let d = card.texts?.draft, !d.isEmpty { DraftPeek(label: "Draft reply", text: d) } else { gist(card.thread.snippet) }
         case .decision:
-            if let options = card.texts?.options, !options.isEmpty { OptionTiles(card: card, options: options) } else { Quote(text: card.thread.snippet) }
+            if let options = card.texts?.options, !options.isEmpty { OptionTiles(card: card, options: options) } else { gist(card.thread.snippet) }
         case .sign:
             Points(points: card.texts?.points ?? [])
             if card.thread.hasAttachments { FileLine(text: "Attachment to sign in the mail") }
@@ -243,14 +248,14 @@ struct CardBody: View {
         case .cleanup, .reading:
             // A batch lists its mails; a single one (sender not learned yet) shows its gist.
             if !card.isBatch {
-                Quote(text: card.texts?.summary.isEmpty == false ? card.texts!.summary : card.thread.snippet)
+                gist(card.texts?.summary.isEmpty == false ? card.texts!.summary : card.thread.snippet)
             } else if card.kind == .cleanup {
                 CleanupGroups(card: card)
             } else {
                 ReadingLines(card: card)
             }
         case .other:
-            Quote(text: card.texts?.summary.isEmpty == false ? card.texts!.summary : card.thread.snippet)
+            gist(card.texts?.summary.isEmpty == false ? card.texts!.summary : card.thread.snippet)
         }
     }
 }
@@ -493,8 +498,11 @@ struct CardActions: View {
                 secondary("Done", key: "e") { model.done(card) }
             }
             if !card.isBatch, card.kind != .cleanup { secondary("Archive", key: "a") { model.archive(card) } }
+            // Promotions and newsletters are often just binned: Delete is in plain sight there.
+            if card.kind == .cleanup || card.kind == .reading { secondary("Delete", key: "d") { model.delete(card) } }
             Spacer(minLength: 4)
             quiet("Later", key: "l") { model.run(.later, on: card) }
+            if card.kind != .cleanup, card.kind != .reading { quiet("Delete", key: "d") { model.delete(card) } }
             if !card.isBatch { quiet("Ask", key: "t") { model.askAbout(card) } }
             Button("Why?") { why.toggle() }
                 .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.text3)
@@ -587,32 +595,34 @@ struct LaterPicker: View {
     }
 }
 
-/// Feed keys, tried before the app-wide ones while the Feed is on screen.
+/// Feed keys, tried before the app-wide ones while the Feed is on screen (see FeedKeyMap).
 enum FeedKeys {
-    static let characters = "lo123\r"
+    static let characters = FeedKeyMap.characters
 
     @MainActor
     static func handle(_ c: String, shift: Bool, model: AppModel) -> Bool {
-        guard model.showsFeed, model.feedLaterCard == nil else { return false }
-        switch c {
-        case "j": model.feedMove(1); return true
-        case "k": model.feedMove(-1); return true
+        guard model.showsFeed, model.feedLaterCard == nil, let action = FeedKeyMap.action(c, shift: shift) else { return false }
+        switch action {
+        case .next: model.feedMove(1); return true
+        case .previous: model.feedMove(-1); return true
         default: break
         }
         guard let card = model.focusedCard, model.feedStrips[card.id] == nil else { return false }
-        switch c {
-        case "\r": model.runPrimary(card)
-        case "1", "2", "3": model.runOption(Int(c) ?? 0, on: card)
-        case "l": if shift { model.feedLaterCard = card.id } else { model.run(.later, on: card) }
-        case "o": model.openCard(card)
-        case "e": model.done(card)
-        case "a": model.archive(card)
-        case "t": model.askAbout(card)
-        case "r": model.draftReply(to: card, body: card.texts?.draft ?? "")
-        case "y":
+        switch action {
+        case .primary: model.runPrimary(card)
+        case let .option(n): model.runOption(n, on: card)
+        case .later: model.run(.later, on: card)
+        case .laterPickDay: model.feedLaterCard = card.id
+        case .open: model.openCard(card)
+        case .done: model.done(card)
+        case .archive: model.archive(card)
+        case .delete: model.delete(card)
+        case .ask: model.askAbout(card)
+        case .reply: model.draftReply(to: card, body: card.texts?.draft ?? "")
+        case .accept:
             guard card.thread.suggestion != nil else { return false }
             model.acceptSuggestions([card.thread.id])
-        default: return false
+        case .next, .previous: return false
         }
         return true
     }

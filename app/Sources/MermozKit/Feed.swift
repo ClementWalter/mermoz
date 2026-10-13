@@ -206,6 +206,36 @@ public enum FeedActions {
     }
 }
 
+/// What a key does on the focused card while the Feed is on screen.
+public enum FeedKeyAction: Equatable, Sendable {
+    case next, previous, primary, option(Int), later, laterPickDay, open, done, archive, delete, ask, reply, accept
+}
+
+public enum FeedKeyMap {
+    /// Characters the Feed takes besides the app-wide shortcuts: ↩, ⌫ and ⌦ included.
+    public static let characters = "lo123\rd\u{7f}\u{f728}"
+
+    /// The action for a typed character (already lowercased; `shift` tells l from ⇧L).
+    public static func action(_ c: String, shift: Bool = false) -> FeedKeyAction? {
+        switch c {
+        case "j": .next
+        case "k": .previous
+        case "\r": .primary
+        case "1", "2", "3": .option(Int(c) ?? 0)
+        case "l": shift ? .laterPickDay : .later
+        case "o": .open
+        case "e": .done
+        case "a": .archive
+        // d, ⌫, ⌦ and # all send the mail to the Trash, as everywhere in the app.
+        case "d", "\u{7f}", "\u{f728}", "#": .delete
+        case "t": .ask
+        case "r": .reply
+        case "y": .accept
+        default: nil
+        }
+    }
+}
+
 public enum FeedSelection {
     /// The mail a card shows in the reading pane: its thread, or a batch's latest mail.
     public static func thread(of card: FeedCard) -> String {
@@ -290,6 +320,20 @@ public enum FeedWords {
         f.dateFormat = "EEE d MMM"
         formatters[key] = f
         return f
+    }
+
+    /// Two lines that say almost the same thing (the AI's "why" and the mail's gist):
+    /// one contains the other, or they share most of their words.
+    public static func nearDuplicate(_ a: String?, _ b: String?) -> Bool {
+        let words = { (s: String?) -> [String] in
+            (s ?? "").lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        }
+        let x = words(a), y = words(b)
+        guard !x.isEmpty, !y.isEmpty else { return false }
+        let jx = x.joined(separator: " "), jy = y.joined(separator: " ")
+        if jx.contains(jy) || jy.contains(jx) { return true }
+        let sx = Set(x), sy = Set(y)
+        return Double(sx.intersection(sy).count) / Double(sx.union(sy).count) >= 0.6
     }
 
     /// The start of a "YYYY-MM-DD" day.
