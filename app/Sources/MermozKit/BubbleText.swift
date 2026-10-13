@@ -134,6 +134,8 @@ public final class BubbleTextCache: @unchecked Sendable {
     public static let minWidth: CGFloat = 40
 
     static func build(_ text: String, style: BubbleTextStyle) -> NSAttributedString {
+        // One line break kind: a CRLF letter lays out and draws like any other.
+        let text = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         let p = NSMutableParagraphStyle()
         p.lineSpacing = style.lineSpacing
         p.lineBreakMode = .byWordWrapping
@@ -168,26 +170,28 @@ public final class BubbleTextCache: @unchecked Sendable {
 
 /// The text container settings shared by measuring and drawing.
 public enum BubbleTextLayout {
-    /// Puts a cached layout into a text view so the view draws it. The container is
-    /// linked both ways (container.textView and view.textContainer): with only the view's
-    /// side set, the layout manager never asks the view to draw and the bubble stays
-    /// blank until a click forces it. A container another view already draws is copied,
-    /// since a container draws into one view only. Returns the layout now shown.
+    /// Shows a cached layout's text in a text view. The view keeps its own text stack and
+    /// takes a copy of the text and the container settings (width, line limit): a view
+    /// drawing a container it does not own stays blank on screen. Returns whether the text
+    /// changed.
     @MainActor
-    public static func attach(_ laid: Laid, to view: NSTextView, replacing old: Laid?) -> Laid {
-        var laid = laid
-        if let other = laid.container.textView, other !== view {
-            laid = BubbleTextCache.lay(NSAttributedString(attributedString: laid.storage),
-                                       width: laid.container.size.width, maxLines: laid.container.maximumNumberOfLines)
-        }
-        if let old, old !== laid, old.container.textView === view { old.container.textView = nil }
-        laid.container.textView = view
+    @discardableResult
+    public static func fill(_ view: NSTextView, from laid: Laid) -> Bool {
+        guard let storage = view.textStorage, let container = view.textContainer else { return false }
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = laid.container.maximumNumberOfLines
+        container.lineBreakMode = laid.container.lineBreakMode
+        container.widthTracksTextView = false
+        container.heightTracksTextView = false
+        container.size = CGSize(width: laid.container.size.width, height: .greatestFiniteMagnitude)
+        guard !storage.isEqual(to: laid.storage) else { return false }
+        storage.setAttributedString(laid.storage)
         view.needsDisplay = true
-        return laid
+        return true
     }
 
     /// A finished TextKit stack: the storage, its laid-out glyphs and the container, plus
-    /// the size the text takes. A text view draws it by adopting `container`.
+    /// the size the text takes. Measuring uses it; a text view copies its text and settings.
     public final class Laid: @unchecked Sendable {
         public let storage: NSTextStorage
         public let manager: NSLayoutManager

@@ -142,7 +142,7 @@ public enum ChatMetrics {
 
 // MARK: text
 
-/// A bubble's selectable text: TextKit 1, drawing a container the cache already laid out.
+/// A bubble's selectable text: the view's own text stack, filled from the cache's layout.
 /// A plain click (no selection, not on a link) is the bubble's click.
 open class SelectableBubbleText: NSTextView {
     public var onClick: (() -> Void)?
@@ -152,7 +152,7 @@ open class SelectableBubbleText: NSTextView {
     private weak var previous: NSResponder?
 
     public static func make() -> Self {
-        let v = Self(usingTextLayoutManager: false)
+        let v = Self(usingTextLayoutManager: true)
         v.isEditable = false
         v.isSelectable = true
         v.drawsBackground = false
@@ -166,8 +166,8 @@ open class SelectableBubbleText: NSTextView {
     /// Shows a cached layout: no measuring or typesetting here.
     public func show(_ laid: BubbleTextLayout.Laid) {
         guard laid !== drawn else { return }
-        drawn = BubbleTextLayout.attach(laid, to: self, replacing: drawn)
-        setAccessibilityValue(laid.storage.string)
+        drawn = laid
+        if BubbleTextLayout.fill(self, from: laid) { setAccessibilityValue(laid.storage.string) }
     }
 
     override open func mouseDown(with event: NSEvent) {
@@ -382,22 +382,41 @@ final class FadeView: NSView {
     }
 }
 
-/// A SwiftUI row inside the stream; its size changes (an email's HTML loading) make the
-/// stream lay out again.
-final class HostedRowView: NSHostingView<AnyView> {
+/// A SwiftUI row inside the stream (the whole email opened in place, the summary). It is
+/// measured by SwiftUI itself at the stream's width, and any change of its ideal size (an
+/// email's HTML or images loading, a section unfolding) lays the stream out again.
+final class HostedRowView: NSView {
     var key = ""
+    let controller: NSHostingController<AnyView>
+    private var watch: NSKeyValueObservation?
 
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        superview?.needsLayout = true
+    override var isFlipped: Bool { true }
+
+    init(rootView: AnyView) {
+        controller = NSHostingController(rootView: rootView)
+        // The controller publishes its ideal size; a change means this row grew or shrank.
+        controller.sizingOptions = [.preferredContentSize]
+        super.init(frame: .zero)
+        let v = controller.view
+        v.autoresizingMask = [.width, .height]
+        v.frame = bounds
+        addSubview(v)
+        watch = controller.observe(\.preferredContentSize) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.superview?.needsLayout = true }
+        }
     }
 
-    /// The row's height when it is `width` wide.
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    var rootView: AnyView {
+        get { controller.rootView }
+        set { controller.rootView = newValue }
+    }
+
+    /// The row's height at `width`, asked of SwiftUI: the content's true height, not the
+    /// frame the row last had.
     func height(at width: CGFloat) -> CGFloat {
-        let c = widthAnchor.constraint(equalToConstant: width)
-        c.isActive = true
-        defer { c.isActive = false }
-        return ceil(fittingSize.height)
+        ceil(controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
     }
 }
 
@@ -502,7 +521,6 @@ public final class ChatStreamView: NSScrollView {
                     next.append(h)
                 } else {
                     let h = HostedRowView(rootView: actions.hosted(key))
-                    h.sizingOptions = [.intrinsicContentSize]
                     h.key = key
                     next.append(h)
                 }
@@ -621,6 +639,20 @@ public final class ChatStreamView: NSScrollView {
         for (row, v) in zip(rows, views) {
             if case let .bubble(b) = row, b.id == id { (v as? BubbleRowView)?.onShowMore?() }
         }
+    }
+
+    /// Scrolls to the very end, as a reader dragging to the bottom would.
+    public func scrollToEnd() {
+        contentView.scroll(to: CGPoint(x: 0, y: max(0, document.frame.height - contentView.bounds.height)))
+        reflectScrolledClipView(contentView)
+    }
+
+    /// The part of the chat on screen, in the document's coordinates.
+    public var visibleArea: CGRect { contentView.documentVisibleRect }
+
+    /// A hosted row's frame in the document, by key.
+    public func hostedFrame(_ key: String) -> CGRect? {
+        zip(rows, views).first { if case let .hosted(k) = $0.0 { k == key } else { false } }?.1.frame
     }
 
     /// Presses "Show N earlier messages", as a click would.

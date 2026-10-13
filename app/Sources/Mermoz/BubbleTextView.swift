@@ -47,8 +47,7 @@ struct BubbleTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> BubbleNSTextView {
-        // TextKit 1: the view adopts containers laid out by the cache.
-        let v = BubbleNSTextView(usingTextLayoutManager: false)
+        let v = BubbleNSTextView(frame: .zero)
         v.isEditable = false
         v.isSelectable = true
         v.drawsBackground = false
@@ -110,7 +109,8 @@ final class BubbleNSTextView: NSTextView {
             width: bounds.width - 2 * textContainerInset.width, maxLines: source.content.maxLines)
         offered.removeAll(keepingCapacity: true)
         guard laid !== drawn else { return }
-        drawn = BubbleTextLayout.attach(laid, to: self, replacing: drawn)
+        drawn = laid
+        BubbleTextLayout.fill(self, from: laid)
     }
     /// Who had the keyboard before a click, given it back unless text was selected.
     private weak var previous: NSResponder?

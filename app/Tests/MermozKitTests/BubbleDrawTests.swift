@@ -1,12 +1,12 @@
-/// A bubble's text view draws its cached layout. The view and its container must be
-/// linked both ways, or the bubble stays blank on screen until a click forces a redraw.
+/// A bubble's text view draws its text: it keeps its own text stack, filled from the
+/// cache's layout (text, width, line limit), and renders ink in its text area.
 import AppKit
 import Testing
 @testable import MermozKit
 
 /// Dark pixels in the view's drawing, rendered offscreen through draw(_:).
 @MainActor
-private func inkPixels(_ v: NSView) -> Int {
+func inkPixels(_ v: NSView) -> Int {
     guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return 0 }
     v.cacheDisplay(in: v.bounds, to: rep)
     var ink = 0
@@ -20,48 +20,40 @@ private func inkPixels(_ v: NSView) -> Int {
 
 private let text = "See you at nine, by the station."
 
-/// A bubble text view showing the cache's layout, as the reading pane does.
 @MainActor
-private func shown(_ cache: BubbleTextCache) -> (NSTextView, BubbleTextLayout.Laid) {
-    let laid = cache.layout(id: "m1", text: text, style: BubbleTextStyle(), width: 300, maxLines: 0)
-    let v = NSTextView(usingTextLayoutManager: false)
-    v.drawsBackground = false
-    v.textContainerInset = .zero
+private func shown(_ cache: BubbleTextCache, maxLines: Int = 0) -> SelectableBubbleText {
+    let laid = cache.layout(id: "m1", text: text, style: BubbleTextStyle(), width: 300, maxLines: maxLines)
+    let v = SelectableBubbleText.make()
     v.frame = CGRect(origin: .zero, size: laid.size)
-    let drawn = BubbleTextLayout.attach(laid, to: v, replacing: nil)
-    return (v, drawn)
+    v.show(laid)
+    return v
 }
 
 @MainActor @Test func aShownBubbleDrawsItsText() {
-    #expect(inkPixels(shown(BubbleTextCache()).0) > 50)
+    #expect(inkPixels(shown(BubbleTextCache())) > 50)
 }
 
-@MainActor @Test func theContainerKnowsTheViewItDrawsInto() {
-    let (v, _) = shown(BubbleTextCache())
+@MainActor @Test func aShownBubbleHoldsItsText() {
+    #expect(shown(BubbleTextCache()).textStorage?.string == text)
+}
+
+@MainActor @Test func theViewDrawsItsOwnContainer() {
+    let v = shown(BubbleTextCache())
     #expect(v.textContainer?.textView === v)
 }
 
-@MainActor @Test func theLayoutManagerDrawsIntoTheBubble() {
-    let (v, drawn) = shown(BubbleTextCache())
-    #expect(drawn.manager.firstTextView === v)
+@MainActor @Test func aClampedBubbleDrawsItsText() {
+    #expect(inkPixels(shown(BubbleTextCache(), maxLines: 8)) > 50)
 }
 
-@MainActor @Test func aSecondViewOfTheSameMessageGetsItsOwnContainer() {
+@MainActor @Test func twoViewsOfOneMessageBothDraw() {
     let cache = BubbleTextCache()
-    let (first, _) = shown(cache)
-    let (second, _) = shown(cache)
-    #expect(first.textContainer !== second.textContainer)
-}
-
-@MainActor @Test func theFirstViewKeepsDrawingWhenASecondShowsTheSameMessage() {
-    let cache = BubbleTextCache()
-    let (first, _) = shown(cache)
+    let first = shown(cache)
     _ = shown(cache)
-    #expect(first.textContainer?.textView === first)
+    #expect(inkPixels(first) > 50)
 }
 
-@MainActor @Test func aSecondViewOfTheSameMessageDrawsToo() {
+@MainActor @Test func twoViewsOfOneMessageHaveTheirOwnContainers() {
     let cache = BubbleTextCache()
-    _ = shown(cache)
-    #expect(inkPixels(shown(cache).0) > 50)
+    #expect(shown(cache).textContainer !== shown(cache).textContainer)
 }
