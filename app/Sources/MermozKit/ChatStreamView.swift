@@ -236,6 +236,86 @@ open class SelectableBubbleText: NSTextView {
     }
 }
 
+/// Selectable text drawn from a cached layout: no text view while it is only read. The
+/// pointer coming over it (or a click) shows a selectable text view filled with the same
+/// text, holding its own text stack.
+open class DrawnText: NSView {
+    public let live = SelectableBubbleText.make()
+    /// Layouts offered for the frame to come, by width; the frame picks one.
+    private var offered: [Int: BubbleTextLayout.Laid] = [:]
+    private var latest: BubbleTextLayout.Laid?
+    public private(set) var laid: BubbleTextLayout.Laid?
+    /// The text view is shown and holds `laid`; nothing is drawn here.
+    public private(set) var isLive = false
+
+    override open var isFlipped: Bool { true }
+
+    public init() {
+        super.init(frame: .zero)
+        live.isHidden = true
+        live.setAccessibilityElement(false)
+        addSubview(live)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    public required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// A layout the frame may take (its size is the size answered for a proposal).
+    public func offer(_ laid: BubbleTextLayout.Laid) {
+        offered[Int(laid.size.width)] = laid
+        latest = laid
+        if self.laid == nil { take(laid) }
+        // A frame of the same size lays nothing out by itself.
+        needsLayout = true
+    }
+
+    override open func layout() {
+        super.layout()
+        if let pick = offered[Int(bounds.width)] ?? latest { take(pick) }
+        offered.removeAll(keepingCapacity: true)
+        live.frame = bounds
+    }
+
+    private func take(_ pick: BubbleTextLayout.Laid) {
+        guard pick !== laid else { return }
+        laid = pick
+        setAccessibilityValue(pick.drawn.string)
+        if isLive { goLive(false) }
+        needsDisplay = true
+    }
+
+    /// Shows the selectable text view with this text, or hides it and draws again.
+    public func goLive(_ on: Bool) {
+        guard on != isLive || (on && live.drawn !== laid) else { return }
+        if on, let laid { live.show(laid) }
+        isLive = on
+        if !on, window?.firstResponder === live { window?.makeFirstResponder(nil) }
+        live.frame = bounds
+        live.isHidden = !on
+        needsDisplay = true
+    }
+
+    override open func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if trackingAreas.isEmpty {
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                           owner: self, userInfo: nil))
+        }
+    }
+
+    override open func mouseEntered(with event: NSEvent) { goLive(true) }
+
+    override open func mouseDown(with event: NSEvent) {
+        goLive(true)
+        live.mouseDown(with: event)
+    }
+
+    override open func draw(_ dirtyRect: NSRect) {
+        if !isLive, let laid { laid.draw(in: CGRect(origin: .zero, size: laid.size)) }
+    }
+}
+
 // MARK: rows
 
 /// One compact bubble drawn by hand: avatar, name and time, rounded background and
@@ -627,7 +707,7 @@ final class ChatDocumentView: NSView {
         MainActor.assumeIsolated { panel.dataSource = PhotoPreview.shared }
     }
 
-    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { panel.dataSource = nil }
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { MainActor.assumeIsolated { panel.dataSource = nil } }
 
     override func keyDown(with event: NSEvent) {
         guard event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty,

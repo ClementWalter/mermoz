@@ -1076,21 +1076,17 @@ struct SelectableTitle: NSViewRepresentable {
                                semibold: true, links: false, red: CGFloat(c.red), green: CGFloat(c.green), blue: CGFloat(c.blue), alpha: 1)
     }
 
-    func makeNSView(context: Context) -> SelectableBubbleText {
-        let v = SelectableBubbleText.make()
-        v.setAccessibilityRole(.staticText)
-        return v
-    }
+    func makeNSView(context: Context) -> DrawnText { DrawnText() }
 
-    func updateNSView(_ v: SelectableBubbleText, context: Context) {
+    func updateNSView(_ v: DrawnText, context: Context) {
         v.setAccessibilityLabel(text)
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView v: SelectableBubbleText, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView v: DrawnText, context: Context) -> CGSize? {
         let width = proposal.width.map { $0.isFinite ? $0 : BubbleTextCache.idealWidth } ?? BubbleTextCache.idealWidth
         let laid = BubbleTextCache.shared.layout(id: BubbleTextCache.titleId, text: text, style: style(context.environment),
                                                  width: width, maxLines: 2, use: .title)
-        v.show(laid)
+        v.offer(laid)
         return laid.size
     }
 }
