@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod addresses;
 mod bodies;
 mod conversations;
 mod counts;
@@ -121,6 +122,7 @@ const MIGRATIONS: &[&str] = &[
     counts::MIGRATION,
     bodies::MIGRATION,
     feed::LATER_MIGRATION,
+    addresses::MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
@@ -1772,6 +1774,7 @@ impl Store {
         if is_from_me {
             conversations::note_correspondents(tx, p.to.iter().chain(&p.cc).chain(&p.bcc))?;
         }
+        addresses::note(tx, std::iter::once(&from).chain(&p.to).chain(&p.cc))?;
         for a in &p.attachments {
             let aid = new_id("att");
             let dir = blobs.join(&aid);
@@ -4191,19 +4194,6 @@ impl Store {
             .map(|a| a.email.clone())
             .collect();
         Ok((to, cc, subject))
-    }
-
-    /// Every address seen in local mail, for the recipient check.
-    pub fn known_address(&self, email: &str) -> Result<bool> {
-        let r = self.r.lock().unwrap();
-        let like = format!("%\"{}\"%", email.to_lowercase());
-        Ok(r.query_row(
-            "SELECT 1 FROM messages WHERE lower(from_email) = ?1 OR lower(to_json) LIKE ?2 OR lower(cc_json) LIKE ?2 LIMIT 1",
-            params![email.to_lowercase(), like],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
     }
 
     // ---- built-in agent ---------------------------------------------------

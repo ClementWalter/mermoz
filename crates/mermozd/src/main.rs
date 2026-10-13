@@ -167,6 +167,30 @@ async fn move_html(store: Arc<Store>) {
             "message HTML moved out of the rows"
         );
     }
+    index_addresses(store).await;
+}
+
+/// Lists the addresses of mail stored before the recipient check had its own index,
+/// 2,000 messages per short write.
+async fn index_addresses(store: Arc<Store>) {
+    let (t0, mut after, mut batches) = (std::time::Instant::now(), 0i64, 0u64);
+    loop {
+        let st = store.clone();
+        match tokio::task::spawn_blocking(move || st.index_addresses_batch(after, 2000)).await {
+            Ok(Ok(Some(next))) => (after, batches) = (next, batches + 1),
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => return warn!("indexing addresses: {e}"),
+            Err(e) => return warn!("indexing addresses: {e}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    if batches > 0 {
+        info!(
+            batches,
+            ms = t0.elapsed().as_millis() as u64,
+            "addresses indexed for the recipient check"
+        );
+    }
 }
 
 /// Copies the WAL into the database once a second after writes, so no commit pays for
