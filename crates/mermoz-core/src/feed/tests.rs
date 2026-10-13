@@ -485,7 +485,7 @@ fn automated_mail_without_a_learned_rule_is_its_own_card() {
 
 #[rstest]
 fn unlearned_clean_up_card_can_wait() {
-    let f = feed(vec![unit("a", "unread", Some(judged(Kind::Cleanup)))]);
+    let f = feed(vec![unit("a", "todo", Some(judged(Kind::Cleanup)))]);
     assert_eq!(f.sections[0].key, Section::Later);
 }
 
@@ -684,4 +684,152 @@ fn mail_back_from_later_says_what_was_picked() {
         ..unit("t", "unread", None)
     };
     assert_eq!(reasons_of(&u)[0], "You set this for Friday evening.");
+}
+
+// ---- unread on top --------------------------------------------------------------------
+
+/// Learned noise whose last message is `days` before the fixture's Monday.
+fn idle_noise(id: &str, status: &str, days: i64) -> FeedUnit {
+    FeedUnit {
+        learned_noise: true,
+        judgment: Some(judged(Kind::Cleanup)),
+        ..idle(id, status, days)
+    }
+}
+
+#[rstest]
+fn unread_mail_comes_before_a_deadline_today() {
+    let f = feed(vec![
+        unit("urgent", "todo", Some(due_in(Kind::Reply, 0))),
+        unit("new", "unread", Some(judged(Kind::Intro))),
+    ]);
+    assert_eq!(ids(&f), vec!["new", "urgent"]);
+}
+
+#[rstest]
+fn the_unread_section_is_first() {
+    let f = feed(vec![
+        unit("urgent", "todo", Some(due_in(Kind::Reply, 0))),
+        unit("new", "unread", None),
+    ]);
+    assert_eq!(f.sections[0].key, Section::Unread);
+}
+
+#[rstest]
+fn the_unread_section_is_titled_unread() {
+    assert_eq!(Section::Unread.title(), "Unread");
+}
+
+#[rstest]
+fn unread_mail_is_newest_first() {
+    let f = feed(vec![idle("older", "unread", 5), idle("newer", "unread", 1)]);
+    assert_eq!(ids(&f), vec!["newer", "older"]);
+}
+
+#[rstest]
+fn unread_mail_is_newest_first_whatever_its_deadline() {
+    let mut older = idle("older", "unread", 5);
+    older.judgment = Some(due_in(Kind::Reply, 0));
+    let f = feed(vec![older, idle("newer", "unread", 1)]);
+    assert_eq!(ids(&f), vec!["newer", "older"]);
+}
+
+#[rstest]
+fn an_unread_card_keeps_its_kind() {
+    let f = feed(vec![unit("t", "unread", Some(judged(Kind::Decision)))]);
+    assert_eq!(f.sections[0].cards[0].kind, Kind::Decision);
+}
+
+#[rstest]
+fn an_unread_card_says_it_sits_in_unread() {
+    let f = feed(vec![unit("t", "unread", Some(judged(Kind::Decision)))]);
+    assert_eq!(f.sections[0].cards[0].section, Section::Unread);
+}
+
+#[rstest]
+fn unread_automated_mail_without_a_rule_is_on_top() {
+    let f = feed(vec![unit("a", "unread", Some(judged(Kind::Cleanup)))]);
+    assert_eq!(f.sections[0].key, Section::Unread);
+}
+
+#[rstest]
+fn months_old_unread_mail_is_still_on_top() {
+    let f = feed(vec![idle("t", "unread", 400)]);
+    assert_eq!(f.sections[0].key, Section::Unread);
+}
+
+#[rstest]
+fn read_mail_keeps_its_section() {
+    let f = feed(vec![unit("t", "todo", Some(due_in(Kind::Reply, 0)))]);
+    assert_eq!(f.sections[0].key, Section::Now);
+}
+
+#[rstest]
+fn a_batch_with_unread_mail_is_on_top() {
+    let f = feed(vec![
+        unit("urgent", "todo", Some(due_in(Kind::Reply, 0))),
+        noise("a", Kind::Cleanup),
+    ]);
+    assert_eq!(ids(&f), vec!["batch:cleanup", "urgent"]);
+}
+
+#[rstest]
+fn a_batch_with_unread_mail_says_it_sits_in_unread() {
+    let f = feed(vec![noise("a", Kind::Cleanup)]);
+    assert_eq!(f.sections[0].cards[0].section, Section::Unread);
+}
+
+#[rstest]
+fn a_batch_with_one_unread_mail_is_on_top() {
+    let f = feed(vec![
+        idle_noise("read", "todo", 1),
+        idle_noise("new", "unread", 3),
+    ]);
+    assert_eq!(f.sections[0].key, Section::Unread);
+}
+
+#[rstest]
+fn a_batch_sits_at_its_newest_unread_mail() {
+    let f = feed(vec![
+        idle("newest", "unread", 1),
+        idle_noise("noise", "unread", 3),
+        idle("oldest", "unread", 5),
+    ]);
+    assert_eq!(ids(&f), vec!["newest", "batch:cleanup", "oldest"]);
+}
+
+#[rstest]
+fn a_batch_of_read_mail_can_wait() {
+    let f = feed(vec![
+        unit("new", "unread", None),
+        idle_noise("noise", "todo", 1),
+    ]);
+    assert_eq!(f.sections[1].key, Section::Later);
+}
+
+#[rstest]
+fn a_batch_of_read_mail_comes_after_the_cards_that_can_wait() {
+    let f = feed(vec![
+        idle_noise("noise", "todo", 1),
+        unit("plain", "todo", Some(judged(Kind::Cleanup))),
+    ]);
+    assert_eq!(ids(&f), vec!["plain", "batch:cleanup"]);
+}
+
+#[rstest]
+fn the_unread_section_shows_its_newest_cards() {
+    let units = (0..MAX_CARDS_PER_SECTION + 3)
+        .map(|i| unit(&format!("t{i}"), "unread", None))
+        .collect();
+    assert_eq!(feed(units).sections[0].more, 3);
+}
+
+#[rstest]
+fn mail_back_from_later_is_first_among_unread() {
+    let back = FeedUnit {
+        back_from_later: Some("Friday evening".into()),
+        ..idle("back", "unread", 5)
+    };
+    let f = feed(vec![idle("newer", "unread", 1), back]);
+    assert_eq!(ids(&f), vec!["back", "newer"]);
 }

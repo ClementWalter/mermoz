@@ -47,6 +47,34 @@ public struct FeedNavigator: Equatable, Sendable {
     }
 }
 
+/// The focused card stays where it stands across a refresh that would move it to
+/// another section (an Unread card once read), so focus and pane stay put under the
+/// user's eyes; it takes its new place at the first refresh after focus moves on.
+public enum FeedHold {
+    public static func keep(_ focus: String?, from old: Feed?, in new: Feed) -> Feed {
+        guard let focus, let old,
+              let si = old.sections.firstIndex(where: { $0.cards.contains { $0.id == focus } }),
+              let ci = old.sections[si].cards.firstIndex(where: { $0.id == focus }),
+              var card = new.card(focus)
+        else { return new }
+        let key = old.sections[si].key
+        guard card.section != key else { return new }
+        var next = new
+        for i in next.sections.indices { next.sections[i].cards.removeAll { $0.id == focus } }
+        next.sections.removeAll { $0.cards.isEmpty }
+        card.section = key
+        if let s = next.sections.firstIndex(where: { $0.key == key }) {
+            next.sections[s].cards.insert(card, at: min(ci, next.sections[s].cards.count))
+        } else {
+            // Its section is gone: put back after the sections that came before it.
+            let before = Set(old.sections[..<si].map(\.key))
+            let at = next.sections.firstIndex { !before.contains($0.key) } ?? next.sections.count
+            next.sections.insert(FeedSection(key: key, title: old.sections[si].title, cards: [card]), at: at)
+        }
+        return next
+    }
+}
+
 /// Recently fetched conversations, so moving to a card shows its mail at once.
 public struct DetailCache: Sendable {
     public let capacity: Int

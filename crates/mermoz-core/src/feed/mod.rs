@@ -210,6 +210,8 @@ pub fn judgment(answers: &Value, dates: &[dates::DateCandidate], amounts: &[Stri
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Section {
+    /// Mail in the Unread status, newest first, whatever its place once read.
+    Unread,
     Now,
     Today,
     Week,
@@ -218,7 +220,8 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 6] = [
+        Section::Unread,
         Section::Now,
         Section::Today,
         Section::Week,
@@ -228,6 +231,7 @@ impl Section {
 
     pub fn title(self) -> &'static str {
         match self {
+            Section::Unread => "Unread",
             Section::Now => "Now",
             Section::Today => "Today",
             Section::Week => "This week",
@@ -262,6 +266,11 @@ pub struct FeedUnit {
 impl FeedUnit {
     pub fn primary(&self) -> &ThreadSummary {
         &self.threads[0]
+    }
+
+    /// One of its threads is in the Unread status.
+    pub fn is_unread(&self) -> bool {
+        self.threads.iter().any(|t| t.status == "unread")
     }
 }
 
@@ -314,7 +323,8 @@ pub fn nudge_after_days(typical_reply_days: Option<f64>) -> i64 {
         .max(2)
 }
 
-/// Picks the section. Deadlines first, then urgent replies, then the rest.
+/// Picks the section a card has once read ([`assemble`] puts unread mail on top of
+/// these). Deadlines first, then urgent replies, then the rest.
 pub fn section(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Section {
     let j = u.judgment.as_ref();
     if matches!(kind, Kind::Cleanup | Kind::Reading) {
@@ -663,11 +673,50 @@ fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
     }
 }
 
-/// A unit with its section, sort key and kind, before its card is built.
-type Placed = (Section, (i64, i64, i64), Kind, FeedUnit);
+/// A card before it is built: a unit with its kind, or a batch already built.
+enum Item {
+    Single(Kind, Box<FeedUnit>),
+    Batch(Box<Card>),
+}
+
+/// An item with its section and sort key.
+type Placed = (Section, (i64, i64, i64), Item);
+
+/// The Unread section's order: mail just back from Later (the user asked to see it
+/// then), then newest first.
+fn newest_first(back_from_later: bool, last_date: i64) -> (i64, i64, i64) {
+    (i64::from(!back_from_later), -last_date, 0)
+}
+
+/// Places a batch: on top while it holds unread mail (at its newest unread mail's
+/// date), else after the single cards of the mail that can wait.
+fn place_batch(kind: Kind, units: Vec<FeedUnit>, ai: &HashSet<String>) -> Placed {
+    let newest_unread = units
+        .iter()
+        .filter(|u| u.is_unread())
+        .map(|u| u.primary().last_date)
+        .max();
+    let mut card = batch(kind, units, ai);
+    match newest_unread {
+        Some(d) => {
+            card.section = Section::Unread;
+            (
+                Section::Unread,
+                newest_first(false, d),
+                Item::Batch(Box::new(card)),
+            )
+        }
+        None => (
+            Section::Later,
+            (i64::MAX, 0, 0),
+            Item::Batch(Box::new(card)),
+        ),
+    }
+}
 
 /// Builds the feed: kind and section per unit, batches for automated mail and
-/// newsletters, sections in order, cards in order within each. `ai_accounts` are the
+/// newsletters, sections in order, cards in order within each. Unread mail is on top,
+/// newest first; the rest follows [`section`] and [`order_key`]. `ai_accounts` are the
 /// accounts whose mail may go to an AI.
 pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<String>) -> Feed {
     let open = units.iter().map(|u| u.threads.len()).sum();
@@ -677,7 +726,7 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
         .map(|u| u.threads.len())
         .sum();
     // Cards are built only for the units shown: ordering needs every unit, words don't.
-    let mut singles: Vec<Placed> = vec![];
+    let mut placed: Vec<Placed> = vec![];
     let (mut cleanup, mut reading) = (vec![], vec![]);
     for u in units {
         let kind = effective_kind(&u);
@@ -686,14 +735,25 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
         match kind {
             Kind::Cleanup if u.learned_noise => cleanup.push(u),
             Kind::Reading if u.learned_noise => reading.push(u),
+            _ if u.is_unread() => {
+                let key = newest_first(u.back_from_later.is_some(), u.primary().last_date);
+                placed.push((Section::Unread, key, Item::Single(kind, Box::new(u))));
+            }
             _ => {
                 let sec = section(&u, kind, today);
                 let key = order_key(&u, today);
-                singles.push((sec, key, kind, u));
+                placed.push((sec, key, Item::Single(kind, Box::new(u))));
             }
         }
     }
-    singles.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    if !cleanup.is_empty() {
+        placed.push(place_batch(Kind::Cleanup, cleanup, ai_accounts));
+    }
+    if !reading.is_empty() {
+        placed.push(place_batch(Kind::Reading, reading, ai_accounts));
+    }
+    // Stable: a batch tying with single cards comes after them.
+    placed.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
     let mut sections: Vec<FeedSection> = Section::ALL
         .iter()
         .map(|s| FeedSection {
@@ -703,21 +763,17 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
             more: 0,
         })
         .collect();
-    for (sec, _, kind, u) in singles {
+    for (sec, _, item) in placed {
         let s = &mut sections[sec as usize];
-        if s.cards.len() == MAX_CARDS_PER_SECTION {
-            s.more += 1;
-            continue;
+        match item {
+            // Never left out: a batch is how the noise gets cleared.
+            Item::Batch(card) => s.cards.push(*card),
+            Item::Single(..) if s.cards.len() >= MAX_CARDS_PER_SECTION => s.more += 1,
+            Item::Single(kind, u) => {
+                let ai = ai_accounts.contains(&u.primary().account_id);
+                s.cards.push(single(*u, kind, sec, today, ai));
+            }
         }
-        let ai = ai_accounts.contains(&u.primary().account_id);
-        s.cards.push(single(u, kind, sec, today, ai));
-    }
-    let later = &mut sections[Section::Later as usize].cards;
-    if !cleanup.is_empty() {
-        later.push(batch(Kind::Cleanup, cleanup, ai_accounts));
-    }
-    if !reading.is_empty() {
-        later.push(batch(Kind::Reading, reading, ai_accounts));
     }
     sections.retain(|s| !s.cards.is_empty());
     Feed {

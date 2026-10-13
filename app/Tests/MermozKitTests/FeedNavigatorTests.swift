@@ -123,3 +123,65 @@ private func detail(_ id: String) -> ThreadDetail { .placeholder(thread(id)) }
 @Test func aPlaceholderShowsTheSubjectWithoutMessages() {
     #expect(ThreadDetail.placeholder(thread("a")).messages.isEmpty)
 }
+
+// MARK: reading an Unread card
+
+private func card(_ id: String, in section: String) -> FeedCard {
+    FeedCard(id: id, kind: .reply, section: section, thread: thread("thr_\(id)"), title: "T")
+}
+
+/// Before: two Unread cards on top. After reading `u`, mermozd puts it in Today.
+private let beforeReading = Feed(sections: [
+    FeedSection(key: "unread", title: "Unread", cards: [card("u", in: "unread"), card("v", in: "unread")]),
+    FeedSection(key: "today", title: "Today", cards: [card("a", in: "today")]),
+])
+private let afterReading = Feed(sections: [
+    FeedSection(key: "unread", title: "Unread", cards: [card("v", in: "unread")]),
+    FeedSection(key: "today", title: "Today", cards: [card("a", in: "today"), card("u", in: "today")]),
+])
+
+@Test func readingTheFocusedUnreadCardKeepsItInPlace() {
+    let next = FeedHold.keep("u", from: beforeReading, in: afterReading)
+    #expect(next.cards.map(\.id) == ["u", "v", "a"])
+}
+
+@Test func readingTheFocusedUnreadCardDoesNotMoveFocus() {
+    let next = FeedHold.keep("u", from: beforeReading, in: afterReading)
+    var nav = on("u")
+    nav.move(by: 0, in: next)
+    #expect(nav == on("u"))
+}
+
+@Test func theNextCardAfterAReadOneIsTheNextUnread() {
+    let next = FeedHold.keep("u", from: beforeReading, in: afterReading)
+    var nav = on("u")
+    nav.move(by: 1, in: next)
+    #expect(nav == on("v"))
+}
+
+@Test func aHeldCardStillSaysUnread() {
+    let next = FeedHold.keep("u", from: beforeReading, in: afterReading)
+    #expect(next.card("u")?.section == "unread")
+}
+
+@Test func onceFocusMovedOnTheReadCardTakesItsPlace() {
+    let held = FeedHold.keep("u", from: beforeReading, in: afterReading)
+    let next = FeedHold.keep("v", from: held, in: afterReading)
+    #expect(next.cards.map(\.id) == ["v", "a", "u"])
+}
+
+@Test func theLastUnreadCardKeepsItsSectionWhileFocused() {
+    let before = Feed(sections: [
+        FeedSection(key: "unread", title: "Unread", cards: [card("u", in: "unread")]),
+        FeedSection(key: "today", title: "Today", cards: [card("a", in: "today")]),
+    ])
+    let after = Feed(sections: [
+        FeedSection(key: "today", title: "Today", cards: [card("u", in: "today"), card("a", in: "today")]),
+    ])
+    #expect(FeedHold.keep("u", from: before, in: after).sections.map(\.key) == ["unread", "today"])
+}
+
+@Test func aCardThatStaysInItsSectionIsNotHeld() {
+    let next = FeedHold.keep("v", from: beforeReading, in: afterReading)
+    #expect(next == afterReading)
+}

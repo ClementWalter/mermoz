@@ -3636,8 +3636,109 @@ fn a_bill_shows_the_amount_written_in_the_mail(judged_demo: World) {
 }
 
 #[rstest]
-fn a_bill_due_this_week_is_for_today(judged_demo: World) {
+fn a_read_bill_due_this_week_is_for_today(judged_demo: World) {
+    judged_demo.read("Facture cantine");
     assert_eq!(judged_demo.section_of("Facture cantine"), "today");
+}
+
+// ---- unread on top ------------------------------------------------------------------
+
+impl World {
+    /// Reads the thread of the card whose subject starts with `subject`, as the pane does.
+    fn read(&self, subject: &str) {
+        let id = self.card(subject)["thread"]["id"].clone();
+        self.ok("threads.mark_read", json!({ "id": id }));
+    }
+
+    fn section_keys(&self) -> Vec<Value> {
+        self.feed()["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["key"].clone())
+            .collect()
+    }
+
+    fn unread_section(&self) -> Vec<Value> {
+        self.feed()["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["key"] == "unread")
+            .map(|s| s["cards"].as_array().unwrap().clone())
+            .unwrap_or_default()
+    }
+}
+
+#[rstest]
+fn unread_mail_is_the_first_section(judged_demo: World) {
+    judged_demo.read("Facture cantine");
+    assert_eq!(judged_demo.section_keys()[0], "unread");
+}
+
+#[rstest]
+fn unread_mail_comes_before_a_read_bill_due_this_week(judged_demo: World) {
+    judged_demo.read("Facture cantine");
+    let cards = judged_demo.cards();
+    let bill = cards
+        .iter()
+        .position(|c| c["thread"]["subject"] == "Facture cantine — octobre")
+        .unwrap();
+    let last_unread = cards.iter().rposition(|c| c["section"] == "unread");
+    assert!(last_unread.is_some_and(|u| u < bill));
+}
+
+#[rstest]
+fn unread_mail_is_newest_first(judged_demo: World) {
+    let dates: Vec<i64> = judged_demo
+        .unread_section()
+        .iter()
+        .filter(|c| c["members"].as_array().unwrap().is_empty())
+        .map(|c| c["thread"]["last_date"].as_i64().unwrap())
+        .collect();
+    assert!(dates.windows(2).all(|w| w[0] >= w[1]), "{dates:?}");
+}
+
+#[rstest]
+fn an_unread_card_keeps_its_kind(judged_demo: World) {
+    assert_eq!(judged_demo.card("Carrelage")["kind"], "decision");
+}
+
+#[rstest]
+fn an_unread_card_is_in_the_unread_section(judged_demo: World) {
+    assert_eq!(judged_demo.section_of("Carrelage"), "unread");
+}
+
+#[rstest]
+fn a_batch_holding_unread_mail_is_on_top(demo: World) {
+    let batch = demo
+        .unread_section()
+        .into_iter()
+        .find(|c| c["id"] == "batch:cleanup");
+    assert!(batch.is_some());
+}
+
+#[rstest]
+fn a_batch_of_read_mail_can_wait(demo: World) {
+    let batch = demo
+        .cards()
+        .into_iter()
+        .find(|c| c["id"] == "batch:cleanup")
+        .unwrap();
+    // Kept open in To do: reading alone would archive it, as the user always does.
+    let ids: Vec<Value> = batch["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].clone())
+        .collect();
+    demo.ok("threads.update", json!({ "ids": ids, "status": "todo" }));
+    let after = demo
+        .cards()
+        .into_iter()
+        .find(|c| c["id"] == "batch:cleanup")
+        .unwrap();
+    assert_eq!(after["section"], "later");
 }
 
 #[rstest]
@@ -4114,7 +4215,7 @@ fn a_returning_thread_is_first_in_the_feed(demo: World) {
             .iter()
             .any(|c| c["reasons"][0] == "You set this for Friday evening.")
     });
-    assert_eq!(demo.card("Carrelage")["section"], "now");
+    assert_eq!(demo.cards()[0]["id"], demo.card("Carrelage")["id"]);
 }
 
 #[rstest]

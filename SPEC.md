@@ -461,7 +461,11 @@ time; archiving it from its card is a yes for that sender, recorded with the Sor
 queue's answers. A section shows its 40 most pressing cards and a batch its 50
 latest mails; the List shows the rest.
 
-**Sections.** Now (due within two days, or urgent with someone waiting on you),
+**Sections.** Unread first: every thread in the Unread status, newest first (mail
+back from Later on top), whatever its deadline, as its usual card; a batch holding
+unread mail sits there too, at its newest unread mail. Reading the focused card
+leaves it in place until focus moves on; the next refresh puts it where it belongs.
+Then Now (due within two days, or urgent with someone waiting on you),
 Today (due within a week, urgent, or a wait past twice the sender's usual answer
 time), This week, Waiting for answers, Can wait (automatic mail, newsletters, and
 anything with no news for two months and no date ahead). A short

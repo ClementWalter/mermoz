@@ -41,7 +41,8 @@ extension AppModel {
             log.info("feed fetched: \(f.cards.count) cards in \((ContinuousClock.now - started).ms) ms")
             // Cards folding away stay until their strip is gone, so nothing jumps.
             let leaving = feed?.cards.filter { feedStrips[$0.id] != nil } ?? []
-            var next = f
+            // The focused card keeps its place (an Unread card being read) until focus moves on.
+            var next = FeedHold.keep(feedFocus, from: feed, in: f)
             for c in leaving where next.card(c.id) == nil {
                 let was = feed?.sections.first { $0.key == c.section }?.cards.firstIndex { $0.id == c.id } ?? 0
                 if let s = next.sections.firstIndex(where: { $0.key == c.section }) {
