@@ -1158,6 +1158,10 @@ fn messages_where(
         if m.body_new.contains("](") || m.body_new.contains("---") || m.body_new.contains("**") {
             m.body_new = crate::newsletter::plain_markdown(&m.body_new);
         }
+        // Tags left in a plain part ("…<BR>") are never shown as text.
+        if m.body_new.contains('<') {
+            m.body_new = crate::newsletter::without_tags(&m.body_new);
+        }
         // Invisible characters and picture placeholders never fill a bubble; a message
         // read (not skipped for speed) that comes out blank is read from its HTML, else
         // its preview.
@@ -1212,9 +1216,17 @@ fn fallback_text(conn: &Connection, m: &Message) -> Result<String> {
 /// or None when its HTML must be read instead (a newsletter's degraded plain part).
 fn reading(m: &Message, listed: bool) -> Option<(String, bool)> {
     use crate::{newsletter, quote};
+    // A plain part that is HTML source: its HTML part is read, else the source as HTML.
+    if newsletter::looks_like_html(&m.body_text) {
+        if m.has_html {
+            return None;
+        }
+        let text = newsletter::clean(&newsletter::html_text(&m.body_text));
+        return Some((text, true));
+    }
     // A forward's header looks like quoted history but is the content.
     if quote::is_forward(&m.subject) {
-        return Some((m.body_text.trim().to_string(), false));
+        return Some((quote::forward_view(&m.body_text), false));
     }
     let degraded = newsletter::degraded(&m.body_text);
     if degraded && m.has_html {

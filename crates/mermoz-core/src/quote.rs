@@ -36,8 +36,67 @@ const FORWARD: &[&str] = &[
     "forwarded message",
     "begin forwarded message",
     "message transféré",
+    "début du message réexpédié",
+    "message réexpédié",
     "weitergeleitete nachricht",
 ];
+
+/// A line that only introduces a forwarded email, `>` quoting aside.
+fn is_forward_marker(line: &str) -> bool {
+    let t = line.trim().trim_start_matches(['>', ' ']);
+    let low = t.to_lowercase();
+    !t.is_empty() && t.chars().count() <= 80 && FORWARD.iter().any(|f| low.contains(f))
+}
+
+/// A header line of a forwarded email ("De: …", "Objet : …", "> Date: …").
+fn is_forward_header(line: &str) -> bool {
+    let t = line.trim_start().trim_start_matches(['>', ' ', '*']);
+    starts_ci(t, HEADER_FROM)
+        || starts_ci(t, HEADER_REST)
+        || starts_ci(t, &["cc:", "cc :", "reply-to:", "répondre à"])
+}
+
+/// A forward as it reads in a chat: the note above it (signature off), then the
+/// forwarded email's text, without its marker line, header block or `>` quoting.
+pub fn forward_view(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(m) = lines.iter().position(|l| is_forward_marker(l)) else {
+        return text.trim().to_string();
+    };
+    let (note, _) = strip_signature(lines[..m].join("\n").trim());
+    let rest = &lines[m + 1..];
+    let content: Vec<&&str> = rest.iter().filter(|l| !l.trim().is_empty()).collect();
+    let quoted = content
+        .iter()
+        .filter(|l| l.trim_start().starts_with('>'))
+        .count();
+    let unq: Vec<&str> = if !content.is_empty() && quoted * 2 >= content.len() {
+        rest.iter()
+            .map(|l| {
+                let t = l.trim_start();
+                t.strip_prefix('>')
+                    .map_or(*l, |r| r.strip_prefix(' ').unwrap_or(r))
+            })
+            .collect()
+    } else {
+        rest.to_vec()
+    };
+    let start = unq
+        .iter()
+        .position(|l| !l.trim().is_empty())
+        .unwrap_or(unq.len());
+    let mut end = start;
+    while end < unq.len() && is_forward_header(unq[end]) {
+        end += 1;
+    }
+    let body = unq[end..].join("\n");
+    let body = body.trim();
+    match (note.is_empty(), body.is_empty()) {
+        (true, _) => body.to_string(),
+        (false, true) => note,
+        (false, false) => format!("{note}\n\n{body}"),
+    }
+}
 const ORIGINAL: &[&str] = &[
     "-----original message-----",
     "----- original message -----",
@@ -225,13 +284,16 @@ pub fn split_text(text: &str) -> (String, bool) {
         return (text.trim_end().to_string(), false);
     };
     let fresh_lower: String = lines[..cut].join("\n").to_lowercase();
-    if FORWARD.iter().any(|f| fresh_lower.contains(f))
+    // A forward quoted by Apple Mail ("> Début du message réexpédié :") is content too.
+    let quoted_forward = lines[cut..].iter().take(4).any(|l| is_forward_marker(l));
+    if quoted_forward
+        || FORWARD.iter().any(|f| fresh_lower.contains(f))
         || (cut == 0 && {
             let lower = text.to_lowercase();
             FORWARD.iter().any(|f| lower.contains(f))
         })
     {
-        return (text.trim_end().to_string(), false);
+        return (forward_view(text), false);
     }
     // Drop the separator rules and blank lines that sat just above the quote.
     while cut > 0 && (lines[cut - 1].trim().is_empty() || is_rule(lines[cut - 1])) {
@@ -367,6 +429,26 @@ mod tests {
     #[case::plain(&"Just a note.", false)]
     fn reports_whether_quote_was_removed(#[case] input: &str, #[case] want: bool) {
         assert_eq!(split_text(input).1, want);
+    }
+
+    /// An Apple Mail forward in French: a note, the sender's contact block, then the
+    /// forwarded email quoted with ">" under "Début du message réexpédié".
+    const APPLE_FR_FORWARD: &str = "On y va mardi ?\r\n\r\nLéo Martin\r\nleo.martin@mail.example\r\n+33 6 11 22 33 44\r\n\r\n> Début du message réexpédié :\r\n> \r\n> De: Nina Roy <nina@club.example>\r\n> Objet: Apéro du club\r\n> Date: 8 octobre 2026 à 11:34:44 UTC+2\r\n> À: Léo Martin <leo.martin@mail.example>\r\n> \r\n> Bonjour à tous,\r\n> \r\n> Apéro mardi 20 octobre à 19h.\r\n";
+
+    #[rstest]
+    fn an_apple_french_forward_reads_as_note_then_content() {
+        assert_eq!(
+            forward_view(APPLE_FR_FORWARD),
+            "On y va mardi ?\n\nBonjour à tous,\n\nApéro mardi 20 octobre à 19h."
+        );
+    }
+
+    #[rstest]
+    #[case::marker("réexpédié")]
+    #[case::header("Objet:")]
+    #[case::quote_mark("> ")]
+    fn an_apple_forward_shows_no_header(#[case] mark: &str) {
+        assert!(!split_text(APPLE_FR_FORWARD).0.contains(mark));
     }
 
     #[rstest]

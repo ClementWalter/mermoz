@@ -42,6 +42,10 @@ const VIEW_ONLINE: &[&str] = &[
     "view it in your browser",
     "view email in browser",
     "view online",
+    "open in browser",
+    "open in your browser",
+    "ouvrir dans le navigateur",
+    "ouvrir dans votre navigateur",
     "web version",
     "having trouble viewing",
     "can't see this email",
@@ -217,6 +221,32 @@ pub fn clean(text: &str) -> String {
     folded.join("\n").trim().to_string()
 }
 
+/// Whether a "plain" part is really HTML source (some senders put the page itself in
+/// text/plain): it opens on a doctype or `<html>`, or tags make up much of it.
+pub fn looks_like_html(text: &str) -> bool {
+    let head: String = text
+        .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}')
+        .chars()
+        .take(20)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if head.starts_with("<!doctype") || head.starts_with("<html") || head.starts_with("<?xml") {
+        return true;
+    }
+    // Cheap first: prose with a stray "<br>" never gets the full count.
+    if !text.contains("</") {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    const TAGS: &[&str] = &[
+        "<div", "</div", "<td", "</td", "<tr", "</tr", "<table", "<span", "</span", "<p>", "<p ",
+        "</p>", "<br", "<a ", "</a>", "<img", "<meta", "<style", "<font", "<center",
+    ];
+    let tags: usize = TAGS.iter().map(|t| lower.matches(t).count()).sum();
+    let words = text.split_whitespace().count().max(1);
+    tags >= 8 && tags * 6 >= words
+}
+
 /// Whether a plain part is a degraded dump of the HTML: empty, opening on a link, or
 /// mostly links.
 pub fn degraded(text: &str) -> bool {
@@ -248,6 +278,11 @@ pub fn degraded(text: &str) -> bool {
 /// Readable text of an HTML body: headings, paragraphs and list items on their own
 /// lines, links as their words, pictures, styles and scripts left out.
 pub fn html_text(html: &str) -> String {
+    // The head (title, preloads, the doctype's address) is never text.
+    let html = match html.to_ascii_lowercase().find("</head>") {
+        Some(end) => &html[end + "</head>".len()..],
+        None => html,
+    };
     // Block ends become line breaks before the tags are dropped.
     let mut marked = String::with_capacity(html.len());
     let lower = html.to_ascii_lowercase();
@@ -292,10 +327,55 @@ pub fn html_text(html: &str) -> String {
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'");
+    // Escaped markup in the page (templates, quoted source) decodes back into tags.
+    let text = without_tags(&text);
     text.lines()
         .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// HTML element names a text never means literally.
+const TAG_NAMES: &[&str] = &[
+    "a", "abbr", "b", "body", "br", "center", "div", "em", "font", "h1", "h2", "h3", "h4", "h5",
+    "h6", "head", "hr", "html", "i", "img", "li", "link", "meta", "ol", "p", "span", "strong",
+    "style", "table", "tbody", "td", "th", "thead", "tr", "u", "ul", "!doctype",
+];
+
+/// `text` with HTML tags (`<p>`, `</div>`, `<a href=…>`) removed; a `<br>` or a block
+/// end becomes a line break. Other angle brackets ("<3", "a < b", "<x@y.z>") stay.
+pub fn without_tags(text: &str) -> String {
+    if !text.contains('<') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let name: String = after
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '!')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let close = after.find('>');
+        match close {
+            Some(c) if TAG_NAMES.contains(&name.as_str()) && !after[..c].contains('<') => {
+                if matches!(name.as_str(), "br" | "p" | "div" | "li" | "tr") && !out.ends_with('\n')
+                {
+                    out.push('\n');
+                }
+                rest = &after[c + 1..];
+            }
+            _ => {
+                out.push('<');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// What a bulk mail shows in a chat bubble: its HTML read as text when the plain part
@@ -303,7 +383,12 @@ pub fn html_text(html: &str) -> String {
 pub fn readable(plain: &str, html: Option<&str>) -> String {
     let from_plain = clean(plain);
     match html {
-        Some(h) if plain.trim().is_empty() || degraded(plain) || from_plain.is_empty() => {
+        Some(h)
+            if plain.trim().is_empty()
+                || degraded(plain)
+                || looks_like_html(plain)
+                || from_plain.is_empty() =>
+        {
             let from_html = clean(&html_text(h));
             if from_html.is_empty() {
                 from_plain
@@ -759,6 +844,65 @@ mod tests {
         assert_eq!(
             tidy("Hello Nora,\n\nSee you Monday."),
             "Hello Nora,\n\nSee you Monday."
+        );
+    }
+
+    /// An event invitation whose text/plain part is the page's HTML source, with
+    /// tracking links in the doctype and head.
+    const RAW_PLAIN: &str = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"https://mail.events.example/ls/click?upn=abc123\">\r\n<html dir=\"ltr\" lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width\"><title>Forum Calcul 2026</title><link rel=\"preload\" as=\"image\" href=\"https://mail.events.example/ls/click?upn=def456\"></head>\r\n<body><div><p>Dear guest,</p><p>Your registration to the Forum Calcul 2026 is confirmed.</p><p>See you on 4 November.</p></div></body></html>";
+
+    #[rstest]
+    #[case::doctype(RAW_PLAIN, true)]
+    #[case::html_tag("<html><body><p>Bonjour</p></body></html>", true)]
+    #[case::prose("Bonjour, voici le <b>plan</b> pour demain.", false)]
+    #[case::code_sample("Use </div> to close it.", false)]
+    fn raw_html_plain_parts(#[case] text: &str, #[case] want: bool) {
+        assert_eq!(looks_like_html(text), want);
+    }
+
+    #[rstest]
+    fn a_raw_html_plain_part_reads_from_the_html_part() {
+        assert_eq!(
+            readable(RAW_PLAIN, Some("<p>Your registration is confirmed.</p>")),
+            "Your registration is confirmed."
+        );
+    }
+
+    #[rstest]
+    #[case::doctype("<!DOCTYPE")]
+    #[case::tag("<p>")]
+    #[case::tracking_link("ls/click")]
+    #[case::title("</title>")]
+    fn raw_html_source_never_shows(#[case] mark: &str) {
+        assert!(!clean(&html_text(RAW_PLAIN)).contains(mark));
+    }
+
+    #[rstest]
+    fn raw_html_source_reads_as_its_words() {
+        assert_eq!(
+            clean(&html_text(RAW_PLAIN)),
+            "Dear guest,\n\nYour registration to the Forum Calcul 2026 is confirmed.\n\nSee you on 4 November."
+        );
+    }
+
+    #[rstest]
+    #[case::break_tag("Merci de ne pas répondre.<BR>", "Merci de ne pas répondre.\n")]
+    #[case::paragraphs("<p>Bonjour,</p><p>Voici.</p>", "\nBonjour,\nVoici.\n")]
+    #[case::link("<a href=\"https://x.example\">Logout</a>", "Logout")]
+    #[case::heart("I <3 it", "I <3 it")]
+    #[case::comparison("a < b and c > d", "a < b and c > d")]
+    #[case::address("Nora <nora@x.example>", "Nora <nora@x.example>")]
+    fn tags_are_removed_from_text(#[case] text: &str, #[case] want: &str) {
+        assert_eq!(without_tags(text), want);
+    }
+
+    #[rstest]
+    fn escaped_markup_in_a_page_never_reads_as_tags() {
+        assert_eq!(
+            html_text(
+                "<p>Menu</p><p>&lt;li&gt;&lt;a href=\"https://x.example/out\"&gt;Logout&lt;/a&gt;&lt;/li&gt;</p>"
+            ),
+            "\nMenu\n\nLogout\n"
         );
     }
 
