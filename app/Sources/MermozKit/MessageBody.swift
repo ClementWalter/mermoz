@@ -98,8 +98,8 @@ public struct BubbleParts: Equatable, Sendable {
 
     /// The message's new text only: quoted history and signature already folded locally.
     public static func compact(_ m: Message) -> BubbleParts {
-        let new = m.displayBody.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = new.isEmpty ? m.bodyText.trimmingCharacters(in: .whitespacesAndNewlines) : new
+        let new = withoutLinkLines(m.displayBody)
+        let text = new.isEmpty ? withoutLinkLines(m.bodyText) : new
         return BubbleParts(recipients: nil, text: text, controls: false, chips: [],
                            thumbnails: MessageBody.inlineImages(m), fileCount: MessageBody.chips(m).count)
     }
@@ -108,6 +108,18 @@ public struct BubbleParts: Equatable, Sendable {
     public static func expanded(_ m: Message) -> BubbleParts {
         BubbleParts(recipients: Recipients.line(to: m.to, cc: m.cc, bcc: m.bcc ?? []), text: m.bodyText,
                     controls: true, chips: MessageBody.chips(m), thumbnails: [], fileCount: 0)
+    }
+
+    /// A bubble never opens on a bare link ("view in browser", tracking): lines that are
+    /// only a URL are left to the whole email.
+    public static func withoutLinkLines(_ text: String) -> String {
+        text.components(separatedBy: "\n")
+            .filter { l in
+                let t = l.trimmingCharacters(in: .whitespaces)
+                return !((t.hasPrefix("http://") || t.hasPrefix("https://")) && !t.contains(" "))
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Compact text longer than about eight lines starts clamped, behind "Show more".

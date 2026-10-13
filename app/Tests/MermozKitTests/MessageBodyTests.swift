@@ -211,3 +211,12 @@ private func said(_ id: String, by email: String, at minutes: Int64, mine: Bool 
     let items = [said("a", by: "nora@x", at: 0), .marker(threadId: "t2", subject: "s", date: 1, joined: true), said("b", by: "nora@x", at: 5)]
     #expect(ChatRuns.startsRun(items) == ["a", "b"])
 }
+
+@Test func aBubbleNeverOpensOnABareLink() {
+    let m = message(text: "https://us.list-manage.com/AIW_vCP29mP?e=1\n\nLe marché rouvre samedi", new: "")
+    #expect(BubbleParts.compact(m).text == "Le marché rouvre samedi")
+}
+
+@Test func linksInsideSentencesStayInTheBubble() {
+    #expect(BubbleParts.withoutLinkLines("Book on https://notary.example/rdv today") == "Book on https://notary.example/rdv today")
+}

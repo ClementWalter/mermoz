@@ -264,6 +264,12 @@ pub fn snippet(body: &str) -> String {
         '\u{180E}',
     ];
     let (text, _) = readable(body);
+    // A newsletter dump opens on its "view in browser" link: preview its content instead.
+    let text = if crate::newsletter::degraded(&text) {
+        crate::newsletter::clean(&text)
+    } else {
+        text
+    };
     let looks_like_css = |l: &str| {
         let t = l.trim();
         t.starts_with('@')

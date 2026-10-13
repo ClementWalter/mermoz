@@ -996,7 +996,8 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
     let mut st = conn.prepare_cached(&format!(
         "SELECT m.id, m.thread_id, from_name, from_email, to_json, cc_json, date, subject, body_text,
            body_html IS NOT NULL, is_from_me,
-           (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json
+           (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json,
+           m.list_id IS NOT NULL
          FROM messages m WHERE {filter} ORDER BY date, m.rowid"
     ))?;
     let mut msgs = st
@@ -1004,36 +1005,64 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
             let to: String = r.get(4)?;
             let cc: String = r.get(5)?;
             let email: String = r.get(3)?;
-            Ok(Message {
-                id: r.get(0)?,
-                thread_id: r.get(1)?,
-                to: serde_json::from_str(&to).unwrap_or_default(),
-                cc: serde_json::from_str(&cc).unwrap_or_default(),
-                bcc: serde_json::from_str(&r.get::<_, String>(13)?).unwrap_or_default(),
-                date: r.get(6)?,
-                subject: r.get(7)?,
-                body_new: String::new(),
-                has_quoted: false,
-                body_clean: r.get(11)?,
-                body_text: r.get(8)?,
-                has_html: r.get::<_, i64>(9)? != 0,
-                is_from_me: r.get::<_, i64>(10)? != 0,
-                attachments: vec![],
-                auth: crate::auth::shown(r.get::<_, Option<String>>(12)?.as_deref(), &email),
-                from: Address {
-                    name: r.get(2)?,
-                    email,
+            let listed = r.get::<_, i64>(14)? != 0;
+            Ok((
+                listed,
+                Message {
+                    id: r.get(0)?,
+                    thread_id: r.get(1)?,
+                    to: serde_json::from_str(&to).unwrap_or_default(),
+                    cc: serde_json::from_str(&cc).unwrap_or_default(),
+                    bcc: serde_json::from_str(&r.get::<_, String>(13)?).unwrap_or_default(),
+                    date: r.get(6)?,
+                    subject: r.get(7)?,
+                    body_new: String::new(),
+                    has_quoted: false,
+                    body_clean: r.get(11)?,
+                    body_text: r.get(8)?,
+                    has_html: r.get::<_, i64>(9)? != 0,
+                    is_from_me: r.get::<_, i64>(10)? != 0,
+                    attachments: vec![],
+                    auth: crate::auth::shown(r.get::<_, Option<String>>(12)?.as_deref(), &email),
+                    from: Address {
+                        name: r.get(2)?,
+                        email,
+                    },
                 },
-            })
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut st = conn.prepare_cached(
         "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
     )?;
-    for m in &mut msgs {
+    for (listed, m) in &mut msgs {
         // A forward's header looks like quoted history but is the content.
         (m.body_new, m.has_quoted) = if crate::quote::is_forward(&m.subject) {
             (m.body_text.trim().to_string(), false)
+        } else if m.has_html
+            && (m.body_text.trim().is_empty() || crate::newsletter::degraded(&m.body_text))
+        {
+            // A newsletter's plain part is often a dump of links: read its HTML instead.
+            let html: Option<String> = conn
+                .query_row(
+                    "SELECT body_html FROM messages WHERE id = ?1",
+                    [&m.id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            (
+                crate::newsletter::readable(&m.body_text, html.as_deref()),
+                true,
+            )
+        } else if crate::newsletter::degraded(&m.body_text) {
+            (crate::newsletter::clean(&m.body_text), true)
+        } else if *listed {
+            // Mailing-list posts carry footers and tracking links even in a clean plain part.
+            (
+                crate::newsletter::clean(&crate::quote::readable(&m.body_text).0),
+                true,
+            )
         } else {
             crate::quote::readable(&m.body_text)
         };
@@ -1049,7 +1078,7 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
             })?
             .collect::<rusqlite::Result<_>>()?;
     }
-    Ok(msgs)
+    Ok(msgs.into_iter().map(|(_, m)| m).collect())
 }
 
 fn draft_row(r: &Row) -> rusqlite::Result<Draft> {

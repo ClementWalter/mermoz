@@ -20,6 +20,7 @@ pub mod inline;
 pub mod jev;
 pub mod mime;
 pub mod model;
+pub mod newsletter;
 pub mod oauth;
 pub mod paths;
 pub mod quote;

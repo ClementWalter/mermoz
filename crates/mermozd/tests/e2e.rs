@@ -3508,3 +3508,56 @@ fn feed_stops_asking_jev_once_credits_ran_out(broke_demo: World) {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(broke_demo.mailbox.lock().unwrap().jev_auth.len(), before);
 }
+
+// ---- newsletters read from their content -----------------------------------------
+
+/// A newsletter whose plain part is a dump opening on its "view in browser" link.
+fn raw_newsletter() -> String {
+    "From: Lettre du Quartier <news@quartier.example>\r\nTo: me@example.com\r\nSubject: La lettre d'octobre\r\nMessage-ID: <news@example.com>\r\nList-Id: Lettre <lettre.quartier.example>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"A\"\r\n\r\n--A\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nhttps://us.list-manage.com/AIW_vCP29mP?e=4f2a9c&c2id=1b2c3d4e5f60718293a4b5c6\r\n\r\n\r\n42% des habitants utilisent le velo.\r\n--A\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p><a href=\"https://us.list-manage.com/v?u=1\">Voir la version en ligne</a></p><h1>Le marche rouvre samedi</h1><p>42% des habitants utilisent le velo.</p><p>Se desabonner</p>\r\n--A--\r\n".into()
+}
+
+fn newsletter(w: &World) -> Value {
+    w.mailbox
+        .lock()
+        .unwrap()
+        .add_message("nl1", "tnl", &["INBOX"], &raw_newsletter(), NOW + 1000);
+    w.wait_until("the newsletter", |w| {
+        w.ok("threads.list", json!({}))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "La lettre d'octobre")
+    });
+    let id = w.thread_by_subject("La lettre d'octobre")["id"].clone();
+    w.ok("threads.get", json!({ "id": id }))
+}
+
+#[rstest]
+fn a_newsletter_bubble_opens_on_its_headline(synced: World) {
+    let m = &newsletter(&synced)["messages"][0];
+    assert!(
+        m["body_new"]
+            .as_str()
+            .unwrap()
+            .starts_with("Le marche rouvre samedi")
+    );
+}
+
+#[rstest]
+fn a_newsletter_bubble_has_no_tracking_link(synced: World) {
+    let m = &newsletter(&synced)["messages"][0];
+    assert!(!m["body_new"].as_str().unwrap().contains("list-manage"));
+}
+
+#[rstest]
+fn a_newsletter_preview_has_no_tracking_link(synced: World) {
+    newsletter(&synced);
+    let t = synced.thread_by_subject("La lettre d'octobre");
+    assert!(!t["snippet"].as_str().unwrap().contains("list-manage"));
+}
+
+#[rstest]
+fn the_whole_newsletter_keeps_its_original_text(synced: World) {
+    let m = &newsletter(&synced)["messages"][0];
+    assert!(m["body_text"].as_str().unwrap().contains("list-manage"));
+}
