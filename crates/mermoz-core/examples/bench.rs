@@ -252,6 +252,9 @@ fn main() {
         ("search common word", "meeting"),
         ("search two words", "report w3f"),
         ("search from:", "from:person"),
+        ("search first keystroke", "m"),
+        ("search from: first letter", "from:p"),
+        ("search two long words", "meeting report"),
     ] {
         let mut s = time(30, || {
             store.search(q, 50).unwrap();

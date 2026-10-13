@@ -883,7 +883,9 @@ fn display_person(name: &str) -> String {
 }
 
 /// Turns free text into a safe FTS5 query: every word is a quoted prefix term,
-/// `from:x` / `to:x` / `subject:x` restrict to a column.
+/// `from:x` / `to:x` / `subject:x` restrict to a column. A single character is a whole
+/// word until a second one is typed: no prefix index covers one letter, and the words
+/// starting with it are most of the mailbox (100-500 ms at 500k messages).
 pub fn fts_query(q: &str) -> Option<String> {
     let mut terms = vec![];
     for raw in q.split_whitespace() {
@@ -900,7 +902,8 @@ pub fn fts_query(q: &str) -> Option<String> {
         if clean.is_empty() {
             continue;
         }
-        let term = format!("\"{}\"*", clean.replace('"', ""));
+        let star = if clean.chars().count() > 1 { "*" } else { "" };
+        let term = format!("\"{}\"{star}", clean.replace('"', ""));
         terms.push(match col {
             Some(c) => format!("{c}:{term}"),
             None => term,
@@ -5027,6 +5030,10 @@ mod tests {
     #[case::from_maps_to_sender("from:marc", Some("sender:\"marc\"*"))]
     #[case::punctuation_is_dropped("\"hello\" (world)", Some("\"hello\"* \"world\"*"))]
     #[case::empty_is_none("  ", None)]
+    #[case::one_letter_is_a_word("m", Some("\"m\""))]
+    #[case::one_letter_sender_is_a_word("from:p", Some("sender:\"p\""))]
+    #[case::two_letters_are_a_prefix("me", Some("\"me\"*"))]
+    #[case::one_accented_letter_is_a_word("é", Some("\"é\""))]
     fn fts_query_building(#[case] q: &str, #[case] want: Option<&str>) {
         assert_eq!(fts_query(q).as_deref(), want);
     }
