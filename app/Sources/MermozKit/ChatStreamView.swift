@@ -573,6 +573,7 @@ public final class ChatStreamView: NSScrollView {
                 let h = ChatMetrics.marker(m)
                 v.frame = CGRect(x: 0, y: y, width: width, height: h)
                 (v as? MarkerRowView)?.configure(m, colors: colors) { [weak self] in self?.actions.split(m.threadId) }
+                y += h
             case .hosted:
                 let inner = width - 2 * ChatMetrics.sidePadding
                 let h = (v as? HostedRowView)?.height(at: inner) ?? 0
