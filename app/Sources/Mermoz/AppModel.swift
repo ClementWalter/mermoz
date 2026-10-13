@@ -237,8 +237,6 @@ final class AppModel {
     @ObservationIgnored var detailTask: Task<Void, Never>?
     /// How long j/k wait for the next key before loading the pane.
     static let settleMs = 60
-    /// Rows the list shows in full right now; the selection scrolls only to reach others.
-    @ObservationIgnored var visibleRows: Set<String> = []
     /// Opens the focused card's mail once j/k pause.
     var feedPaneTask: Task<Void, Never>?
     /// When the Feed started opening, until its first card is on screen.
@@ -481,18 +479,6 @@ final class AppModel {
                 totalThreads = page.total
             } catch { report(error) }
         }
-    }
-
-    /// The list row to scroll to for a thread: its first copy on screen.
-    func rowAnchor(for id: String) -> String? {
-        for g in groups {
-            if g.subgroups.isEmpty {
-                if g.threads.contains(where: { $0.id == id }) { return g.id + "|" + id }
-            } else if let sub = g.subgroups.first(where: { $0.threads.contains { $0.id == id } }) {
-                return g.id + "/" + sub.id + "|" + id
-            }
-        }
-        return nil
     }
 
     func canOpenGroup(_ field: Grouping, _ key: String) -> Bool {
@@ -916,7 +902,12 @@ final class AppModel {
         let ids = multiSelection.isEmpty ? Set([selectedThreadId].compactMap { $0 }) : Set(multiSelection)
         selectionCells.select(ids)
         if hasSelection != (selectedThreadId != nil) { hasSelection = selectedThreadId != nil }
+        revealSelection?()
     }
+
+    /// Set by the List's table: brings the selected row into view in the same update as
+    /// the selection moves, so the frame that shows the new highlight shows its row.
+    @ObservationIgnored var revealSelection: (() -> Void)?
 
     private func setLocal(_ id: String, _ f: (inout ThreadSummary) -> Void) {
         if let i = threads.firstIndex(where: { $0.id == id }) { f(&threads[i]) }

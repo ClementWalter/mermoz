@@ -124,6 +124,20 @@ enum PerfHarness {
         }
     }
 
+    /// Whether the List's selected row is fully inside the list's visible area.
+    private static func selectedRowShown() -> Bool {
+        func find(_ v: NSView) -> PassiveTableView? {
+            if let t = v as? PassiveTableView { return t }
+            for s in v.subviews { if let t = find(s) { return t } }
+            return nil
+        }
+        guard let root = NSApp.windows.first(where: { $0.isVisible && $0.frame.height > 300 })?.contentView,
+              let table = find(root), let c = table.delegate as? ThreadTable.Coordinator,
+              let id = c.model.selectedThreadId, let row = ListItems.row(of: id, in: c.items),
+              let clip = table.enclosingScrollView?.contentView else { return true }
+        return clip.bounds.contains(table.rect(ofRow: row))
+    }
+
     private static func pct(_ v: [Double], _ p: Double) -> Double {
         let s = v.sorted()
         return s.isEmpty ? 0 : s[Int(Double(s.count - 1) * p)]
@@ -194,6 +208,8 @@ enum PerfHarness {
         var actions: [Double] = []
         var beforeDetail: [Double] = []
         var ready: [Double] = []
+        // List steps that ended with the selected row not fully shown.
+        var hidden = 0
         watched = model
         for _ in 0..<n {
             let c = await window(gap: gap, step)
@@ -203,6 +219,7 @@ enum PerfHarness {
             actions.append(c.action)
             if let d = detailAt { beforeDetail.append(d) }
             if let r = paneReady { ready.append(r) }
+            if model.layout == .list, !selectedRowShown() { hidden += 1 }
         }
         let result: [String: Double] = [
             "steps": Double(n), "gap_ms": Double(gapMs), "idle_ms": base,
@@ -213,7 +230,7 @@ enum PerfHarness {
             "first_median_ms": pct(firsts, 0.5), "first_p95_ms": pct(firsts, 0.95), "action_median_ms": pct(actions, 0.5),
             "bubble_size_hits": Double(BubbleTextCache.shared.sizeHits), "bubble_size_misses": Double(BubbleTextCache.shared.sizeMisses),
             "bubble_main_misses": Double(BubbleTextCache.shared.mainMisses),
-            "visible_rows": Double(model.visibleRows.count), "visible_cards": Double(model.feedFullyVisible.count),
+            "visible_cards": Double(model.feedFullyVisible.count), "selection_hidden_steps": Double(hidden),
         ]
         log.info("perf: \(result.description, privacy: .public)")
         if let out = ProcessInfo.processInfo.environment["MERMOZ_PERF_OUT"],

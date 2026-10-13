@@ -13,5 +13,7 @@ let package = Package(
         .target(name: "MermozKit"),
         .executableTarget(name: "Mermoz", dependencies: ["MermozKit"]),
         .testTarget(name: "MermozKitTests", dependencies: ["MermozKit"]),
+        // The app's own views and model driven in-process (offscreen windows, no daemon).
+        .testTarget(name: "MermozTests", dependencies: ["Mermoz", "MermozKit"]),
     ]
 )

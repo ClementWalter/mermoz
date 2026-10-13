@@ -18,16 +18,10 @@ struct ThreadListView: View {
                 .foregroundStyle(Theme.text3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        ThreadListRows(groups: model.groups, loaded: model.threads.count, total: model.totalThreads) {
-                            focused = true
-                        }
-                        .equatable()
-                    }
-                    .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.99) { model.visibleRows = Set($0) }
-                    .background { SelectionScroller(proxy: proxy) }
+                ThreadTable(groups: model.groups, loaded: model.threads.count, total: model.totalThreads) {
+                    focused = true
                 }
+                .equatable()
             }
         }
         .listPanel()
@@ -51,66 +45,6 @@ struct ThreadListView: View {
         .onKeyPress(.return) {
             if model.selectedThreadId == nil { model.moveSelection(1) }
             return .handled
-        }
-    }
-}
-
-/// The list's rows. Its inputs are plain values, so a parent redraw that leaves the
-/// groups as they were skips it; the selection reaches rows through their own flags.
-struct ThreadListRows: View, Equatable {
-    @Environment(AppModel.self) private var model
-    let groups: [ThreadGroup]
-    let loaded: Int
-    let total: Int
-    /// Gives the keyboard back to the list after a click.
-    let refocus: () -> Void
-
-    nonisolated static func == (a: ThreadListRows, b: ThreadListRows) -> Bool {
-        a.groups == b.groups && a.loaded == b.loaded && a.total == b.total
-    }
-
-    var body: some View {
-        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-            ForEach(groups) { g in
-                Section {
-                    if g.subgroups.isEmpty {
-                        rows(g.threads, in: g.id)
-                    } else {
-                        ForEach(g.subgroups) { sub in
-                            SubGroupHeader(group: sub)
-                            rows(sub.threads, in: g.id + "/" + sub.id)
-                        }
-                    }
-                } header: {
-                    if g.field != .none { GroupHeaderView(group: g) }
-                }
-            }
-            if total > loaded {
-                // Reaching the end loads the next page.
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading more · \(loaded) of \(total.formatted())")
-                }
-                .font(.system(size: 11.5)).foregroundStyle(Theme.text3).padding(12)
-                .onAppear { model.loadMore() }
-            }
-        }
-        // Reports which rows show in full, so the selection scrolls only to reveal one.
-        .scrollTargetLayout()
-    }
-
-    /// A thread in two project groups appears in both: each copy gets its own id, or
-    /// SwiftUI draws only one and leaves an empty slot.
-    private func rows(_ threads: [ThreadSummary], in group: String) -> some View {
-        ForEach(threads) { t in
-            ThreadRow(thread: t, selection: model.selectionCells.flag(t.id))
-                .equatable()
-                .id(group + "|" + t.id)
-                .onTapGesture {
-                    let mods = NSEvent.modifierFlags
-                    model.click(t.id, shift: mods.contains(.shift), command: mods.contains(.command))
-                    refocus()
-                }
         }
     }
 }
@@ -359,22 +293,6 @@ struct DisplayMenu: View {
             d[keyPath: kp] = v
             model.display = d
         })
-    }
-}
-
-/// Keeps the selected row in view. It alone observes the selected id, so a j/k step
-/// does not redraw the list around it.
-struct SelectionScroller: View {
-    @Environment(AppModel.self) private var model
-    let proxy: ScrollViewProxy
-
-    var body: some View {
-        Color.clear
-            .onChange(of: model.selectedThreadId) { _, id in
-                // Only to reveal a row not fully shown, and without animation: a scroll
-                // lays the list out again, an animated one on every frame of it.
-                if let id, let anchor = model.rowAnchor(for: id), !model.visibleRows.contains(anchor) { proxy.scrollTo(anchor) }
-            }
     }
 }
 
