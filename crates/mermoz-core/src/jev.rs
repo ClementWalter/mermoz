@@ -447,14 +447,28 @@ pub struct Client {
     key: String,
 }
 
+/// The pooled HTTP client of a provider, shared by every call for the process's life.
+/// A cold connection costs ~0.5 s of TCP and TLS before the request even leaves;
+/// kept warm, HTTP/2 multiplexes every call in flight over one connection.
+pub fn http(p: Provider) -> &'static reqwest::Client {
+    static POOLS: [std::sync::OnceLock<reqwest::Client>; 2] =
+        [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+    let slot = Provider::ALL.iter().position(|x| *x == p).expect("listed");
+    POOLS[slot].get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .pool_idle_timeout(Duration::from_secs(300))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_while_idle(true)
+            .build()
+            .expect("http client")
+    })
+}
+
 impl Client {
     pub fn new(provider: Provider, key: String) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .expect("http client");
         Self {
-            http,
+            http: http(provider).clone(),
             provider,
             base: provider.base(),
             key,
@@ -945,6 +959,21 @@ mod tests {
         #[case] want: &str,
     ) {
         assert_eq!(resolve_base(p, overridden.map(String::from)), want);
+    }
+
+    #[rstest]
+    #[case::typesafe(Provider::TypeSafe)]
+    #[case::subq(Provider::SubQ)]
+    fn each_provider_reuses_one_pooled_client(#[case] p: Provider) {
+        assert!(std::ptr::eq(http(p), http(p)));
+    }
+
+    #[rstest]
+    fn providers_do_not_share_a_pool() {
+        assert!(!std::ptr::eq(
+            http(Provider::TypeSafe),
+            http(Provider::SubQ)
+        ));
     }
 
     #[rstest]

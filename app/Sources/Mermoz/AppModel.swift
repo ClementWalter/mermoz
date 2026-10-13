@@ -1376,12 +1376,17 @@ final class AppModel {
     /// Switches instant sorting to `provider`; only ever on the user's say.
     func setRouterProvider(_ provider: String) async {
         guard let client, provider != router.provider else { return }
+        // Shown at once: a picker still reading the old value snaps back and sends it again.
+        router.provider = provider
         do {
             router = try await client.setRouterProvider(provider)
             await refreshSortInfo()
             sortQueue.reset()
             if selection == .sort { await loadSortQueue() }
-        } catch { report(error) }
+        } catch {
+            report(error)
+            await loadRouter()
+        }
     }
 
     /// Daily allowance of background sorting requests.

@@ -52,6 +52,23 @@ impl World {
         self.home.path().join("mermozd.sock")
     }
 
+    fn wait_for_socket(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while UnixStream::connect(self.sock()).is_err() {
+            assert!(Instant::now() < deadline, "daemon did not start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Stops the daemon and starts a fresh one on the same home, as after a reboot.
+    fn restart(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+        let _ = std::fs::remove_file(self.sock());
+        self.daemon = spawn_daemon(self.home.path(), self.port, &[]);
+        self.wait_for_socket();
+    }
+
     fn call(&self, method: &str, params: Value) -> Result<Value, Value> {
         let mut s = UnixStream::connect(self.sock()).unwrap();
         writeln!(
@@ -239,7 +256,21 @@ fn launch(home: tempfile::TempDir, mailbox: Shared, extra_env: &[(&str, &str)]) 
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake_ant, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let daemon = Command::new(env!("CARGO_BIN_EXE_mermozd"))
+    let daemon = spawn_daemon(home.path(), port, extra_env);
+    let w = World {
+        home,
+        mailbox,
+        daemon,
+        port,
+    };
+    w.wait_for_socket();
+    w
+}
+
+/// A daemon on `home`, talking to the stubs on `port`.
+fn spawn_daemon(home: &std::path::Path, port: u16, extra_env: &[(&str, &str)]) -> Child {
+    let fake_ant = home.join("fake-ant");
+    Command::new(env!("CARGO_BIN_EXE_mermozd"))
         .env("MERMOZ_ANT", &fake_ant)
         .env(
             "MERMOZ_CHATGPT_AUTH_BASE",
@@ -249,7 +280,7 @@ fn launch(home: tempfile::TempDir, mailbox: Shared, extra_env: &[(&str, &str)]) 
             "MERMOZ_OPENAI_API_BASE",
             format!("http://127.0.0.1:{port}/oa/v1"),
         )
-        .env("MERMOZ_HOME", home.path())
+        .env("MERMOZ_HOME", home)
         .env("MERMOZ_TOKEN_STORE", "file")
         .env(
             "MERMOZ_GMAIL_BASE",
@@ -270,19 +301,7 @@ fn launch(home: tempfile::TempDir, mailbox: Shared, extra_env: &[(&str, &str)]) 
             Stdio::null()
         })
         .spawn()
-        .unwrap();
-    let w = World {
-        home,
-        mailbox,
-        daemon,
-        port,
-    };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while UnixStream::connect(w.sock()).is_err() {
-        assert!(Instant::now() < deadline, "daemon did not start");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    w
+        .unwrap()
 }
 
 #[fixture]
@@ -1948,6 +1967,78 @@ print(s.makefile().readline())
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["error"]["code"], -32011);
+}
+
+/// A SubQ key saved through `router.set`, TypeSafe still in use.
+fn subq_key_saved(w: &World) {
+    w.ok(
+        "router.set",
+        json!({ "api_key": "subq-test", "key_provider": "subq" }),
+    );
+}
+
+/// The CLI's line for SubQ in `mermoz router`.
+fn cli_subq_line(w: &World) -> String {
+    let out = w.cli(&["router"]);
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.trim_start().starts_with("SubQ"))
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[rstest]
+fn a_saved_subq_key_is_reported(synced: World) {
+    subq_key_saved(&synced);
+    assert_eq!(
+        synced.ok("router.get", json!({}))["providers"][1]["configured"],
+        true
+    );
+}
+
+#[rstest]
+fn the_cli_reports_a_saved_subq_key(synced: World) {
+    subq_key_saved(&synced);
+    assert!(cli_subq_line(&synced).contains(" key "));
+}
+
+#[rstest]
+fn a_saved_subq_key_is_written_to_the_secret_store(synced: World) {
+    subq_key_saved(&synced);
+    assert!(
+        synced
+            .home
+            .path()
+            .join("tokens/ai.mermoz.subq/api_key")
+            .exists()
+    );
+}
+
+#[rstest]
+fn a_saved_subq_key_survives_a_restart(mut synced: World) {
+    subq_key_saved(&synced);
+    synced.restart();
+    assert_eq!(
+        synced.ok("router.get", json!({}))["providers"][1]["configured"],
+        true
+    );
+}
+
+#[rstest]
+fn the_cli_reports_the_subq_key_after_a_restart(mut synced: World) {
+    subq_key_saved(&synced);
+    synced.restart();
+    assert!(cli_subq_line(&synced).contains(" key "));
+}
+
+#[rstest]
+fn the_picked_provider_survives_a_restart(mut synced: World) {
+    synced.ok(
+        "router.set",
+        json!({ "provider": "subq", "api_key": "subq-test" }),
+    );
+    synced.restart();
+    assert_eq!(synced.ok("router.get", json!({}))["provider"], "subq");
 }
 
 /// TypeSafe in use and out of credits, with a SubQ key saved.
