@@ -27,6 +27,43 @@ fn sentence(rng: &mut StdRng, n: usize) -> String {
     (0..n).map(|_| word(rng)).collect::<Vec<_>>().join(" ")
 }
 
+/// One synthetic email: a tenth in the inbox, ~10 KB of HTML on a third of them
+/// (newsletters, rich replies).
+fn message(
+    rng: &mut StdRng,
+    people: &[Address],
+    id: &str,
+    thread: &str,
+    date: i64,
+) -> IncomingMessage {
+    let from = people[rng.random_range(0..people.len())].clone();
+    let labels: Vec<String> = if rng.random_bool(0.1) {
+        vec!["INBOX".into()]
+    } else {
+        vec![]
+    };
+    IncomingMessage {
+        provider_id: id.into(),
+        provider_thread_id: thread.into(),
+        label_ids: labels,
+        internal_date: date,
+        parsed: ParsedMessage {
+            from: Some(from),
+            to: vec![Address {
+                name: "Me".into(),
+                email: "me@example.com".into(),
+            }],
+            subject: sentence(rng, 6),
+            body_text: sentence(rng, 120),
+            body_html: rng
+                .random_bool(0.3)
+                .then(|| format!("<html><body><p>{}</p></body></html>", sentence(rng, 1500))),
+            message_id: Some(format!("<{id}@x>")),
+            ..Default::default()
+        },
+    }
+}
+
 fn pct(v: &mut [Duration], p: f64) -> Duration {
     v.sort();
     v[((v.len() as f64 - 1.0) * p) as usize]
@@ -74,36 +111,13 @@ fn main() {
         for i in 0..n {
             // ~3 messages per thread on average.
             let thread = i / 3 + rng.random_range(0..2);
-            let from = people[rng.random_range(0..people.len())].clone();
-            let labels: Vec<String> = if rng.random_bool(0.1) {
-                vec!["INBOX".into()]
-            } else {
-                vec![]
-            };
-            batch.push(IncomingMessage {
-                provider_id: format!("m{i}"),
-                provider_thread_id: format!("t{thread}"),
-                label_ids: labels,
-                internal_date: now - (n - i) as i64 * 60_000,
-                parsed: ParsedMessage {
-                    from: Some(from),
-                    to: vec![Address {
-                        name: "Me".into(),
-                        email: "me@example.com".into(),
-                    }],
-                    subject: sentence(&mut rng, 6),
-                    body_text: sentence(&mut rng, 120),
-                    // Newsletters and rich replies: ~10 KB of HTML on a third of the mail.
-                    body_html: rng.random_bool(0.3).then(|| {
-                        format!(
-                            "<html><body><p>{}</p></body></html>",
-                            sentence(&mut rng, 1500)
-                        )
-                    }),
-                    message_id: Some(format!("<m{i}@x>")),
-                    ..Default::default()
-                },
-            });
+            batch.push(message(
+                &mut rng,
+                &people,
+                &format!("m{i}"),
+                &format!("t{thread}"),
+                now - (n - i) as i64 * 60_000,
+            ));
             if batch.len() == 1000 {
                 store
                     .ingest_many(&acc, "me@example.com", &batch, SyncMode::Initial)
@@ -160,12 +174,13 @@ fn main() {
     });
     // A sender with hundreds of threads (notifications, a long relationship): the whole
     // conversation opens at once.
-    let big = &ids[ids.len() / 2];
+    // Picked by thread number, which later runs' sync batches never shift.
+    let members: Vec<String> = (1000..1300)
+        .map(|k| store.resolve_thread_id(&format!("M-{k}")).unwrap())
+        .collect();
+    let big = &members[0];
     if store.conversation_thread_ids(big).unwrap().len() < 2 {
-        let half = ids.len() / 2;
-        store
-            .merge_threads(&ids[half..(half + 300).min(ids.len())])
-            .unwrap();
+        store.merge_threads(&members).unwrap();
     }
     let big_n = store.conversation_thread_ids(big).unwrap().len();
     let mut open_big = time(20, || {
@@ -247,6 +262,66 @@ fn main() {
             budget: Duration::from_millis(50),
         });
     }
+
+    // Sync while the user reads: 100-message batches (the daemon's chunk) into new and
+    // existing threads, and the list read meanwhile. Ids are unique per run.
+    let run = mermoz_core::model::now_ms();
+    let batches: Vec<Vec<IncomingMessage>> = (0..20)
+        .map(|b| {
+            (0..100)
+                .map(|k| {
+                    let thread = if k % 2 == 0 {
+                        format!("s{run}-{b}-{k}")
+                    } else {
+                        format!("t{}", rng.random_range(0..n / 3))
+                    };
+                    message(&mut rng, &people, &format!("s{run}-{b}-{k}"), &thread, run)
+                })
+                .collect()
+        })
+        .collect();
+    let syncing = std::sync::atomic::AtomicBool::new(true);
+    let (mut writes, mut reads) = (vec![], vec![]);
+    std::thread::scope(|s| {
+        let writer = s.spawn(|| {
+            let t = batches
+                .iter()
+                .map(|b| {
+                    let t = Instant::now();
+                    store
+                        .ingest_many(&acc, "me@example.com", b, SyncMode::Incremental)
+                        .unwrap();
+                    t.elapsed()
+                })
+                .collect::<Vec<_>>();
+            syncing.store(false, std::sync::atomic::Ordering::Relaxed);
+            t
+        });
+        while syncing.load(std::sync::atomic::Ordering::Relaxed) {
+            let t = Instant::now();
+            store
+                .threads(&ThreadFilter {
+                    status: Some(vec!["backlog".into()]),
+                    limit: 300,
+                    conversations: true,
+                    ..Default::default()
+                })
+                .unwrap();
+            reads.push(t.elapsed());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        writes = writer.join().unwrap();
+    });
+    checks.push(Check {
+        name: "sync batch (100 messages)",
+        p95: pct(&mut writes, 0.95),
+        budget: Duration::from_millis(100),
+    });
+    checks.push(Check {
+        name: "threads.list during sync",
+        p95: pct(&mut reads, 0.95),
+        budget: Duration::from_millis(16),
+    });
 
     let mut failed = false;
     for c in &checks {

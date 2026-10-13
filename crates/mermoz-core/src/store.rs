@@ -18,8 +18,16 @@ pub use conversations::{GroupingPlan, PairCandidate};
 mod feed;
 pub use feed::FEED_STATUSES;
 
+/// Writer settings. Each ingested message runs in a savepoint whose sub-journal stays in
+/// memory, and a 32 MB page cache keeps a sync batch's pages from being evicted and
+/// read back mid-transaction (SQLite's default is 2 MB).
 const PRAGMAS: &str =
-    "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";
+    "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;
+     PRAGMA temp_store = MEMORY; PRAGMA cache_size = -32768;";
+
+/// Reader settings: 16 MB of cache each keeps the hot list and index pages resident.
+const READER_PRAGMAS: &str =
+    "PRAGMA foreign_keys = ON; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -16384;";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -1185,6 +1193,15 @@ fn draft_attachment_row(r: &Row) -> rusqlite::Result<DraftAttachment> {
     })
 }
 
+/// A message's full-text row, written after the rest of its batch.
+struct FtsRow<'m> {
+    rowid: i64,
+    subject: &'m str,
+    sender: String,
+    recipients: String,
+    body: &'m str,
+}
+
 const DRAFT_COLS: &str =
     "id, account_id, thread_id, to_json, cc_json, subject, body, state, origin, created, updated";
 
@@ -1203,7 +1220,7 @@ impl Store {
         w.busy_timeout(std::time::Duration::from_secs(5))?;
         let reader = || -> Result<Connection> {
             let r = Connection::open(path)?;
-            r.execute_batch("PRAGMA foreign_keys = ON;")?;
+            r.execute_batch(READER_PRAGMAS)?;
             r.busy_timeout(std::time::Duration::from_secs(5))?;
             Ok(r)
         };
@@ -1460,7 +1477,9 @@ impl Store {
     ) -> Result<String> {
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
-        let thread_id = Self::ingest_tx(&tx, &self.blobs, account_id, me, msg, mode)?;
+        let mut fts = vec![];
+        let thread_id = Self::ingest_tx(&tx, &self.blobs, account_id, me, msg, mode, &mut fts)?;
+        Self::index_fts(&tx, &fts)?;
         tx.commit()?;
         Ok(thread_id)
     }
@@ -1476,16 +1495,21 @@ impl Store {
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
         let mut ids = vec![];
+        // Full-text rows are written once every savepoint is released: FTS5 flushes its
+        // pending index on each savepoint, which wrote one tiny segment per message.
+        let mut fts = vec![];
         for m in msgs {
             // One malformed message must not stall the mailbox: isolate each in a savepoint,
             // record failures for a later retry, and keep importing.
             tx.execute_batch("SAVEPOINT msg")?;
-            match Self::ingest_tx(&tx, &self.blobs, account_id, me, m, mode) {
+            let indexed = fts.len();
+            match Self::ingest_tx(&tx, &self.blobs, account_id, me, m, mode, &mut fts) {
                 Ok(id) => {
                     tx.execute_batch("RELEASE msg")?;
                     ids.push(id);
                 }
                 Err(e) => {
+                    fts.truncate(indexed);
                     tx.execute_batch("ROLLBACK TO msg; RELEASE msg")?;
                     tracing::warn!(provider_id = %m.provider_id, "skipping message: {e}");
                     tx.execute(
@@ -1496,17 +1520,30 @@ impl Store {
                 }
             }
         }
+        Self::index_fts(&tx, &fts)?;
         tx.commit()?;
         Ok(ids)
     }
 
-    fn ingest_tx(
+    fn index_fts(tx: &Connection, rows: &[FtsRow]) -> Result<()> {
+        let mut st = tx.prepare_cached(
+            "INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for f in rows {
+            st.execute(params![f.rowid, f.subject, f.sender, f.recipients, f.body])?;
+        }
+        Ok(())
+    }
+
+    /// Stores one message; its full-text row is queued in `fts` for [`Self::index_fts`].
+    fn ingest_tx<'m>(
         tx: &Connection,
         blobs: &Path,
         account_id: &str,
         me: &str,
-        msg: &IncomingMessage,
+        msg: &'m IncomingMessage,
         mode: SyncMode,
+        fts: &mut Vec<FtsRow<'m>>,
     ) -> Result<String> {
         let labels_json = serde_json::to_string(&msg.label_ids)?;
         let unread = msg.label_ids.iter().any(|l| l == "UNREAD");
@@ -1626,10 +1663,13 @@ impl Store {
             params![mid, fts_rowid],
         )?;
         let recipients: Vec<String> = p.to.iter().chain(p.cc.iter()).map(fmt_addr).collect();
-        tx.execute(
-            "INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![fts_rowid, p.subject, fmt_addr(&from), recipients.join(", "), p.body_text],
-        )?;
+        fts.push(FtsRow {
+            rowid: fts_rowid,
+            subject: &p.subject,
+            sender: fmt_addr(&from),
+            recipients: recipients.join(", "),
+            body: &p.body_text,
+        });
         if is_from_me {
             conversations::note_correspondents(tx, p.to.iter().chain(&p.cc).chain(&p.bcc))?;
         }
@@ -1680,8 +1720,9 @@ impl Store {
             |r| r.get(0),
         )?;
         Self::sync_projects_tx(tx, &account_id, thread_id)?;
+        // Only the last message's body makes the snippet: the others' are not read.
         let mut st = tx.prepare_cached(
-            "SELECT from_name, from_email, is_from_me, unread, date, subject, body_text,
+            "SELECT from_name, from_email, is_from_me, unread, date, subject, m.id,
                (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id)
              FROM messages m WHERE thread_id = ?1 ORDER BY date",
         )?;
@@ -1719,7 +1760,10 @@ impl Store {
             .map(|r| r.5.clone())
             .find(|s| !s.is_empty())
             .unwrap_or_default();
-        let snippet = crate::quote::snippet(&last.6);
+        let body: String = tx
+            .prepare_cached("SELECT body_text FROM messages WHERE id = ?1")?
+            .query_row([&last.6], |r| r.get(0))?;
+        let snippet = crate::quote::snippet(&body);
         let last_from = if last.2 {
             "You".to_string()
         } else {
@@ -2481,9 +2525,11 @@ impl Store {
         thread_id: &str,
     ) -> Result<(bool, bool, BTreeSet<String>)> {
         // System labels may be missing from the label cache; their id is their name.
+        // `+account_id` keeps SQLite on the (thread_id, label_id) key: through the
+        // (account_id, label_id) index it read every label row of the mailbox per message.
         let mut st = tx.prepare_cached(
             "SELECT tl.label_id, l.name FROM thread_labels tl LEFT JOIN labels l ON l.account_id = tl.account_id AND l.label_id = tl.label_id
-             WHERE tl.thread_id = ?1 AND tl.account_id = ?2",
+             WHERE tl.thread_id = ?1 AND +tl.account_id = ?2",
         )?;
         let (mut inbox, mut trash, mut names) = (false, false, BTreeSet::new());
         for row in st.query_map(params![thread_id, account_id], |r| {
@@ -5023,6 +5069,49 @@ mod tests {
             .ingest_many(&env.acc, "me@example.com", &[bad, good], SyncMode::Initial)
             .unwrap();
         assert_eq!(ids.len(), 1);
+    }
+
+    /// A batch where one message fails: the failed one leaves no search entry.
+    fn batch_with_a_failure(env: &Env) {
+        let blobs = env._dir.path().join("blobs");
+        let good = incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "okidoki");
+        let mut bad = incoming("m2", "t2", "marc@x.com", &["INBOX"], now_ms(), "zebracorn");
+        bad.parsed.attachments.push(crate::mime::ParsedAttachment {
+            filename: "a.txt".into(),
+            mime: "text/plain".into(),
+            data: b"d".to_vec(),
+            ..Default::default()
+        });
+        std::fs::remove_dir_all(&blobs).unwrap();
+        std::fs::write(&blobs, b"").unwrap();
+        env.store
+            .ingest_many(&env.acc, "me@example.com", &[good, bad], SyncMode::Initial)
+            .unwrap();
+    }
+
+    #[rstest]
+    fn failed_message_is_not_searchable(env: Env) {
+        batch_with_a_failure(&env);
+        assert!(env.store.search("zebracorn", 10).unwrap().is_empty());
+    }
+
+    #[rstest]
+    fn rest_of_a_failed_batch_is_searchable(env: Env) {
+        batch_with_a_failure(&env);
+        assert_eq!(env.store.search("okidoki", 10).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn single_ingest_is_searchable(env: Env) {
+        env.store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "okidoki"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        assert_eq!(env.store.search("okidoki", 10).unwrap().len(), 1);
     }
 
     #[rstest]

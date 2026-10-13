@@ -846,12 +846,20 @@ impl Store {
             )
             .collect();
         people.retain(|p| !me.contains(&p.email));
-        for p in &mut people {
-            if let Ok(c) = self.contact(&p.email) {
-                p.title = c.card.title;
-                p.company = c.card.company;
-                if !c.card.name.is_empty() {
-                    p.name = c.card.name;
+        {
+            // A list conversation has hundreds of people: one lock, one prepared lookup.
+            let r = self.r.lock().unwrap();
+            let mut st =
+                r.prepare_cached("SELECT name, title, company FROM contacts WHERE email = ?1")?;
+            for p in &mut people {
+                let card: Option<(String, String, String)> = st
+                    .query_row([p.email.trim()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .optional()?;
+                if let Some((name, title, company)) = card {
+                    (p.title, p.company) = (title, company);
+                    if !name.is_empty() {
+                        p.name = name;
+                    }
                 }
             }
         }

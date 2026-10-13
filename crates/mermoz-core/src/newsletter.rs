@@ -96,6 +96,13 @@ fn is_tracker(url: &str) -> bool {
 }
 
 fn is_url(token: &str) -> bool {
+    // Every word of every message is asked: reject on the first byte when it can't start one.
+    if !matches!(
+        token.as_bytes().first(),
+        Some(b'h' | b'w' | b'<' | b'(' | b'[' | b'"' | b'\'')
+    ) {
+        return false;
+    }
     let t = token.trim_matches(|c| "<>()[]\"'".contains(c));
     t.starts_with("http://") || t.starts_with("https://") || t.starts_with("www.")
 }
@@ -212,18 +219,28 @@ pub fn clean(text: &str) -> String {
 /// mostly links.
 pub fn degraded(text: &str) -> bool {
     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let links = words
-        .iter()
-        .filter(|w| is_url(w))
-        .map(|w| w.len())
-        .sum::<usize>();
-    let chars = words.iter().map(|w| w.len()).sum::<usize>().max(1);
-    let low = first.to_lowercase();
-    words.is_empty()
-        || is_url(first.trim())
-        || VIEW_ONLINE.iter().any(|v| low.contains(v))
-        || links * 10 > chars * 3
+    if is_url(first.trim()) {
+        return true;
+    }
+    // A "view online" banner opens the line: a long unwrapped body is not searched whole.
+    let low = first.chars().take(200).collect::<String>().to_lowercase();
+    if VIEW_ONLINE.iter().any(|v| low.contains(v)) {
+        return true;
+    }
+    // Without a link anywhere, only an empty text is degraded: no word walk needed.
+    if !text.contains("http") && !text.contains("www.") {
+        return text.trim().is_empty();
+    }
+    // One pass, no allocation: it runs on every message with HTML that is opened.
+    let (mut chars, mut links, mut words) = (0usize, 0usize, 0usize);
+    for w in text.split_whitespace() {
+        words += 1;
+        chars += w.len();
+        if is_url(w) {
+            links += w.len();
+        }
+    }
+    words == 0 || links * 10 > chars.max(1) * 3
 }
 
 /// Readable text of an HTML body: headings, paragraphs and list items on their own
@@ -402,6 +419,21 @@ mod tests {
         true
     )]
     #[case::prose("Votre relevé d'octobre est disponible.", false)]
+    #[case::bare_www_links(
+        "www.a.example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaa www.b.example/bbbbbbbbbbbbbbbbbbbbb hi",
+        true
+    )]
+    #[case::banner_first("View this email in your browser\nHello", true)]
+    #[case::banner_deep_in_one_long_line(concat!(
+        "Hello there, here is a very long unwrapped paragraph that goes on and on about ",
+        "the quarterly numbers, the team offsite, the new office plants and the coffee ",
+        "machine that finally works again after months of trouble; anyway, view online"
+    ), false)]
+    #[case::prose_with_one_link(
+        "Hi team, please read the minutes at https://notes.example/q3 before Friday's \
+         meeting so we can decide on the budget and the hiring plan together. Thanks!",
+        false
+    )]
     fn degraded_plain_parts(#[case] text: &str, #[case] want: bool) {
         assert_eq!(degraded(text), want);
     }
