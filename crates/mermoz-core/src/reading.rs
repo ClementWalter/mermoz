@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this pipeline; bump it when its output changes, so cached readings are
 /// recomputed in the background.
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 
 /// What the pipeline reads from a message.
 #[derive(Debug, Clone, Copy, Default)]
@@ -282,10 +282,43 @@ fn has_visible(s: &str) -> bool {
 /// An HTML body as normalised text, cut at its quoted history: (text, cut).
 fn html_reading(html: &str) -> (String, bool) {
     let (cut, quoted) = quote::split_html(html);
-    (
-        without_navigation(&normalize(&newsletter::html_text(&cut))),
-        quoted,
-    )
+    let text = without_navigation(&normalize(&newsletter::html_text(&cut)));
+    (joined_fragments(&text), quoted)
+}
+
+/// Short labels a layout broke over lines ("15 jours pour\nchanger d'avis",
+/// "Votre colis\n?") read as one line. Only a lowercase continuation (or punctuation
+/// alone) joins, under a short line that ends no sentence, clause or greeting:
+/// addresses ("6 rue Drouot\n75009 Paris"), sign-offs and names, bullets and table rows
+/// keep their breaks.
+fn joined_fragments(text: &str) -> String {
+    let mut out: Vec<String> = vec![];
+    for line in text.lines() {
+        let t = line.trim();
+        let joins = out.last().is_some_and(|prev: &String| {
+            let p = prev.trim();
+            let continues = t.chars().next().is_some_and(char::is_lowercase)
+                || !t.is_empty() && t.chars().all(|c| "?!.,:;".contains(c));
+            !p.is_empty()
+                && continues
+                && !p.ends_with(['.', '!', '?', ':', ';', ','])
+                && !p.starts_with(['•', '-', '*'])
+                && p.split_whitespace().count() <= 6
+                && t.split_whitespace().count() <= 6
+                && !t.starts_with("http")
+        });
+        match out.last_mut() {
+            Some(prev) if joins => {
+                // "colis" + "?" keeps the French space; a lone "," or "." hugs the word.
+                if !matches!(t, "," | ".") {
+                    prev.push(' ');
+                }
+                prev.push_str(t);
+            }
+            _ => out.push(line.to_string()),
+        }
+    }
+    out.join("\n")
 }
 
 /// A web page's menu at the top of its text ("• accueil", "• tarifs", "• mon compte"…)

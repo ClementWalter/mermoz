@@ -728,14 +728,9 @@ fn is_contact_line(line: &str) -> bool {
         && rest
             .chars()
             .all(|c| c.is_ascii_digit() || " +.-()/".contains(c));
-    // "75205 Paris Cedex 13, France", "Mailing address:": a postal address.
-    let postal = t.len() <= 60
-        && (t
-            .split_whitespace()
-            .next()
-            .is_some_and(|w| w.len() == 5 && w.chars().all(|c| c.is_ascii_digit()))
-            || low.contains("cedex")
-            || low.starts_with("mailing address"));
+    // "Mailing address:" says a signature. A bare postcode line ("75011 Paris") does
+    // not: a delivery address ends many order emails; it is only a name-like line.
+    let postal = t.len() <= 60 && low.starts_with("mailing address");
     email || web || phone || postal
 }
 

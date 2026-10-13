@@ -506,6 +506,10 @@ pub fn html_text(html: &str) -> String {
     });
     let hidden = HIDDEN.replace_all(html, " ");
     let html = hidden.as_ref();
+    // In HTML a line break in the source is a space ("Votre\n<span>colis</span>" reads
+    // "Votre colis"); only tags break lines, and <pre> keeps its own.
+    let folded = fold_source_whitespace(html);
+    let html = folded.as_str();
     // Block ends become line breaks before the tags are dropped.
     let mut marked = String::with_capacity(html.len());
     let lower = html.to_ascii_lowercase();
@@ -537,6 +541,9 @@ pub fn html_text(html: &str) -> String {
             marked.push_str("\n• ");
         } else if BREAK.iter().any(|b| rest.starts_with(b)) {
             marked.push('\n');
+        } else if rest.starts_with("</td") || rest.starts_with("</th") {
+            // Cells of a row read side by side, never glued ("Total 10 €").
+            marked.push(' ');
         }
         let ch = html[i..].chars().next().unwrap();
         marked.push(ch);
@@ -559,6 +566,36 @@ pub fn html_text(html: &str) -> String {
         .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// HTML source with its line breaks and tabs turned into spaces, except inside <pre>.
+fn fold_source_whitespace(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < html.len() {
+        let Some(pre) = lower[i..].find("<pre").map(|k| i + k) else {
+            out.extend(html[i..].chars().map(|c| {
+                if matches!(c, '\n' | '\r' | '\t') {
+                    ' '
+                } else {
+                    c
+                }
+            }));
+            break;
+        };
+        out.extend(html[i..pre].chars().map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        }));
+        let end = lower[pre..].find("</pre").map_or(html.len(), |k| pre + k);
+        out.push_str(&html[pre..end]);
+        i = end;
+    }
+    out
 }
 
 /// HTML element names a text never means literally.

@@ -630,6 +630,60 @@ fn html_style_sheets_never_read_as_text(#[case] html: &str) {
     assert_eq!(read(&m).text, "Votre colis arrive demain.");
 }
 
+// ---- HTML layout breaks: fragments join, real breaks stay ----
+
+fn from_html(html: &str) -> String {
+    read(&Mail {
+        text: "",
+        html: Some(html),
+        ..Default::default()
+    })
+    .text
+}
+
+#[rstest]
+#[case::source_newline_inside_a_cell(
+    "<table><tr><td>Votre\n   <span class=\"x\">colis</span>&nbsp;\n</td></tr></table>",
+    "Votre colis"
+)]
+#[case::source_newlines_in_a_heading(
+    "<h2>Des nouvelles de\n votre\n <span>colis ?</span></h2>",
+    "Des nouvelles de votre colis ?"
+)]
+#[case::label_broken_by_br(
+    "<p>15 jours pour<br>changer d'avis</p>",
+    "15 jours pour changer d'avis"
+)]
+#[case::lone_question_mark("<p>Votre colis<br>?</p>", "Votre colis ?")]
+#[case::lone_comma("<p>Contactez Atelier Nord<br>,</p>", "Contactez Atelier Nord,")]
+#[case::address_kept(
+    "<p>Livraison à :<br>6 rue des Lilas<br>75011 Paris</p>",
+    "Livraison à :\n6 rue des Lilas\n75011 Paris"
+)]
+#[case::sign_off_kept("<p>Bien à vous,<br>Nora Lind</p>", "Bien à vous,\nNora Lind")]
+#[case::greeting_line_kept(
+    "<p>Bonjour,<br>votre colis est arrivé.</p>",
+    "Bonjour,\nvotre colis est arrivé."
+)]
+#[case::list_kept("<ul><li>pommes</li><li>poires</li></ul>", "• pommes\n• poires")]
+#[case::table_rows_kept(
+    "<table><tr><td>Total</td><td>10 €</td></tr><tr><td>Port</td><td>offert</td></tr></table>",
+    "Total 10 €\nPort offert"
+)]
+#[case::preformatted_lines_kept("<pre>Ligne une\nLigne deux</pre>", "Ligne une\nLigne deux")]
+#[case::long_wrapped_sentences_kept(
+    "<p>Votre commande a bien été expédiée par le vendeur hier soir<br>et arrivera chez vous sous trois jours ouvrés.</p>",
+    "Votre commande a bien été expédiée par le vendeur hier soir\net arrivera chez vous sous trois jours ouvrés."
+)]
+fn html_layout_breaks(#[case] html: &str, #[case] want: &str) {
+    assert_eq!(from_html(html), want);
+}
+
+#[rstest]
+fn a_plain_part_keeps_its_own_line_breaks() {
+    assert_eq!(read(&mail("x", "Prix\nunitaire")).text, "Prix\nunitaire");
+}
+
 // ---- Unfilled mailing merge tags ----
 
 #[rstest]
