@@ -197,7 +197,13 @@ final class AppModel {
     var chatApplied: Set<String> = []
     /// The Feed (AppModel+Feed.swift): its cards and the one keys act on.
     var feed: Feed?
-    var feedFocus: String?
+    var feedFocus: String? {
+        didSet { if feedFocus != oldValue { feedFocusCells.select(Set([feedFocus].compactMap { $0 })) } }
+    }
+    /// One flag per Feed card, so j/k redraws the two cards it moves between.
+    @ObservationIgnored let feedFocusCells = SelectionCells()
+    /// Feed cards shown in full right now; the focus scrolls only to reach others.
+    @ObservationIgnored var feedFullyVisible: Set<String> = []
     /// Cards just handled, shown as a "Done · Undo" strip before they fold away.
     var feedStrips: [String: String] = [:]
     /// Threads whose card words were already asked for.

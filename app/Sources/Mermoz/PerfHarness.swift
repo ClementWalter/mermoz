@@ -62,6 +62,35 @@ enum PerfHarness {
         return s.isEmpty ? 0 : s[Int(Double(s.count - 1) * p)]
     }
 
+    /// `MERMOZ_PERF_SCENARIO`: what one step does. `jk` (default) steps down the List,
+    /// `board` down a Board column, `feed` to the next Feed card, `palette` opens or closes
+    /// ⌘K, `resize` widens or narrows the window.
+    private static func scenario(_ model: AppModel) async -> () -> Void {
+        switch ProcessInfo.processInfo.environment["MERMOZ_PERF_SCENARIO"] ?? "jk" {
+        case "board":
+            model.layout = .board
+            await model.loadList()
+            return { model.moveBoard(dx: 0, dy: 1) }
+        case "feed":
+            model.layout = .feed
+            await model.loadList()
+            return { model.feedMove(1) }
+        case "palette":
+            return { model.paletteMode = model.paletteMode == nil ? .search : nil }
+        case "resize":
+            var wider = true
+            return {
+                guard let w = NSApp.windows.first(where: { $0.isVisible && $0.frame.height > 300 }) else { return }
+                var f = w.frame
+                f.size.width += wider ? 60 : -60
+                wider.toggle()
+                w.setFrame(f, display: true)
+            }
+        default:
+            return { model.moveSelection(1) }
+        }
+    }
+
     static func run(_ model: AppModel) async {
         guard let n = steps else { return }
         let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical],
@@ -70,6 +99,7 @@ enum PerfHarness {
         let gapMs = ProcessInfo.processInfo.environment["MERMOZ_PERF_GAP_MS"].flatMap(Int.init) ?? 400
         let gap = Duration.milliseconds(gapMs)
         for _ in 0..<100 where model.threads.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
+        let step = await scenario(model)
         try? await Task.sleep(for: .seconds(2))
         var idle: [Double] = []
         for _ in 0..<10 { idle.append(await window(gap: gap) {}.total) }
@@ -78,7 +108,7 @@ enum PerfHarness {
         var firsts: [Double] = []
         var actions: [Double] = []
         for _ in 0..<n {
-            let c = await window(gap: gap) { model.moveSelection(1) }
+            let c = await window(gap: gap, step)
             costs.append(max(0, c.total - base))
             firsts.append(c.first)
             actions.append(c.action)
@@ -88,6 +118,7 @@ enum PerfHarness {
             "median_ms": pct(costs, 0.5), "p95_ms": pct(costs, 0.95), "mean_ms": costs.reduce(0, +) / Double(max(n, 1)),
             "first_median_ms": pct(firsts, 0.5), "first_p95_ms": pct(firsts, 0.95), "action_median_ms": pct(actions, 0.5),
             "bubble_size_hits": Double(BubbleTextCache.shared.sizeHits), "bubble_size_misses": Double(BubbleTextCache.shared.sizeMisses),
+            "visible_rows": Double(model.visibleRows.count), "visible_cards": Double(model.feedFullyVisible.count),
         ]
         log.info("perf: \(result.description, privacy: .public)")
         if let out = ProcessInfo.processInfo.environment["MERMOZ_PERF_OUT"],

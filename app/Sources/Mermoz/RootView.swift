@@ -22,8 +22,9 @@ struct RootView: View {
                     MainLayout()
                 }
             }
+            // The palette shows at once: a fade laid the whole window out again on each of its frames.
             if model.paletteMode != nil {
-                CommandPalette().transition(.opacity)
+                CommandPalette()
             }
             if model.showShortcuts {
                 ShortcutsOverlay().transition(.opacity)
@@ -47,7 +48,6 @@ struct RootView: View {
                     .accessibilityHidden(true)
             }
         }
-        .animation(.easeOut(duration: 0.12), value: model.paletteMode)
         .animation(.easeOut(duration: 0.12), value: model.showShortcuts)
         .onAppear { if keyMonitor == nil { keyMonitor = ThreadKeys.install(model: model) } }
         .onDisappear { if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil } }
@@ -82,14 +82,14 @@ struct MainLayout: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .inspector(isPresented: Binding(get: { model.hasSelection || model.compose != nil },
                                                     set: { if !$0 { model.open(nil); model.compose = nil } })) {
-                        DetailPane().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
+                        DetailPane().layoutBoundary().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
                     }
             } else if model.layout == .board && !model.isReview {
                 BoardView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .inspector(isPresented: Binding(get: { model.hasSelection || model.compose != nil },
                                                     set: { if !$0 { model.open(nil); model.compose = nil } })) {
-                        DetailPane().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
+                        DetailPane().layoutBoundary().inspectorColumnWidth(min: 380, ideal: 560, max: 900)
                     }
             } else {
                 Group {

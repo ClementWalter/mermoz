@@ -29,40 +29,18 @@ struct FeedView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        if let f = model.feed {
-                            FeedBrief(feed: f)
-                            ForEach(f.sections) { s in
-                                FeedSectionHeader(section: s)
-                                ForEach(s.cards) { c in
-                                    // Equatable: only the cards that changed render again on j/k.
-                                    FeedCardView(card: c, focused: model.feedFocus == c.id, strip: model.feedStrips[c.id])
-                                        .equatable()
-                                        .id(c.id)
-                                        .onAppear { model.cardAppeared(c.id) }
-                                        .onDisappear { model.cardDisappeared(c.id) }
-                                }
-                                if s.more > 0 {
-                                    Text("\(s.more) more here · the List shows them all")
-                                        .font(.system(size: 12)).foregroundStyle(Theme.text3).padding(.horizontal, 4)
-                                }
-                            }
-                            if f.cards.isEmpty { AllClear() }
-                        } else {
-                            ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(40)
-                        }
-                    }
-                    .frame(maxWidth: 680)
-                    .padding(.horizontal, 18).padding(.vertical, 16)
-                    .frame(maxWidth: .infinity)
+                    FeedCards(feed: model.feed, strips: model.feedStrips)
+                        .equatable()
+                        .frame(maxWidth: 680)
+                        .padding(.horizontal, 18).padding(.vertical, 16)
+                        .frame(maxWidth: .infinity)
                 }
                 .scrollIndicators(.automatic)
-                .onChange(of: model.feedFocus) { _, id in
-                    // No anchor: the list only moves when the card would leave the screen.
-                    if let id { proxy.scrollTo(id) }
-                }
+                .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.99) { model.feedFullyVisible = Set($0) }
+                .background { FeedScroller(proxy: proxy) }
             }
             .listPanel()
+            .layoutBoundary()
         }
     }
 
@@ -72,6 +50,58 @@ struct FeedView: View {
         case let .account(id): model.accounts.first { $0.id == id }?.email ?? "Account"
         default: "All open"
         }
+    }
+}
+
+/// The Feed's cards. Plain-value inputs, so a redraw around them that leaves the feed as
+/// it was skips them; focus reaches each card through its own flag.
+struct FeedCards: View, Equatable {
+    @Environment(AppModel.self) private var model
+    let feed: Feed?
+    let strips: [String: String]
+
+    nonisolated static func == (a: FeedCards, b: FeedCards) -> Bool { a.feed == b.feed && a.strips == b.strips }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 10) {
+            if let f = feed {
+                FeedBrief(feed: f)
+                ForEach(f.sections) { s in
+                    FeedSectionHeader(section: s)
+                    ForEach(s.cards) { c in
+                        // Equatable: only the cards that changed render again on j/k.
+                        FeedCardView(card: c, focus: model.feedFocusCells.flag(c.id), strip: strips[c.id])
+                            .equatable()
+                            .id(c.id)
+                            .onAppear { model.cardAppeared(c.id) }
+                            .onDisappear { model.cardDisappeared(c.id) }
+                    }
+                    if s.more > 0 {
+                        Text("\(s.more) more here · the List shows them all")
+                            .font(.system(size: 12)).foregroundStyle(Theme.text3).padding(.horizontal, 4)
+                    }
+                }
+                if f.cards.isEmpty { AllClear() }
+            } else {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(40)
+            }
+        }
+        // Reports which rows show in full, so the selection scrolls only to reveal one.
+        .scrollTargetLayout()
+    }
+}
+
+/// Keeps the focused card in view. It alone observes the focus, so j/k does not redraw
+/// the Feed around it; it scrolls only to reveal a card not fully shown.
+struct FeedScroller: View {
+    @Environment(AppModel.self) private var model
+    let proxy: ScrollViewProxy
+
+    var body: some View {
+        Color.clear
+            .onChange(of: model.feedFocus) { _, id in
+                if let id, !model.feedFullyVisible.contains(id) { proxy.scrollTo(id) }
+            }
     }
 }
 
@@ -127,13 +157,16 @@ struct AllClear: View {
 struct FeedCardView: View, Equatable {
     @Environment(AppModel.self) private var model
     let card: FeedCard
-    let focused: Bool
+    /// The card's own focus flag: j/k redraws only the cards it leaves and reaches.
+    let focus: SelectionFlag
     /// "Done · Undo" shown in place of the card for a moment after it was handled.
     let strip: String?
 
     nonisolated static func == (a: FeedCardView, b: FeedCardView) -> Bool {
-        a.focused == b.focused && a.strip == b.strip && a.card == b.card
+        a.focus === b.focus && a.strip == b.strip && a.card == b.card
     }
+
+    private var focused: Bool { focus.on }
 
     var body: some View {
         if let label = strip {

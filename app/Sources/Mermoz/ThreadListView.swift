@@ -27,7 +27,6 @@ struct ThreadListView: View {
                             focused = true
                         }
                         .equatable()
-                        .scrollTargetLayout()
                     }
                     .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.99) { model.visibleRows = Set($0) }
                     .background { SelectionScroller(proxy: proxy) }
@@ -99,6 +98,8 @@ struct ThreadListRows: View, Equatable {
                 .onAppear { model.loadMore() }
             }
         }
+        // Reports which rows show in full, so the selection scrolls only to reveal one.
+        .scrollTargetLayout()
     }
 
     /// A thread in two project groups appears in both: each copy gets its own id, or
