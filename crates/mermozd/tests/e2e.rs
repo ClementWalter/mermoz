@@ -2311,7 +2311,9 @@ fn forgotten_refusal_is_offered_again(synced: World) {
     );
 }
 
-/// `n` read automated mails from one no-reply sender, "Parcel 0" to "Parcel n-1".
+/// `n` read automated mails from one no-reply sender, "Parcel statement 0" to
+/// "Parcel statement n-1"; the stub Jev judges a "statement" automatic mail, so the
+/// Feed's background judging agrees with the no-reply sender.
 fn parcels(w: &World, n: usize) {
     {
         let mut m = w.mailbox.lock().unwrap();
@@ -2323,7 +2325,7 @@ fn parcels(w: &World, n: usize) {
                 &["INBOX"],
                 &raw(
                     "Parcel Hub <noreply@parcels.example>",
-                    &format!("Parcel {i}"),
+                    &format!("Parcel statement {i}"),
                     "On its way",
                     &id,
                 ),
@@ -2342,7 +2344,7 @@ fn three_accepted_archives_put_the_sender_in_the_batch_card(synced: World) {
     // No Receipts folder: the stub suggests Archive alone.
     synced.ok("router.set", json!({ "api_key": "jev-test" }));
     for i in 0..3 {
-        let id = synced.thread_by_subject(&format!("Parcel {i}"))["id"].clone();
+        let id = synced.thread_by_subject(&format!("Parcel statement {i}"))["id"].clone();
         synced.wait_until("suggestion", |w| {
             !suggested(&w.ok("threads.suggest", json!({ "ids": [id] }))).is_empty()
         });
@@ -2360,7 +2362,7 @@ fn three_accepted_archives_put_the_sender_in_the_batch_card(synced: World) {
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["subject"] == "Parcel 3")
+            .any(|t| t["subject"] == "Parcel statement 3")
     );
 }
 
