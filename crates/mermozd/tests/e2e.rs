@@ -4165,3 +4165,35 @@ fn pulling_a_gmail_hit_makes_it_searchable(with_unseen_mail: World) {
         "Your flight to Papeete"
     );
 }
+
+/// A town letter sent through Mailjet: a portrait placeholder, then lines made of
+/// non-breaking spaces and invisible characters before the letter.
+fn raw_town_letter() -> String {
+    "From: Mairie de Villeneuve <lettre@villeneuve.example>\r\nTo: me@example.com\r\nSubject: La lettre du maire\r\nMessage-ID: <town@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n<<Camille Durand - Maire de Villeneuve>> [https://x1abc.mjt.lu/img/x1abc/b/portrait.png]\r\n\u{00A0}\r\n\u{200B}\u{200C}\r\n\u{2007}\r\nChers Habitants,\r\n\u{00A0}\r\nLe nouveau marche ouvre samedi.\r\n".into()
+}
+
+#[rstest]
+fn a_town_letter_bubble_starts_with_words(synced: World) {
+    synced.mailbox.lock().unwrap().add_message(
+        "tl1",
+        "ttl",
+        &["INBOX"],
+        &raw_town_letter(),
+        NOW + 1000,
+    );
+    synced.wait_until("the town letter", |w| {
+        w.ok("threads.list", json!({}))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "La lettre du maire")
+    });
+    let id = synced.thread_by_subject("La lettre du maire")["id"].clone();
+    let v = synced.ok("threads.get", json!({ "id": id }));
+    assert!(
+        v["messages"][0]["body_new"]
+            .as_str()
+            .unwrap()
+            .starts_with("Camille Durand - Maire de Villeneuve\n\nChers Habitants,")
+    );
+}

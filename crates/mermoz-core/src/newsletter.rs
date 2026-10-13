@@ -157,7 +157,7 @@ fn without_tracking_links(line: &str) -> String {
 /// The readable part of a bulk mail's text: preamble links, tracking links, image
 /// names and the footer removed, blank runs folded, starting at its first real line.
 pub fn clean(text: &str) -> String {
-    let text = plain_markdown(text);
+    let text = tidy(&plain_markdown(text));
     let text = text.as_str();
     let text: String = text
         .chars()
@@ -408,6 +408,104 @@ pub fn plain_markdown(text: &str) -> String {
     folded.join("\n").trim().to_string()
 }
 
+/// Characters that take no room: a line made of them (and spaces) is blank.
+const ZERO_WIDTH: &[char] = &[
+    '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}', '\u{2060}', '\u{2061}', '\u{2062}',
+    '\u{2063}', '\u{2064}', '\u{FEFF}', '\u{034F}', '\u{00AD}', '\u{180E}', '\u{FFFC}',
+];
+
+/// Picture names that say nothing: dropped rather than kept as a line of text.
+const GENERIC_ALT: &[&str] = &[
+    "logo",
+    "image",
+    "img",
+    "header",
+    "banner",
+    "bandeau",
+    "spacer",
+    "icon",
+    "icône",
+    "photo",
+    "picture",
+    "pixel",
+    "separator",
+    "séparateur",
+    "facebook",
+    "twitter",
+    "instagram",
+    "linkedin",
+    "youtube",
+    "x",
+    "email header",
+    "en-tête",
+];
+
+/// A picture's alt text worth reading (a headline), not a generic name.
+fn meaningful_alt(alt: &str) -> bool {
+    let a = alt.trim().to_lowercase();
+    a.split_whitespace().count() >= 2
+        && !GENERIC_ALT.contains(&a.as_str())
+        && !a.split_whitespace().all(|w| GENERIC_ALT.contains(&w))
+}
+
+/// "[https://…]" on its own: a picture or link address in brackets.
+fn bracketed_url(token: &str) -> bool {
+    let t = token.trim();
+    t.starts_with('[')
+        && t.ends_with(']')
+        && !t[1..t.len() - 1].contains(' ')
+        && is_url(&t[1..t.len() - 1])
+}
+
+/// Mailjet / Brevo picture placeholders: `<<alt>> [https://…img…]` reads as the alt
+/// text when it is a headline, and disappears otherwise; bracketed addresses go.
+fn without_placeholders(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(open) = rest.find("<<") {
+        let Some(close) = rest[open..].find(">>").map(|c| open + c) else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        let alt = &rest[open + 2..close];
+        if meaningful_alt(alt) {
+            out.push_str(alt.trim());
+        }
+        rest = &rest[close + 2..];
+    }
+    out.push_str(rest);
+    out.split(' ')
+        .filter(|w| !bracketed_url(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A text ready for a bubble: zero-width characters and picture placeholders gone, lines
+/// of only (Unicode) spaces counted as blank, blank runs folded, no blank first or last
+/// line.
+pub fn tidy(text: &str) -> String {
+    let mut out: Vec<String> = vec![];
+    for line in text.lines() {
+        let l: String = line.chars().filter(|c| !ZERO_WIDTH.contains(c)).collect();
+        let l = if l.contains("<<") || l.contains("[http") {
+            without_placeholders(&l)
+        } else {
+            l
+        };
+        if l.trim().is_empty() {
+            if out.last().is_some_and(|p| !p.is_empty()) {
+                out.push(String::new());
+            }
+        } else {
+            out.push(l.trim_end().to_string());
+        }
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +708,62 @@ mod tests {
     #[case::parenthesis_after_brackets("Voir [annexe] (page 3)", "Voir [annexe] (page 3)")]
     fn ordinary_text_is_untouched(#[case] text: &str, #[case] want: &str) {
         assert_eq!(plain_markdown(text), want);
+    }
+
+    /// A town newsletter sent through Mailjet: a portrait placeholder, lines of invisible
+    /// characters and non-breaking spaces, then the letter.
+    const TOWN: &str = "<<Camille Durand - Maire de Villeneuve, Vice-Présidente de l'agglomération>> [https://x1abc.mjt.lu/img/x1abc/b/portrait.png]\n\u{00A0}\n\u{200B}\u{200C}\n\u{2007}\u{FEFF}\nChers Habitants,\n\u{00A0}\nLe nouveau marché ouvre samedi place de la Mairie.\n \n<<Texte à la une>> [https://x1abc.mjt.lu/img/x1abc/b/une.png]\n<<logo>> [https://x1abc.mjt.lu/img/x1abc/b/logo.png]\n\u{00A0}\n";
+
+    #[rstest]
+    fn the_first_line_is_never_blank() {
+        assert!(!tidy(TOWN).lines().next().unwrap().trim().is_empty());
+    }
+
+    #[rstest]
+    fn a_headline_placeholder_reads_as_its_words() {
+        assert_eq!(
+            tidy(TOWN).lines().next(),
+            Some("Camille Durand - Maire de Villeneuve, Vice-Présidente de l'agglomération")
+        );
+    }
+
+    #[rstest]
+    fn picture_addresses_are_gone() {
+        assert!(!tidy(TOWN).contains("mjt.lu"));
+    }
+
+    #[rstest]
+    fn a_generic_picture_name_is_dropped() {
+        assert!(!tidy(TOWN).contains("logo"));
+    }
+
+    #[rstest]
+    fn invisible_lines_fold_into_one_blank() {
+        assert_eq!(
+            tidy(TOWN),
+            "Camille Durand - Maire de Villeneuve, Vice-Présidente de l'agglomération\n\nChers Habitants,\n\nLe nouveau marché ouvre samedi place de la Mairie.\n\nTexte à la une"
+        );
+    }
+
+    #[rstest]
+    #[case::nbsp("\u{00A0}\u{00A0}")]
+    #[case::zero_width("\u{200B}\u{200C}\u{FEFF}")]
+    #[case::figure_space("\u{2007}\u{202F}")]
+    #[case::only_placeholders("<<logo>> [https://x.mjt.lu/img/a.png]\n\u{00A0}")]
+    fn invisible_text_tidies_to_nothing(#[case] text: &str) {
+        assert_eq!(tidy(text), "");
+    }
+
+    #[rstest]
+    fn tidy_leaves_ordinary_text_alone() {
+        assert_eq!(
+            tidy("Hello Nora,\n\nSee you Monday."),
+            "Hello Nora,\n\nSee you Monday."
+        );
+    }
+
+    #[rstest]
+    fn the_town_letter_reads_cleanly_as_a_newsletter() {
+        assert!(clean(TOWN).starts_with("Camille Durand"));
     }
 }

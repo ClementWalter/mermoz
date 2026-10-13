@@ -1158,6 +1158,15 @@ fn messages_where(
         if m.body_new.contains("](") || m.body_new.contains("---") || m.body_new.contains("**") {
             m.body_new = crate::newsletter::plain_markdown(&m.body_new);
         }
+        // Invisible characters and picture placeholders never fill a bubble; a message
+        // read (not skipped for speed) that comes out blank is read from its HTML, else
+        // its preview.
+        if i >= read_from {
+            m.body_new = crate::newsletter::tidy(&m.body_new);
+            if m.body_new.is_empty() {
+                m.body_new = fallback_text(conn, m)?;
+            }
+        }
         m.attachments = st
             .query_map([&m.id], |r| {
                 Ok(AttachmentInfo {
@@ -1171,6 +1180,32 @@ fn messages_where(
             .collect::<rusqlite::Result<_>>()?;
     }
     Ok(msgs.into_iter().map(|(_, m)| m).collect())
+}
+
+/// Text for a message whose reading came out empty: its HTML read as text, else its
+/// one-line preview (empty only for a truly empty message).
+fn fallback_text(conn: &Connection, m: &Message) -> Result<String> {
+    if m.has_html {
+        let html: Option<String> = conn
+            .query_row(
+                &format!("SELECT {} FROM messages m WHERE id = ?1", bodies::HTML_OF_M),
+                [&m.id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(h) = html {
+            let t = crate::newsletter::tidy(&crate::newsletter::clean(
+                &crate::newsletter::html_text(&h),
+            ));
+            if !t.is_empty() {
+                return Ok(t);
+            }
+        }
+    }
+    Ok(crate::newsletter::tidy(&crate::quote::snippet(
+        &m.body_text,
+    )))
 }
 
 /// What a reader is shown of a message: (its new content, whether anything was hidden),

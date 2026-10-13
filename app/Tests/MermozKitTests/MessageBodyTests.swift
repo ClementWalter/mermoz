@@ -241,3 +241,38 @@ func compactTextHasNoMarkdownSyntax(mark: String) {
 @Test func bracketsWithoutALinkStay() {
     #expect(BubbleParts.plainMarkdown("Prix [indicatif] : 10 €") == "Prix [indicatif] : 10 €")
 }
+
+// ---- a bubble is never empty --------------------------------------------------------
+
+/// A town newsletter sent through Mailjet, with invisible and non-breaking blank lines.
+private let townLetter = "<<Camille Durand - Maire de Villeneuve>> [https://x1abc.mjt.lu/img/x1abc/b/portrait.png]\n\u{00A0}\n\u{200B}\u{200C}\n\u{2007}\u{FEFF}\nChers Habitants,\n\u{00A0}\nLe nouveau marché ouvre samedi.\n \n<<logo>> [https://x1abc.mjt.lu/img/x1abc/b/logo.png]\n\u{00A0}\n"
+
+@Test func compactTextsFirstLineIsNonBlank() {
+    let first = BubbleParts.compact(message(text: townLetter, new: townLetter)).text.components(separatedBy: "\n")[0]
+    #expect(!first.trimmingCharacters(in: .whitespaces).isEmpty)
+}
+
+@Test func aHeadlinePlaceholderReadsAsItsWords() {
+    #expect(BubbleParts.compact(message(text: townLetter, new: townLetter)).text.hasPrefix("Camille Durand - Maire de Villeneuve\n"))
+}
+
+@Test func placeholderAddressesAreGone() {
+    #expect(!BubbleParts.compact(message(text: townLetter, new: townLetter)).text.contains("mjt.lu"))
+}
+
+@Test func invisibleLinesFoldIntoOneBlank() {
+    #expect(BubbleParts.tidy("Chers Habitants,\n\u{00A0}\n\u{200B}\n\u{2007}\nLe marché.") == "Chers Habitants,\n\nLe marché.")
+}
+
+@Test func anInvisibleNewPartFallsBackToTheWholeText() {
+    #expect(BubbleParts.compact(message(text: "Le marché ouvre samedi.", new: "\u{00A0}\n\u{200B}")).text == "Le marché ouvre samedi.")
+}
+
+@Test func anEntirelyInvisibleMessageSaysItIsEmpty() {
+    #expect(BubbleContent.compact(message(text: "\u{00A0}\n\u{200B}", new: "\u{FEFF}"), showAll: false).text == "(empty message)")
+}
+
+@Test(arguments: ["\u{00A0}\u{00A0}", "\u{200B}\u{200C}\u{FEFF}", "\u{2007}\u{202F}", "<<logo>> [https://x.mjt.lu/img/a.png]"])
+func invisibleTextTidiesToNothing(text: String) {
+    #expect(BubbleParts.tidy(text) == "")
+}

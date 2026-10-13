@@ -98,8 +98,10 @@ public struct BubbleParts: Equatable, Sendable {
 
     /// The message's new text only: quoted history and signature already folded locally.
     public static func compact(_ m: Message) -> BubbleParts {
-        let new = withoutLinkLines(plainMarkdown(m.displayBody))
-        let text = new.isEmpty ? withoutLinkLines(m.bodyText) : new
+        // Never a blank bubble: its new text, else its whole text (a truly empty message
+        // then reads "(empty message)").
+        let new = tidy(withoutLinkLines(plainMarkdown(m.displayBody)))
+        let text = new.isEmpty ? tidy(withoutLinkLines(plainMarkdown(m.bodyText))) : new
         return BubbleParts(recipients: nil, text: text, controls: false, chips: [],
                            thumbnails: MessageBody.inlineImages(m), fileCount: MessageBody.chips(m).count)
     }
@@ -136,6 +138,36 @@ public struct BubbleParts: Equatable, Sendable {
             .joined(separator: "\n")
             .replacing(/\n{3,}/, with: "\n\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Characters that take no room: a line made of them and spaces is blank.
+    private static let zeroWidth: Set<Character> = ["\u{200B}", "\u{200C}", "\u{200D}", "\u{200E}", "\u{200F}", "\u{2060}",
+                                                    "\u{FEFF}", "\u{034F}", "\u{00AD}", "\u{180E}", "\u{FFFC}"]
+    private static let genericAlt: Set<String> = ["logo", "image", "img", "header", "banner", "bandeau", "spacer", "icon",
+                                                  "photo", "picture", "pixel", "facebook", "twitter", "instagram", "linkedin"]
+
+    /// A bubble's text: invisible characters and picture placeholders (`<<alt>> [url]`)
+    /// gone, lines of only spaces (non-breaking ones too) blank, blank runs folded, and no
+    /// blank first or last line.
+    public static func tidy(_ text: String) -> String {
+        var out: [String] = []
+        for raw in text.components(separatedBy: "\n") {
+            var line = String(raw.filter { !zeroWidth.contains($0) })
+            line = line.replacing(/<<([^>]*)>>/) { m in
+                let alt = String(m.output.1).trimmingCharacters(in: .whitespaces)
+                let words = alt.lowercased().split(separator: " ")
+                return words.count >= 2 && !words.allSatisfy { genericAlt.contains(String($0)) } ? alt : ""
+            }
+            line = line.replacing(/\[https?:\/\/[^\s\]]*\]/, with: "")
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if let last = out.last, !last.isEmpty { out.append("") }
+            } else {
+                out.append(String(line.reversed().drop { $0.isWhitespace }.reversed()))
+            }
+        }
+        while out.last == "" { out.removeLast() }
+        return out.joined(separator: "\n")
     }
 
     public static func withoutLinkLines(_ text: String) -> String {
