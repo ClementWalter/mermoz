@@ -278,7 +278,11 @@ fn main() {
                     } else {
                         format!("t{}", rng.random_range(0..n / 3))
                     };
-                    message(&mut rng, &people, &format!("s{run}-{b}-{k}"), &thread, run)
+                    let mut m =
+                        message(&mut rng, &people, &format!("s{run}-{b}-{k}"), &thread, run);
+                    // Out of the inbox, so reruns don't keep growing the feed.
+                    m.label_ids.clear();
+                    m
                 })
                 .collect()
         })
