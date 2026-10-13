@@ -92,6 +92,28 @@ public enum SenderIdentity {
     }
 }
 
+/// Photos sent along with a message (image files, not images pasted in the body): the
+/// chat shows them as a grid; other files stay a count.
+public enum ChatPhotos {
+    static let types: Set<String> = ["image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/heic", "image/heif",
+                                     "image/gif", "image/webp"]
+    static let extensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "gif", "webp"]
+
+    /// An image file a photo viewer opens; a generic type falls back on the file's extension.
+    public static func isPhoto(_ a: Attachment) -> Bool {
+        let mime = a.mime.lowercased()
+        if types.contains(mime) { return true }
+        guard mime.isEmpty || mime == "application/octet-stream" else { return false }
+        return extensions.contains((a.filename as NSString).pathExtension.lowercased())
+    }
+
+    /// The message's attached photos, without the images pasted in its body.
+    public static func attached(_ m: Message, pasted: [Attachment]) -> [Attachment] {
+        let shown = Set(pasted.map(\.id))
+        return m.attachments.filter { $0.inline != true && !shown.contains($0.id) && isPhoto($0) }
+    }
+}
+
 /// A row the app draws in SwiftUI.
 public enum HostedRow: Sendable {
     case summary
@@ -141,11 +163,12 @@ public enum ChatRows {
                         note = NearDuplicate.note(changed)
                     }
                     let key = SenderIdentity.key(m.from)
+                    let photos = ChatPhotos.attached(m, pasted: parts.thumbnails)
                     rows.append(.bubble(BubbleSpec(
                         id: m.id, content: content, mine: m.isFromMe, firstOfRun: first, sender: names[key] ?? m.from.display,
                         senderKey: key,
-                        time: time(m.date), focused: focused == m.id, files: parts.fileCount, note: note,
-                        thumbnails: parts.thumbnails.map(\.id))))
+                        time: time(m.date), focused: focused == m.id, files: max(0, parts.fileCount - photos.count), note: note,
+                        thumbnails: parts.thumbnails.map(\.id), photos: photos)))
                 }
                 previous = (m, parts.text)
             }

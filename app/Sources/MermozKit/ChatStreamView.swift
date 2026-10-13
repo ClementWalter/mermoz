@@ -4,6 +4,7 @@
 /// views; the rare rows that need SwiftUI (the whole email opened in place, a thread
 /// marker, the summary, a bubble with pasted images) are hosted.
 import AppKit
+import Quartz
 import SwiftUI
 
 // MARK: model
@@ -26,12 +27,16 @@ public struct BubbleSpec: Equatable, Sendable {
     public var note: String?
     /// Pasted images (attachment ids), shown as thumbnails under the text.
     public var thumbnails: [String]
+    /// Photos sent along (image files), shown as a grid under the text.
+    public var photos: [Attachment]
 
     public init(id: String, content: BubbleContent, mine: Bool, firstOfRun: Bool, sender: String, senderKey: String? = nil,
-                time: String, focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = []) {
+                time: String, focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = [],
+                photos: [Attachment] = []) {
         self.id = id; self.content = content; self.mine = mine; self.firstOfRun = firstOfRun
         self.sender = sender; self.senderKey = senderKey ?? sender.lowercased(); self.time = time; self.focused = focused; self.files = files; self.note = note
         self.thumbnails = thumbnails
+        self.photos = photos
     }
 }
 
@@ -94,6 +99,8 @@ public struct ChatActions {
     public var split: (String) -> Void = { _ in }
     /// The file of an attachment, for its thumbnail.
     public var file: (String) async -> URL? = { _ in nil }
+    /// Shows photo files from the one at the index; nil: Quick Look.
+    public var previewPhotos: (([URL], Int) -> Void)?
 
     public init() {}
 }
@@ -120,6 +127,33 @@ public enum ChatMetrics {
     public static let thumbGap: CGFloat = 6
     public static let markerLine: CGFloat = 20
     public static let markerJoined: CGFloat = 26
+    /// Width of the photo grid, and the gap between its tiles.
+    public static let photoGrid: CGFloat = 224
+    public static let photoGap: CGFloat = 4
+    /// Photos shown; the last tile says how many more there are.
+    public static let photosShown = 4
+
+    /// The photo grid's tiles from its top left, as a messaging app lays them out: one
+    /// wide photo, two side by side, one tall beside two, or four in a square.
+    public static func photoTiles(_ count: Int) -> [CGRect] {
+        let w = photoGrid, g = photoGap, half = (photoGrid - photoGap) / 2, small: CGFloat = 82
+        switch count {
+        case 0: return []
+        case 1: return [CGRect(x: 0, y: 0, width: w, height: 168)]
+        case 2: return [CGRect(x: 0, y: 0, width: half, height: 140), CGRect(x: half + g, y: 0, width: half, height: 140)]
+        case 3: return [CGRect(x: 0, y: 0, width: half, height: 2 * small + g),
+                        CGRect(x: half + g, y: 0, width: half, height: small),
+                        CGRect(x: half + g, y: small + g, width: half, height: small)]
+        default: return [CGRect(x: 0, y: 0, width: half, height: small), CGRect(x: half + g, y: 0, width: half, height: small),
+                         CGRect(x: 0, y: small + g, width: half, height: small),
+                         CGRect(x: half + g, y: small + g, width: half, height: small)]
+        }
+    }
+
+    /// Height the photo grid takes, its gap above included.
+    public static func photosHeight(_ count: Int) -> CGFloat {
+        count == 0 ? 0 : thumbGap + (photoTiles(count).map(\.maxY).max() ?? 0)
+    }
 
     /// Widest the text of a bubble can be in a chat `width` wide.
     public static func textWidth(_ width: CGFloat, mine: Bool) -> CGFloat {
@@ -135,7 +169,7 @@ public enum ChatMetrics {
     /// The bubble's own height with its text taking `text`.
     public static func bubble(text: CGSize, _ spec: BubbleSpec) -> CGFloat {
         text.height + 2 * inset.height + (spec.content.clamped ? showMore : 0) + (spec.files > 0 ? files : 0)
-            + (spec.thumbnails.isEmpty ? 0 : thumbGap + thumb.height)
+            + (spec.thumbnails.isEmpty ? 0 : thumbGap + thumb.height) + photosHeight(spec.photos.count)
     }
 
     /// Height of a thread marker row.
@@ -213,6 +247,12 @@ final class BubbleRowView: NSView {
     let text = SelectableBubbleText.make()
     /// The layout this row shows.
     private var laid: BubbleTextLayout.Laid?
+    /// The photo tiles, in this view.
+    private(set) var photoRects: [CGRect] = []
+    /// Opens the photos from the one at the index.
+    var onPhoto: ((Int) -> Void)?
+    /// The photo tile a press started on, and where: a drag takes the file out, a click opens it.
+    private var pressed: (tile: Int, at: CGPoint)?
     /// The text view is shown and holds `laid`; the row draws no text of its own.
     private(set) var textIsLive = false
     private let fade = FadeView()
@@ -275,7 +315,8 @@ final class BubbleRowView: NSView {
         let top = ChatMetrics.top(spec)
         // Wide enough for "Show more" and the file count under short text.
         let thumbs = CGFloat(spec.thumbnails.count) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap) - ChatMetrics.thumbGap
-        let floor: CGFloat = max(spec.content.clamped || spec.files > 0 ? 80 : 0, spec.thumbnails.isEmpty ? 0 : thumbs)
+        let floor: CGFloat = max(spec.content.clamped || spec.files > 0 ? 80 : 0, spec.thumbnails.isEmpty ? 0 : thumbs,
+                                 spec.photos.isEmpty ? 0 : ChatMetrics.photoGrid)
         let bubbleSize = CGSize(width: max(laid.size.width, floor) + 2 * ChatMetrics.inset.width,
                                 height: ChatMetrics.bubble(text: laid.size, spec))
         let x = spec.mine
@@ -284,6 +325,10 @@ final class BubbleRowView: NSView {
         bubbleRect = CGRect(x: x, y: top, width: bubbleSize.width, height: bubbleSize.height)
         text.frame = CGRect(x: x + ChatMetrics.inset.width, y: top + ChatMetrics.inset.height,
                             width: laid.size.width, height: laid.size.height)
+        let gridTop = text.frame.maxY + (spec.content.clamped ? ChatMetrics.showMore : 0)
+            + (spec.thumbnails.isEmpty ? 0 : ChatMetrics.thumbGap + ChatMetrics.thumb.height) + ChatMetrics.thumbGap
+        photoRects = ChatMetrics.photoTiles(min(spec.photos.count, ChatMetrics.photosShown))
+            .map { $0.offsetBy(dx: text.frame.minX, dy: gridTop) }
         fade.isHidden = !spec.content.clamped
         more?.isHidden = !spec.content.clamped
         if spec.content.clamped {
@@ -294,6 +339,7 @@ final class BubbleRowView: NSView {
         }
         setAccessibilityLabel("Message from \(spec.mine ? "you" : spec.sender)"
             + (spec.files > 0 ? ", \(spec.files) file\(spec.files == 1 ? "" : "s") attached" : "")
+            + (spec.photos.isEmpty ? "" : ", \(spec.photos.count) photo\(spec.photos.count == 1 ? "" : "s")")
             + (spec.note.map { ". \($0)" } ?? ""))
         setAccessibilityHelp("Opens the whole email")
         needsDisplay = true
@@ -352,6 +398,7 @@ final class BubbleRowView: NSView {
         defer {
             if spec.files > 0 { drawFiles(spec.files) }
             drawThumbnails(spec.thumbnails)
+            drawPhotos(spec.photos)
         }
         let shape = NSBezierPath(roundedRect: bubbleRect.insetBy(dx: 0.5, dy: 0.5), xRadius: ChatMetrics.radius, yRadius: ChatMetrics.radius)
         (spec.mine ? colors.mineBackground : colors.theirsBackground).setFill()
@@ -364,29 +411,53 @@ final class BubbleRowView: NSView {
 
     var file: (String) async -> URL? = { _ in nil }
 
+    /// Photos past the grid, counted on its last tile ("+2").
+    var hiddenPhotos: Int { max(0, (spec?.photos.count ?? 0) - ChatMetrics.photosShown) }
+
+    /// Attached photos as a grid; past four, the last tile says how many more there are.
+    private func drawPhotos(_ photos: [Attachment]) {
+        for (i, r) in photoRects.enumerated() where i < photos.count {
+            drawTile(photos[i].id, in: r)
+            let more = hiddenPhotos
+            guard i == ChatMetrics.photosShown - 1, more > 0 else { continue }
+            NSColor.black.withAlphaComponent(0.45).setFill()
+            NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10).fill()
+            let label = NSAttributedString(string: "+\(more)", attributes: [
+                .font: NSFont.systemFont(ofSize: 22, weight: .semibold), .foregroundColor: NSColor.white,
+            ])
+            let s = label.size()
+            label.draw(at: CGPoint(x: r.midX - s.width / 2, y: r.midY - s.height / 2))
+        }
+    }
+
+    /// One image tile: the image cropped to fill it once decoded, a soft placeholder until
+    /// then (asking for it, off the main thread).
+    private func drawTile(_ id: String, in r: CGRect) {
+        let clip = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10)
+        colors.mineBackground.withAlphaComponent(0.6).setFill()
+        clip.fill()
+        if let image = Thumbnails.shared.image(id) {
+            NSGraphicsContext.saveGraphicsState()
+            clip.addClip()
+            // Fill the tile, cropping the longer side.
+            let scale = max(r.width / CGFloat(image.width), r.height / CGFloat(image.height))
+            let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
+            NSImage(cgImage: image, size: size)
+                .draw(in: CGRect(x: r.midX - size.width / 2, y: r.midY - size.height / 2, width: size.width, height: size.height),
+                      from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            NSGraphicsContext.restoreGraphicsState()
+        } else {
+            Thumbnails.shared.load(id, file: file) { [weak self] in self?.needsDisplay = true }
+        }
+    }
+
     /// Pasted images as thumbnails under the text, decoded small and off the main thread.
     private func drawThumbnails(_ ids: [String]) {
         guard !ids.isEmpty else { return }
         let y = text.frame.maxY + (spec?.content.clamped == true ? ChatMetrics.showMore : 0) + ChatMetrics.thumbGap
         for (i, id) in ids.enumerated() {
-            let r = CGRect(x: text.frame.minX + CGFloat(i) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap), y: y,
-                           width: ChatMetrics.thumb.width, height: ChatMetrics.thumb.height)
-            let clip = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10)
-            colors.mineBackground.withAlphaComponent(0.6).setFill()
-            clip.fill()
-            if let image = Thumbnails.shared.image(id) {
-                NSGraphicsContext.saveGraphicsState()
-                clip.addClip()
-                // Fill the tile, cropping the longer side.
-                let scale = max(r.width / CGFloat(image.width), r.height / CGFloat(image.height))
-                let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
-                NSImage(cgImage: image, size: size)
-                    .draw(in: CGRect(x: r.midX - size.width / 2, y: r.midY - size.height / 2, width: size.width, height: size.height),
-                          from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-                NSGraphicsContext.restoreGraphicsState()
-            } else {
-                Thumbnails.shared.load(id, file: file) { [weak self] in self?.needsDisplay = true }
-            }
+            drawTile(id, in: CGRect(x: text.frame.minX + CGFloat(i) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap), y: y,
+                                    width: ChatMetrics.thumb.width, height: ChatMetrics.thumb.height))
         }
     }
 
@@ -418,7 +489,9 @@ final class BubbleRowView: NSView {
     /// outside its text open the whole email too.
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if text.frame.contains(p) {
+        if let tile = photoRects.firstIndex(where: { $0.contains(p) }) {
+            pressed = (tile, p)
+        } else if text.frame.contains(p) {
             liveText(true)
             text.mouseDown(with: event)
         } else if bubbleRect.contains(p) {
@@ -426,6 +499,55 @@ final class BubbleRowView: NSView {
         } else {
             super.mouseDown(with: event)
         }
+    }
+}
+
+extension BubbleRowView: NSDraggingSource {
+    override func mouseDragged(with event: NSEvent) {
+        guard let (tile, at) = pressed, let spec, tile < spec.photos.count else { return super.mouseDragged(with: event) }
+        let p = convert(event.locationInWindow, from: nil)
+        guard hypot(p.x - at.x, p.y - at.y) > 4 else { return }
+        pressed = nil
+        // The file as it is stored, under its own name; not yet fetched, nothing to drag.
+        guard let url = Thumbnails.shared.url(spec.photos[tile].id) else { return }
+        let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+        let image = Thumbnails.shared.image(spec.photos[tile].id).map { NSImage(cgImage: $0, size: photoRects[tile].size) }
+        item.setDraggingFrame(photoRects[tile], contents: image)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let (tile, _) = pressed else { return super.mouseUp(with: event) }
+        pressed = nil
+        onPhoto?(tile)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .outsideApplication ? .copy : []
+    }
+
+    /// Presses a photo tile, as a click would.
+    func pressPhoto(_ tile: Int) { onPhoto?(tile) }
+}
+
+/// Quick Look over a chat's photos, driven from the chat's document view (the panel asks
+/// the responder chain who controls it).
+@MainActor
+final class PhotoPreview: NSObject, @MainActor QLPreviewPanelDataSource {
+    static let shared = PhotoPreview()
+    var urls: [URL] = []
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { urls.count }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! { urls[index] as NSURL }
+
+    /// Shows `urls` from the one at `index`, controlled by `controller`.
+    func show(_ urls: [URL], at index: Int, from controller: NSView) {
+        self.urls = urls
+        controller.window?.makeFirstResponder(controller)
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if panel.isVisible { panel.reloadData() } else { panel.makeKeyAndOrderFront(nil) }
+        panel.currentPreviewItemIndex = index
     }
 }
 
@@ -496,6 +618,16 @@ final class ChatDocumentView: NSView {
         // A click in the chat gives it the keyboard: ↑/↓ and Enter move between messages.
         window?.makeFirstResponder(self)
     }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { !PhotoPreview.shared.urls.isEmpty }
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated { panel.dataSource = PhotoPreview.shared }
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { panel.dataSource = nil }
 
     override func keyDown(with event: NSEvent) {
         guard event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty,
@@ -666,6 +798,7 @@ public final class ChatStreamView: NSScrollView {
                 }
                 (v as? BubbleRowView)?.onShowMore = { [weak self] in self?.actions.showMore(spec.id) }
                 (v as? BubbleRowView)?.file = actions.file
+                (v as? BubbleRowView)?.onPhoto = { [weak self] i in self?.openPhotos(spec.photos, at: i) }
                 y += h
             case let .marker(m):
                 let h = ChatMetrics.marker(m)
@@ -711,6 +844,24 @@ public final class ChatStreamView: NSScrollView {
         super.layout()
         // The pane was resized: the rows follow, in the document's own layout pass.
         if contentView.bounds.width != laidWidth { document.needsLayout = true }
+    }
+
+    /// Fetches the photos' files (already stored ones at once) and shows them from `index`.
+    private func openPhotos(_ photos: [Attachment], at index: Int) {
+        let file = actions.file
+        let preview = actions.previewPhotos
+        Task { @MainActor [weak self] in
+            var urls: [URL] = []
+            var at = 0
+            for (i, p) in photos.enumerated() {
+                let stored = Thumbnails.shared.url(p.id)
+                guard let url = stored == nil ? await file(p.id) : stored else { continue }
+                if i == index { at = urls.count }
+                urls.append(url)
+            }
+            guard !urls.isEmpty, let self else { return }
+            if let preview { preview(urls, at) } else { PhotoPreview.shared.show(urls, at: at, from: self.document) }
+        }
     }
 
     // MARK: for tests
@@ -890,7 +1041,18 @@ final class Thumbnails: @unchecked Sendable {
     static let shared = Thumbnails()
     private let lock = NSLock()
     private var images: [String: CGImage] = [:]
+    /// Files already fetched, by attachment id: dragged out and shown in Quick Look as they are.
+    private var files: [String: URL] = [:]
     private var loading: Set<String> = []
+    private let decoder: @Sendable (URL) -> CGImage?
+
+    init(decode: @escaping @Sendable (URL) -> CGImage? = Thumbnails.decode) { decoder = decode }
+
+    func url(_ id: String) -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return files[id]
+    }
 
     func image(_ id: String) -> CGImage? {
         lock.lock()
@@ -904,19 +1066,21 @@ final class Thumbnails: @unchecked Sendable {
         guard !loading.contains(id), images[id] == nil else { lock.unlock(); return }
         loading.insert(id)
         lock.unlock()
+        let decoder = decoder
         Task {
             guard let url = await file(id) else { return }
-            let image = await Task.detached(priority: .utility) { Self.decode(url) }.value
-            self.store(id, image)
+            let image = await Task.detached(priority: .utility) { decoder(url) }.value
+            self.store(id, image, url: url)
             done()
         }
     }
 
-    private func store(_ id: String, _ image: CGImage?) {
+    private func store(_ id: String, _ image: CGImage?, url: URL) {
         lock.lock()
         defer { lock.unlock() }
-        if images.count > 500 { images.removeAll() }
+        if images.count > 500 { images.removeAll(); files.removeAll() }
         images[id] = image
+        files[id] = url
     }
 
     static func decode(_ url: URL) -> CGImage? {
