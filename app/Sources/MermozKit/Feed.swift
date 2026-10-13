@@ -212,14 +212,20 @@ public enum FeedKeyAction: Equatable, Sendable {
 }
 
 public enum FeedKeyMap {
-    /// Characters the Feed takes besides the app-wide shortcuts: ↩, ⌫ and ⌦ included.
-    public static let characters = "lo123\rd\u{7f}\u{f728}"
+    /// The characters AppKit types for the ↓ and ↑ keys.
+    public static let downArrow = "\u{f701}"
+    public static let upArrow = "\u{f700}"
+
+    /// Characters the Feed takes besides the app-wide shortcuts: ↩, ⌫, ⌦ and the arrows.
+    public static let characters = "lo123\rd\u{7f}\u{f728}" + downArrow + upArrow
 
     /// The action for a typed character (already lowercased; `shift` tells l from ⇧L).
     public static func action(_ c: String, shift: Bool = false) -> FeedKeyAction? {
         switch c {
-        case "j": .next
-        case "k": .previous
+        // The arrows read on the window, not on a focused view, so they work wherever the
+        // focus is; with ⇧ they are left alone (the Feed has no multi-selection).
+        case "j", downArrow where !shift: .next
+        case "k", upArrow where !shift: .previous
         case "\r": .primary
         case "1", "2", "3": .option(Int(c) ?? 0)
         case "l": shift ? .laterPickDay : .later

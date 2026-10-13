@@ -318,3 +318,28 @@ func deleteKeysDelete(key: String) {
 @Test func aMissingWhyIsNoDuplicate() {
     #expect(!FeedWords.nearDuplicate(nil, "Anything"))
 }
+
+// MARK: arrows
+
+@Test func downArrowGoesToTheNextCard() {
+    #expect(FeedKeyMap.action(FeedKeyMap.downArrow) == .next)
+}
+
+@Test func upArrowGoesToThePreviousCard() {
+    #expect(FeedKeyMap.action(FeedKeyMap.upArrow) == .previous)
+}
+
+@Test(arguments: [FeedKeyMap.downArrow, FeedKeyMap.upArrow])
+func shiftArrowsAreLeftAlone(key: String) {
+    #expect(FeedKeyMap.action(key, shift: true) == nil)
+}
+
+@Test(arguments: [FeedKeyMap.downArrow, FeedKeyMap.upArrow])
+func theFeedListensForTheArrows(key: String) {
+    #expect(FeedKeyMap.characters.contains(key))
+}
+
+@Test func arrowsPassTheShortcutFilter() {
+    let c = ShortcutKey.normalize(FeedKeyMap.downArrow, command: false, control: false, option: false, known: FeedKeyMap.characters)
+    #expect(c == FeedKeyMap.downArrow)
+}
