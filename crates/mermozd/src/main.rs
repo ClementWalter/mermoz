@@ -147,6 +147,8 @@ async fn handle(svc: Arc<Service>, stream: UnixStream) {
 /// Moves HTML still stored in message rows to its own table, in short writes spaced
 /// out so a sync or a click never waits behind it.
 async fn move_html(store: Arc<Store>) {
+    // The app's first list and counts read the disk alone.
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     let (t0, mut after, mut batches) = (std::time::Instant::now(), 0i64, 0u64);
     loop {
         let st = store.clone();
@@ -164,6 +166,22 @@ async fn move_html(store: Arc<Store>) {
             ms = t0.elapsed().as_millis() as u64,
             "message HTML moved out of the rows"
         );
+    }
+}
+
+/// Copies the WAL into the database once a second after writes, so no commit pays for
+/// a checkpoint while holding the write lock.
+async fn checkpoints(store: Arc<Store>) {
+    let second = std::time::Duration::from_secs(1);
+    // Not at launch: the first list and counts own the disk.
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + second, second);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let st = store.clone();
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || st.checkpoint()).await {
+            warn!("checkpoint: {e}");
+        }
     }
 }
 
@@ -193,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
     // The feed only reads the store and Jev, so it also runs on demo data.
     feed::start(&svc);
     tokio::spawn(move_html(svc.store.clone()));
+    tokio::spawn(checkpoints(svc.store.clone()));
     // MERMOZ_NO_SYNC serves the local store only (demo data, offline UI work).
     if std::env::var_os("MERMOZ_NO_SYNC").is_none() {
         svc.start_all();

@@ -9,7 +9,7 @@
 
 use super::Store;
 use crate::error::Result;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 pub(super) const MIGRATION: &str = r#"
 CREATE TABLE IF NOT EXISTS message_html (
@@ -30,6 +30,16 @@ impl Store {
     /// in one short write. Returns the last rowid looked at, or None once none is left.
     pub fn move_html_batch(&self, after: i64, limit: i64) -> Result<Option<i64>> {
         let mut w = self.w.lock().unwrap();
+        // Once done it stays done (new mail never keeps HTML in its row): no launch
+        // scans the whole messages table again.
+        let done: Option<String> = w
+            .query_row("SELECT value FROM meta WHERE key = 'html_moved'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if done.is_some() {
+            return Ok(None);
+        }
         let tx = w.transaction()?;
         // `body_html IS NOT NULL` reads only the row header, never the HTML itself.
         let rows: Vec<(i64, String)> = tx
@@ -40,6 +50,11 @@ impl Store {
             .query_map(params![after, limit], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
         let Some(&(last, _)) = rows.last() else {
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('html_moved', '1')",
+                [],
+            )?;
+            tx.commit()?;
             return Ok(None);
         };
         for (_, id) in &rows {
@@ -208,6 +223,14 @@ mod tests {
     #[rstest]
     fn nothing_left_ends_the_move(env: Env) {
         assert_eq!(env.store.move_html_batch(0, 10).unwrap(), None);
+    }
+
+    #[rstest]
+    fn a_finished_move_never_scans_again(env: Env) {
+        env.store.move_html_batch(0, 10).unwrap();
+        inline_html(&env);
+        env.store.move_html_batch(0, 10).unwrap();
+        assert_eq!(row_html_count(&env), 1);
     }
 
     #[rstest]

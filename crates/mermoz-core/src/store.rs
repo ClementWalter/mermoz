@@ -20,10 +20,13 @@ pub use feed::FEED_STATUSES;
 
 /// Writer settings. Each ingested message runs in a savepoint whose sub-journal stays in
 /// memory, and a 32 MB page cache keeps a sync batch's pages from being evicted and
-/// read back mid-transaction (SQLite's default is 2 MB).
+/// read back mid-transaction (SQLite's default is 2 MB). No commit checkpoints: copying
+/// the WAL back runs after the write lock is released ([`Store::checkpoint`]), and the
+/// WAL file is trimmed back to 64 MB whenever it starts over.
 const PRAGMAS: &str =
     "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;
-     PRAGMA temp_store = MEMORY; PRAGMA cache_size = -32768;";
+     PRAGMA temp_store = MEMORY; PRAGMA cache_size = -32768; PRAGMA wal_autocheckpoint = 0;
+     PRAGMA journal_size_limit = 67108864;";
 
 /// Reader settings: 16 MB of cache each keeps the hot list and index pages resident.
 const READER_PRAGMAS: &str =
@@ -919,6 +922,8 @@ pub struct Store {
     r: Mutex<Connection>,
     /// Reads for the background router, so its history scans never queue the UI's reads.
     bg: Mutex<Connection>,
+    /// Checkpoints, with the database version they last saw.
+    ckpt: Mutex<(Connection, i64)>,
     blobs: PathBuf,
     counts_cache: Mutex<counts::CountsCache>,
 }
@@ -1047,36 +1052,38 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
     let mut st = conn.prepare_cached(
         "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
     )?;
-    for (listed, m) in &mut msgs {
-        // A forward's header looks like quoted history but is the content.
-        (m.body_new, m.has_quoted) = if crate::quote::is_forward(&m.subject) {
-            (m.body_text.trim().to_string(), false)
-        } else if m.has_html
-            && (m.body_text.trim().is_empty() || crate::newsletter::degraded(&m.body_text))
-        {
-            // A newsletter's plain part is often a dump of links: read its HTML instead.
-            let html: Option<String> = conn
+    // The reading text is pure CPU per message: a long conversation spreads it on cores.
+    let readings = par_map(&msgs, |(listed, m)| reading(m, *listed));
+    let html: Vec<Option<String>> = msgs
+        .iter()
+        .zip(&readings)
+        .map(|((_, m), r)| -> Result<Option<String>> {
+            if r.is_some() {
+                return Ok(None);
+            }
+            Ok(conn
                 .query_row(
                     &format!("SELECT {} FROM messages m WHERE id = ?1", bodies::HTML_OF_M),
                     [&m.id],
                     |r| r.get(0),
                 )
                 .optional()?
-                .flatten();
-            (
-                crate::newsletter::readable(&m.body_text, html.as_deref()),
-                true,
-            )
-        } else if crate::newsletter::degraded(&m.body_text) {
-            (crate::newsletter::clean(&m.body_text), true)
-        } else if *listed {
-            // Mailing-list posts carry footers and tracking links even in a clean plain part.
-            (
-                crate::newsletter::clean(&crate::quote::readable(&m.body_text).0),
-                true,
-            )
-        } else {
-            crate::quote::readable(&m.body_text)
+                .flatten())
+        })
+        .collect::<Result<_>>()?;
+    let todo: Vec<usize> = (0..msgs.len()).filter(|&i| readings[i].is_none()).collect();
+    // A newsletter's plain part is often a dump of links: its HTML is read instead.
+    let from_html = par_map(&todo, |&i| {
+        crate::newsletter::readable(&msgs[i].1.body_text, html[i].as_deref())
+    });
+    let mut from_html = todo.into_iter().zip(from_html);
+    for (i, ((_, m), r)) in msgs.iter_mut().zip(readings).enumerate() {
+        (m.body_new, m.has_quoted) = match r {
+            Some(r) => r,
+            None => {
+                let (_, text) = from_html.find(|(j, _)| *j == i).expect("read from html");
+                (text, true)
+            }
         };
         m.attachments = st
             .query_map([&m.id], |r| {
@@ -1091,6 +1098,51 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
             .collect::<rusqlite::Result<_>>()?;
     }
     Ok(msgs.into_iter().map(|(_, m)| m).collect())
+}
+
+/// What a reader is shown of a message: (its new content, whether anything was hidden),
+/// or None when its HTML must be read instead (a newsletter's degraded plain part).
+fn reading(m: &Message, listed: bool) -> Option<(String, bool)> {
+    use crate::{newsletter, quote};
+    // A forward's header looks like quoted history but is the content.
+    if quote::is_forward(&m.subject) {
+        return Some((m.body_text.trim().to_string(), false));
+    }
+    let degraded = newsletter::degraded(&m.body_text);
+    if degraded && m.has_html {
+        return None;
+    }
+    Some(if degraded {
+        (newsletter::clean(&m.body_text), true)
+    } else if listed {
+        // Mailing-list posts carry footers and tracking links even in a clean plain part.
+        (newsletter::clean(&quote::readable(&m.body_text).0), true)
+    } else {
+        quote::readable(&m.body_text)
+    })
+}
+
+/// `f` over `items`, in order; on several threads once there are enough to pay for them.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    const MIN_PER_THREAD: usize = 32;
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(8)
+        .min(items.len() / MIN_PER_THREAD);
+    if threads <= 1 {
+        return items.iter().map(&f).collect();
+    }
+    let chunk = items.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        let parts: Vec<_> = items
+            .chunks(chunk)
+            .map(|c| s.spawn(|| c.iter().map(&f).collect::<Vec<R>>()))
+            .collect();
+        parts
+            .into_iter()
+            .flat_map(|p| p.join().expect("reading worker"))
+            .collect()
+    })
 }
 
 fn draft_row(r: &Row) -> rusqlite::Result<Draft> {
@@ -1228,6 +1280,7 @@ impl Store {
             w: Mutex::new(w),
             r: Mutex::new(reader()?),
             bg: Mutex::new(reader()?),
+            ckpt: Mutex::new((reader()?, -1)),
             blobs: blobs.to_path_buf(),
             counts_cache: Default::default(),
         };
@@ -1241,6 +1294,34 @@ impl Store {
         }
         tracing::info!(ms = t0.elapsed().as_millis() as u64, "store opened");
         Ok(store)
+    }
+
+    /// Copies committed WAL pages into the database file, when anything was written since
+    /// the last call. Run off the write path: SQLite's own checkpoint runs inside the
+    /// commit that fills the WAL, holding the write lock for the whole copy. Passive, so
+    /// it never waits on (or blocks) a writer or a reader. Returns the pages copied.
+    pub fn checkpoint(&self) -> Result<i64> {
+        let mut g = self.ckpt.lock().unwrap();
+        let (conn, seen) = &mut *g;
+        let version: i64 = conn.query_row("PRAGMA data_version", [], |r| r.get(0))?;
+        if version == *seen {
+            return Ok(0);
+        }
+        *seen = version;
+        let (log, copied): (i64, i64) =
+            conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
+                Ok((r.get(1)?, r.get(2)?))
+            })?;
+        // The WAL only starts over when a write finds no reader on it; under steady reads
+        // it keeps growing. Past 64 MB it is rewound by the writer itself (other writes
+        // queue on its lock, never fail busy), giving up after 50 ms of waiting on readers.
+        if log > 16_384 && copied == log {
+            let w = self.w.lock().unwrap();
+            w.busy_timeout(std::time::Duration::from_millis(50))?;
+            let _ = w.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+            w.busy_timeout(std::time::Duration::from_secs(5))?;
+        }
+        Ok(copied)
     }
 
     /// Recomputes every list preview once when the preview rules change.
@@ -1522,6 +1603,10 @@ impl Store {
         }
         Self::index_fts(&tx, &fts)?;
         tx.commit()?;
+        drop(w);
+        // A sync writes batch after batch: the WAL is copied back after each, with the
+        // write lock already released, so clicks never wait on the copy.
+        self.checkpoint()?;
         Ok(ids)
     }
 
@@ -5099,6 +5184,25 @@ mod tests {
     fn rest_of_a_failed_batch_is_searchable(env: Env) {
         batch_with_a_failure(&env);
         assert_eq!(env.store.search("okidoki", 10).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn checkpoint_copies_a_write(env: Env) {
+        env.store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        assert!(env.store.checkpoint().unwrap() > 0);
+    }
+
+    #[rstest]
+    fn checkpoint_without_writes_does_nothing(env: Env) {
+        env.store.checkpoint().unwrap();
+        assert_eq!(env.store.checkpoint().unwrap(), 0);
     }
 
     #[rstest]

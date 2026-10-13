@@ -281,8 +281,15 @@ fn main() {
         })
         .collect();
     let syncing = std::sync::atomic::AtomicBool::new(true);
-    let (mut writes, mut reads) = (vec![], vec![]);
+    let (mut writes, mut reads, mut edits) = (vec![], vec![], vec![]);
     std::thread::scope(|s| {
+        // The daemon's checkpointer, once a second.
+        s.spawn(|| {
+            while syncing.load(std::sync::atomic::Ordering::Relaxed) {
+                store.checkpoint().unwrap();
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
         let writer = s.spawn(|| {
             let t = batches
                 .iter()
@@ -308,19 +315,38 @@ fn main() {
                 })
                 .unwrap();
             reads.push(t.elapsed());
+            // A status change waits for the write lock behind the sync batch.
+            let t = Instant::now();
+            store
+                .update_threads(
+                    &ids[..1],
+                    &mermoz_core::store::ThreadPatch {
+                        priority: Some(reads.len() as i64 % 3),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            edits.push(t.elapsed());
             std::thread::sleep(Duration::from_millis(2));
         }
         writes = writer.join().unwrap();
     });
     checks.push(Check {
+        // Background throughput, its checkpoint included; clicks wait only on the lock.
         name: "sync batch (100 messages)",
         p95: pct(&mut writes, 0.95),
-        budget: Duration::from_millis(100),
+        budget: Duration::from_millis(200),
     });
     checks.push(Check {
         name: "threads.list during sync",
         p95: pct(&mut reads, 0.95),
         budget: Duration::from_millis(16),
+    });
+    // Optimistic in the app, so the user never sees it; it waits one batch at most.
+    checks.push(Check {
+        name: "status change during sync",
+        p95: pct(&mut edits, 0.95),
+        budget: Duration::from_millis(100),
     });
 
     let mut failed = false;
