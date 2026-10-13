@@ -114,6 +114,17 @@ public enum ChatPhotos {
     }
 }
 
+/// The small line a bubble shows over its text.
+public enum BubbleCaption {
+    /// "Forwarded from Nora" for a forward (just "Forwarded" when the original sender is
+    /// unknown); nil otherwise.
+    public static func of(_ m: Message) -> String? {
+        guard m.forwarded == true else { return nil }
+        guard let from = m.forwardedFrom?.trimmingCharacters(in: .whitespaces), !from.isEmpty else { return "Forwarded" }
+        return "Forwarded from \(from)"
+    }
+}
+
 /// A row the app draws in SwiftUI.
 public enum HostedRow: Sendable {
     case summary
@@ -168,7 +179,8 @@ public enum ChatRows {
                         id: m.id, content: content, mine: m.isFromMe, firstOfRun: first, sender: names[key] ?? m.from.display,
                         senderKey: key,
                         time: time(m.date), focused: focused == m.id, files: max(0, parts.fileCount - photos.count), note: note,
-                        thumbnails: parts.thumbnails.map(\.id), photos: photos)))
+                        thumbnails: parts.thumbnails.map(\.id), photos: photos, caption: BubbleCaption.of(m),
+                        quoted: m.quotedOnly == true)))
                 }
                 previous = (m, parts.text)
             }

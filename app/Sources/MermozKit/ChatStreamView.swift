@@ -29,14 +29,20 @@ public struct BubbleSpec: Equatable, Sendable {
     public var thumbnails: [String]
     /// Photos sent along (image files), shown as a grid under the text.
     public var photos: [Attachment]
+    /// A small line inside the bubble over the text, such as "Forwarded from Nora".
+    public var caption: String?
+    /// The message adds no words of its own: its text is a quote, drawn dimmed with a bar.
+    public var quoted: Bool
 
     public init(id: String, content: BubbleContent, mine: Bool, firstOfRun: Bool, sender: String, senderKey: String? = nil,
                 time: String, focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = [],
-                photos: [Attachment] = []) {
+                photos: [Attachment] = [], caption: String? = nil, quoted: Bool = false) {
         self.id = id; self.content = content; self.mine = mine; self.firstOfRun = firstOfRun
         self.sender = sender; self.senderKey = senderKey ?? sender.lowercased(); self.time = time; self.focused = focused; self.files = files; self.note = note
         self.thumbnails = thumbnails
         self.photos = photos
+        self.caption = caption
+        self.quoted = quoted
     }
 }
 
@@ -130,6 +136,16 @@ public enum ChatMetrics {
     /// Width of the photo grid, and the gap between its tiles.
     public static let photoGrid: CGFloat = 224
     public static let photoGap: CGFloat = 4
+    /// The caption line inside a bubble, over its text.
+    public static let caption: CGFloat = 18
+    /// How strongly a quote-only bubble's text shows.
+    public static let quotedAlpha: CGFloat = 0.6
+    static var captionFont: NSFont { .systemFont(ofSize: 11, weight: .medium) }
+
+    /// Width the caption takes, its arrow included.
+    public static func captionWidth(_ caption: String) -> CGFloat {
+        ceil(16 + (caption as NSString).size(withAttributes: [.font: captionFont]).width)
+    }
     /// Photos shown; the last tile says how many more there are.
     public static let photosShown = 4
 
@@ -170,6 +186,7 @@ public enum ChatMetrics {
     public static func bubble(text: CGSize, _ spec: BubbleSpec) -> CGFloat {
         text.height + 2 * inset.height + (spec.content.clamped ? showMore : 0) + (spec.files > 0 ? files : 0)
             + (spec.thumbnails.isEmpty ? 0 : thumbGap + thumb.height) + photosHeight(spec.photos.count)
+            + (spec.caption == nil ? 0 : caption)
     }
 
     /// Height of a thread marker row.
@@ -396,15 +413,18 @@ final class BubbleRowView: NSView {
         // Wide enough for "Show more" and the file count under short text.
         let thumbs = CGFloat(spec.thumbnails.count) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap) - ChatMetrics.thumbGap
         let floor: CGFloat = max(spec.content.clamped || spec.files > 0 ? 80 : 0, spec.thumbnails.isEmpty ? 0 : thumbs,
-                                 spec.photos.isEmpty ? 0 : ChatMetrics.photoGrid)
+                                 spec.photos.isEmpty ? 0 : ChatMetrics.photoGrid,
+                                 spec.caption.map { min(ChatMetrics.captionWidth($0), ChatMetrics.textWidth(width, mine: spec.mine)) } ?? 0)
         let bubbleSize = CGSize(width: max(laid.size.width, floor) + 2 * ChatMetrics.inset.width,
                                 height: ChatMetrics.bubble(text: laid.size, spec))
         let x = spec.mine
             ? width - ChatMetrics.sidePadding - bubbleSize.width
             : ChatMetrics.sidePadding + ChatMetrics.avatar + ChatMetrics.avatarGap
         bubbleRect = CGRect(x: x, y: top, width: bubbleSize.width, height: bubbleSize.height)
-        text.frame = CGRect(x: x + ChatMetrics.inset.width, y: top + ChatMetrics.inset.height,
+        let captioned = spec.caption == nil ? 0 : ChatMetrics.caption
+        text.frame = CGRect(x: x + ChatMetrics.inset.width, y: top + ChatMetrics.inset.height + captioned,
                             width: laid.size.width, height: laid.size.height)
+        text.alphaValue = spec.quoted ? ChatMetrics.quotedAlpha : 1
         let gridTop = text.frame.maxY + (spec.content.clamped ? ChatMetrics.showMore : 0)
             + (spec.thumbnails.isEmpty ? 0 : ChatMetrics.thumbGap + ChatMetrics.thumb.height) + ChatMetrics.thumbGap
         photoRects = ChatMetrics.photoTiles(min(spec.photos.count, ChatMetrics.photosShown))
@@ -420,6 +440,7 @@ final class BubbleRowView: NSView {
         setAccessibilityLabel("Message from \(spec.mine ? "you" : spec.sender)"
             + (spec.files > 0 ? ", \(spec.files) file\(spec.files == 1 ? "" : "s") attached" : "")
             + (spec.photos.isEmpty ? "" : ", \(spec.photos.count) photo\(spec.photos.count == 1 ? "" : "s")")
+            + (spec.caption.map { ". \($0)" } ?? "") + (spec.quoted ? ". Quotes an earlier message" : "")
             + (spec.note.map { ". \($0)" } ?? ""))
         setAccessibilityHelp("Opens the whole email")
         needsDisplay = true
@@ -486,10 +507,41 @@ final class BubbleRowView: NSView {
         (spec.focused ? colors.accent.withAlphaComponent(0.6) : colors.border).setStroke()
         shape.lineWidth = spec.focused ? 1.5 : 1
         shape.stroke()
-        if !textIsLive, let laid { laid.draw(in: text.frame) }
+        if let caption = spec.caption { drawCaption(caption) }
+        if spec.quoted {
+            // A quote bar in the bubble's left margin, beside the dimmed text.
+            colors.secondary.withAlphaComponent(0.35).setFill()
+            NSBezierPath(roundedRect: CGRect(x: bubbleRect.minX + 5, y: text.frame.minY, width: 2.5, height: text.frame.height),
+                         xRadius: 1.25, yRadius: 1.25).fill()
+        }
+        if !textIsLive, let laid {
+            if spec.quoted {
+                NSGraphicsContext.current?.cgContext.saveGState()
+                NSGraphicsContext.current?.cgContext.setAlpha(ChatMetrics.quotedAlpha)
+                laid.draw(in: text.frame)
+                NSGraphicsContext.current?.cgContext.restoreGState()
+            } else {
+                laid.draw(in: text.frame)
+            }
+        }
     }
 
     var file: (String) async -> URL? = { _ in nil }
+
+    /// "↪ Forwarded from Nora" over the text, in the quieter color.
+    private func drawCaption(_ caption: String) {
+        let x = text.frame.minX, y = text.frame.minY - ChatMetrics.caption
+        if let arrow = NSImage(systemSymbolName: "arrowshape.turn.up.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .regular)) {
+            colors.secondary.set()
+            arrow.draw(in: CGRect(x: x, y: y + 2, width: 12, height: 11), from: .zero, operation: .sourceOver, fraction: 0.8,
+                       respectFlipped: true, hints: nil)
+        }
+        NSAttributedString(string: caption, attributes: [
+            .font: ChatMetrics.captionFont, .foregroundColor: colors.secondary,
+        ]).draw(with: CGRect(x: x + 16, y: y, width: max(0, bubbleRect.maxX - ChatMetrics.inset.width - x - 16), height: 15),
+                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
 
     /// Photos past the grid, counted on its last tile ("+2").
     var hiddenPhotos: Int { max(0, (spec?.photos.count ?? 0) - ChatMetrics.photosShown) }
