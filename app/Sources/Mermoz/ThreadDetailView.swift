@@ -14,7 +14,7 @@ struct ThreadDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            IssueToolbar(thread: detail.thread)
+            IssueToolbar(thread: detail.thread).equatable()
             Divider().overlay(Theme.line)
             if let sg = model.appliedSuggestion[detail.thread.id] { AppliedSuggestionBar(threadId: detail.thread.id, suggestion: sg) }
             ConversationHeader(detail: detail, conversation: conversation)
@@ -716,7 +716,7 @@ struct TabList<Content: View>: View {
     }
 }
 
-struct IssueToolbar: View {
+struct IssueToolbar: View, Equatable {
     @Environment(AppModel.self) private var model
     let thread: ThreadSummary
     @State private var dueDate = Date()
@@ -726,7 +726,7 @@ struct IssueToolbar: View {
         HStack(spacing: 6) {
             Menu {
                 ForEach(model.statuses) { s in
-                    Button { model.update([thread.id], status: s.key) } label: { Text(s.name) }
+                    Button { model.update([openId], status: s.key) } label: { Text(s.name) }
                 }
             } label: {
                 Chip {
@@ -738,7 +738,7 @@ struct IssueToolbar: View {
 
             Menu {
                 ForEach([1, 2, 3, 4, 0], id: \.self) { p in
-                    Button(Theme.priorityNames[p] ?? "") { model.update([thread.id], priority: p) }
+                    Button(Theme.priorityNames[p] ?? "") { model.update([openId], priority: p) }
                 }
             } label: {
                 Chip { PriorityIcon(priority: thread.priority); Text(Theme.priorityNames[thread.priority] ?? "") }
@@ -751,7 +751,7 @@ struct IssueToolbar: View {
                     Toggle(p.name, isOn: Binding(
                         get: { thread.projects.contains(p.id) },
                         set: { on in
-                            if on { model.update([thread.id], addProjects: [p.id]) } else { model.update([thread.id], removeProjects: [p.id]) }
+                            if on { model.update([openId], addProjects: [p.id]) } else { model.update([openId], removeProjects: [p.id]) }
                         }))
                 }
             } label: {
@@ -775,13 +775,13 @@ struct IssueToolbar: View {
                     DatePicker("", selection: $dueDate, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
                     HStack {
                         if thread.due != nil {
-                            Button("Clear") { model.update([thread.id], due: .clear); showDue = false }
+                            Button("Clear") { model.update([openId], due: .clear); showDue = false }
                         }
                         Spacer()
                         Button("Set") {
                             let f = DateFormatter()
                             f.dateFormat = "yyyy-MM-dd"
-                            model.update([thread.id], due: .set(f.string(from: dueDate)))
+                            model.update([openId], due: .set(f.string(from: dueDate)))
                             showDue = false
                         }
                         .keyboardShortcut(.defaultAction)
@@ -806,6 +806,14 @@ struct IssueToolbar: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 50)
+    }
+
+    /// The thread open now. The toolbar is not rebuilt for a thread showing the same
+    /// status, priority, projects and due date, so its actions read the open thread.
+    private var openId: String { model.detail?.thread.id ?? thread.id }
+
+    nonisolated static func == (a: IssueToolbar, b: IssueToolbar) -> Bool {
+        a.thread.showsSameChips(as: b.thread)
     }
 
     private var projectLabel: String {
