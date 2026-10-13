@@ -991,6 +991,67 @@ fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
     Ok(())
 }
 
+/// The messages matching `filter` (one `?1` parameter), oldest first, in one pass.
+fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Message>> {
+    let mut st = conn.prepare_cached(&format!(
+        "SELECT m.id, m.thread_id, from_name, from_email, to_json, cc_json, date, subject, body_text,
+           body_html IS NOT NULL, is_from_me,
+           (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json
+         FROM messages m WHERE {filter} ORDER BY date, m.rowid"
+    ))?;
+    let mut msgs = st
+        .query_map([arg], |r| {
+            let to: String = r.get(4)?;
+            let cc: String = r.get(5)?;
+            let email: String = r.get(3)?;
+            Ok(Message {
+                id: r.get(0)?,
+                thread_id: r.get(1)?,
+                to: serde_json::from_str(&to).unwrap_or_default(),
+                cc: serde_json::from_str(&cc).unwrap_or_default(),
+                bcc: serde_json::from_str(&r.get::<_, String>(13)?).unwrap_or_default(),
+                date: r.get(6)?,
+                subject: r.get(7)?,
+                body_new: String::new(),
+                has_quoted: false,
+                body_clean: r.get(11)?,
+                body_text: r.get(8)?,
+                has_html: r.get::<_, i64>(9)? != 0,
+                is_from_me: r.get::<_, i64>(10)? != 0,
+                attachments: vec![],
+                auth: crate::auth::shown(r.get::<_, Option<String>>(12)?.as_deref(), &email),
+                from: Address {
+                    name: r.get(2)?,
+                    email,
+                },
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut st = conn.prepare_cached(
+        "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
+    )?;
+    for m in &mut msgs {
+        // A forward's header looks like quoted history but is the content.
+        (m.body_new, m.has_quoted) = if crate::quote::is_forward(&m.subject) {
+            (m.body_text.trim().to_string(), false)
+        } else {
+            crate::quote::readable(&m.body_text)
+        };
+        m.attachments = st
+            .query_map([&m.id], |r| {
+                Ok(AttachmentInfo {
+                    id: r.get(0)?,
+                    filename: r.get(1)?,
+                    mime: r.get(2)?,
+                    size: r.get(3)?,
+                    inline: r.get::<_, i64>(4)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+    }
+    Ok(msgs)
+}
+
 fn draft_row(r: &Row) -> rusqlite::Result<Draft> {
     let to: String = r.get(3)?;
     let cc: String = r.get(4)?;
@@ -1100,9 +1161,12 @@ impl Store {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::create_dir_all(blobs)?;
+        let t0 = std::time::Instant::now();
         let w = Connection::open(path)?;
         w.execute_batch(PRAGMAS)?;
+        tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: pragmas");
         migrate(&w)?;
+        tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: migrated");
         w.busy_timeout(std::time::Duration::from_secs(5))?;
         let reader = || -> Result<Connection> {
             let r = Connection::open(path)?;
@@ -1118,11 +1182,14 @@ impl Store {
             counts_cache: Default::default(),
         };
         store.seed()?;
+        tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: seeded");
         store.backfill_snippets()?;
+        tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: snippets");
         let dropped = store.drop_stale_suggestions(now_ms())?;
         if dropped > 0 {
             tracing::info!(dropped, "dropped live-status suggestions on stale threads");
         }
+        tracing::info!(ms = t0.elapsed().as_millis() as u64, "store opened");
         Ok(store)
     }
 
@@ -1926,64 +1993,7 @@ impl Store {
 
     pub fn messages(&self, thread_id: &str) -> Result<Vec<Message>> {
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached(
-            "SELECT m.id, from_name, from_email, to_json, cc_json, date, subject, body_text, body_html IS NOT NULL, is_from_me,
-               (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json
-             FROM messages m WHERE thread_id = ?1 ORDER BY date",
-        )?;
-        let mut msgs = st
-            .query_map([thread_id], |r| {
-                let to: String = r.get(3)?;
-                let cc: String = r.get(4)?;
-                Ok(Message {
-                    id: r.get(0)?,
-                    thread_id: thread_id.to_string(),
-                    from: Address {
-                        name: r.get(1)?,
-                        email: r.get(2)?,
-                    },
-                    to: serde_json::from_str(&to).unwrap_or_default(),
-                    cc: serde_json::from_str(&cc).unwrap_or_default(),
-                    bcc: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
-                    date: r.get(5)?,
-                    subject: r.get(6)?,
-                    body_new: String::new(),
-                    has_quoted: false,
-                    body_clean: r.get(10)?,
-                    body_text: r.get(7)?,
-                    has_html: r.get::<_, i64>(8)? != 0,
-                    is_from_me: r.get::<_, i64>(9)? != 0,
-                    attachments: vec![],
-                    auth: crate::auth::shown(
-                        r.get::<_, Option<String>>(11)?.as_deref(),
-                        &r.get::<_, String>(2)?,
-                    ),
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut st = r.prepare_cached(
-            "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
-        )?;
-        for m in &mut msgs {
-            // A forward's header looks like quoted history but is the content.
-            (m.body_new, m.has_quoted) = if crate::quote::is_forward(&m.subject) {
-                (m.body_text.trim().to_string(), false)
-            } else {
-                crate::quote::readable(&m.body_text)
-            };
-            m.attachments = st
-                .query_map([&m.id], |r| {
-                    Ok(AttachmentInfo {
-                        id: r.get(0)?,
-                        filename: r.get(1)?,
-                        mime: r.get(2)?,
-                        size: r.get(3)?,
-                        inline: r.get::<_, i64>(4)? != 0,
-                    })
-                })?
-                .collect::<rusqlite::Result<_>>()?;
-        }
-        Ok(msgs)
+        messages_where(&r, "m.thread_id = ?1", thread_id)
     }
 
     /// A message's own parts its HTML can show inline (`cid:` links), read from disk.

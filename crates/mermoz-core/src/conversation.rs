@@ -231,15 +231,23 @@ pub fn ai_verdict(raw: &str) -> Option<bool> {
 
 /// Web links in a message, in order, without duplicates or trailing punctuation.
 pub fn links(text: &str) -> Vec<String> {
+    let delim = |c: char| c.is_whitespace() || "<>\"'()[]".contains(c);
     let mut out: Vec<String> = vec![];
-    for word in text.split(|c: char| c.is_whitespace() || "<>\"'()[]".contains(c)) {
-        let Some(i) = word.find("http://").or_else(|| word.find("https://")) else {
+    // One scan for "http" over the whole text: long newsletters have thousands of words.
+    let mut from = 0;
+    while let Some(k) = text[from..].find("http") {
+        let i = from + k;
+        let rest = &text[i..];
+        if !(rest.starts_with("http://") || rest.starts_with("https://")) {
+            from = i + 4;
             continue;
-        };
-        let url = word[i..].trim_end_matches(['.', ',', ';', ':', '!', '?', '*']);
+        }
+        let end = rest.find(delim).map_or(text.len(), |e| i + e);
+        let url = text[i..end].trim_end_matches(['.', ',', ';', ':', '!', '?', '*']);
         if url.len() > 10 && !out.iter().any(|u| u == url) {
             out.push(url.to_string());
         }
+        from = end;
     }
     out
 }
@@ -386,6 +394,10 @@ mod tests {
     #[case::bracketed("Checklist <https://docs.example/list>", vec!["https://docs.example/list"])]
     #[case::duplicate("https://a.example/x and https://a.example/x", vec!["https://a.example/x"])]
     #[case::none("No link here", vec![])]
+    #[case::inside_a_word("url=https://a.example/x;", vec!["https://a.example/x"])]
+    #[case::http_word_without_scheme("httpd says hi http://b.example/y", vec!["http://b.example/y"])]
+    #[case::two_lines("https://a.example/1\nhttps://a.example/2", vec!["https://a.example/1", "https://a.example/2"])]
+    #[case::too_short("http://a.b", vec![])]
     fn links_are_found(#[case] text: &str, #[case] want: Vec<&str>) {
         assert_eq!(links(text), want);
     }

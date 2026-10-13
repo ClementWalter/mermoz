@@ -151,6 +151,26 @@ fn main() {
         p95: pct(&mut open, 0.95),
         budget: Duration::from_millis(16),
     });
+    // A sender with hundreds of threads (notifications, a long relationship): the whole
+    // conversation opens at once.
+    let big = &ids[ids.len() / 2];
+    if store.conversation_thread_ids(big).unwrap().len() < 2 {
+        let half = ids.len() / 2;
+        store
+            .merge_threads(&ids[half..(half + 300).min(ids.len())])
+            .unwrap();
+    }
+    let big_n = store.conversation_thread_ids(big).unwrap().len();
+    let mut open_big = time(20, || {
+        let msgs = store.conversation_messages(big).unwrap();
+        store.conversation(big, &msgs).unwrap();
+    });
+    eprintln_info(&format!("big conversation: {big_n} threads"));
+    checks.push(Check {
+        name: "open 300-thread conversation",
+        p95: pct(&mut open_big, 0.95),
+        budget: Duration::from_millis(16),
+    });
     let mut counts = time(50, || {
         store.counts(true).unwrap();
     });

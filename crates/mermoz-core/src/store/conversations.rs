@@ -742,22 +742,34 @@ impl Store {
 
     /// Every message of a thread's conversation, oldest first.
     pub fn conversation_messages(&self, tid: &str) -> Result<Vec<Message>> {
-        let mut out = vec![];
-        for t in self.conversation_thread_ids(tid)? {
-            out.extend(self.messages(&t)?);
-        }
-        out.sort_by_key(|m| m.date);
-        Ok(out)
+        let r = self.r.lock().unwrap();
+        let cid = conversation_of(&r, tid)?;
+        super::messages_where(
+            &r,
+            "m.thread_id IN (SELECT id FROM threads WHERE conversation_id = ?1)",
+            &cid,
+        )
+    }
+
+    /// Every thread of a thread's conversation, in one query.
+    fn conversation_threads(&self, tid: &str) -> Result<Vec<ThreadSummary>> {
+        let r = self.r.lock().unwrap();
+        let cid = conversation_of(&r, tid)?;
+        let mut rows = r
+            .prepare_cached(&format!(
+                "SELECT {} FROM threads t WHERE t.conversation_id = ?1",
+                super::THREAD_COLS
+            ))?
+            .query_map([cid], super::thread_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        super::attach(&r, &mut rows)?;
+        Ok(rows)
     }
 
     /// What the reading pane shows about a thread's conversation besides its messages.
     pub fn conversation(&self, tid: &str, messages: &[Message]) -> Result<Conversation> {
-        let ids = self.conversation_thread_ids(tid)?;
-        let mut threads = ids
-            .iter()
-            .map(|t| self.thread(t))
-            .collect::<Result<Vec<_>>>()?;
-        threads.sort_by_key(|t| t.last_date);
+        let mut threads = self.conversation_threads(tid)?;
+        threads.sort_by(|a, b| a.last_date.cmp(&b.last_date).then_with(|| a.id.cmp(&b.id)));
         let mut people: Vec<ConversationPerson> = vec![];
         let mut seen: HashMap<String, usize> = HashMap::new();
         let mut add = |a: &Address, wrote: bool| {
@@ -784,6 +796,7 @@ impl Store {
         };
         let mut files = vec![];
         let mut links = vec![];
+        let mut seen_links: std::collections::HashSet<String> = Default::default();
         for m in messages {
             if !m.is_from_me {
                 add(&m.from, true);
@@ -811,7 +824,7 @@ impl Store {
                 });
             }
             for url in conv::links(&m.body_new) {
-                if !links.iter().any(|l: &SharedLink| l.url == url) {
+                if seen_links.insert(url.clone()) {
                     links.push(SharedLink {
                         url,
                         message_id: m.id.clone(),

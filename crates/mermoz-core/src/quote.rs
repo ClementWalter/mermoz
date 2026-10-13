@@ -45,11 +45,29 @@ const ORIGINAL: &[&str] = &[
     "-----message d'origine-----",
 ];
 
+/// Whether `line`, leading blanks aside, starts with one of the lowercase `prefixes`,
+/// ignoring case. Allocation-free: it runs on every line of every message opened.
+fn starts_ci(line: &str, prefixes: &[&str]) -> bool {
+    let line = line.trim_start();
+    let Some(&b) = line.as_bytes().first() else {
+        return false;
+    };
+    let first = b.to_ascii_lowercase();
+    prefixes.iter().any(|p| {
+        // Most lines differ from every marker at their first (ASCII) byte.
+        if b.is_ascii() && p.as_bytes()[0] != first {
+            return false;
+        }
+        let mut it = line.chars().flat_map(char::to_lowercase);
+        p.chars().all(|c| it.next() == Some(c))
+    })
+}
+
 fn is_attribution(line: &str, next: &str) -> bool {
-    let l = line.trim().to_lowercase();
-    if !ATTR_START.iter().any(|s| l.starts_with(s)) {
+    if !starts_ci(line, ATTR_START) {
         return false;
     }
+    let l = line.trim().to_lowercase();
     let joined = format!("{l} {}", next.trim().to_lowercase());
     ATTR_END
         .iter()
@@ -58,14 +76,14 @@ fn is_attribution(line: &str, next: &str) -> bool {
 
 /// Outlook-style header block: a From line followed closely by Sent/To/Subject lines.
 fn is_header_block(lines: &[&str], i: usize) -> bool {
-    let l = lines[i].trim().to_lowercase();
-    if !HEADER_FROM.iter().any(|h| l.starts_with(h)) {
+    if !starts_ci(lines[i], HEADER_FROM) {
         return false;
     }
-    let following = lines.iter().skip(i + 1).take(5).filter(|x| {
-        let x = x.trim().to_lowercase();
-        HEADER_REST.iter().any(|h| x.starts_with(h))
-    });
+    let following = lines
+        .iter()
+        .skip(i + 1)
+        .take(5)
+        .filter(|x| starts_ci(x, HEADER_REST));
     following.count() >= 2
 }
 
@@ -103,13 +121,8 @@ pub fn strip_signature(text: &str) -> (String, bool) {
     let mut cut = lines.len();
     for (i, l) in lines.iter().enumerate() {
         let t = l.trim_end();
-        let low = t.trim().to_lowercase();
         // RFC 3676 signature delimiter, or a footer/disclaimer starting a line.
-        if t == "--"
-            || t == "-- "
-            || FOOTERS.iter().any(|f| low.starts_with(f))
-            || DISCLAIMERS.iter().any(|d| low.starts_with(d))
-        {
+        if t == "--" || t == "-- " || starts_ci(t, FOOTERS) || starts_ci(t, DISCLAIMERS) {
             cut = i;
             break;
         }
@@ -192,18 +205,16 @@ pub fn readable(text: &str) -> (String, bool) {
 /// Splits plain text into (new content, whether quoted history was removed).
 pub fn split_text(text: &str) -> (String, bool) {
     let lines: Vec<&str> = text.lines().collect();
-    let lower = text.to_lowercase();
     let mut cut = None;
     for i in 0..lines.len() {
         let next = lines.get(i + 1).copied().unwrap_or("");
-        let t = lines[i].trim().to_lowercase();
-        let quoted_tail = t.starts_with('>')
+        let quoted_tail = lines[i].trim_start().starts_with('>')
             && lines[i..]
                 .iter()
                 .all(|l| l.trim().is_empty() || l.trim_start().starts_with('>'));
         if is_attribution(lines[i], next)
             || is_header_block(&lines, i)
-            || ORIGINAL.iter().any(|o| t.starts_with(o))
+            || starts_ci(lines[i], ORIGINAL)
             || quoted_tail
         {
             cut = Some(i);
@@ -215,7 +226,10 @@ pub fn split_text(text: &str) -> (String, bool) {
     };
     let fresh_lower: String = lines[..cut].join("\n").to_lowercase();
     if FORWARD.iter().any(|f| fresh_lower.contains(f))
-        || (cut == 0 && FORWARD.iter().any(|f| lower.contains(f)))
+        || (cut == 0 && {
+            let lower = text.to_lowercase();
+            FORWARD.iter().any(|f| lower.contains(f))
+        })
     {
         return (text.trim_end().to_string(), false);
     }
@@ -308,6 +322,18 @@ pub fn split_html(html: &str) -> (String, bool) {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case::exact("from: a", HEADER_FROM, true)]
+    #[case::upper("FROM: a", HEADER_FROM, true)]
+    #[case::indented("   Von: a", HEADER_FROM, true)]
+    #[case::accented_upper("À : b", HEADER_REST, true)]
+    #[case::other("Hello", HEADER_FROM, false)]
+    #[case::blank("   ", HEADER_FROM, false)]
+    #[case::shorter_than_prefix("fro", HEADER_FROM, false)]
+    fn case_insensitive_prefixes(#[case] line: &str, #[case] set: &[&str], #[case] want: bool) {
+        assert_eq!(starts_ci(line, set), want);
+    }
 
     const OUTLOOK_FR: &str = "Merci beaucoup !!\n\n________________________________\nFrom: Clément Walter <c@x.com>\nSent: Monday, 29 June 2026 11:07:21\nTo: Valérie <v@y.eu>\nSubject: Re: Projet\n\nBonjour Valérie\n";
     const GMAIL_FR: &str = "Parfait, merci.\n\nLe dim. 11 oct. 2026 à 08:12, Marc Petit <marc@x.com> a écrit :\n> Hello\n> there\n";
