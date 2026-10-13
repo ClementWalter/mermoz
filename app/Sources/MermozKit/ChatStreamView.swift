@@ -205,9 +205,16 @@ open class SelectableBubbleText: NSTextView {
 // MARK: rows
 
 /// One compact bubble drawn by hand: avatar, name and time, rounded background and
-/// border, the text view, and for a clamped message its fade and "Show more".
+/// border, its text, and for a clamped message its fade and "Show more". The text is
+/// drawn from the cached layout; the selectable text view is filled and shown only once
+/// the pointer comes over the bubble (or clicks it), so stepping through conversations
+/// fills no text view.
 final class BubbleRowView: NSView {
     let text = SelectableBubbleText.make()
+    /// The layout this row shows.
+    private var laid: BubbleTextLayout.Laid?
+    /// The text view is shown and holds `laid`; the row draws no text of its own.
+    private(set) var textIsLive = false
     private let fade = FadeView()
     /// "Show more", made the first time this view shows a clamped bubble.
     private var more: NSButton?
@@ -221,6 +228,7 @@ final class BubbleRowView: NSView {
 
     init() {
         super.init(frame: .zero)
+        text.isHidden = true
         addSubview(text)
         addSubview(fade)
         setAccessibilityElement(true)
@@ -259,7 +267,11 @@ final class BubbleRowView: NSView {
         self.spec = spec
         self.colors = colors
         text.onClick = onClick
-        text.show(laid)
+        if laid !== self.laid {
+            self.laid = laid
+            if textIsLive { liveText(false) }
+        }
+        setAccessibilityValue(laid.drawn.string)
         let top = ChatMetrics.top(spec)
         // Wide enough for "Show more" and the file count under short text.
         let thumbs = CGFloat(spec.thumbnails.count) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap) - ChatMetrics.thumbGap
@@ -286,6 +298,28 @@ final class BubbleRowView: NSView {
         setAccessibilityHelp("Opens the whole email")
         needsDisplay = true
     }
+
+    /// Shows the selectable text view filled with this row's text, or hides it and draws
+    /// the text again.
+    func liveText(_ on: Bool) {
+        guard on != textIsLive || (on && text.drawn !== laid) else { return }
+        if on, let laid { text.show(laid) }
+        textIsLive = on
+        if !on, window?.firstResponder === text { window?.makeFirstResponder(superview) }
+        text.isHidden = !on
+        needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if trackingAreas.isEmpty {
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                           owner: self, userInfo: nil))
+        }
+    }
+
+    /// The pointer over the bubble: the text becomes selectable, its links clickable.
+    override func mouseEntered(with event: NSEvent) { liveText(true) }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let spec else { return }
@@ -325,6 +359,7 @@ final class BubbleRowView: NSView {
         (spec.focused ? colors.accent.withAlphaComponent(0.6) : colors.border).setStroke()
         shape.lineWidth = spec.focused ? 1.5 : 1
         shape.stroke()
+        if !textIsLive, let laid { laid.draw(in: text.frame) }
     }
 
     var file: (String) async -> URL? = { _ in nil }
@@ -379,10 +414,18 @@ final class BubbleRowView: NSView {
         label.draw(at: CGPoint(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2))
     }
 
-    /// Clicks on the bubble outside its text open the whole email too.
+    /// A click on the text goes to the text view (made live first); clicks on the bubble
+    /// outside its text open the whole email too.
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if bubbleRect.contains(p) { text.onClick?() } else { super.mouseDown(with: event) }
+        if text.frame.contains(p) {
+            liveText(true)
+            text.mouseDown(with: event)
+        } else if bubbleRect.contains(p) {
+            text.onClick?()
+        } else {
+            super.mouseDown(with: event)
+        }
     }
 }
 
@@ -696,10 +739,17 @@ public final class ChatStreamView: NSScrollView {
         return colors.avatars[SenderIdentity.colorIndex(spec.senderKey, count: colors.avatars.count)]
     }
 
-    /// The text view drawing a message's bubble.
+    /// A message's selectable text view, made live as when the pointer comes over it.
     public func bubbleText(_ id: String) -> SelectableBubbleText? {
+        guard let r = bubbleRow(id) else { return nil }
+        r.liveText(true)
+        return r.text
+    }
+
+    /// The row drawing a message's bubble.
+    func bubbleRow(_ id: String) -> BubbleRowView? {
         for (row, v) in zip(rows, views) {
-            if case let .bubble(b) = row, b.id == id { return (v as? BubbleRowView)?.text }
+            if case let .bubble(b) = row, b.id == id { return v as? BubbleRowView }
         }
         return nil
     }

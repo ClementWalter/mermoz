@@ -193,6 +193,18 @@ public final class BubbleTextCache: @unchecked Sendable {
         return s
     }
 
+    /// The text as a bubble draws it when no text view is live: links underlined, as the
+    /// text view shows them (`linkTextAttributes`).
+    static func drawn(_ s: NSAttributedString) -> NSAttributedString {
+        let whole = NSRange(location: 0, length: s.length)
+        var links: [NSRange] = []
+        s.enumerateAttribute(.link, in: whole) { value, range, _ in if value != nil { links.append(range) } }
+        guard !links.isEmpty else { return s }
+        let m = NSMutableAttributedString(attributedString: s)
+        for r in links { m.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: r) }
+        return m
+    }
+
     /// TextKit 1 layout configured with `BubbleTextLayout.configure`; the text view that
     /// draws it takes this very container, so what is measured is what is drawn.
     static func lay(_ s: NSAttributedString, width: CGFloat, maxLines: Int) -> BubbleTextLayout.Laid {
@@ -205,7 +217,7 @@ public final class BubbleTextCache: @unchecked Sendable {
         manager.ensureLayout(for: container)
         let r = manager.usedRect(for: container)
         return BubbleTextLayout.Laid(storage: storage, manager: manager, container: container,
-                                     size: CGSize(width: ceil(r.width), height: ceil(r.height)))
+                                     size: CGSize(width: ceil(r.width), height: ceil(r.height)), drawn: drawn(s))
     }
 }
 
@@ -238,9 +250,21 @@ public enum BubbleTextLayout {
         public let manager: NSLayoutManager
         public let container: NSTextContainer
         public let size: CGSize
+        /// The text for string drawing (immutable, links underlined).
+        public let drawn: NSAttributedString
 
-        init(storage: NSTextStorage, manager: NSLayoutManager, container: NSTextContainer, size: CGSize) {
+        init(storage: NSTextStorage, manager: NSLayoutManager, container: NSTextContainer, size: CGSize,
+             drawn: NSAttributedString) {
             self.storage = storage; self.manager = manager; self.container = container; self.size = size
+            self.drawn = drawn
+        }
+
+        /// Draws the text in `rect` (the text's own frame, `size` big) with string drawing:
+        /// no text view, no TextKit stack. A clamped bubble's rect holds its first lines and
+        /// the last one ends in an ellipsis, as the text view's line limit does.
+        @MainActor
+        public func draw(in rect: CGRect) {
+            drawn.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
         }
     }
 
