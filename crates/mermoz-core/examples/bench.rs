@@ -255,9 +255,11 @@ fn main() {
         ("search first keystroke", "m"),
         ("search from: first letter", "from:p"),
         ("search two long words", "meeting report"),
+        ("search finished words", "meeting report "),
     ] {
         let mut s = time(30, || {
-            store.search(q, 50).unwrap();
+            // As the app asks while the query is typed.
+            store.search(q, 50, true).unwrap();
         });
         checks.push(Check {
             name,

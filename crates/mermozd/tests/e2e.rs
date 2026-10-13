@@ -4094,3 +4094,74 @@ fn a_window_keeps_every_file_and_link(demo: World) {
         )
     );
 }
+
+/// Synced, plus a flight confirmation Gmail holds that sync never saw.
+#[fixture]
+fn with_unseen_mail(synced: World) -> World {
+    synced.mailbox.lock().unwrap().add_unseen(
+        "m9",
+        "t9",
+        &raw(
+            "Frenchbee <noreply@frenchbee.example>",
+            "Your flight to Papeete",
+            "Booking confirmed",
+            "m9",
+        ),
+        NOW - 5000,
+    );
+    synced
+}
+
+fn gmail_hits(w: &World, q: &str) -> Vec<Value> {
+    w.ok("search.gmail", json!({ "query": q }))["results"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+#[rstest]
+fn local_search_misses_mail_it_does_not_hold(with_unseen_mail: World) {
+    assert!(
+        with_unseen_mail.ok("search", json!({ "query": "papeete" }))["threads"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[rstest]
+fn gmail_search_finds_it(with_unseen_mail: World) {
+    assert_eq!(
+        gmail_hits(&with_unseen_mail, "papeete")[0]["subject"],
+        "Your flight to Papeete"
+    );
+}
+
+#[rstest]
+fn gmail_search_says_it_is_not_in_mermoz(with_unseen_mail: World) {
+    assert_eq!(
+        gmail_hits(&with_unseen_mail, "papeete")[0]["in_mermoz"],
+        false
+    );
+}
+
+#[rstest]
+fn gmail_search_knows_mail_already_here(with_unseen_mail: World) {
+    assert_eq!(
+        gmail_hits(&with_unseen_mail, "remediation")[0]["in_mermoz"],
+        true
+    );
+}
+
+#[rstest]
+fn pulling_a_gmail_hit_makes_it_searchable(with_unseen_mail: World) {
+    let hit = gmail_hits(&with_unseen_mail, "papeete")[0].clone();
+    with_unseen_mail.ok(
+        "search.gmail_pull",
+        json!({ "account_id": hit["account_id"], "ids": [hit["id"]] }),
+    );
+    assert_eq!(
+        with_unseen_mail.ok("search", json!({ "query": "papeete" }))["threads"][0]["subject"],
+        "Your flight to Papeete"
+    );
+}

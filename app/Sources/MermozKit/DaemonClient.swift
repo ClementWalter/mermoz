@@ -246,8 +246,21 @@ public final class DaemonClient: Sendable {
         try await call("messages.html", Params().with("id", messageId).with("full", full).with("images", images), as: HTMLBody.self)
     }
 
-    public func search(_ query: String, limit: Int = 50) async throws -> [ThreadSummary] {
-        try await call("search", Params().with("query", query).with("limit", limit), as: SearchResult.self).threads
+    /// `typing`: the query is still being typed, so its last word also matches as a prefix.
+    public func search(_ query: String, limit: Int = 50, typing: Bool = false) async throws -> [ThreadSummary] {
+        try await call("search", Params().with("query", query).with("limit", limit).with("typing", typing),
+                       as: SearchResult.self).threads
+    }
+
+    /// Gmail's own search, for mail Mermoz doesn't hold.
+    public func searchGmail(_ query: String) async throws -> [GmailHit] {
+        try await call("search.gmail", Params().with("query", query), as: GmailSearch.self).results
+    }
+
+    /// Stores messages found on Gmail; returns their threads.
+    public func pullFromGmail(accountId: String, ids: [String]) async throws -> [String] {
+        try await call("search.gmail_pull", Params().with("account_id", accountId).with("ids", ids),
+                       as: PulledThreads.self).threads
     }
 
     public func attachment(_ id: String) async throws -> AttachmentFile { try await call("attachments.get", Params().with("id", id)) }

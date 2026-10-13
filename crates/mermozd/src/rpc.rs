@@ -466,7 +466,29 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .and_then(|v| v.as_i64())
                 .unwrap_or(50)
                 .clamp(1, 500);
-            Ok(json!({ "threads": st.search(&s(p, "query")?, limit)? }))
+            // `typing`: the app's live search, where the last word may still be growing.
+            Ok(json!({ "threads": st.search(&s(p, "query")?, limit, flag(p, "typing"))? }))
+        }
+        "search.gmail" => {
+            // The fallback when local search finds nothing: Gmail's own search, on every
+            // connected account.
+            let q = s(p, "query")?;
+            let limit = p
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20)
+                .clamp(1, 50) as u32;
+            let mut hits = vec![];
+            for acc in st.accounts()? {
+                let Ok(w) = svc.worker(&acc.id) else { continue };
+                hits.extend(w.sync.search_gmail(&q, limit).await?);
+            }
+            Ok(json!({ "results": hits }))
+        }
+        "search.gmail_pull" => {
+            let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
+            let w = svc.worker(&s(p, "account_id")?)?;
+            Ok(json!({ "threads": w.sync.pull(&ids).await? }))
         }
         "attachments.get" => {
             let (path, filename, mime, size) = st.attachment(&s(p, "id")?)?;

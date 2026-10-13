@@ -418,6 +418,26 @@ public struct SearchResult: Codable, Sendable {
     public var threads: [ThreadSummary]
 }
 
+/// A message Gmail's own search found, for mail Mermoz doesn't hold.
+public struct GmailHit: Codable, Sendable, Identifiable, Equatable {
+    public var accountId: String
+    public var id: String
+    public var threadId: String
+    public var from: String
+    public var subject: String
+    public var date: String
+    /// Already stored locally; otherwise it shows "on Gmail" until pulled in.
+    public var inMermoz: Bool
+}
+
+public struct GmailSearch: Codable, Sendable {
+    public var results: [GmailHit]
+}
+
+public struct PulledThreads: Codable, Sendable {
+    public var threads: [String]
+}
+
 public struct Draft: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var id: String
     public var accountId: String

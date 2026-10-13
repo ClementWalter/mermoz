@@ -7,6 +7,8 @@ struct PaletteItem: Identifiable {
     let title: String
     var detail: String = ""
     var icon: AnyView
+    /// The palette stays open (the item fills it with more results).
+    var keepsOpen = false
     let run: @MainActor () -> Void
 }
 
@@ -15,6 +17,8 @@ struct CommandPalette: View {
     @Environment(\.openWindow) private var openWindow
     @State private var query = ""
     @State private var results: [ThreadSummary] = []
+    /// Gmail's own results for this query, once asked.
+    @State private var gmail: [GmailHit]?
     @State private var cursor = 0
     @FocusState private var focused: Bool
 
@@ -41,7 +45,7 @@ struct CommandPalette: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
-                            Button { item.run(); close() } label: {
+                            Button { item.run(); if !item.keepsOpen { close() } } label: {
                                 HStack(spacing: 10) {
                                     item.icon.frame(width: 16)
                                     Text(item.title).lineLimit(1)
@@ -58,7 +62,7 @@ struct CommandPalette: View {
                             .id(item.id)
                         }
                         if items.isEmpty {
-                            Text(query.isEmpty ? "Type to search your mail" : "No matches")
+                            Text(query.isEmpty ? "Type to search your mail" : gmail == nil ? "No matches" : "No matches on Gmail either")
                                 .font(.system(size: 13)).foregroundStyle(Theme.text3).padding(18)
                         }
                     }
@@ -88,7 +92,7 @@ struct CommandPalette: View {
             try? await Task.sleep(for: .milliseconds(30))
             focused = true
         }
-        .onChange(of: query) { cursor = 0 }
+        .onChange(of: query) { cursor = 0; gmail = nil }
         .task(id: query) {
             guard model.paletteMode == .search else { return }
             // Debounce keystrokes so the daemon only sees settled queries.
@@ -152,13 +156,25 @@ struct CommandPalette: View {
                 }
             }
             if q.isEmpty { return commands(sel).filter { !$0.navigation }.map(\.item) }
+            // Nothing here: Gmail's own search, for mail Mermoz doesn't hold.
+            let typed = query
+            let fallback: [PaletteItem] = !results.isEmpty ? [] : gmail.map { hits in
+                hits.map { h in
+                    PaletteItem(id: "g-\(h.id)", title: h.subject.isEmpty ? "(no subject)" : h.subject,
+                                detail: h.inMermoz ? h.from : "\(h.from) · on Gmail",
+                                icon: AnyView(Image(systemName: "envelope"))) { model.pullFromGmail(h) }
+                }
+            } ?? [PaletteItem(id: "g-search", title: "No matches in Mermoz. Search all of Gmail for “\(typed)”",
+                              icon: AnyView(Image(systemName: "magnifyingglass")), keepsOpen: true) {
+                Task { gmail = await model.searchGmail(typed) }
+            }]
             let ranked = commands(sel)
                 .map { ($0, CommandMatch.score(q, title: $0.item.title, keywords: $0.keywords)) }
                 .filter { $0.1 > 0 }
                 .sorted { $0.1 > $1.1 }
                 .prefix(8)
                 .map(\.0.item)
-            return ranked + mail
+            return ranked + mail + fallback
         }
     }
 
@@ -268,7 +284,7 @@ struct CommandPalette: View {
     private func runSelected() {
         guard items.indices.contains(cursor) else { return }
         let item = items[cursor]
-        close()
+        if !item.keepsOpen { close() }
         item.run()
     }
 

@@ -884,12 +884,23 @@ fn display_person(name: &str) -> String {
     }
 }
 
-/// Turns free text into a safe FTS5 query: every word is a quoted prefix term,
-/// `from:x` / `to:x` / `subject:x` restrict to a column. A single character is a whole
-/// word until a second one is typed: no prefix index covers one letter, and the words
-/// starting with it are most of the mailbox (100-500 ms at 500k messages).
-pub fn fts_query(q: &str) -> Option<String> {
-    let mut terms = vec![];
+/// A search as FTS5 queries: every term must match (`all`); mail with the words in a
+/// row (`phrase`) ranks first, then mail with them all in its subject or sender
+/// (`headline`). Both are None while a long word is typed (see [`fts_query`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FtsQuery {
+    pub all: String,
+    pub phrase: Option<String>,
+    pub headline: Option<String>,
+}
+
+/// Turns free text into safe FTS5 queries: every word must match, as a whole word,
+/// accents and case aside; `from:x` / `to:x` / `subject:x` restrict to a column. While
+/// `typing`, the word being typed (the last, with no space after it) also matches as a
+/// prefix once it has 3 letters: a finished word matching longer ones ("bee" in "been")
+/// let unrelated mail in.
+pub fn fts_query(q: &str, typing: bool) -> Option<FtsQuery> {
+    let mut terms: Vec<(Option<&str>, String)> = vec![];
     for raw in q.split_whitespace() {
         let (col, word) = match raw.split_once(':') {
             Some(("from", w)) => (Some("sender"), w),
@@ -901,21 +912,48 @@ pub fn fts_query(q: &str) -> Option<String> {
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == '@' || *c == '.' || *c == '-' || *c == '_')
             .collect();
-        if clean.is_empty() {
-            continue;
+        if !clean.is_empty() {
+            terms.push((col, clean));
         }
-        let star = if clean.chars().count() > 1 { "*" } else { "" };
-        let term = format!("\"{}\"{star}", clean.replace('"', ""));
-        terms.push(match col {
-            Some(c) => format!("{c}:{term}"),
-            None => term,
-        });
     }
-    if terms.is_empty() {
-        None
-    } else {
-        Some(terms.join(" "))
-    }
+    let last = terms.len().checked_sub(1)?;
+    let open = typing && !q.ends_with(char::is_whitespace);
+    let prefix = |i: usize, w: &str| open && i == last && w.chars().count() >= 3;
+    let all = terms
+        .iter()
+        .enumerate()
+        .map(|(i, (col, w))| {
+            let star = if prefix(i, w) { "*" } else { "" };
+            match col {
+                Some(c) => format!("{c}:\"{w}\"{star}"),
+                None => format!("\"{w}\"{star}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words: Vec<(usize, &str)> = terms
+        .iter()
+        .enumerate()
+        .filter(|(_, (col, _))| col.is_none())
+        .map(|(i, (_, w))| (i, w.as_str()))
+        .collect();
+    // A typed word of 5+ letters has no prefix index: FTS5 merges every word it starts,
+    // ~20 ms at 500k, so ranking (more such merges) waits for the word to finish.
+    let ranked = !(prefix(last, &terms[last].1) && terms[last].1.chars().count() >= 5);
+    let phrase = match words.as_slice() {
+        [_, .., (i, w)] if ranked => {
+            let star = if prefix(*i, w) { "*" } else { "" };
+            let joined = words.iter().map(|(_, w)| *w).collect::<Vec<_>>().join(" ");
+            Some(format!("\"{joined}\"{star}"))
+        }
+        _ => None,
+    };
+    let headline = ranked.then(|| format!("{{subject sender}} : ({all})"));
+    Some(FtsQuery {
+        all,
+        phrase,
+        headline,
+    })
 }
 
 fn fmt_addr(a: &Address) -> String {
@@ -2758,19 +2796,46 @@ impl Store {
 
     /// Full-text search, most recent matching threads first. FTS rowids are
     /// date-ordered, so even a word in every message returns in milliseconds.
-    pub fn search(&self, q: &str, limit: i64) -> Result<Vec<ThreadSummary>> {
-        let Some(fq) = fts_query(q) else {
+    /// Threads matching every word of `q`, best first: the words as a phrase, then all
+    /// of them in the subject or sender, then anywhere; the most recent first within
+    /// each. Ranked among the newest 1,000 matches, so a word in half the mailbox stays
+    /// fast. (FTS5's bm25 counts every match of every word first: 20 ms more for a
+    /// common word at 500k messages.)
+    pub fn search(&self, q: &str, limit: i64, typing: bool) -> Result<Vec<ThreadSummary>> {
+        let Some(fq) = fts_query(q, typing) else {
             return Ok(vec![]);
+        };
+        let mut args: Vec<rusqlite::types::Value> =
+            vec![fq.all.into(), limit.into(), 1000i64.into()];
+        let mut ctes = String::new();
+        let mut rank = String::from("CASE");
+        for (n, q) in [fq.phrase, fq.headline].into_iter().enumerate() {
+            let Some(q) = q else { continue };
+            args.push(q.into());
+            // Each tier only looks back to the oldest candidate, so its scan stays short.
+            ctes.push_str(&format!(
+                ", t{n} AS (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?{}
+                   AND rowid >= (SELECT MIN(rowid) FROM hits))",
+                args.len()
+            ));
+            rank.push_str(&format!(" WHEN hits.rowid IN t{n} THEN {n}"));
+        }
+        rank = if ctes.is_empty() {
+            "2".into()
+        } else {
+            rank + " ELSE 2 END"
         };
         let r = self.r.lock().unwrap();
         let sql = format!(
-            "WITH hits AS (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1 ORDER BY rowid DESC LIMIT ?2)
-             SELECT {THREAD_COLS} FROM hits JOIN messages m ON m.fts_rowid = hits.rowid JOIN threads t ON t.id = m.thread_id
-             GROUP BY t.id ORDER BY t.last_date DESC LIMIT ?3"
+            "WITH hits AS (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1
+                           ORDER BY rowid DESC LIMIT ?3){ctes}
+             SELECT {THREAD_COLS} FROM hits JOIN messages m ON m.fts_rowid = hits.rowid
+               JOIN threads t ON t.id = m.thread_id
+             GROUP BY t.id ORDER BY MIN({rank}), t.last_date DESC LIMIT ?2"
         );
         let mut st = r.prepare_cached(&sql)?;
         let mut rows = st
-            .query_map(params![fq, limit * 4, limit], thread_row)?
+            .query_map(params_from_iter(args.iter()), thread_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         attach(&r, &mut rows)?;
         Ok(rows)
@@ -5035,16 +5100,38 @@ mod tests {
     }
 
     #[rstest]
-    #[case::words_are_prefix_terms("audit report", Some("\"audit\"* \"report\"*"))]
-    #[case::from_maps_to_sender("from:marc", Some("sender:\"marc\"*"))]
-    #[case::punctuation_is_dropped("\"hello\" (world)", Some("\"hello\"* \"world\"*"))]
-    #[case::empty_is_none("  ", None)]
-    #[case::one_letter_is_a_word("m", Some("\"m\""))]
-    #[case::one_letter_sender_is_a_word("from:p", Some("sender:\"p\""))]
-    #[case::two_letters_are_a_prefix("me", Some("\"me\"*"))]
-    #[case::one_accented_letter_is_a_word("é", Some("\"é\""))]
-    fn fts_query_building(#[case] q: &str, #[case] want: Option<&str>) {
-        assert_eq!(fts_query(q).as_deref(), want);
+    #[case::finished_words_are_whole("audit report", false, Some("\"audit\" \"report\""))]
+    #[case::typed_word_is_a_prefix("audit rep", true, Some("\"audit\" \"rep\"*"))]
+    #[case::a_space_finishes_the_word("audit rep ", true, Some("\"audit\" \"rep\""))]
+    #[case::short_typed_word_is_whole("audit re", true, Some("\"audit\" \"re\""))]
+    #[case::one_letter_is_whole("m", true, Some("\"m\""))]
+    #[case::from_maps_to_sender("from:marc", false, Some("sender:\"marc\""))]
+    #[case::typed_sender_is_a_prefix("from:mar", true, Some("sender:\"mar\"*"))]
+    #[case::punctuation_is_dropped("\"hello\" (world)", false, Some("\"hello\" \"world\""))]
+    #[case::empty_is_none("  ", false, None)]
+    fn fts_query_matches_every_word(
+        #[case] q: &str,
+        #[case] typing: bool,
+        #[case] want: Option<&str>,
+    ) {
+        assert_eq!(fts_query(q, typing).map(|f| f.all).as_deref(), want);
+    }
+
+    #[rstest]
+    #[case::words_in_a_row("french bee", false, Some("\"french bee\""))]
+    #[case::typed_phrase_ends_in_a_prefix("french bee", true, Some("\"french bee\"*"))]
+    #[case::columns_stay_out("from:ada french bee", false, Some("\"french bee\""))]
+    #[case::one_word_has_none("french", false, None)]
+    #[case::a_long_typed_word_waits("french beekeep", true, None)]
+    fn fts_query_phrase(#[case] q: &str, #[case] typing: bool, #[case] want: Option<&str>) {
+        assert_eq!(fts_query(q, typing).unwrap().phrase.as_deref(), want);
+    }
+
+    #[rstest]
+    #[case::finished_words("french bee", false, Some("{subject sender} : (\"french\" \"bee\")"))]
+    #[case::a_long_typed_word_waits("beekeep", true, None)]
+    fn fts_query_headline(#[case] q: &str, #[case] typing: bool, #[case] want: Option<&str>) {
+        assert_eq!(fts_query(q, typing).unwrap().headline.as_deref(), want);
     }
 
     #[rstest]
@@ -5141,7 +5228,7 @@ mod tests {
                 SyncMode::Initial,
             )
             .unwrap();
-        assert_eq!(env.store.search("remed", 10).unwrap().len(), 1);
+        assert_eq!(env.store.search("remed", 10, true).unwrap().len(), 1);
     }
 
     #[rstest]
@@ -5232,13 +5319,13 @@ mod tests {
     #[rstest]
     fn failed_message_is_not_searchable(env: Env) {
         batch_with_a_failure(&env);
-        assert!(env.store.search("zebracorn", 10).unwrap().is_empty());
+        assert!(env.store.search("zebracorn", 10, false).unwrap().is_empty());
     }
 
     #[rstest]
     fn rest_of_a_failed_batch_is_searchable(env: Env) {
         batch_with_a_failure(&env);
-        assert_eq!(env.store.search("okidoki", 10).unwrap().len(), 1);
+        assert_eq!(env.store.search("okidoki", 10, false).unwrap().len(), 1);
     }
 
     #[rstest]
@@ -5270,7 +5357,7 @@ mod tests {
                 SyncMode::Initial,
             )
             .unwrap();
-        assert_eq!(env.store.search("okidoki", 10).unwrap().len(), 1);
+        assert_eq!(env.store.search("okidoki", 10, false).unwrap().len(), 1);
     }
 
     #[rstest]
@@ -5765,7 +5852,176 @@ mod tests {
                 SyncMode::Initial,
             )
             .unwrap();
-        assert_eq!(s.search("budget", 10).unwrap()[0].id, newer);
+        assert_eq!(s.search("budget", 10, false).unwrap()[0].id, newer);
+    }
+
+    /// One email of its own thread; returns the thread id.
+    fn mail(
+        env: &Env,
+        n: u32,
+        from: (&str, &str),
+        subject: &str,
+        body: &str,
+        age_days: i64,
+    ) -> String {
+        let mut m = incoming(
+            &format!("rel{n}"),
+            &format!("relt{n}"),
+            from.1,
+            &["INBOX"],
+            now_ms() - age_days * DAY,
+            body,
+        );
+        m.parsed.subject = subject.into();
+        m.parsed.from = Some(Address {
+            name: from.0.into(),
+            email: from.1.into(),
+        });
+        env.store
+            .ingest(&env.acc, "me@example.com", &m, SyncMode::Initial)
+            .unwrap()
+    }
+
+    /// A small mailbox where "french bee" means the airline, and other mail has the
+    /// words apart, as parts of other words, or in a less telling place.
+    struct Relevance {
+        env: Env,
+        flight: String,
+        apart: String,
+        in_subject: String,
+        in_body: String,
+    }
+
+    #[fixture]
+    fn relevance(env: Env) -> Relevance {
+        let flight = mail(
+            &env,
+            1,
+            ("French Bee", "noreply@frenchbee.example"),
+            "Your booking",
+            "Your French Bee flight to Papeete is confirmed.",
+            30,
+        );
+        let apart = mail(
+            &env,
+            2,
+            ("Ada Lind", "ada@corp.example"),
+            "Garden",
+            "The bee hotel is ready; the french doors are painted.",
+            2,
+        );
+        mail(
+            &env,
+            3,
+            ("Georg Kargel", "georg@bank.example"),
+            "Bank transfer",
+            "We have been to the French desk about your transfer.",
+            1,
+        );
+        let in_subject = mail(
+            &env,
+            4,
+            ("Nora", "nora@agency.example"),
+            "Invoice for October",
+            "Please find it attached.",
+            20,
+        );
+        let in_body = mail(
+            &env,
+            5,
+            ("Marc", "marc@agency.example"),
+            "Hello",
+            "The invoice will follow next week, after the meeting.",
+            1,
+        );
+        Relevance {
+            env,
+            flight,
+            apart,
+            in_subject,
+            in_body,
+        }
+    }
+
+    fn ids(r: &Relevance, q: &str, typing: bool) -> Vec<String> {
+        r.env
+            .store
+            .search(q, 10, typing)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect()
+    }
+
+    #[rstest]
+    fn every_word_must_match(relevance: Relevance) {
+        assert_eq!(ids(&relevance, "french bee", false).len(), 2);
+    }
+
+    #[rstest]
+    fn a_word_inside_another_does_not_match(relevance: Relevance) {
+        // "been" is not "bee": the bank mail stays out.
+        assert!(
+            !ids(&relevance, "bee french", false)
+                .iter()
+                .any(|i| i != &relevance.flight && i != &relevance.apart)
+        );
+    }
+
+    #[rstest]
+    fn the_phrase_ranks_first(relevance: Relevance) {
+        // Older, but the words are in a row.
+        assert_eq!(ids(&relevance, "french bee", false)[0], relevance.flight);
+    }
+
+    #[rstest]
+    fn words_apart_still_match(relevance: Relevance) {
+        assert_eq!(ids(&relevance, "french bee", false)[1], relevance.apart);
+    }
+
+    #[rstest]
+    fn the_subject_ranks_above_the_body(relevance: Relevance) {
+        assert_eq!(
+            ids(&relevance, "invoice", false),
+            vec![relevance.in_subject.clone(), relevance.in_body.clone()]
+        );
+    }
+
+    #[rstest]
+    #[case::domain("frenchbee")]
+    #[case::address("noreply@frenchbee.example")]
+    #[case::sender_name("bee")]
+    fn the_sender_is_searchable_without_from(relevance: Relevance, #[case] q: &str) {
+        assert!(ids(&relevance, q, false).contains(&relevance.flight));
+    }
+
+    #[rstest]
+    fn case_and_accents_do_not_matter(relevance: Relevance) {
+        assert_eq!(
+            ids(&relevance, "PAPÉETE", false),
+            vec![relevance.flight.clone()]
+        );
+    }
+
+    #[rstest]
+    fn an_accented_query_finds_plain_text(relevance: Relevance) {
+        assert_eq!(
+            ids(&relevance, "papéete", false),
+            vec![relevance.flight.clone()]
+        );
+    }
+
+    #[rstest]
+    fn the_word_being_typed_is_a_prefix(relevance: Relevance) {
+        assert_eq!(
+            ids(&relevance, "papee", true),
+            vec![relevance.flight.clone()]
+        );
+    }
+
+    #[rstest]
+    fn a_finished_word_is_not_a_prefix(relevance: Relevance) {
+        assert!(ids(&relevance, "papee", false).is_empty());
     }
 
     #[rstest]
@@ -5785,7 +6041,7 @@ mod tests {
                 SyncMode::Initial,
             )
             .unwrap();
-        assert_eq!(env.store.search("reunion", 10).unwrap().len(), 1);
+        assert_eq!(env.store.search("reunion", 10, false).unwrap().len(), 1);
     }
 
     #[rstest]

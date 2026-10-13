@@ -102,6 +102,21 @@ impl Mailbox {
     }
 
     /// Simulates a change made on another device (phone, webmail).
+    /// A message Gmail has but sync never saw (no history entry): only Gmail's own
+    /// search finds it.
+    pub fn add_unseen(&mut self, id: &str, thread_id: &str, raw: &str, internal_date: i64) {
+        self.messages.insert(
+            id.into(),
+            StubMessage {
+                id: id.into(),
+                thread_id: thread_id.into(),
+                labels: ["INBOX".to_string()].into(),
+                raw: raw.into(),
+                internal_date,
+            },
+        );
+    }
+
     pub fn relabel_thread(&mut self, thread_id: &str, add: &[&str], remove: &[&str]) {
         let ids: Vec<String> = self
             .messages
@@ -179,9 +194,18 @@ async fn profile(State(s): State<Shared>) -> Json<Value> {
     )
 }
 
-async fn list(State(s): State<Shared>) -> Json<Value> {
+async fn list(State(s): State<Shared>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let m = s.lock().unwrap();
-    let mut msgs: Vec<&StubMessage> = m.messages.values().collect();
+    // `q`, like Gmail's search box; here a plain case-insensitive match on the source.
+    let want = q.get("q").map(|w| w.to_lowercase());
+    let mut msgs: Vec<&StubMessage> = m
+        .messages
+        .values()
+        .filter(|x| {
+            want.as_ref()
+                .is_none_or(|w| x.raw.to_lowercase().contains(w))
+        })
+        .collect();
     msgs.sort_by_key(|x| std::cmp::Reverse(x.internal_date));
     let refs: Vec<Value> = msgs
         .iter()

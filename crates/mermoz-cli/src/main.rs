@@ -110,11 +110,15 @@ enum Cmd {
     },
     /// Show one person's card and recent threads.
     Contact { email: String },
-    /// Full-text search (from:, to:, subject: prefixes supported).
+    /// Full-text search: every word must match, as a whole word, accents and case aside;
+    /// from:, to:, subject: restrict to a field. Best matches first.
     Search {
         query: Vec<String>,
         #[arg(long, default_value_t = 20)]
         limit: i64,
+        /// Search all of Gmail instead (Gmail's own syntax), for mail Mermoz doesn't hold.
+        #[arg(long)]
+        gmail: bool,
     },
     /// Show a thread with all messages.
     Thread {
@@ -900,7 +904,38 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 out.line(format!("… {shown} of {total} shown (use --limit)"));
             }
         }
-        Cmd::Search { query, limit } => {
+        Cmd::Search {
+            query,
+            limit,
+            gmail: true,
+        } => {
+            let v = c.call(
+                "search.gmail",
+                json!({ "query": query.join(" "), "limit": limit }),
+            )?;
+            if out.json {
+                out.json(&v);
+                return Ok(());
+            }
+            let hits = v["results"].as_array().cloned().unwrap_or_default();
+            if hits.is_empty() {
+                out.line("No matches on Gmail either.");
+            }
+            for h in hits {
+                let here = if h["in_mermoz"] == true {
+                    ""
+                } else {
+                    "  (on Gmail)"
+                };
+                out.line(format!(
+                    "{}  {}  {}{here}",
+                    h["date"].as_str().unwrap_or(""),
+                    h["from"].as_str().unwrap_or(""),
+                    h["subject"].as_str().unwrap_or("")
+                ));
+            }
+        }
+        Cmd::Search { query, limit, .. } => {
             let v = c.call(
                 "search",
                 json!({ "query": query.join(" "), "limit": limit }),
@@ -910,6 +945,11 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                     out.json(&v);
                     Ok(())
                 };
+            }
+            if v["threads"].as_array().is_none_or(|a| a.is_empty()) {
+                out.line(
+                    "No matches in Mermoz. Search all of Gmail: mermoz search --gmail <words>",
+                );
             }
             print_threads(&out, &v["threads"]);
         }

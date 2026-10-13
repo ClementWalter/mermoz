@@ -234,6 +234,20 @@ impl Gmail {
             .await?)
     }
 
+    /// Gmail's own search, as typed in Gmail's search box (`q`), newest first.
+    pub async fn search_messages(&self, q: &str, max: u32) -> Result<MessageList> {
+        Ok(self
+            .call(
+                reqwest::Method::GET,
+                "/messages",
+                &[("q", q.to_string()), ("maxResults", max.to_string())],
+                None,
+            )
+            .await?
+            .json()
+            .await?)
+    }
+
     pub async fn get_raw(&self, id: &str) -> Result<RawMessage> {
         Ok(self
             .call(

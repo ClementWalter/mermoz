@@ -57,7 +57,63 @@ fn sync_limit() -> Option<i64> {
         .and_then(|v| v.parse().ok())
 }
 
+/// One message Gmail's own search found, as the fallback lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GmailHit {
+    pub account_id: String,
+    pub id: String,
+    pub thread_id: String,
+    pub from: String,
+    pub subject: String,
+    pub date: String,
+    /// Already stored locally (e.g. a word local search can't see, like a Gmail operator).
+    pub in_mermoz: bool,
+}
+
 impl AccountSync {
+    /// Gmail's own search, for mail Mermoz doesn't hold (not synced yet, or in folders
+    /// it doesn't import): each hit with its sender, subject and date.
+    pub async fn search_gmail(&self, q: &str, max: u32) -> Result<Vec<GmailHit>> {
+        let found = self.gmail.search_messages(q, max).await?;
+        let mut out = vec![];
+        for r in found.messages {
+            let headers = self
+                .gmail
+                .headers(&r.id, &["From", "Subject", "Date"])
+                .await?;
+            let get = |name: &str| {
+                headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            out.push(GmailHit {
+                account_id: self.account_id.clone(),
+                in_mermoz: self.store.has_message(&self.account_id, &r.id)?,
+                from: get("From"),
+                subject: get("Subject"),
+                date: get("Date"),
+                id: r.id,
+                thread_id: r.thread_id,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Stores messages found by [`Self::search_gmail`]; returns their threads.
+    pub async fn pull(&self, ids: &[String]) -> Result<Vec<String>> {
+        let msgs = self
+            .fetch_many(ids.iter().map(|i| (i.clone(), String::new())).collect())
+            .await?;
+        let threads =
+            self.store
+                .ingest_many(&self.account_id, &self.email, &msgs, SyncMode::Incremental)?;
+        let threads = dedup(threads);
+        let _ = self.events.send(Event::ThreadsChanged(threads.clone()));
+        Ok(threads)
+    }
+
     pub async fn refresh_labels(&self) -> Result<()> {
         let labels = self.gmail.labels().await?;
         let pairs: Vec<(String, String)> = labels.into_iter().map(|l| (l.id, l.name)).collect();

@@ -1452,7 +1452,24 @@ final class AppModel {
 
     func search(_ q: String) async -> [ThreadSummary] {
         guard let client, !q.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
-        return (try? await client.search(q, limit: 30)) ?? []
+        return (try? await client.search(q, limit: 30, typing: true)) ?? []
+    }
+
+    /// The fallback when nothing local matches: Gmail's own search.
+    func searchGmail(_ q: String) async -> [GmailHit] {
+        guard let client else { return [] }
+        do { return try await client.searchGmail(q) } catch { report(error); return [] }
+    }
+
+    /// Brings a message found on Gmail into Mermoz and opens its thread.
+    func pullFromGmail(_ hit: GmailHit) {
+        guard let client else { return }
+        Task {
+            do {
+                let pulled = try await client.pullFromGmail(accountId: hit.accountId, ids: [hit.id])
+                if let id = pulled.first { reveal(try await client.thread(id, latest: 1).thread) }
+            } catch { report(error) }
+        }
     }
 
     /// Jumps to a thread that may not be in the current list (palette results).
