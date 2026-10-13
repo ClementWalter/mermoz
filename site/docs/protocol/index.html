@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermoz JSON-RPC protocol: the mermozd socket API</title>
+  <meta name="description" content="The Mermoz daemon protocol: JSON-RPC 2.0 over a Unix socket, its objects, methods, errors, Google Drive calls, the send gate and notifications.">
+  <link rel="canonical" href="https://mermoz.xyz/docs/protocol/">
+  <link rel="alternate" type="text/markdown" href="/docs/protocol/index.md">
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="apple-touch-icon" href="/assets/icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mermoz.xyz/docs/protocol/">
+  <meta property="og:title" content="Mermoz JSON-RPC protocol: the mermozd socket API">
+  <meta property="og:site_name" content="Mermoz">
+  <meta property="og:description" content="The Mermoz daemon protocol: JSON-RPC 2.0 over a Unix socket, its objects, methods, errors, Google Drive calls, the send gate and notifications.">
+  <meta property="og:image" content="https://mermoz.xyz/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#EAF3FB">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="page">
+  <div class="beta-bar">Mermoz is in <strong>private beta</strong> — <a href="/#beta">join the list</a> and we'll open your access.</div>
+
+  <header class="nav">
+    <a class="brand" href="/"><img src="/assets/icon.png" alt="" width="34" height="34"> Mermoz</a>
+    <nav>
+      <a href="/#features">Features</a>
+      <a href="/docs/">Docs</a>
+      <a href="/about/">About</a>
+      <a class="nav-cta" href="/#beta">Join the beta</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="prose paper-card">
+<h1 id="mermoz-json-rpc-protocol-mermozd">Mermoz JSON-RPC protocol (mermozd)</h1>
+<p>This is the protocol between Mermoz's daemon, <code>mermozd</code>, and its clients: the Mac app, the <code>mermoz</code> CLI and the MCP server. Use it to build your own client; for agents, the <a href="/docs/cli/">CLI</a> and the <a href="/docs/mcp/">MCP server</a> are simpler. Source: <a href="https://github.com/ClementWalter/mermoz/blob/main/docs/protocol.md">docs/protocol.md</a>.</p>
+<p><code>mermozd</code> is the only process that touches the network and the database. The
+app, the CLI and the MCP server are clients of this protocol.</p>
+<h2 id="transport">Transport</h2>
+<ul>
+<li>Unix domain socket at <code>$MERMOZ_HOME/mermozd.sock</code>.
+  <code>MERMOZ_HOME</code> defaults to <code>~/Library/Application Support/Mermoz</code>;
+  <code>MERMOZ_SOCKET</code> overrides the socket path (macOS limits it to 104 bytes).</li>
+<li>JSON-RPC 2.0, one JSON object per line (<code>\n</code> terminated), UTF-8.</li>
+<li>Requests are answered in order per connection. A connection that called
+  <code>subscribe</code> additionally receives notifications (no <code>id</code>) at any time.</li>
+</ul>
+<h2 id="conventions">Conventions</h2>
+<ul>
+<li>Timestamps: integer Unix milliseconds.</li>
+<li>Dates without time (due dates): <code>"YYYY-MM-DD"</code>.</li>
+<li>Priority: <code>0</code> none, <code>1</code> urgent, <code>2</code> high, <code>3</code> normal, <code>4</code> low.</li>
+<li>Status keys: <code>unread</code> (entry status), then for read mail <code>todo</code>, <code>waiting</code>,
+  <code>in_progress</code>, <code>backlog</code>, <code>review</code> (an agent draft awaits approval), <code>done</code>,
+  <code>archive</code>, <code>deleted</code> (Gmail Trash). <code>done</code>, <code>archive</code> and <code>deleted</code> are out of
+  the inbox. Reading an <code>unread</code> thread moves it to the open status new mail
+  interrupted, else the router's suggestion, else <code>todo</code>; new mail from someone
+  else brings it back to <code>unread</code>.</li>
+<li>Projects are the user's Gmail labels, identified by name (nested with <code>/</code>).
+  A thread can be in several.</li>
+<li>Thread <code>number</code> is a stable human id like <code>"M-1287"</code>; every method taking a
+  thread <code>id</code> also accepts its number.</li>
+</ul>
+<h2 id="errors">Errors</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>code</th>
+<th>name</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>-32601</td>
+<td>method_not_found</td>
+<td></td>
+</tr>
+<tr>
+<td>-32602</td>
+<td>invalid_params</td>
+<td><code>message</code> says which param and why</td>
+</tr>
+<tr>
+<td>-32004</td>
+<td>not_found</td>
+<td>unknown thread / draft / account / attachment</td>
+</tr>
+<tr>
+<td>-32010</td>
+<td>approval_required</td>
+<td>send moved to Review; <code>data: {draft, thread}</code></td>
+</tr>
+<tr>
+<td>-32011</td>
+<td>app_only</td>
+<td>method only callable from Mermoz.app</td>
+</tr>
+<tr>
+<td>-32020</td>
+<td>upstream</td>
+<td>provider (Gmail) error; <code>data: {status, body}</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="objects">Objects</h2>
+<pre><code class="language-jsonc">// Account
+{&quot;id&quot;: &quot;acc_1&quot;, &quot;email&quot;: &quot;me@example.com&quot;, &quot;provider&quot;: &quot;gmail&quot;,
+ &quot;sync&quot;: {&quot;state&quot;: &quot;initial|idle|syncing|error&quot;, &quot;synced&quot;: 1200, &quot;total&quot;: 5400, &quot;error&quot;: null}}
+
+// ThreadSummary
+{&quot;id&quot;: &quot;thr_…&quot;, &quot;number&quot;: &quot;M-1287&quot;, &quot;account_id&quot;: &quot;acc_1&quot;,
+ &quot;subject&quot;: &quot;…&quot;, &quot;snippet&quot;: &quot;…&quot;, &quot;participants&quot;: [&quot;Marc Petit&quot;, &quot;You&quot;],
+ &quot;last_from&quot;: &quot;Marc Petit&quot;, &quot;last_date&quot;: 1791700000000,
+ &quot;unread&quot;: true, &quot;message_count&quot;: 3, &quot;has_attachments&quot;: true,
+ &quot;status&quot;: &quot;todo&quot;, &quot;priority&quot;: 2, &quot;projects&quot;: [&quot;Clients/Acme&quot;],
+ &quot;due&quot;: &quot;2026-10-16&quot; | null, &quot;summary&quot;: &quot;…&quot; | null, &quot;next_action&quot;: &quot;…&quot; | null,
+ &quot;suggestion&quot;: Suggestion | null,
+ &quot;conversation_id&quot;: &quot;thr_…&quot;, &quot;conversation_kind&quot;: &quot;person|feed|list&quot;, &quot;conversation_threads&quot;: 2}
+
+// Conversation (threads.get with &quot;conversation&quot;: true): Gmail threads with the same
+// people about the same matter, read as one chat. Its id is a thread id; a thread
+// alone is its own conversation. Feeds group an automated sender, lists a mailing list.
+{&quot;id&quot;: &quot;thr_…&quot;, &quot;kind&quot;: &quot;person|feed|list&quot;, &quot;threads&quot;: [ThreadSummary],
+ &quot;people&quot;: [{&quot;name&quot;: &quot;Nora Lind&quot;, &quot;email&quot;: &quot;nora@…&quot;, &quot;title&quot;: &quot;&quot;, &quot;company&quot;: &quot;&quot;, &quot;messages&quot;: 3}],
+ &quot;files&quot;: [SharedFile], &quot;links&quot;: [{&quot;url&quot;: &quot;https://…&quot;, &quot;message_id&quot;: &quot;msg_…&quot;, &quot;from&quot;: &quot;Nora Lind&quot;, &quot;date&quot;: 1791700000000}]}
+
+// SharedFile (newest first)
+{&quot;id&quot;: &quot;att_…&quot;, &quot;filename&quot;: &quot;cellar-plan.pdf&quot;, &quot;mime&quot;: &quot;application/pdf&quot;, &quot;size&quot;: 2400,
+ &quot;message_id&quot;: &quot;msg_…&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;from&quot;: &quot;You&quot;, &quot;date&quot;: 1791700000000}
+
+// Suggestion: the router's pending prediction (absent once read or decided).
+// Fields under the confidence bar are null / empty. On already-read threads in
+// open columns (background sorting) it holds only what would change, at
+// confidence ≥ 0.7, and never a priority.
+{&quot;status&quot;: &quot;archive&quot; | null, &quot;status_confidence&quot;: 0.93 | null,
+ &quot;projects&quot;: [&quot;Receipts&quot;], &quot;project_confidence&quot;: 0.88 | null,
+ &quot;priority&quot;: 0 | null, &quot;automated&quot;: 0.97 | null}
+
+// Message (thread_id: its Gmail thread, inside a conversation of several)
+{&quot;id&quot;: &quot;msg_…&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;from&quot;: {&quot;name&quot;: &quot;Marc Petit&quot;, &quot;email&quot;: &quot;marc@…&quot;},
+ &quot;to&quot;: [{&quot;name&quot;: &quot;&quot;, &quot;email&quot;: &quot;…&quot;}], &quot;cc&quot;: [], &quot;date&quot;: 1791700000000,
+ &quot;subject&quot;: &quot;…&quot;, &quot;body_text&quot;: &quot;… full text …&quot;, &quot;body_new&quot;: &quot;… without quoted history, signature or boilerplate …&quot;,
+ &quot;has_quoted&quot;: true, &quot;body_clean&quot;: &quot;… agent's reading version …&quot; | null, &quot;has_html&quot;: true, &quot;is_from_me&quot;: false,
+ &quot;attachments&quot;: [{&quot;id&quot;: &quot;att_…&quot;, &quot;filename&quot;: &quot;report.pdf&quot;, &quot;mime&quot;: &quot;application/pdf&quot;, &quot;size&quot;: 2400000}]}
+
+// Status
+{&quot;key&quot;: &quot;todo&quot;, &quot;name&quot;: &quot;Todo&quot;, &quot;order&quot;: 2, &quot;color&quot;: &quot;#5A7386&quot;}
+
+// Contact (directory entry built from signatures)
+{&quot;email&quot;: &quot;marc@acme.example&quot;, &quot;name&quot;: &quot;Marc Petit&quot;, &quot;title&quot;: &quot;CFO&quot;, &quot;company&quot;: &quot;Acme&quot;,
+ &quot;phones&quot;: [&quot;+33 6 12 34 56 78&quot;], &quot;address&quot;: &quot;&quot;, &quot;website&quot;: &quot;&quot;, &quot;socials&quot;: [], &quot;last_seen&quot;: 1791700000000}
+
+// Project (a Gmail label; id is its name)
+{&quot;id&quot;: &quot;Clients/Acme&quot;, &quot;name&quot;: &quot;Clients/Acme&quot;, &quot;color&quot;: &quot;#5B8DEF&quot;}
+
+// Draft
+{&quot;id&quot;: &quot;dft_…&quot;, &quot;account_id&quot;: &quot;acc_1&quot;, &quot;thread_id&quot;: &quot;thr_…&quot; | null,
+ &quot;to&quot;: [&quot;a@b.c&quot;], &quot;cc&quot;: [], &quot;subject&quot;: &quot;…&quot;, &quot;body&quot;: &quot;…&quot;,
+ &quot;state&quot;: &quot;draft|review|sent|rejected&quot;, &quot;origin&quot;: &quot;app|agent&quot;,
+ &quot;created&quot;: 1791700000000, &quot;updated&quot;: 1791700000000}
+
+// ChatMessage: one turn of &quot;Chat about this&quot;. Actions are proposals; nothing is applied.
+{&quot;id&quot;: &quot;cht_…&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;role&quot;: &quot;user|assistant&quot;, &quot;text&quot;: &quot;light Markdown&quot;,
+ &quot;actions&quot;: [{&quot;kind&quot;: &quot;draft_reply&quot;, &quot;label&quot;: &quot;Draft a reply&quot;, &quot;body&quot;: &quot;…&quot;},
+             {&quot;kind&quot;: &quot;status&quot;, &quot;label&quot;: &quot;Move to Waiting&quot;, &quot;status&quot;: &quot;waiting&quot;},
+             {&quot;kind&quot;: &quot;project&quot;, &quot;label&quot;: &quot;File in Finance&quot;, &quot;project&quot;: &quot;Finance&quot;},
+             {&quot;kind&quot;: &quot;follow_up&quot;, &quot;label&quot;: &quot;Remind me on Oct 20&quot;, &quot;due&quot;: &quot;2026-10-20&quot;}],
+ &quot;searched&quot;: false, &quot;research_unavailable&quot;: false, &quot;created&quot;: 1791700000000}
+
+// Feed: sections in order (now, today, week, waiting, later), empty ones left out.
+// A section shows its 40 most pressing cards (`more` counts the rest; a batch lists
+// its 50 latest mails). `sorting` is true while Jev has open threads left to judge.
+{&quot;sections&quot;: [{&quot;key&quot;: &quot;now&quot;, &quot;title&quot;: &quot;Now&quot;, &quot;cards&quot;: [Card], &quot;more&quot;: 0}], &quot;open&quot;: 23, &quot;judged&quot;: 21, &quot;sorting&quot;: true}
+
+// Card: one thing to do. `kind`: reply | decision | sign | promise | event | payment |
+// intro | waiting | cleanup | reading | other. Batches (`id` &quot;batch:cleanup&quot; /
+// &quot;batch:reading&quot;) list their threads in `members`. `due` is the user's follow-up date,
+// else the deadline Jev picked among the dates written in the mail; `amount` is
+// verbatim from the mail. `reasons` explain the card in plain words. `texts` are the
+// AI's words, null until written; `texts_wanted` says the account's AI may write them.
+{&quot;id&quot;: &quot;thr_…&quot;, &quot;kind&quot;: &quot;decision&quot;, &quot;section&quot;: &quot;now&quot;, &quot;thread&quot;: ThreadSummary, &quot;members&quot;: [],
+ &quot;title&quot;: &quot;Choose the kitchen tiles&quot;, &quot;why&quot;: &quot;…&quot; | null, &quot;reasons&quot;: [&quot;The mail asks for it by Fri 16 Oct.&quot;],
+ &quot;due&quot;: &quot;2026-10-16&quot; | null, &quot;due_time&quot;: &quot;18:00&quot; | null, &quot;amount&quot;: &quot;126,00 €&quot; | null,
+ &quot;from_backlog&quot;: false, &quot;waiting_days&quot;: 6 | null, &quot;texts&quot;: Texts | null, &quot;texts_wanted&quot;: true}
+
+// Texts: the AI's words for a card (cached until new mail). `options` for decisions,
+// `points` for sign / payment / event, `draft` for reply / promise / intro / waiting;
+// a batch carries one summary per member in `lines`.
+{&quot;title&quot;: &quot;…&quot;, &quot;why&quot;: &quot;…&quot;, &quot;draft&quot;: &quot;…&quot;, &quot;summary&quot;: &quot;…&quot;, &quot;points&quot;: [&quot;…&quot;], &quot;lines&quot;: [&quot;…&quot;],
+ &quot;options&quot;: [{&quot;label&quot;: &quot;…&quot;, &quot;detail&quot;: &quot;…&quot;, &quot;recommended&quot;: true, &quot;reason&quot;: &quot;…&quot;, &quot;reply&quot;: &quot;…&quot;}]}
+</code></pre>
+<h2 id="methods">Methods</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>method</th>
+<th>params</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hello</code></td>
+<td><code>{}</code></td>
+<td><code>{"version": "0.1.0"}</code></td>
+</tr>
+<tr>
+<td><code>accounts.list</code></td>
+<td><code>{}</code></td>
+<td><code>[Account]</code>, each with <code>needs_reconnect</code> (signed in through another OAuth client: still syncs, sign in again)</td>
+</tr>
+<tr>
+<td><code>accounts.add_gmail</code></td>
+<td><code>{}</code>, or the user's own Google client: <code>{"client_json"}</code> (the Google Cloud download) or <code>{"client_id","client_secret"}</code></td>
+<td><code>{"auth_url": "https://…"}</code>; completes in background, emits <code>accounts_changed</code>; an own client is stored with the token and used for the account's later consents (Drive too)</td>
+</tr>
+<tr>
+<td><code>accounts.sign_in_status</code></td>
+<td><code>{}</code></td>
+<td><code>{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?}</code>; <code>kind</code>: <code>admin_policy</code>, <code>unverified</code>, <code>org_internal</code>, <code>app_blocked</code>, <code>declined</code></td>
+</tr>
+<tr>
+<td><code>accounts.reconnect</code></td>
+<td><code>{"account_id"}</code></td>
+<td><code>{"auth_url"}</code>; signs the account in again with the app's client (or the account's own client), keeping local mail; emits <code>accounts_changed</code></td>
+</tr>
+<tr>
+<td><code>accounts.remove</code></td>
+<td><code>{"id"}</code></td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>statuses.list</code></td>
+<td><code>{}</code></td>
+<td><code>[Status]</code></td>
+</tr>
+<tr>
+<td><code>labels.list</code></td>
+<td><code>{}</code></td>
+<td><code>[{"account_id","id","name","count"}]</code> user labels ("mailboxes"), nested with <code>/</code></td>
+</tr>
+<tr>
+<td><code>projects.list</code></td>
+<td><code>{}</code></td>
+<td><code>[Project]</code></td>
+</tr>
+<tr>
+<td><code>projects.create</code></td>
+<td><code>{"name", "color"?}</code> — the Gmail label is created when a thread first gets it</td>
+<td><code>Project</code></td>
+</tr>
+<tr>
+<td><code>projects.update</code></td>
+<td><code>{"id", "name"?, "color"?}</code> — renames the Gmail label (and its sub-labels) on every account</td>
+<td><code>Project</code></td>
+</tr>
+<tr>
+<td><code>projects.delete</code></td>
+<td><code>{"id"}</code> — deletes the Gmail label on every account; the mail stays</td>
+<td><code>{"threads": n}</code></td>
+</tr>
+<tr>
+<td><code>counts</code></td>
+<td><code>{"conversations"?: false}</code> — with <code>conversations</code>, one per conversation, plus a <code>kind</code> map of open feeds and lists</td>
+<td><code>{"status": {key: n}, "project": {name: n}, "account": {id: n}}</code> (open threads only: <code>done</code>/<code>archive</code>/<code>deleted</code> are omitted)</td>
+</tr>
+<tr>
+<td><code>threads.list</code></td>
+<td><code>{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "order"?: "last_date"|"priority"|"due"|"created", "reverse"?: false, "limit"?: 200, "offset"?: 0, "conversations"?: false, "kind"?: ["person"|"feed"|"list"], "suggested"?: true | {"status": key | null, "projects"?: [name]}}</code> — <code>suggested</code>: only threads with a pending suggestion, or with one going to that destination; <code>conversations</code> lists only the thread leading each conversation (its latest open thread, else its latest)</td>
+<td><code>{"threads": [ThreadSummary], "total": n}</code>; newest / most urgent / soonest first unless <code>reverse</code> (no priority / no due date stay last)</td>
+</tr>
+<tr>
+<td><code>search</code></td>
+<td><code>{"query", "limit"?: 50, "typing"?: false}</code> — every word must match as a whole word (accents and case aside); with <code>typing</code>, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each</td>
+<td><code>{"threads": [ThreadSummary]}</code></td>
+</tr>
+<tr>
+<td><code>search.gmail</code></td>
+<td><code>{"query", "limit"?: 20}</code> — Gmail's own search on every account, for mail Mermoz doesn't hold</td>
+<td><code>{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}</code></td>
+</tr>
+<tr>
+<td><code>search.gmail_pull</code></td>
+<td><code>{"account_id", "ids": [id]}</code> — stores those Gmail messages</td>
+<td><code>{"threads": [id]}</code></td>
+</tr>
+<tr>
+<td><code>threads.get</code></td>
+<td><code>{"id", "conversation"?: false, "latest"?: n}</code> — with <code>conversation</code>, every message of the thread's conversation; with <code>latest</code> too, only its last n (people, files and links still cover all of it)</td>
+<td><code>{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n}</code> (<code>earlier</code>: messages left out by <code>latest</code>)</td>
+</tr>
+<tr>
+<td><code>conversations.split</code></td>
+<td><code>{"id"}</code> — takes the thread out of its conversation for good</td>
+<td><code>{"conversation_id"}</code></td>
+</tr>
+<tr>
+<td><code>conversations.merge</code></td>
+<td><code>{"ids": [id]}</code> — joins the threads' conversations into the latest one's</td>
+<td><code>{"conversation_id", "threads": n}</code></td>
+</tr>
+<tr>
+<td><code>conversations.progress</code></td>
+<td><code>{}</code> — background grouping</td>
+<td><code>{"pending": n, "waiting_for_ai": n}</code></td>
+</tr>
+<tr>
+<td><code>files.list</code></td>
+<td><code>{"query"?, "limit"?: 200}</code> — files shared anywhere, newest first</td>
+<td><code>[SharedFile]</code></td>
+</tr>
+<tr>
+<td><code>threads.update</code></td>
+<td>the other open threads of each conversation follow · <code>{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}</code></td>
+<td><code>{"updated": n}</code></td>
+</tr>
+<tr>
+<td><code>threads.accept_suggestions</code></td>
+<td><code>{"ids": [id]}</code> — applies each pending suggestion and marks the thread read</td>
+<td><code>{"accepted": n}</code></td>
+</tr>
+<tr>
+<td><code>suggestions.summary</code></td>
+<td><code>{"statuses": [key], "project"?, "account_id"?}</code> — pending suggestions per column, grouped by target</td>
+<td><code>{"columns": [{"status", "pending": n, "groups": [{"status": key | null, "projects": [name], "count": n}]}], "paused": "credits" | "unavailable" | null, "calls_today": n, "daily_cap": n}</code></td>
+</tr>
+<tr>
+<td><code>suggestions.resort</code></td>
+<td><code>{"stop": true}</code> — ends a whole-mailbox sort left by an older version and clears what it suggested (as <code>suggestions.clear</code>); starting one is refused</td>
+<td><code>{"stopped": true, "cleared": n}</code></td>
+</tr>
+<tr>
+<td><code>suggestions.clear</code></td>
+<td><code>{}</code> — deletes suggestions on read threads nobody reviewed (and "no change" verdicts); Unread's, accepted and rejected ones stay; the threads go back in the Sort queue</td>
+<td><code>{"cleared": n}</code></td>
+</tr>
+<tr>
+<td><code>sort.state</code></td>
+<td><code>{"statuses"?: [key]}</code> — the Sort queue: read threads in open columns without a decided verdict</td>
+<td><code>{"to_sort": n, "by_status": [{"status", "count"}], "configured": bool, "paused": "credits" | "unavailable" | null, "provider_name": "TypeSafe", "offer": {"provider", "name", "message"} | null, "learned": [{"sender", "name", "status", "projects", "kind": "rule" | "avoid", "count"}]}</code></td>
+</tr>
+<tr>
+<td><code>sort.next</code></td>
+<td><code>{"statuses"?: [key], "exclude"?: [id], "count"?: 3}</code> — the next cards, newest first; suggestions are asked of the AI for these few threads only (at most 12 calls per request)</td>
+<td><code>{"cards": [{"thread": ThreadSummary, "why": "…" | null}], "paused": …, "provider_name": "…", "offer": … }</code></td>
+</tr>
+<tr>
+<td><code>sort.answer</code></td>
+<td><code>{"id", "answer": "yes" | "no" | "change", "status"?, "projects"?}</code> — yes accepts, no refuses (never offered again for that sender), change refuses and files where given</td>
+<td><code>{"undo": {"thread", "since"}, "learned": "Learned: mail from X goes to Y" | null}</code></td>
+</tr>
+<tr>
+<td><code>sort.undo</code></td>
+<td><code>{"undo"}</code> from <code>sort.answer</code> — the thread returns as it was, the answer is forgotten</td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>suggestions.accept</code></td>
+<td><code>{"status", "project"?, "account_id"?, "target"?: {"status": key | null, "projects": [name]}}</code> — accepts the column's pending suggestions, or one group</td>
+<td><code>{"accepted": n, "before": [ThreadSummary]}</code> (snapshots for <code>threads.restore</code>)</td>
+</tr>
+<tr>
+<td><code>threads.reject_suggestions</code></td>
+<td><code>{"ids": [id]}</code> — turns the pending suggestions down; the threads stay put and are not suggested again until new mail</td>
+<td><code>{"rejected": n}</code></td>
+</tr>
+<tr>
+<td><code>threads.reopen_suggestions</code></td>
+<td><code>{"ids": [id]}</code> — undoes a rejection: the suggestions are pending again</td>
+<td><code>{"reopened": n}</code></td>
+</tr>
+<tr>
+<td><code>threads.restore</code></td>
+<td><code>{"threads": [{"id", "unread", "status", "priority", "projects", "due"}]}</code> — puts threads back as in the snapshots (a <code>ThreadSummary</code> works too)</td>
+<td><code>{"restored": n}</code></td>
+</tr>
+<tr>
+<td><code>router.get</code></td>
+<td><code>{}</code> — instant routing with a System One provider (Settings › Developer); top-level fields describe the picked one</td>
+<td><code>{"provider": "typesafe" | "subq", "provider_name": "TypeSafe", "configured": bool, "error": "…" | null, "model": "jev-latest" | "subq-snap-preview", "daily_cap": n, "calls_today": n, "paused": "credits" | "unavailable" | null, "providers": [{"id", "name", "model", "configured", "error", "paused", "calls_today"}], "offer": {"provider", "name", "message"} | null}</code></td>
+</tr>
+<tr>
+<td><code>router.set</code></td>
+<td><code>{"provider"?: "typesafe" | "subq", "api_key"?: "…" | null, "key_provider"?: id, "daily_cap"?: n}</code> — app only; <code>provider</code> picks where mail is sent; <code>api_key</code> is stored for <code>key_provider</code>, else <code>provider</code>, else the picked one (null removes it); <code>daily_cap</code> bounds background sorting calls per day (default 20,000)</td>
+<td>same as <code>router.get</code></td>
+</tr>
+<tr>
+<td><code>router.test</code></td>
+<td><code>{"api_key"?, "provider"?}</code> — one tiny call with the given or stored key of the provider (default: the picked one)</td>
+<td><code>{"ok": true, "ms": n}</code></td>
+</tr>
+<tr>
+<td><code>threads.mark_read</code></td>
+<td><code>{"id", "read"?: true}</code> — reading marks the whole conversation read</td>
+<td><code>{"thread": ThreadSummary}</code> as reading left it</td>
+</tr>
+<tr>
+<td><code>messages.html</code></td>
+<td><code>{"id", "full"?: false}</code> — quoted history removed unless <code>full</code></td>
+<td><code>{"html": "…", "has_quoted": bool}</code> sanitized, remote content stripped</td>
+</tr>
+<tr>
+<td><code>attachments.get</code></td>
+<td><code>{"id"}</code></td>
+<td><code>{"path": "/abs/path", "filename", "mime", "size"}</code></td>
+</tr>
+<tr>
+<td><code>drafts.list</code></td>
+<td><code>{"state"?: "review"}</code></td>
+<td><code>[Draft]</code></td>
+</tr>
+<tr>
+<td><code>drafts.get</code></td>
+<td><code>{"id"}</code></td>
+<td><code>Draft</code></td>
+</tr>
+<tr>
+<td><code>drafts.create</code></td>
+<td><code>{"account_id"?, "thread_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}</code> — with <code>thread_id</code>, it is a reply: recipients/subject default from the thread. All attachments are added or none (the draft is not created)</td>
+<td><code>Draft</code></td>
+</tr>
+<tr>
+<td><code>drafts.attach</code></td>
+<td><code>{"id", "attachments": [Attach]}</code> or <code>{"id", ...Attach}</code></td>
+<td><code>Draft</code></td>
+</tr>
+<tr>
+<td><code>drafts.detach</code></td>
+<td><code>{"id", "attachment_id"}</code> (an id from <code>Draft.attachments</code>)</td>
+<td><code>Draft</code></td>
+</tr>
+<tr>
+<td><code>drafts.update</code></td>
+<td><code>{"id", "to"?, "cc"?, "subject"?, "body"?}</code></td>
+<td><code>Draft</code></td>
+</tr>
+<tr>
+<td><code>drafts.delete</code></td>
+<td><code>{"id"}</code></td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>drafts.send</code></td>
+<td><code>{"id"}</code></td>
+<td><code>{"sent": true}</code> or error <code>approval_required</code></td>
+</tr>
+<tr>
+<td><code>review.approve</code></td>
+<td><code>{"id"}</code> — app only</td>
+<td><code>{"sent": true}</code></td>
+</tr>
+<tr>
+<td><code>review.reject</code></td>
+<td><code>{"id"}</code> — app only</td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>providers.list</code></td>
+<td><code>{}</code></td>
+<td><code>[{"id","name","kind","base_url","model","has_key"}]</code> (keys never leave the daemon)</td>
+</tr>
+<tr>
+<td><code>providers.save</code></td>
+<td><code>{"id"?, "name", "kind": "anthropic"|"openai", "base_url"?, "model", "api_key"?}</code> — app only</td>
+<td><code>Provider</code></td>
+</tr>
+<tr>
+<td><code>providers.delete</code></td>
+<td><code>{"id"}</code> — app only</td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>providers.test</code></td>
+<td><code>{"id"}</code></td>
+<td><code>{"ok", "clean_body"?, "card"?, "error"?}</code> on a built-in sample</td>
+</tr>
+<tr>
+<td><code>accounts.agent.get</code></td>
+<td><code>{"account_id"}</code></td>
+<td><code>{"provider_ids", "digest_enabled", "done", "pending", "failed", "error"}</code></td>
+</tr>
+<tr>
+<td><code>accounts.agent.set</code></td>
+<td><code>{"account_id", "provider_ids"?: [id|"*"], "digest_enabled"?}</code> — app only</td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>contacts.list</code></td>
+<td><code>{"query"?, "limit"?: 200}</code></td>
+<td><code>[Contact]</code> most recently heard from first</td>
+</tr>
+<tr>
+<td><code>contacts.get</code></td>
+<td><code>{"email"}</code></td>
+<td><code>{"contact": Contact, "threads": [ThreadSummary]}</code></td>
+</tr>
+<tr>
+<td><code>settings.get</code></td>
+<td><code>{}</code></td>
+<td><code>{"agents_may_send": false}</code></td>
+</tr>
+<tr>
+<td><code>settings.set</code></td>
+<td><code>{"agents_may_send"}</code> — app only</td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>chat.get</code></td>
+<td><code>{"thread_id"}</code></td>
+<td><code>{"messages": [ChatMessage], "research_available": bool}</code></td>
+</tr>
+<tr>
+<td><code>chat.send</code></td>
+<td><code>{"thread_id", "text", "research"?: true}</code> — asks the account's allowed AI; streams <code>chat_delta</code></td>
+<td><code>ChatMessage</code> (the answer)</td>
+</tr>
+<tr>
+<td><code>chat.clear</code></td>
+<td><code>{"thread_id"}</code></td>
+<td><code>{"deleted": n}</code></td>
+</tr>
+<tr>
+<td><code>feed.list</code></td>
+<td><code>{"project"?, "account_id"?}</code> — the Feed: open threads as cards, in sections</td>
+<td><code>Feed</code></td>
+</tr>
+<tr>
+<td><code>feed.texts</code></td>
+<td><code>{"ids": [thread id]}</code> — asks the account's allowed AI to write these cards' words in the background (cards on screen only); emits <code>feed_changed</code> per card</td>
+<td><code>{"queued": n}</code></td>
+</tr>
+<tr>
+<td><code>feed.snooze</code></td>
+<td><code>{"ids": [id], "until": ms, "label"?}</code> — Later: the threads leave the feed and their status columns until <code>until</code> (or new mail), then come back Unread and first in the feed with "You set this for <label>"</td>
+<td><code>{"snoozed": n}</code></td>
+</tr>
+<tr>
+<td><code>later.options</code></td>
+<td><code>{}</code> — the Later picker's quick choices for now: this evening (before 17:00), tomorrow morning, this weekend (weekdays), Friday evening (Mon–Thu), next week</td>
+<td><code>[{"key": "f", "label": "Friday evening", "until": ms, "when": "Fri 18:00"}]</code></td>
+</tr>
+<tr>
+<td><code>later.parse</code></td>
+<td><code>{"text"}</code> — plain French or English ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"), read locally</td>
+<td><code>{"until": ms, "when": "Fri 18:00"}</code> or <code>null</code></td>
+</tr>
+<tr>
+<td><code>feed.learn_archive</code></td>
+<td><code>{"ids": [id]}</code> — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as in the Sort queue (three make a rule; ruled senders' mail is batched)</td>
+<td><code>{"learned": n}</code></td>
+</tr>
+<tr>
+<td><code>feed.unsnooze</code></td>
+<td><code>{"ids": [id]}</code></td>
+<td><code>{"unsnoozed": n}</code></td>
+</tr>
+<tr>
+<td><code>feedback.submit</code></td>
+<td><code>{"text", "command"?, "agent"?}</code></td>
+<td><code>{"id"}</code></td>
+</tr>
+<tr>
+<td><code>feedback.list</code></td>
+<td><code>{}</code></td>
+<td><code>[{"id","text","command","agent","created"}]</code></td>
+</tr>
+<tr>
+<td><code>subscribe</code></td>
+<td><code>{}</code></td>
+<td><code>{}</code> then notifications</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="google-drive">Google Drive</h2>
+<p>Drive has its own consent and refresh token per account (stored apart from the
+Gmail one), so declining or disconnecting Drive never affects mail. Asked scopes:
+<code>drive.readonly</code> (read any file the user can open: previews, files shared with a
+thread's people, search) and <code>drive.file</code> (files Mermoz created or the user picked:
+saving attachments, sharing a picked file). Google lets the user untick either;
+<code>drive.status</code> says what was granted.</p>
+<pre><code class="language-jsonc">// DriveFile
+{&quot;id&quot;: &quot;1Abc…&quot;, &quot;name&quot;: &quot;Remediation plan&quot;, &quot;mime&quot;: &quot;application/vnd.google-apps.document&quot;,
+ &quot;kind&quot;: &quot;Google Doc&quot;, &quot;modified&quot;: 1791648000000, &quot;owner&quot;: {&quot;name&quot;: &quot;Marc&quot;, &quot;email&quot;: &quot;marc@…&quot;} | null,
+ &quot;web_link&quot;: &quot;https://docs.google.com/…&quot; | null, &quot;icon_link&quot;: &quot;…&quot; | null, &quot;has_thumbnail&quot;: true}
+
+// DriveLink: a Drive link found in a thread's messages
+{&quot;file_id&quot;: &quot;1Abc…&quot;, &quot;url&quot;: &quot;https://docs.google.com/document/d/1Abc…/edit&quot;, &quot;link_kind&quot;: &quot;document&quot;,
+ &quot;message_id&quot;: &quot;msg_…&quot;, &quot;access&quot;: &quot;ok|no_access|not_connected|error&quot;, &quot;file&quot;: DriveFile | null}
+
+// SavedAttachment
+{&quot;attachment_id&quot;: &quot;att_…&quot;, &quot;file_id&quot;: &quot;…&quot;, &quot;name&quot;: &quot;report.pdf&quot;, &quot;web_link&quot;: &quot;…&quot;,
+ &quot;folder&quot;: &quot;Mermoz/Clients/Acme&quot;, &quot;created&quot;: 1791700000000}
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>method</th>
+<th>params</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>drive.status</code></td>
+<td><code>{"account_id"?}</code> (all accounts without it)</td>
+<td><code>{"account_id", "email", "connected", "can_read_all", "can_save", "attempt": {"state": "waiting|connected|declined|error", "error"} | null}</code></td>
+</tr>
+<tr>
+<td><code>drive.connect</code></td>
+<td><code>{"account_id"}</code> — app only; completes in background, emits <code>drive_changed</code></td>
+<td><code>{"auth_url"}</code></td>
+</tr>
+<tr>
+<td><code>drive.disconnect</code></td>
+<td><code>{"account_id"}</code> — app only; forgets the token and the cache (does not call Google's revoke, which would end Gmail access too)</td>
+<td><code>{}</code></td>
+</tr>
+<tr>
+<td><code>drive.links</code></td>
+<td><code>{"thread_id"}</code></td>
+<td><code>{"account_id", "connected", "links": [DriveLink]}</code></td>
+</tr>
+<tr>
+<td><code>drive.files_for_thread</code></td>
+<td><code>{"thread_id", "limit"?: 20}</code> — for the thread's Docs tab</td>
+<td><code>{"account_id", "connected", "can_read_all", "linked": [DriveLink], "shared": [DriveFile] (owned by or shared with its participants, linked ones left out), "saved": [SavedAttachment]}</code></td>
+</tr>
+<tr>
+<td><code>drive.files_for_people</code></td>
+<td><code>{"account_id", "emails": [email], "limit"?: 20}</code></td>
+<td><code>{"files": [DriveFile]}</code> newest first</td>
+</tr>
+<tr>
+<td><code>drive.search</code></td>
+<td><code>{"account_id", "query"?, "limit"?: 20}</code> — no query: recently opened files</td>
+<td><code>{"files": [DriveFile]}</code></td>
+</tr>
+<tr>
+<td><code>drive.content</code></td>
+<td><code>{"account_id", "file_id"}</code> — Docs as Markdown, Sheets as CSV (first sheet), Slides and text files as text; cached by version</td>
+<td><code>{"file": DriveFile, "text": "…" | null}</code></td>
+</tr>
+<tr>
+<td><code>drive.thumbnail</code></td>
+<td><code>{"account_id", "file_id"}</code></td>
+<td><code>{"mime", "data": base64}</code> or <code>null</code></td>
+</tr>
+<tr>
+<td><code>drive.pick</code></td>
+<td><code>{"account_id", "file_ids"?: [id]}</code> — app only; opens Google's file picker (<code>drive.file</code> only); without a Drive connection the pick connects Drive with <code>drive.file</code> alone</td>
+<td><code>{"pick_id", "auth_url"}</code></td>
+</tr>
+<tr>
+<td><code>drive.pick_result</code></td>
+<td><code>{"pick_id"}</code></td>
+<td><code>{"account_id", "state": "waiting|done|declined|error", "files": [DriveFile], "error"}</code></td>
+</tr>
+<tr>
+<td><code>drive.save_attachment</code></td>
+<td><code>{"attachment_id"}</code> — into <code>Mermoz/&lt;first project, split on "/"&gt;</code> or <code>Mermoz/No project</code>, folders created when missing; saving again returns the first save</td>
+<td><code>SavedAttachment</code></td>
+</tr>
+<tr>
+<td><code>drive.saved</code></td>
+<td><code>{"thread_id"}</code></td>
+<td><code>[SavedAttachment]</code></td>
+</tr>
+<tr>
+<td><code>drive.share</code></td>
+<td><code>{"account_id", "file_id", "emails": [email], "role": "reader"|"commenter"}</code> — app only, after the user confirms; Drive sends no email of its own</td>
+<td><code>{"shared": [email], "failed": [{"email", "reason"}]}</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Drive errors: <code>-32030</code> <code>drive_not_connected</code> (<code>data: {account_id}</code>): show "Connect
+Google Drive". <code>-32031</code> <code>drive_needs_access</code> (<code>data: {account_id, reason}</code>):
+<code>read_all</code> (the read permission was unticked), <code>save</code> (the "files you use with
+Mermoz" permission was unticked) or <code>pick</code> (choose the file in Google's picker
+first, then retry).</p>
+<h2 id="send-gate">Send gate</h2>
+<p><code>Attach</code> is an absolute file path, or <code>{"path" | "from_attachment" | "url", "filename"?, "inline"?}</code>:
+<code>from_attachment</code> copies an attachment of a message already in Mermoz (forwarding),
+<code>url</code> adds a link listed under the text instead of a file. Files are copied into
+<code>blobs/drafts/&lt;draft&gt;/</code> and deleted once the draft is sent or deleted. Each
+<code>Draft</code> has <code>attachments: [{id, kind: "file"|"link", filename, mime, size, path?, url?, inline}]</code>.
+More than 25 MB of files in one draft is refused with a plain-words message.
+Messages larger than 4 MB go through Gmail's upload endpoint.</p>
+<p><code>drafts.send</code> sends immediately when the caller is Mermoz.app, or when
+<code>agents_may_send</code> is true. Otherwise the draft moves to state <code>review</code>, its
+thread to status <code>review</code>, and the call fails with <code>approval_required</code>:</p>
+<pre><code class="language-json">{&quot;code&quot;: -32010, &quot;message&quot;: &quot;approval_required: draft dft_8f2c is waiting for the user to approve it in Mermoz. Tell the user; do not retry.&quot;,
+ &quot;data&quot;: {&quot;draft&quot;: &quot;dft_8f2c&quot;, &quot;thread&quot;: &quot;M-1262&quot;}}
+</code></pre>
+<p>The caller is Mermoz.app when the peer process's executable (from the socket's
+peer pid) lives inside a bundle named <code>Mermoz.app</code>. <code>review.*</code> and
+<code>settings.set</code> are refused with <code>app_only</code> for any other caller.</p>
+<h2 id="notifications">Notifications</h2>
+<pre><code class="language-json">{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;threads_changed&quot;, &quot;ids&quot;: [&quot;thr_…&quot;]}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;accounts_changed&quot;}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;sync_progress&quot;, &quot;account_id&quot;: &quot;acc_1&quot;, &quot;synced&quot;: 1200, &quot;total&quot;: 5400}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;drafts_changed&quot;}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;contacts_changed&quot;}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;suggestions_changed&quot;}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;drive_changed&quot;, &quot;account_id&quot;: &quot;acc_1&quot;}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;feed_changed&quot;}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;chat_delta&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;text&quot;: &quot;the answer so far&quot;}}
+</code></pre>
+<p><code>chat_delta</code> carries the whole visible answer so far (never the actions block), at
+most every 60 ms while <code>chat.send</code> streams; the final answer is <code>chat.send</code>'s result.
+A Claude turn paused by its web search loop (<code>pause_turn</code>) is resumed automatically, up
+to 3 times, into the same answer; past that, the answer so far is kept.</p>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <span>© 2026 Mermoz · Made with paper, pencil and Rust</span>
+    <span class="footer-links"><a href="/docs/">Docs</a> <a href="/about/">About</a> <a href="/contact/">Contact</a> <a href="/privacy/">Privacy</a> <a href="/llms.txt">llms.txt</a> <a href="https://github.com/ClementWalter/mermoz">GitHub</a></span>
+  </footer>
+</body>
+</html>

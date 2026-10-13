@@ -1,0 +1,51 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ClementWalter/mermoz",
+  "title": "Mermoz",
+  "description": "Your local Gmail mailbox on macOS: search, read, sort and draft mail. Sends need approval.",
+  "version": "0.1.0",
+  "websiteUrl": "https://mermoz.xyz/docs/mcp/",
+  "repository": {
+    "url": "https://github.com/ClementWalter/mermoz",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://mermoz.xyz/assets/icon.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "1024x1024"
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "xyz.mermoz/install": {
+        "transport": "stdio",
+        "requires": "Mermoz.app installed and running on macOS 26 or later, signed in to Gmail",
+        "download": "https://github.com/ClementWalter/mermoz/releases/latest/download/Mermoz.dmg",
+        "command": "mermoz",
+        "args": [
+          "mcp"
+        ],
+        "bundledCommand": "/Applications/Mermoz.app/Contents/Resources/mermoz",
+        "remote": null,
+        "clients": {
+          "claude-code": "claude mcp add mermoz -- mermoz mcp",
+          "codex": "codex mcp add mermoz -- mermoz mcp",
+          "claude-desktop": {
+            "mcpServers": {
+              "mermoz": {
+                "command": "/Applications/Mermoz.app/Contents/Resources/mermoz",
+                "args": [
+                  "mcp"
+                ]
+              }
+            }
+          }
+        },
+        "docs": "https://mermoz.xyz/docs/mcp/"
+      }
+    }
+  }
+}

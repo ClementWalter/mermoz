@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermoz privacy: what stays on your Mac and what leaves it</title>
+  <meta name="description" content="How Mermoz handles your mail: stored on your Mac, the Google scopes it asks for, which AI providers see email content and only when you turn them on, Google Drive, and the beta sign-up.">
+  <link rel="canonical" href="https://mermoz.xyz/privacy/">
+  <link rel="alternate" type="text/markdown" href="/privacy/index.md">
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="apple-touch-icon" href="/assets/icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mermoz.xyz/privacy/">
+  <meta property="og:title" content="Mermoz privacy: what stays on your Mac and what leaves it">
+  <meta property="og:site_name" content="Mermoz">
+  <meta property="og:description" content="How Mermoz handles your mail: stored on your Mac, the Google scopes it asks for, which AI providers see email content and only when you turn them on, Google Drive, and the beta sign-up.">
+  <meta property="og:image" content="https://mermoz.xyz/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#EAF3FB">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="page">
+  <div class="beta-bar">Mermoz is in <strong>private beta</strong> — <a href="/#beta">join the list</a> and we'll open your access.</div>
+
+  <header class="nav">
+    <a class="brand" href="/"><img src="/assets/icon.png" alt="" width="34" height="34"> Mermoz</a>
+    <nav>
+      <a href="/#features">Features</a>
+      <a href="/docs/">Docs</a>
+      <a href="/about/">About</a>
+      <a class="nav-cta" href="/#beta">Join the beta</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="prose paper-card">
+<h1 id="mermoz-privacy">Mermoz privacy</h1>
+<p>Mermoz is an email app that keeps your mailbox on your Mac. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the <a href="https://github.com/ClementWalter/mermoz">source code</a>.</p>
+<blockquote>
+<p><strong>Needs legal review.</strong> This page describes how the software behaves. It is not yet a reviewed privacy policy: the data controller's identity, the legal bases (GDPR), retention periods and the Google API Limited Use statement below must be confirmed by counsel before the public launch.</p>
+</blockquote>
+<h2 id="your-mail-stays-on-your-mac">Your mail stays on your Mac</h2>
+<ul>
+<li>Mermoz downloads your Gmail messages, labels and attachments into <code>~/Library/Application Support/Mermoz</code> on your Mac (a local database and a files folder). Search, reading and sorting run there, offline.</li>
+<li>A single background process, <code>mermozd</code>, talks to Google on your behalf. The app, the <code>mermoz</code> command line and the MCP server talk to it over a local socket on your Mac.</li>
+<li>Remote images in emails are not loaded unless you ask for them, since they can tell the sender you opened the mail.</li>
+<li>Your Google sign-ins, Drive grants and AI provider keys are kept on your Mac: in the macOS Keychain for signed releases, or in files only your user account can read for beta builds.</li>
+<li>The app has no analytics or tracking. Feedback sent with <code>mermoz feedback</code> is stored in your local mailbox database and shown in Settings › Developer; it is not uploaded.</li>
+<li>Removing an account in Mermoz deletes its messages from the local database and its Google sign-in from your Mac; deleting the folder above removes everything Mermoz stored. Your mail in Gmail is not affected.</li>
+</ul>
+<h2 id="what-mermoz-asks-google-for">What Mermoz asks Google for</h2>
+<ul>
+<li><strong>Gmail:</strong> the <code>gmail.modify</code> scope, to read your mail, apply your labels and statuses (archive, trash, read state) and send the drafts you approve. Mermoz does not ask for permission to delete mail permanently.</li>
+<li><strong>Google Drive (optional):</strong> only when you click "Connect Google Drive", in a separate consent: <code>drive.readonly</code> (preview documents linked in your mail, files shared with a thread's people, search) and <code>drive.file</code> (save attachments into a Mermoz folder, share a file you picked). You can untick either; mail never depends on Drive. Drive file text Mermoz reads is cached on your Mac.</li>
+<li>Companies can sign in through their own Google client instead of Mermoz's; that client is stored with the account on your Mac.</li>
+</ul>
+<blockquote>
+<p><strong>Needs legal review.</strong> Google requires apps using Gmail data to state that their use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. Confirm the exact wording before submitting for Google verification.</p>
+</blockquote>
+<h2 id="ai-providers-off-until-you-turn-them-on">AI providers: off until you turn them on</h2>
+<p>Mermoz works without any AI. Email content is sent to an AI provider only after you set one up, and only to the provider you chose:</p>
+<ul>
+<li><strong>Instant sorting (TypeSafe's Jev, or SubQ).</strong> Only if you paste a TypeSafe or SubQ API key in Settings › Developer. New and open threads are then sent to that provider (<code>api.typesafe.ai</code> or <code>api.subq.ai</code>) to suggest a status, project and priority, and to rank the Feed. Each request carries the thread plus two hints built on your Mac: where you filed earlier mail from the same people, and a short description of your projects. Removing the key stops it.</li>
+<li><strong>Your account's AI (Claude by Anthropic, ChatGPT or another OpenAI-compatible service).</strong> Only for the accounts where you allow a provider, connected with your own API key, "Sign in with Anthropic" or "Continue with ChatGPT" (billed to your own plan). It is then used when you:</li>
+<li>ask "Chat about this" (the thread, its people, its status and your earlier mail with them; with web research on, the provider may search the web for the answer);</li>
+<li>turn on the reading assistant, which writes the Optimized reading version and grows your contact directory from signatures;</li>
+<li>open the Feed, whose cards' summaries and draft words it writes, and when Mermoz groups threads into conversations and needs a judgment on an uncertain pair.</li>
+<li><strong>Agents you run yourself.</strong> The CLI and MCP server give your own agents (for example Claude Code or Codex) the mail they ask for. What those agents send to their AI provider is governed by that agent and its provider, not by Mermoz. Agents cannot send email without your approval in the app, unless you turn on agent sending.</li>
+</ul>
+<p>Each provider handles the content under its own terms: <a href="https://typesafe.ai">TypeSafe</a>, <a href="https://subq.ai">SubQ</a>, <a href="https://www.anthropic.com/legal/privacy">Anthropic</a>, <a href="https://openai.com/policies/privacy-policy/">OpenAI</a>.</p>
+<blockquote>
+<p><strong>Needs legal review.</strong> Whether each provider acts as your processor or as an independent controller, and the data-transfer terms that apply, depend on the account or key you use with it.</p>
+</blockquote>
+<h2 id="this-website-and-the-beta-sign-up">This website and the beta sign-up</h2>
+<ul>
+<li>mermoz.xyz is a static site hosted on GitHub Pages. It sets no cookies and runs no analytics. GitHub, as the host, receives your IP address and request details; fonts are loaded from Google Fonts, which also sees your IP address.</li>
+<li><strong>The beta sign-up form</strong> sends only the email address you type to a Google Form owned by Mermoz's maintainer (Google Forms, operated by Google). The address is used to add you to the beta: it is added as a test user of Mermoz's Google Cloud project (so you can sign in during Google's review) and receives the invitation email, sent from clement@mermoz.xyz through Zoho Mail. It is not sold or shared with anyone else.</li>
+<li>The download button links to the latest release on GitHub, which serves the file.</li>
+</ul>
+<blockquote>
+<p><strong>Needs legal review.</strong> Retention period for sign-up addresses, the legal basis (consent), and how to ask for deletion must be stated; until then, write to clement@mermoz.xyz to have your address removed.</p>
+</blockquote>
+<h2 id="contact">Contact</h2>
+<p>Questions or deletion requests: clement@mermoz.xyz. See also the <a href="/contact/">contact page</a>.</p>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <span>© 2026 Mermoz · Made with paper, pencil and Rust</span>
+    <span class="footer-links"><a href="/docs/">Docs</a> <a href="/about/">About</a> <a href="/contact/">Contact</a> <a href="/privacy/">Privacy</a> <a href="/llms.txt">llms.txt</a> <a href="https://github.com/ClementWalter/mermoz">GitHub</a></span>
+  </footer>
+</body>
+</html>

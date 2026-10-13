@@ -1,0 +1,77 @@
+# Mermoz
+
+> Mermoz is a fast, local-first Gmail client for macOS (macOS 26 or later), free and open source, in private beta (version 0.1.0). The whole mailbox is stored on the Mac, so search and reading are instant and work offline. A command-line tool (`mermoz`, every command speaks `--json`) and a built-in MCP server (`mermoz mcp`, stdio) let AI agents read, search, sort and draft mail. Agents never send on their own: a send waits for the user's approval in the app.
+
+How an agent calls it: Mermoz.app must be installed and running (its daemon `mermozd` owns the mailbox; the CLI and the MCP server talk to it over a local Unix socket). The CLI ships inside the app at `/Applications/Mermoz.app/Contents/Resources/mermoz`; Settings › Developer › Install in PATH links it as `mermoz`. Add the MCP server to an agent with `claude mcp add mermoz -- mermoz mcp` (Claude Code) or `codex mcp add mermoz -- mermoz mcp` (Codex). CLI exit codes: 0 ok, 1 error, 2 usage, 3 approval required (tell the user, do not retry), 4 not found, 5 Mermoz not running.
+
+Not a fit for: Windows, Linux, iOS or web; mail providers other than Gmail; remote or server-side mailbox access (there is no hosted API or remote MCP endpoint); sending mail without a human approving it.
+
+## When to use Mermoz
+
+- [Fast local Gmail client on macOS](https://mermoz.xyz/): the user wants a light, native Mac app for Gmail where new mail is sorted before it is read, one key handles a thread, and the whole mailbox lives on the Mac.
+- [Agent-first mail through the CLI and the MCP server](https://mermoz.xyz/docs/mcp/): an agent needs to read, search, sort (statuses, priorities, Gmail labels as projects) or draft mail in the user's Gmail, through `mermoz mcp` over stdio or `mermoz <command> --json`, with every send held for the user's approval.
+- [Offline search over the whole mailbox](https://mermoz.xyz/docs/cli/#search): instant full-text search over every message stored on the Mac, without a network round trip (`mermoz search "from:marc audit" --json`, MCP tool `search_mail`).
+
+## Docs
+
+- [Mermoz developer docs](https://mermoz.xyz/docs/): overview of the CLI, the MCP server and the protocol.
+- [Mermoz CLI reference](https://mermoz.xyz/docs/cli/): every `mermoz` command with its real `--help` text.
+- [Mermoz MCP server](https://mermoz.xyz/docs/mcp/): install in Claude Code, Claude Desktop and Codex; all 26 tools with their parameters.
+- [Mermoz JSON-RPC protocol](https://mermoz.xyz/docs/protocol/): the `mermozd` socket protocol the app, the CLI and the MCP server use.
+- [MCP registry entry](https://mermoz.xyz/server.json): `server.json` in the official MCP registry format (local stdio server, no remote endpoint).
+- [MCP discovery document](https://mermoz.xyz/.well-known/mcp.json): how to install and launch the local stdio server.
+
+## CLI commands
+
+- [mermoz search](https://mermoz.xyz/docs/cli/#search): full-text search, every word must match; `from:`, `to:`, `subject:` restrict to a field; `--gmail` searches all of Gmail instead.
+- [mermoz list](https://mermoz.xyz/docs/cli/#list): list threads by `--status`, `--project`, `--account`, `--label`; `--conversations` for one row per conversation.
+- [mermoz thread](https://mermoz.xyz/docs/cli/#thread): read a whole thread (`--conversation` for every thread of its conversation).
+- [mermoz feed](https://mermoz.xyz/docs/cli/#feed): open mail as cards, one thing to do each, most pressing first.
+- [mermoz status](https://mermoz.xyz/docs/cli/#status): set the status of threads (unread, todo, waiting, in_progress, backlog, review, done, archive, deleted).
+- [mermoz project](https://mermoz.xyz/docs/cli/#project): add or remove a project (a Gmail label) on a thread.
+- [mermoz accept](https://mermoz.xyz/docs/cli/#accept): accept the AI's suggested status and projects for threads.
+- [mermoz draft](https://mermoz.xyz/docs/cli/#draft): create, edit, attach files to and list drafts; drafts never send by themselves.
+- [mermoz send](https://mermoz.xyz/docs/cli/#send): ask to send a draft; exits 3 (`approval_required`) until the user approves it in Mermoz.
+- [mermoz mcp](https://mermoz.xyz/docs/mcp/): run the MCP server on stdio.
+
+## MCP tools
+
+- [search_mail](https://mermoz.xyz/docs/mcp/#search_mail): Full-text search across all local mail (instant, offline).
+- [list_threads](https://mermoz.xyz/docs/mcp/#list_threads): List threads (issues) filtered by status/project/account, newest first.
+- [get_thread](https://mermoz.xyz/docs/mcp/#get_thread): Read a whole thread: every message's plain-text body, recipients and attachment ids.
+- [split_conversation](https://mermoz.xyz/docs/mcp/#split_conversation): Take a thread out of the conversation Mermoz grouped it into (when it is a different matter).
+- [merge_conversations](https://mermoz.xyz/docs/mcp/#merge_conversations): Join the conversations of two or more threads into one (same people, same matter).
+- [list_files](https://mermoz.xyz/docs/mcp/#list_files): Files shared in any conversation, newest first, with their attachment id (read with get_attachment) and thread.
+- [update_thread](https://mermoz.xyz/docs/mcp/#update_thread): Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), projects (Gmail labels: add_projects/remove_projects, or projects to replace) or due date (YYYY-MM-DD, null clears).
+- [accept_suggestions](https://mermoz.xyz/docs/mcp/#accept_suggestions): Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read.
+- [reject_suggestions](https://mermoz.xyz/docs/mcp/#reject_suggestions): Turn down the AI's pending suggestion for threads: they stay where they are and are not suggested again.
+- [column_suggestions](https://mermoz.xyz/docs/mcp/#column_suggestions): The AI's pending suggestions in status columns, grouped by target (status + projects) with counts, and how far background sorting has got (classified of total).
+- [stop_resort](https://mermoz.xyz/docs/mcp/#stop_resort): Stop a whole-mailbox sort and clear every suggestion on read threads that nobody reviewed.
+- [get_attachment](https://mermoz.xyz/docs/mcp/#get_attachment): Get an attachment's local file path (readable offline); text attachments also return their content.
+- [create_draft](https://mermoz.xyz/docs/mcp/#create_draft): Create a draft.
+- [send_draft](https://mermoz.xyz/docs/mcp/#send_draft): Ask to send a draft.
+- [search_contacts](https://mermoz.xyz/docs/mcp/#search_contacts): Search the user's directory, built automatically from email signatures: names, titles, companies, phones, addresses, websites.
+- [list_labels](https://mermoz.xyz/docs/mcp/#list_labels): The user's Gmail labels (mailboxes) with ids, accounts and thread counts.
+- [list_statuses](https://mermoz.xyz/docs/mcp/#list_statuses): Workflow statuses.
+- [list_projects](https://mermoz.xyz/docs/mcp/#list_projects): Projects: the user's Gmail labels.
+- [chat_about_thread](https://mermoz.xyz/docs/mcp/#chat_about_thread): Ask the user's own AI (the one allowed for the thread's account in Mermoz) about a thread; it sees the thread, its people, status and the user's earlier mail with them, and may search the web.
+- [thread_drive_files](https://mermoz.xyz/docs/mcp/#thread_drive_files): Google Drive files of a thread: those linked in its messages (with access: ok, no_access or not_connected), files shared by or with its participants, and its attachments already saved to Drive.
+- [read_drive_file](https://mermoz.xyz/docs/mcp/#read_drive_file): A Google Drive file's text: Docs as Markdown, Sheets as CSV (first sheet), Slides as text, plain-text files as they are.
+- [search_drive](https://mermoz.xyz/docs/mcp/#search_drive): Search the account's Google Drive by name and content; without a query, the files the user opened most recently.
+- [save_attachment_to_drive](https://mermoz.xyz/docs/mcp/#save_attachment_to_drive): Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing).
+- [feed](https://mermoz.xyz/docs/mcp/#feed): The user's Feed: every open thread as a card (one thing to do), in sections now, today, week, waiting, later, ordered by deadline then urgency.
+- [snooze_thread](https://mermoz.xyz/docs/mcp/#snooze_thread): Later: hide threads from the Feed until a time (Unix ms) or until new mail arrives in them.
+- [submit_feedback](https://mermoz.xyz/docs/mcp/#submit_feedback): Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.
+
+## About
+
+- [About Mermoz](https://mermoz.xyz/about/): what Mermoz is, who makes it, the name.
+- [Contact](https://mermoz.xyz/contact/): email, GitHub issues, feedback from agents.
+- [Privacy](https://mermoz.xyz/privacy/): what stays on the Mac, the Google scopes, which AI providers see mail and when.
+- [Download Mermoz for Mac](https://github.com/ClementWalter/mermoz/releases/latest/download/Mermoz.dmg): the latest DMG (sign-in needs a private-beta invitation).
+- [Source code on GitHub](https://github.com/ClementWalter/mermoz): Rust daemon and CLI, SwiftUI app.
+
+## Optional
+
+- [llms-full.txt](https://mermoz.xyz/llms-full.txt): every page above as Markdown in one file.
+- [Homepage as Markdown](https://mermoz.xyz/index.md): the landing page text.

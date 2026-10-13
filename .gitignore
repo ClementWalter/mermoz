@@ -5,3 +5,5 @@
 *.profraw
 __pycache__/
 .pytest_cache/
+.wrangler/
+node_modules/

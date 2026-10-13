@@ -1,0 +1,558 @@
+{
+  "serverInfo": {
+    "name": "mermoz"
+  },
+  "protocolVersion": "2025-06-18",
+  "instructions": "Mermoz is the user's local mailbox. Threads are issues with statuses. Search and reading are instant and offline. Sending always needs the user's approval unless they enabled agent sending.",
+  "tools": [
+    {
+      "description": "Full-text search across all local mail (instant, offline). Supports from:, to:, subject: prefixes. Returns threads best match first.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 20,
+            "type": "integer"
+          },
+          "query": {
+            "description": "search words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_mail"
+    },
+    {
+      "description": "List threads (issues) filtered by status/project/account, newest first. Statuses: unread, todo, waiting, in_progress, backlog, review, done, archive, deleted. Projects are the user's Gmail labels; each thread lists its `projects` and the AI's pending `suggestion`. `suggested`: true for threads with a pending suggestion, or {status, projects} for one destination listed by column_suggestions. `conversations`: one row per conversation (Gmail threads with the same people about the same matter, as the user sees them), each with `conversation_threads`; `kind`: [\"feed\", \"list\"] for automated senders and mailing lists.",
+      "inputSchema": {
+        "properties": {
+          "account_id": {
+            "description": "account id",
+            "type": "string"
+          },
+          "conversations": {
+            "type": "boolean"
+          },
+          "kind": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label_id": {
+            "description": "Gmail label id from list_labels (pass its account_id too)",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "type": "integer"
+          },
+          "project": {
+            "description": "project (Gmail label) name",
+            "type": "string"
+          },
+          "status": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "suggested": {
+            "type": [
+              "boolean",
+              "object"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_threads"
+    },
+    {
+      "description": "Read a whole thread: every message's plain-text body, recipients and attachment ids. With `conversation`, every message of the conversation it belongs to (each with its `thread_id`), plus its people, files and links.",
+      "inputSchema": {
+        "properties": {
+          "conversation": {
+            "type": "boolean"
+          },
+          "id": {
+            "description": "thread id or number like M-1287",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_thread"
+    },
+    {
+      "description": "Take a thread out of the conversation Mermoz grouped it into (when it is a different matter). Final: it is never grouped with them again.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "thread id or number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "split_conversation"
+    },
+    {
+      "description": "Join the conversations of two or more threads into one (same people, same matter).",
+      "inputSchema": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "type": "object"
+      },
+      "name": "merge_conversations"
+    },
+    {
+      "description": "Files shared in any conversation, newest first, with their attachment id (read with get_attachment) and thread.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer"
+          },
+          "query": {
+            "description": "part of a file name",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_files"
+    },
+    {
+      "description": "Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), projects (Gmail labels: add_projects/remove_projects, or projects to replace) or due date (YYYY-MM-DD, null clears). 'deleted' moves the thread to Gmail Trash.",
+      "inputSchema": {
+        "properties": {
+          "add_projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "due": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "thread id or number",
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "remove_projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "status key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "update_thread"
+    },
+    {
+      "description": "Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read. Pass `ids`, or `column` (a status) to accept that column's pending suggestions — all of them, or only the group given by `to_status`/`to_projects` as listed by column_suggestions.",
+      "inputSchema": {
+        "properties": {
+          "column": {
+            "description": "status key of the column",
+            "type": "string"
+          },
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to_projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to_status": {
+            "description": "group's target status (null: groups that only add projects)",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "accept_suggestions"
+    },
+    {
+      "description": "Turn down the AI's pending suggestion for threads: they stay where they are and are not suggested again.",
+      "inputSchema": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "type": "object"
+      },
+      "name": "reject_suggestions"
+    },
+    {
+      "description": "The AI's pending suggestions in status columns, grouped by target (status + projects) with counts, and how far background sorting has got (classified of total). Nothing moves until accepted.",
+      "inputSchema": {
+        "properties": {
+          "account_id": {
+            "description": "limit to an account",
+            "type": "string"
+          },
+          "project": {
+            "description": "limit to a project",
+            "type": "string"
+          },
+          "statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "statuses"
+        ],
+        "type": "object"
+      },
+      "name": "column_suggestions"
+    },
+    {
+      "description": "Stop a whole-mailbox sort and clear every suggestion on read threads that nobody reviewed. Accepted and turned-down suggestions are kept; Unread mail keeps its own.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "stop_resort"
+    },
+    {
+      "description": "Get an attachment's local file path (readable offline); text attachments also return their content.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "attachment id from get_thread",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_attachment"
+    },
+    {
+      "description": "Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves. Attachments are copied into Mermoz; Gmail sends at most 25 MB of files per email.",
+      "inputSchema": {
+        "properties": {
+          "attachments": {
+            "description": "files to attach: absolute paths",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "body": {
+            "description": "plain text body",
+            "type": "string"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "forward_attachments": {
+            "description": "attachment ids from get_thread to send again (forwarding)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject": {
+            "description": "subject",
+            "type": "string"
+          },
+          "thread_id": {
+            "description": "thread to reply to",
+            "type": "string"
+          },
+          "to": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
+      "name": "create_draft"
+    },
+    {
+      "description": "Ask to send a draft. Unless the user enabled agent sending, the draft goes to the user's Review lane and this returns approval_required: tell the user, do not retry.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "draft id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "send_draft"
+    },
+    {
+      "description": "Search the user's directory, built automatically from email signatures: names, titles, companies, phones, addresses, websites. Empty query lists recent contacts.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 20,
+            "type": "integer"
+          },
+          "query": {
+            "description": "name, email or company",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "search_contacts"
+    },
+    {
+      "description": "The user's Gmail labels (mailboxes) with ids, accounts and thread counts.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_labels"
+    },
+    {
+      "description": "Workflow statuses.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_statuses"
+    },
+    {
+      "description": "Projects: the user's Gmail labels. A thread can be in several.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_projects"
+    },
+    {
+      "description": "Ask the user's own AI (the one allowed for the thread's account in Mermoz) about a thread; it sees the thread, its people, status and the user's earlier mail with them, and may search the web. The conversation is kept with the thread and shown in the app. Returns the answer and proposed actions (status, project, follow_up date, draft_reply body); nothing is applied: use update_thread or create_draft to act. Without a question, returns the conversation so far.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "thread id or number",
+            "type": "string"
+          },
+          "question": {
+            "description": "what to ask",
+            "type": "string"
+          },
+          "research": {
+            "default": true,
+            "description": "allow web search",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "chat_about_thread"
+    },
+    {
+      "description": "Google Drive files of a thread: those linked in its messages (with access: ok, no_access or not_connected), files shared by or with its participants, and its attachments already saved to Drive. Needs the account's Drive connected in Mermoz.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "thread id or number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "thread_drive_files"
+    },
+    {
+      "description": "A Google Drive file's text: Docs as Markdown, Sheets as CSV (first sheet), Slides as text, plain-text files as they are. Cached locally.",
+      "inputSchema": {
+        "properties": {
+          "account_id": {
+            "description": "account id",
+            "type": "string"
+          },
+          "file_id": {
+            "description": "Drive file id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "file_id"
+        ],
+        "type": "object"
+      },
+      "name": "read_drive_file"
+    },
+    {
+      "description": "Search the account's Google Drive by name and content; without a query, the files the user opened most recently.",
+      "inputSchema": {
+        "properties": {
+          "account_id": {
+            "description": "account id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer"
+          },
+          "query": {
+            "description": "words to find",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id"
+        ],
+        "type": "object"
+      },
+      "name": "search_drive"
+    },
+    {
+      "description": "Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing). Returns the folder and an Open in Drive link; saving again returns the same file. Sharing files stays with the user in the app.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "attachment id from get_thread",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "save_attachment_to_drive"
+    },
+    {
+      "description": "The user's Feed: every open thread as a card (one thing to do), in sections now, today, week, waiting, later, ordered by deadline then urgency. Each card has a kind (reply, decision, sign, promise, event, payment, intro, waiting, cleanup, reading, other), plain-language reasons, the deadline and amount written in the mail, and the AI's words when written. Automated mail and newsletters come as batch cards listing their threads.",
+      "inputSchema": {
+        "properties": {
+          "project": {
+            "description": "only this project's cards",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "feed"
+    },
+    {
+      "description": "Later: hide threads from the Feed until a time (Unix ms) or until new mail arrives in them. until null brings them back now.",
+      "inputSchema": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "until": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "type": "object"
+      },
+      "name": "snooze_thread"
+    },
+    {
+      "description": "Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.",
+      "inputSchema": {
+        "properties": {
+          "text": {
+            "description": "what went wrong or is missing",
+            "type": "string"
+          },
+          "tool": {
+            "description": "tool name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "submit_feedback"
+    }
+  ]
+}

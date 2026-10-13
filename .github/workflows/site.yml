@@ -1,32 +1,54 @@
-# Publishes the landing page in site/ to GitHub Pages (custom domain from site/CNAME).
+# Publishes the landing page in site/ to GitHub Pages (custom domain from site/CNAME),
+# after checking that the generated agent files are fresh and valid.
 name: site
 
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/site.yml"]
+    paths: ["site/**", "docs/protocol.md", "scripts/site_build.py", "scripts/build_app.py", "crates/mermoz-cli/src/**", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", "docs/protocol.md", "scripts/site_build.py", "crates/mermoz-cli/src/**", ".github/workflows/site.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Generated pages, llms.txt, sitemap and MCP files must match their sources.
+      - run: uv run scripts/site_build.py build --check
+      - run: uv run --with pytest --with jsonschema --with xmlschema --with markdown --with click pytest site/tests -q
+      - run: node --test site/edge/worker.test.mjs
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # Sources, tests and the edge Worker stay in the repo, not on the site.
+      - run: rsync -a --exclude src --exclude tests --exclude edge --exclude README.md site/ _site/
+      # v3 keeps dot-directories (.well-known); v4 would drop them.
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4

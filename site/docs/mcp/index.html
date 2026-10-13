@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermoz MCP server: Gmail on Mac for Claude, Codex and other agents</title>
+  <meta name="description" content="Add the Mermoz MCP server (mermoz mcp, stdio) to Claude Code, Claude Desktop or Codex and let agents search, read, sort and draft your local Gmail mailbox.">
+  <link rel="canonical" href="https://mermoz.xyz/docs/mcp/">
+  <link rel="alternate" type="text/markdown" href="/docs/mcp/index.md">
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="apple-touch-icon" href="/assets/icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mermoz.xyz/docs/mcp/">
+  <meta property="og:title" content="Mermoz MCP server: Gmail on Mac for Claude, Codex and other agents">
+  <meta property="og:site_name" content="Mermoz">
+  <meta property="og:description" content="Add the Mermoz MCP server (mermoz mcp, stdio) to Claude Code, Claude Desktop or Codex and let agents search, read, sort and draft your local Gmail mailbox.">
+  <meta property="og:image" content="https://mermoz.xyz/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#EAF3FB">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="page">
+  <div class="beta-bar">Mermoz is in <strong>private beta</strong> — <a href="/#beta">join the list</a> and we'll open your access.</div>
+
+  <header class="nav">
+    <a class="brand" href="/"><img src="/assets/icon.png" alt="" width="34" height="34"> Mermoz</a>
+    <nav>
+      <a href="/#features">Features</a>
+      <a href="/docs/">Docs</a>
+      <a href="/about/">About</a>
+      <a class="nav-cta" href="/#beta">Join the beta</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="prose paper-card">
+<h1 id="mermoz-mcp-server">Mermoz MCP server</h1>
+<p><code>mermoz mcp</code> runs an MCP server on <strong>stdio</strong> that gives AI agents the user's Mermoz mailbox as 26 tools: search, read, sort, draft, Drive files and more. It is local: it runs on the user's Mac, next to Mermoz.app, and talks to the app's daemon over a Unix socket. There is no hosted or remote (Streamable HTTP) endpoint: Mermoz has no server of its own that holds mail.</p>
+<ul>
+<li><strong>Requires:</strong> Mermoz.app installed and running (macOS 26 or later), signed in to Gmail. If the app isn't running, tools answer "Mermoz isn't running. Ask the user to open Mermoz.app."</li>
+<li><strong>Command:</strong> <code>mermoz mcp</code> once the CLI is in PATH (Mermoz › Settings › Developer › Install in PATH), or the full path <code>/Applications/Mermoz.app/Contents/Resources/mermoz mcp</code>.</li>
+<li><strong>Protocol version:</strong> 2025-06-18; capability <code>tools</code>.</li>
+<li><strong>Sending:</strong> <code>send_draft</code> moves the draft to the user's Review lane and returns <code>approval_required</code> unless the user enabled agent sending. Tell the user; do not retry.</li>
+</ul>
+<h2 id="add-mermoz-to-claude-code">Add Mermoz to Claude Code</h2>
+<pre><code class="language-sh">claude mcp add mermoz -- mermoz mcp
+# for every project: claude mcp add --scope user mermoz -- mermoz mcp
+</code></pre>
+<h2 id="add-mermoz-to-claude-desktop">Add Mermoz to Claude Desktop</h2>
+<p>Claude Desktop does not read your shell's PATH, so use the full path. In Claude Desktop, <strong>Settings › Developer › Edit Config</strong> opens <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>; add:</p>
+<pre><code class="language-json">{
+  &quot;mcpServers&quot;: {
+    &quot;mermoz&quot;: {
+      &quot;command&quot;: &quot;/Applications/Mermoz.app/Contents/Resources/mermoz&quot;,
+      &quot;args&quot;: [&quot;mcp&quot;]
+    }
+  }
+}
+</code></pre>
+<p>Then quit and reopen Claude Desktop.</p>
+<h2 id="add-mermoz-to-codex">Add Mermoz to Codex</h2>
+<pre><code class="language-sh">codex mcp add mermoz -- mermoz mcp
+</code></pre>
+<p>Or in <code>~/.codex/config.toml</code>:</p>
+<pre><code class="language-toml">[mcp_servers.mermoz]
+command = &quot;mermoz&quot;
+args = [&quot;mcp&quot;]
+</code></pre>
+<h2 id="any-other-mcp-client">Any other MCP client</h2>
+<p>Launch <code>mermoz mcp</code> (or <code>/Applications/Mermoz.app/Contents/Resources/mermoz mcp</code>) as a stdio server: newline-delimited JSON-RPC 2.0 on stdin and stdout. Discovery documents: <a href="/server.json">server.json</a> (official MCP registry format) and <a href="/.well-known/mcp.json">/.well-known/mcp.json</a>.</p>
+<h2 id="tools">Tools</h2>
+<h3 id="search_mail">search_mail</h3>
+<p>Full-text search across all local mail (instant, offline). Supports from:, to:, subject: prefixes. Returns threads best match first.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>limit</code></td>
+<td>integer</td>
+<td>no</td>
+<td>(default 20)</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>string</td>
+<td>yes</td>
+<td>search words</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="list_threads">list_threads</h3>
+<p>List threads (issues) filtered by status/project/account, newest first. Statuses: unread, todo, waiting, in_progress, backlog, review, done, archive, deleted. Projects are the user's Gmail labels; each thread lists its <code>projects</code> and the AI's pending <code>suggestion</code>. <code>suggested</code>: true for threads with a pending suggestion, or {status, projects} for one destination listed by column_suggestions. <code>conversations</code>: one row per conversation (Gmail threads with the same people about the same matter, as the user sees them), each with <code>conversation_threads</code>; <code>kind</code>: ["feed", "list"] for automated senders and mailing lists.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>account_id</code></td>
+<td>string</td>
+<td>no</td>
+<td>account id</td>
+</tr>
+<tr>
+<td><code>conversations</code></td>
+<td>boolean</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>label_id</code></td>
+<td>string</td>
+<td>no</td>
+<td>Gmail label id from list_labels (pass its account_id too)</td>
+</tr>
+<tr>
+<td><code>limit</code></td>
+<td>integer</td>
+<td>no</td>
+<td>(default 50)</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>string</td>
+<td>no</td>
+<td>project (Gmail label) name</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>suggested</code></td>
+<td>boolean or object</td>
+<td>no</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="get_thread">get_thread</h3>
+<p>Read a whole thread: every message's plain-text body, recipients and attachment ids. With <code>conversation</code>, every message of the conversation it belongs to (each with its <code>thread_id</code>), plus its people, files and links.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>conversation</code></td>
+<td>boolean</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>thread id or number like M-1287</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="split_conversation">split_conversation</h3>
+<p>Take a thread out of the conversation Mermoz grouped it into (when it is a different matter). Final: it is never grouped with them again.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>thread id or number</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="merge_conversations">merge_conversations</h3>
+<p>Join the conversations of two or more threads into one (same people, same matter).</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ids</code></td>
+<td>array of string</td>
+<td>yes</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="list_files">list_files</h3>
+<p>Files shared in any conversation, newest first, with their attachment id (read with get_attachment) and thread.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>limit</code></td>
+<td>integer</td>
+<td>no</td>
+<td>(default 50)</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>string</td>
+<td>no</td>
+<td>part of a file name</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="update_thread">update_thread</h3>
+<p>Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), projects (Gmail labels: add_projects/remove_projects, or projects to replace) or due date (YYYY-MM-DD, null clears). 'deleted' moves the thread to Gmail Trash.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add_projects</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>due</code></td>
+<td>string or null</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>thread id or number</td>
+</tr>
+<tr>
+<td><code>priority</code></td>
+<td>integer</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>projects</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>remove_projects</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>string</td>
+<td>no</td>
+<td>status key</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="accept_suggestions">accept_suggestions</h3>
+<p>Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read. Pass <code>ids</code>, or <code>column</code> (a status) to accept that column's pending suggestions — all of them, or only the group given by <code>to_status</code>/<code>to_projects</code> as listed by column_suggestions.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>column</code></td>
+<td>string</td>
+<td>no</td>
+<td>status key of the column</td>
+</tr>
+<tr>
+<td><code>ids</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>to_projects</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>to_status</code></td>
+<td>string or null</td>
+<td>no</td>
+<td>group's target status (null: groups that only add projects)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="reject_suggestions">reject_suggestions</h3>
+<p>Turn down the AI's pending suggestion for threads: they stay where they are and are not suggested again.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ids</code></td>
+<td>array of string</td>
+<td>yes</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="column_suggestions">column_suggestions</h3>
+<p>The AI's pending suggestions in status columns, grouped by target (status + projects) with counts, and how far background sorting has got (classified of total). Nothing moves until accepted.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>account_id</code></td>
+<td>string</td>
+<td>no</td>
+<td>limit to an account</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>string</td>
+<td>no</td>
+<td>limit to a project</td>
+</tr>
+<tr>
+<td><code>statuses</code></td>
+<td>array of string</td>
+<td>yes</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="stop_resort">stop_resort</h3>
+<p>Stop a whole-mailbox sort and clear every suggestion on read threads that nobody reviewed. Accepted and turned-down suggestions are kept; Unread mail keeps its own.</p>
+<p>No parameters.</p>
+<h3 id="get_attachment">get_attachment</h3>
+<p>Get an attachment's local file path (readable offline); text attachments also return their content.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>attachment id from get_thread</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="create_draft">create_draft</h3>
+<p>Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves. Attachments are copied into Mermoz; Gmail sends at most 25 MB of files per email.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>attachments</code></td>
+<td>array of string</td>
+<td>no</td>
+<td>files to attach: absolute paths</td>
+</tr>
+<tr>
+<td><code>body</code></td>
+<td>string</td>
+<td>yes</td>
+<td>plain text body</td>
+</tr>
+<tr>
+<td><code>cc</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+<tr>
+<td><code>forward_attachments</code></td>
+<td>array of string</td>
+<td>no</td>
+<td>attachment ids from get_thread to send again (forwarding)</td>
+</tr>
+<tr>
+<td><code>subject</code></td>
+<td>string</td>
+<td>no</td>
+<td>subject</td>
+</tr>
+<tr>
+<td><code>thread_id</code></td>
+<td>string</td>
+<td>no</td>
+<td>thread to reply to</td>
+</tr>
+<tr>
+<td><code>to</code></td>
+<td>array of string</td>
+<td>no</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="send_draft">send_draft</h3>
+<p>Ask to send a draft. Unless the user enabled agent sending, the draft goes to the user's Review lane and this returns approval_required: tell the user, do not retry.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>draft id</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="search_contacts">search_contacts</h3>
+<p>Search the user's directory, built automatically from email signatures: names, titles, companies, phones, addresses, websites. Empty query lists recent contacts.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>limit</code></td>
+<td>integer</td>
+<td>no</td>
+<td>(default 20)</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>string</td>
+<td>no</td>
+<td>name, email or company</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="list_labels">list_labels</h3>
+<p>The user's Gmail labels (mailboxes) with ids, accounts and thread counts.</p>
+<p>No parameters.</p>
+<h3 id="list_statuses">list_statuses</h3>
+<p>Workflow statuses.</p>
+<p>No parameters.</p>
+<h3 id="list_projects">list_projects</h3>
+<p>Projects: the user's Gmail labels. A thread can be in several.</p>
+<p>No parameters.</p>
+<h3 id="chat_about_thread">chat_about_thread</h3>
+<p>Ask the user's own AI (the one allowed for the thread's account in Mermoz) about a thread; it sees the thread, its people, status and the user's earlier mail with them, and may search the web. The conversation is kept with the thread and shown in the app. Returns the answer and proposed actions (status, project, follow_up date, draft_reply body); nothing is applied: use update_thread or create_draft to act. Without a question, returns the conversation so far.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>thread id or number</td>
+</tr>
+<tr>
+<td><code>question</code></td>
+<td>string</td>
+<td>no</td>
+<td>what to ask</td>
+</tr>
+<tr>
+<td><code>research</code></td>
+<td>boolean</td>
+<td>no</td>
+<td>allow web search (default True)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="thread_drive_files">thread_drive_files</h3>
+<p>Google Drive files of a thread: those linked in its messages (with access: ok, no_access or not_connected), files shared by or with its participants, and its attachments already saved to Drive. Needs the account's Drive connected in Mermoz.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>thread id or number</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="read_drive_file">read_drive_file</h3>
+<p>A Google Drive file's text: Docs as Markdown, Sheets as CSV (first sheet), Slides as text, plain-text files as they are. Cached locally.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>account_id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>account id</td>
+</tr>
+<tr>
+<td><code>file_id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Drive file id</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="search_drive">search_drive</h3>
+<p>Search the account's Google Drive by name and content; without a query, the files the user opened most recently.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>account_id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>account id</td>
+</tr>
+<tr>
+<td><code>limit</code></td>
+<td>integer</td>
+<td>no</td>
+<td>(default 20)</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>string</td>
+<td>no</td>
+<td>words to find</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="save_attachment_to_drive">save_attachment_to_drive</h3>
+<p>Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing). Returns the folder and an Open in Drive link; saving again returns the same file. Sharing files stays with the user in the app.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>attachment id from get_thread</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="feed">feed</h3>
+<p>The user's Feed: every open thread as a card (one thing to do), in sections now, today, week, waiting, later, ordered by deadline then urgency. Each card has a kind (reply, decision, sign, promise, event, payment, intro, waiting, cleanup, reading, other), plain-language reasons, the deadline and amount written in the mail, and the AI's words when written. Automated mail and newsletters come as batch cards listing their threads.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>project</code></td>
+<td>string</td>
+<td>no</td>
+<td>only this project's cards</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="snooze_thread">snooze_thread</h3>
+<p>Later: hide threads from the Feed until a time (Unix ms) or until new mail arrives in them. until null brings them back now.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ids</code></td>
+<td>array of string</td>
+<td>yes</td>
+<td></td>
+</tr>
+<tr>
+<td><code>until</code></td>
+<td>integer or null</td>
+<td>no</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="submit_feedback">submit_feedback</h3>
+<p>Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>parameter</th>
+<th>type</th>
+<th>required</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>text</code></td>
+<td>string</td>
+<td>yes</td>
+<td>what went wrong or is missing</td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>string</td>
+<td>no</td>
+<td>tool name</td>
+</tr>
+</tbody>
+</table></div>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <span>© 2026 Mermoz · Made with paper, pencil and Rust</span>
+    <span class="footer-links"><a href="/docs/">Docs</a> <a href="/about/">About</a> <a href="/contact/">Contact</a> <a href="/privacy/">Privacy</a> <a href="/llms.txt">llms.txt</a> <a href="https://github.com/ClementWalter/mermoz">GitHub</a></span>
+  </footer>
+</body>
+</html>

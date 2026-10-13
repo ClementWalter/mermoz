@@ -168,6 +168,8 @@ h1 {
   margin: 0;
 }
 h1 em { font-style: normal; color: var(--accent); }
+/* The product name sits on top of the tagline, quiet, so search finds "Mermoz" in the headline. */
+.h1-kicker { display: block; font-family: var(--sans); font-size: clamp(17px, 1.8vw, 21px); font-weight: 600; letter-spacing: 0; line-height: 1.3; color: var(--ink-2); margin: 0 0 18px; }
 .lede { font-size: clamp(18px, 2vw, 22px); color: var(--ink-2); max-width: 620px; margin: 26px auto 34px; }
 .ctas { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 .btn {
@@ -280,6 +282,9 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.86em
 .download-card p { color: var(--ink-2); max-width: 480px; margin: 10px auto 30px; }
 
 .footer { display: flex; justify-content: space-between; gap: 16px; max-width: 1100px; margin: 0 auto; padding: 30px 24px 50px; color: var(--ink-3); font-size: 14px; border-top: 1px dashed #C9DAE9; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.footer a { color: var(--ink-3); }
+.footer a:hover { color: var(--accent); }
 
 /* Scroll reveal. */
 .reveal { opacity: 0; transform: translateY(26px); transition: opacity 0.8s ease, transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
@@ -287,6 +292,25 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.86em
 .note-card.reveal.shown:nth-child(3n + 1) { transform: rotate(-0.8deg); }
 .note-card.reveal.shown:nth-child(3n + 2) { transform: rotate(0.6deg) translateY(14px); }
 .note-card.reveal.shown:nth-child(3n) { transform: rotate(-0.3deg); }
+
+/* Text pages (docs, about, privacy, 404): one paper card under the fixed bars. */
+.page main { padding: 150px 24px 100px; display: flex; justify-content: center; }
+.prose { width: min(880px, 100%); padding: 48px 56px; font-size: 17px; color: var(--ink-2); overflow-wrap: anywhere; }
+.prose h1 { font-size: clamp(38px, 5vw, 56px); color: var(--ink); margin-bottom: 22px; }
+.prose h2 { font-size: clamp(26px, 3vw, 34px); color: var(--ink); margin: 44px 0 12px; }
+.prose h3 { font-family: var(--serif); font-size: 21px; color: var(--ink); margin: 32px 0 8px; }
+.prose a { overflow-wrap: anywhere; }
+.prose li { margin: 6px 0; }
+.prose strong { color: var(--ink); }
+.prose blockquote { margin: 22px 0; padding: 14px 20px; border-left: 4px solid #F5C66B; background: #FFF8E8; border-radius: 0 12px 12px 0; color: var(--ink); }
+.prose blockquote p { margin: 0; }
+.prose pre { background: #0F2234; color: #E3EEF8; border-radius: 14px; padding: 18px 20px; overflow-x: auto; font-size: 14px; line-height: 1.6; }
+.prose pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; }
+.table-wrap { overflow-x: auto; margin: 16px 0; }
+.prose table { border-collapse: collapse; font-size: 14.5px; min-width: 100%; }
+.prose th, .prose td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.prose th { color: var(--ink); background: var(--accent-soft); }
+.prose td:first-child, .prose th:first-child { white-space: nowrap; overflow-wrap: normal; }
 
 @media (max-width: 900px) {
   .notes { grid-template-columns: 1fr 1fr; }
@@ -296,6 +320,8 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.86em
   .note-hero { display: none; }
 }
 @media (max-width: 620px) {
+  .page main { padding: 140px 16px 70px; }
+  .prose { padding: 30px 20px; }
   body { font-size: 17px; }
   .nav nav a:not(.nav-cta) { display: none; }
   .notes { grid-template-columns: 1fr; }

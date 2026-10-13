@@ -1,0 +1,1760 @@
+# Mermoz: full site text
+
+Source: https://mermoz.xyz/llms.txt. Each section below is one page of https://mermoz.xyz.
+
+
+---
+
+<!-- https://mermoz.xyz/ · updated 2026-10-13 -->
+
+# Mermoz: fast, agent-first email for Mac (Gmail)
+
+**The mail must go through.** Mermoz is a light, fast email app for macOS, named after the Aéropostale pilot Jean Mermoz. New mail is sorted before you read it. One key handles a thread. Your whole mailbox lives on your Mac, quiet and instant.
+
+Private beta · free and open source · macOS 26 or later · Gmail · version 0.1.0
+
+- Join the private beta: [mermoz.xyz/#beta](https://mermoz.xyz/#beta) (leave the Gmail address you'll use).
+- Already invited? [Download Mermoz for Mac](https://github.com/ClementWalter/mermoz/releases/latest/download/Mermoz.dmg).
+- Source: [https://github.com/ClementWalter/mermoz](https://github.com/ClementWalter/mermoz).
+
+## Built for a lighter workflow
+
+An inbox that behaves like a flight plan: everything has a status, a destination, and a key to get it there.
+
+- **Sorted before you read it.** Each new email arrives with a suggested status and project. Read it and the suggestion applies, or press `y`.
+- **One key, done.** `e` done, `a` archive, `⌫` delete, `⌘Z` undo. Select several with `⇧` and move them together.
+- **Flows, not folders.** Unread, To do, Waiting, Done. A list or a board, grouped and ordered your way. Your Gmail labels are your projects.
+- **Read what matters.** Original, exactly as sent. Or Optimized: the same words without signatures, disclaimers and quoted history. Made once, kept.
+- **Your whole mailbox, instant.** Every message lives on your Mac. Search, read and sort offline, with `⌘K` for anything else.
+- **Agent first.** A first-class command line and MCP server. Your agents search, sort and draft; you approve what leaves.
+
+## Your agents fly Mermoz too
+
+Everything the app does, the command line does: search, read, sort, draft. Every command speaks `--json`, and an MCP server plugs Mermoz into Claude, Codex and any agent you run.
+
+- One command per action, scriptable end to end.
+- MCP server built in: `mermoz mcp` (stdio). See the [MCP docs](https://mermoz.xyz/docs/mcp/).
+- Agents can draft anything. Nothing is sent until you approve it in Mermoz. There is no `--yes`.
+- Agents report friction with `mermoz feedback`, so the tool keeps improving.
+
+```text
+$ mermoz list --status todo --json
+{ "threads": [{ "number": "M-1287", "subject": "Q4 audit — sign by Friday?" }], "total": 1 }
+$ mermoz draft reply M-1287 --file reply.md
+dft_42  [draft]
+$ mermoz send dft_42
+error: approval_required: draft dft_42 is waiting for the user to approve it in Mermoz.   # exit 3
+```
+
+## The spirit of Mermoz
+
+In 1930, Jean Mermoz flew the Aéropostale mail across the South Atlantic, from Senegal to Brazil, in a little over twenty hours. The Aéropostale pilots had a motto: « Le courrier doit passer », the mail must go through. Mermoz keeps that spirit: mail that moves, light and fast, without the heavy machinery around it.
+
+## More
+
+- [Developer docs](https://mermoz.xyz/docs/) · [CLI](https://mermoz.xyz/docs/cli/) · [MCP server](https://mermoz.xyz/docs/mcp/) · [Protocol](https://mermoz.xyz/docs/protocol/)
+- [About](https://mermoz.xyz/about/) · [Contact](https://mermoz.xyz/contact/) · [Privacy](https://mermoz.xyz/privacy/)
+- [llms.txt](https://mermoz.xyz/llms.txt)
+
+---
+
+<!-- https://mermoz.xyz/docs/ · updated 2026-10-13 -->
+
+# Mermoz developer docs
+
+Mermoz keeps your Gmail mailbox on your Mac and lets your own scripts and AI agents work with it. Everything the app does, the command line does, and an MCP server gives agents the same mailbox as native tools. Search and reading are instant and offline. **Agents never send mail on their own**: a send waits in the Review lane until you approve it in Mermoz.
+
+## How the pieces fit
+
+- **`mermozd`**, the daemon inside Mermoz.app, is the only process that touches the network and the mailbox database.
+- **`mermoz`**, the command-line tool, and **`mermoz mcp`**, the MCP server, are clients of the daemon over a local Unix socket. Mermoz.app must be running.
+- The CLI ships inside the app at `/Applications/Mermoz.app/Contents/Resources/mermoz`. In Mermoz, open **Settings › Developer › Command line tool › Install in PATH** to link it as `mermoz` (into `/usr/local/bin` or `~/.local/bin`).
+
+## Pages
+
+- [Mermoz CLI reference](/docs/cli/): every `mermoz` command, with its `--help` text and exit codes.
+- [Mermoz MCP server](/docs/mcp/): add Mermoz to Claude Code, Claude Desktop or Codex; the 26 tools and their parameters.
+- [Mermoz JSON-RPC protocol](/docs/protocol/): the `mermozd` socket protocol, for building your own client.
+
+## Quick start for agents
+
+```sh
+mermoz list --status todo --json          # threads waiting on the user
+mermoz search "from:marc audit" --json    # instant, offline full-text search
+mermoz thread M-1287 --json               # read a whole thread
+mermoz draft reply M-1287 --file r.txt    # draft a reply (never sends)
+mermoz send dft_8f2c                      # exit 3: waits for the user's approval
+claude mcp add mermoz -- mermoz mcp       # or plug the MCP server into Claude Code
+```
+
+Machine-readable summaries: [llms.txt](/llms.txt), [llms-full.txt](/llms-full.txt), [server.json](/server.json) (MCP registry format) and [/.well-known/mcp.json](/.well-known/mcp.json).
+
+---
+
+<!-- https://mermoz.xyz/docs/cli/ · updated 2026-10-13 -->
+
+# Mermoz CLI reference
+
+`mermoz` is the command line of Mermoz: the same mailbox as the app, instant and offline, for people and agents. Every command is non-interactive and takes `--json` for machine-readable output. Mermoz.app must be running (the CLI talks to its daemon); otherwise commands exit with code 5.
+
+**Install:** the CLI ships inside the app at `/Applications/Mermoz.app/Contents/Resources/mermoz`. In Mermoz, **Settings › Developer › Command line tool › Install in PATH** links it as `mermoz`.
+
+**Sending:** `mermoz send` never sends by itself. Unless the user turned on agent sending, the draft moves to the Review lane and the command exits with code 3 (`approval_required`): tell the user, do not retry. There is no `--yes`.
+
+## Exit codes
+
+| code | meaning |
+| --- | --- |
+| 0 | ok |
+| 1 | error |
+| 2 | usage |
+| 3 | approval required: tell the user |
+| 4 | not found |
+| 5 | Mermoz is not running |
+
+## Overview
+
+```text
+Your Mermoz mailbox from the terminal. Instant, offline, agent-friendly.
+
+Usage: mermoz [OPTIONS] <COMMAND>
+
+Commands:
+  accounts      List connected accounts and their sync state
+  add-account   Connect a Gmail account (opens the browser).
+  reconnect     Sign an account in to Google again, keeping its mail (opens the browser). Needed when `mermoz accounts` says "sign in again"
+  list          List threads, newest first
+  labels        List your Gmail labels ("mailboxes") with thread counts
+  contacts      Search the directory built from email signatures (name, email or company)
+  contact       Show one person's card and recent threads
+  search        Full-text search: every word must match, as a whole word, accents and case aside; from:, to:, subject: restrict to a field. Best matches first
+  thread        Show a thread with all messages
+  conversation  Split or join conversations (Gmail threads read as one chat)
+  files         Files shared in any conversation, newest first, optionally matching a name
+  attachments   List a thread's attachments, or save them with --out
+  status        Set the status of one or more threads
+  priority      Set priority: none, urgent, high, normal, low
+  project       Add a thread to a project (a Gmail label, created if missing); "none" clears all
+  accept        Accept the AI's suggested status and projects for threads (marks them read), or for a whole column with --column (optionally only one --to/--to-project group)
+  reject        Turn down the AI's suggestion for threads: they stay where they are and are not suggested again until new mail arrives
+  resort        Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept
+  suggestions   The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with `mermoz accept`)
+  due           Set a follow-up date (YYYY-MM-DD); "none" clears
+  read          Mark a thread read or unread
+  draft         Create and manage drafts
+  drive         Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only
+  send          Ask to send a draft. Unless enabled by the user, it waits for approval in Mermoz (exit 3)
+  statuses      Workflow statuses
+  projects      Projects
+  feedback      Report friction with this CLI so it can improve
+  chat          Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied
+  feed          The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)
+  later         Put a thread off until a time said in plain words ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. "none" brings it back now
+  router        Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
+  sync          Trigger an immediate sync
+  mcp           Run an MCP server on stdio
+  help          Print this message or the help of the given subcommand(s)
+
+Options:
+      --json     Machine-readable JSON output
+  -h, --help     Print help
+  -V, --version  Print version
+
+Examples:
+  mermoz list --status todo                 Threads waiting on you
+  mermoz search "from:marc audit" --json    Full-text search, JSON output
+  mermoz thread M-1287                      Read a whole thread
+  mermoz thread M-1287 --conversation       Read every thread of its conversation
+  mermoz list --conversations --status todo One row per conversation
+  mermoz conversation split M-1290          Take a thread out of its conversation
+  mermoz files invoice                      Files shared anywhere, by name
+  mermoz attachments M-1287 --out /tmp/a    Save a thread's attachments
+  mermoz status M-1287 waiting              Change a thread's status
+  mermoz draft reply M-1287 --file r.txt    Draft a reply (never sends)
+  mermoz draft new --to a@x.com --body hi --attach plan.pdf --attach photo.jpg
+                                            Draft with files (25 MB in total at most)
+  mermoz send dft_8f2c                      Ask to send; the user approves in Mermoz
+  mermoz chat M-1287 "should I accept?"     Ask the AI about a thread (proposals only)
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 approval required (tell the user) · 4 not found · 5 Mermoz not running
+```
+
+## Commands
+
+### mermoz accounts
+
+List connected accounts and their sync state
+
+```text
+List connected accounts and their sync state
+
+Usage: mermoz accounts [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz add-account
+
+Connect a Gmail account (opens the browser).
+
+```text
+Connect a Gmail account (opens the browser).
+
+A company Google Workspace that blocks Mermoz can sign in through its own
+Google Cloud OAuth client (Desktop app) instead:
+  mermoz add-account --client-json ~/Downloads/client_secret_….json
+  mermoz add-account --client-id ID --client-secret SECRET
+That client is stored with the account and used for its Drive too.
+
+Usage: mermoz add-account [OPTIONS]
+
+Options:
+      --client-json <CLIENT_JSON>
+          The client_secret_*.json downloaded from Google Cloud
+
+      --json
+          Machine-readable JSON output
+
+      --client-id <CLIENT_ID>
+          OAuth client ID (with --client-secret)
+
+      --client-secret <CLIENT_SECRET>
+          OAuth client secret (with --client-id)
+
+      --wait
+          Wait for the browser sign-in to finish and say how it went
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+### mermoz reconnect
+
+Sign an account in to Google again, keeping its mail (opens the browser). Needed when `mermoz accounts` says "sign in again"
+
+```text
+Sign an account in to Google again, keeping its mail (opens the browser). Needed when `mermoz accounts` says "sign in again"
+
+Usage: mermoz reconnect [OPTIONS] <ACCOUNT>
+
+Arguments:
+  <ACCOUNT>  Account id or email
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz list
+
+List threads, newest first
+
+```text
+List threads, newest first
+
+Usage: mermoz list [OPTIONS]
+
+Options:
+      --json               Machine-readable JSON output
+      --status <STATUS>    Status key(s), comma separated (unread, todo, waiting, archive, ...)
+      --project <PROJECT>  Project, i.e. Gmail label name (e.g. "Clients/Acme")
+      --account <ACCOUNT>  Account email or id
+      --label <LABEL>      Gmail label ("mailbox") name, e.g. "Clients/Acme"
+      --conversations      One row per conversation (the thread leading it), as in the app
+      --feeds              Only automated senders and mailing lists (implies --conversations)
+      --limit <LIMIT>      [default: 50]
+  -h, --help               Print help
+```
+
+### mermoz labels
+
+List your Gmail labels ("mailboxes") with thread counts
+
+```text
+List your Gmail labels ("mailboxes") with thread counts
+
+Usage: mermoz labels [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz contacts
+
+Search the directory built from email signatures (name, email or company)
+
+```text
+Search the directory built from email signatures (name, email or company)
+
+Usage: mermoz contacts [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...  
+
+Options:
+      --json           Machine-readable JSON output
+      --limit <LIMIT>  [default: 50]
+  -h, --help           Print help
+```
+
+### mermoz contact
+
+Show one person's card and recent threads
+
+```text
+Show one person's card and recent threads
+
+Usage: mermoz contact [OPTIONS] <EMAIL>
+
+Arguments:
+  <EMAIL>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz search
+
+Full-text search: every word must match, as a whole word, accents and case aside; from:, to:, subject: restrict to a field. Best matches first
+
+```text
+Full-text search: every word must match, as a whole word, accents and case aside; from:, to:, subject: restrict to a field. Best matches first
+
+Usage: mermoz search [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...  
+
+Options:
+      --json           Machine-readable JSON output
+      --limit <LIMIT>  [default: 20]
+      --gmail          Search all of Gmail instead (Gmail's own syntax), for mail Mermoz doesn't hold
+  -h, --help           Print help
+```
+
+### mermoz thread
+
+Show a thread with all messages
+
+```text
+Show a thread with all messages
+
+Usage: mermoz thread [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --conversation  Every message of the thread's conversation (Gmail threads read as one chat)
+      --json          Machine-readable JSON output
+  -h, --help          Print help
+```
+
+### mermoz conversation
+
+Split or join conversations (Gmail threads read as one chat)
+
+```text
+Split or join conversations (Gmail threads read as one chat)
+
+Usage: mermoz conversation [OPTIONS] <COMMAND>
+
+Commands:
+  split  Take a thread out of its conversation for good
+  merge  Join the conversations of these threads into one
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz conversation split
+
+Take a thread out of its conversation for good
+
+```text
+Take a thread out of its conversation for good
+
+Usage: mermoz conversation split [OPTIONS] <THREAD>
+
+Arguments:
+  <THREAD>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz conversation merge
+
+Join the conversations of these threads into one
+
+```text
+Join the conversations of these threads into one
+
+Usage: mermoz conversation merge [OPTIONS] <THREADS> <THREADS>...
+
+Arguments:
+  <THREADS> <THREADS>...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz files
+
+Files shared in any conversation, newest first, optionally matching a name
+
+```text
+Files shared in any conversation, newest first, optionally matching a name
+
+Usage: mermoz files [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...  
+
+Options:
+      --json           Machine-readable JSON output
+      --limit <LIMIT>  [default: 50]
+  -h, --help           Print help
+```
+
+### mermoz attachments
+
+List a thread's attachments, or save them with --out
+
+```text
+List a thread's attachments, or save them with --out
+
+Usage: mermoz attachments [OPTIONS] <THREAD>
+
+Arguments:
+  <THREAD>  
+
+Options:
+      --json       Machine-readable JSON output
+      --out <OUT>  
+  -h, --help       Print help
+```
+
+### mermoz status
+
+Set the status of one or more threads
+
+```text
+Set the status of one or more threads
+
+Usage: mermoz status [OPTIONS] <ARGS> <ARGS>...
+
+Arguments:
+  <ARGS> <ARGS>...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz priority
+
+Set priority: none, urgent, high, normal, low
+
+```text
+Set priority: none, urgent, high, normal, low
+
+Usage: mermoz priority [OPTIONS] <THREAD> <PRIORITY>
+
+Arguments:
+  <THREAD>    
+  <PRIORITY>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz project
+
+Add a thread to a project (a Gmail label, created if missing); "none" clears all
+
+```text
+Add a thread to a project (a Gmail label, created if missing); "none" clears all
+
+Usage: mermoz project [OPTIONS] <THREAD> <PROJECT>
+
+Arguments:
+  <THREAD>   
+  <PROJECT>  
+
+Options:
+      --json    Machine-readable JSON output
+      --remove  Take the thread out of the project instead
+  -h, --help    Print help
+```
+
+### mermoz accept
+
+Accept the AI's suggested status and projects for threads (marks them read), or for a whole column with --column (optionally only one --to/--to-project group)
+
+```text
+Accept the AI's suggested status and projects for threads (marks them read), or for a whole column with --column (optionally only one --to/--to-project group)
+
+Usage: mermoz accept [OPTIONS] [THREADS]...
+
+Arguments:
+  [THREADS]...  
+
+Options:
+      --column <COLUMN>           Every pending suggestion of this status column
+      --json                      Machine-readable JSON output
+      --to <TO>                   Only the group going to this status ("none": groups that only add projects)
+      --to-project <TO_PROJECTS>  Only the group adding exactly these projects (repeat for several)
+  -h, --help                      Print help
+
+Examples:
+  mermoz accept M-12 M-14
+  mermoz accept --column backlog
+  mermoz accept --column backlog --to archive --to-project Receipts
+```
+
+### mermoz reject
+
+Turn down the AI's suggestion for threads: they stay where they are and are not suggested again until new mail arrives
+
+```text
+Turn down the AI's suggestion for threads: they stay where they are and are not suggested again until new mail arrives
+
+Usage: mermoz reject [OPTIONS] <THREADS>...
+
+Arguments:
+  <THREADS>...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz resort
+
+Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept
+
+```text
+Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept
+
+Usage: mermoz resort [OPTIONS] --stop
+
+Options:
+      --json  Machine-readable JSON output
+      --stop  
+  -h, --help  Print help
+
+Examples:
+  mermoz resort --stop
+```
+
+### mermoz suggestions
+
+The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with `mermoz accept`)
+
+```text
+The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with `mermoz accept`)
+
+Usage: mermoz suggestions [OPTIONS] [STATUS]
+
+Arguments:
+  [STATUS]  
+
+Options:
+      --clear                     Clear every suggestion on read threads that nobody reviewed (Unread mail keeps its own); accepted and turned-down ones are kept
+      --json                      Machine-readable JSON output
+      --to <TO>                   List the threads going to this status ("none": groups that only add projects)
+      --to-project <TO_PROJECTS>  List the threads going to exactly these projects (repeat for several)
+      --limit <LIMIT>             Most threads to list [default: 50]
+  -h, --help                      Print help
+
+Examples:
+  mermoz suggestions backlog
+  mermoz suggestions backlog --to archive
+  mermoz suggestions backlog --to none --to-project Receipts
+```
+
+### mermoz due
+
+Set a follow-up date (YYYY-MM-DD); "none" clears
+
+```text
+Set a follow-up date (YYYY-MM-DD); "none" clears
+
+Usage: mermoz due [OPTIONS] <THREAD> <DATE>
+
+Arguments:
+  <THREAD>  
+  <DATE>    
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz read
+
+Mark a thread read or unread
+
+```text
+Mark a thread read or unread
+
+Usage: mermoz read [OPTIONS] <THREAD>
+
+Arguments:
+  <THREAD>  
+
+Options:
+      --json    Machine-readable JSON output
+      --unread  
+  -h, --help    Print help
+```
+
+### mermoz draft
+
+Create and manage drafts
+
+```text
+Create and manage drafts
+
+Usage: mermoz draft [OPTIONS] <COMMAND>
+
+Commands:
+  reply   Draft a reply; recipients and subject default from the thread
+  new     Draft a new message
+  attach  Add files to a draft
+  detach  Remove an attachment from a draft (ids are shown by `draft show`)
+  list    List drafts (optionally by state: draft, review, rejected)
+  show    Show a draft
+  edit    Replace a draft's body
+  delete  Delete a draft
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz draft reply
+
+Draft a reply; recipients and subject default from the thread
+
+```text
+Draft a reply; recipients and subject default from the thread
+
+Usage: mermoz draft reply [OPTIONS] <THREAD>
+
+Arguments:
+  <THREAD>  
+
+Options:
+      --body <BODY>    
+      --json           Machine-readable JSON output
+      --file <FILE>    Read the body from a file ("-" for stdin)
+      --attach <PATH>  Attach a file; repeat for several
+  -h, --help           Print help
+```
+
+### mermoz draft new
+
+Draft a new message
+
+```text
+Draft a new message
+
+Usage: mermoz draft new [OPTIONS] --to <TO>
+
+Options:
+      --json               Machine-readable JSON output
+      --to <TO>            
+      --cc <CC>            
+      --subject <SUBJECT>  [default: ""]
+      --body <BODY>        
+      --file <FILE>        
+      --account <ACCOUNT>  Account email or id to send from
+      --attach <PATH>      Attach a file; repeat for several
+  -h, --help               Print help
+```
+
+### mermoz draft attach
+
+Add files to a draft
+
+```text
+Add files to a draft
+
+Usage: mermoz draft attach [OPTIONS] <ID> <PATH>...
+
+Arguments:
+  <ID>       
+  <PATH>...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz draft detach
+
+Remove an attachment from a draft (ids are shown by `draft show`)
+
+```text
+Remove an attachment from a draft (ids are shown by `draft show`)
+
+Usage: mermoz draft detach [OPTIONS] <ID> <ATTACHMENT>
+
+Arguments:
+  <ID>          
+  <ATTACHMENT>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz draft list
+
+List drafts (optionally by state: draft, review, rejected)
+
+```text
+List drafts (optionally by state: draft, review, rejected)
+
+Usage: mermoz draft list [OPTIONS]
+
+Options:
+      --json           Machine-readable JSON output
+      --state <STATE>  
+  -h, --help           Print help
+```
+
+### mermoz draft show
+
+Show a draft
+
+```text
+Show a draft
+
+Usage: mermoz draft show [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz draft edit
+
+Replace a draft's body
+
+```text
+Replace a draft's body
+
+Usage: mermoz draft edit [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --body <BODY>  
+      --json         Machine-readable JSON output
+      --file <FILE>  
+  -h, --help         Print help
+```
+
+### mermoz draft delete
+
+Delete a draft
+
+```text
+Delete a draft
+
+Usage: mermoz draft delete [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz drive
+
+Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only
+
+```text
+Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only
+
+Usage: mermoz drive [OPTIONS] <COMMAND>
+
+Commands:
+  files   Drive files linked in a thread, shared with its people, and attachments saved
+  read    A Drive file's text (Docs as Markdown, Sheets as CSV, Slides as text)
+  search  Search Drive by name and content; no words lists recently opened files
+  save    Save an attachment to Drive, in Mermoz/<thread's project>
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz drive files
+
+Drive files linked in a thread, shared with its people, and attachments saved
+
+```text
+Drive files linked in a thread, shared with its people, and attachments saved
+
+Usage: mermoz drive files [OPTIONS] <THREAD>
+
+Arguments:
+  <THREAD>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz drive read
+
+A Drive file's text (Docs as Markdown, Sheets as CSV, Slides as text)
+
+```text
+A Drive file's text (Docs as Markdown, Sheets as CSV, Slides as text)
+
+Usage: mermoz drive read [OPTIONS] <FILE_ID>
+
+Arguments:
+  <FILE_ID>  
+
+Options:
+      --account <ACCOUNT>  Account id or email (default: the first account)
+      --json               Machine-readable JSON output
+  -h, --help               Print help
+```
+
+### mermoz drive search
+
+Search Drive by name and content; no words lists recently opened files
+
+```text
+Search Drive by name and content; no words lists recently opened files
+
+Usage: mermoz drive search [OPTIONS] [WORDS]...
+
+Arguments:
+  [WORDS]...  
+
+Options:
+      --account <ACCOUNT>  
+      --json               Machine-readable JSON output
+      --limit <LIMIT>      [default: 20]
+  -h, --help               Print help
+```
+
+### mermoz drive save
+
+Save an attachment to Drive, in Mermoz/<thread's project>
+
+```text
+Save an attachment to Drive, in Mermoz/<thread's project>
+
+Usage: mermoz drive save [OPTIONS] <ATTACHMENT>
+
+Arguments:
+  <ATTACHMENT>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz send
+
+Ask to send a draft. Unless enabled by the user, it waits for approval in Mermoz (exit 3)
+
+```text
+Ask to send a draft. Unless enabled by the user, it waits for approval in Mermoz (exit 3)
+
+Usage: mermoz send [OPTIONS] <DRAFT>
+
+Arguments:
+  <DRAFT>  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz statuses
+
+Workflow statuses
+
+```text
+Workflow statuses
+
+Usage: mermoz statuses [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz projects
+
+Projects
+
+```text
+Projects
+
+Usage: mermoz projects [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz feedback
+
+Report friction with this CLI so it can improve
+
+```text
+Report friction with this CLI so it can improve
+
+Usage: mermoz feedback [OPTIONS] [TEXT]...
+
+Arguments:
+  [TEXT]...  
+
+Options:
+      --command <COMMAND>  The command that caused trouble
+      --json               Machine-readable JSON output
+      --agent <AGENT>      Who is reporting (e.g. claude-code)
+  -h, --help               Print help
+```
+
+### mermoz chat
+
+Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied
+
+```text
+Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied
+
+Usage: mermoz chat [OPTIONS] <THREAD> [QUESTION]...
+
+Arguments:
+  <THREAD>       
+  [QUESTION]...  
+
+Options:
+      --json         Machine-readable JSON output
+      --no-research  Don't let the AI search the web for this answer
+      --clear        Forget this thread's conversation
+  -h, --help         Print help
+```
+
+### mermoz feed
+
+The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)
+
+```text
+The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)
+
+Usage: mermoz feed [OPTIONS]
+
+Options:
+      --json               Machine-readable JSON output
+      --project <PROJECT>  Only this project's cards
+  -h, --help               Print help
+```
+
+### mermoz later
+
+Put a thread off until a time said in plain words ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. "none" brings it back now
+
+```text
+Put a thread off until a time said in plain words ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. "none" brings it back now
+
+Usage: mermoz later [OPTIONS] <THREAD> [WHEN]...
+
+Arguments:
+  <THREAD>   
+  [WHEN]...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz router
+
+Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
+
+```text
+Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
+
+Usage: mermoz router [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz sync
+
+Trigger an immediate sync
+
+```text
+Trigger an immediate sync
+
+Usage: mermoz sync [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+### mermoz mcp
+
+Run an MCP server on stdio
+
+```text
+Run an MCP server on stdio
+
+Usage: mermoz mcp [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+```
+
+---
+
+<!-- https://mermoz.xyz/docs/mcp/ · updated 2026-10-13 -->
+
+# Mermoz MCP server
+
+`mermoz mcp` runs an MCP server on **stdio** that gives AI agents the user's Mermoz mailbox as 26 tools: search, read, sort, draft, Drive files and more. It is local: it runs on the user's Mac, next to Mermoz.app, and talks to the app's daemon over a Unix socket. There is no hosted or remote (Streamable HTTP) endpoint: Mermoz has no server of its own that holds mail.
+
+- **Requires:** Mermoz.app installed and running (macOS 26 or later), signed in to Gmail. If the app isn't running, tools answer "Mermoz isn't running. Ask the user to open Mermoz.app."
+- **Command:** `mermoz mcp` once the CLI is in PATH (Mermoz › Settings › Developer › Install in PATH), or the full path `/Applications/Mermoz.app/Contents/Resources/mermoz mcp`.
+- **Protocol version:** 2025-06-18; capability `tools`.
+- **Sending:** `send_draft` moves the draft to the user's Review lane and returns `approval_required` unless the user enabled agent sending. Tell the user; do not retry.
+
+## Add Mermoz to Claude Code
+
+```sh
+claude mcp add mermoz -- mermoz mcp
+# for every project: claude mcp add --scope user mermoz -- mermoz mcp
+```
+
+## Add Mermoz to Claude Desktop
+
+Claude Desktop does not read your shell's PATH, so use the full path. In Claude Desktop, **Settings › Developer › Edit Config** opens `~/Library/Application Support/Claude/claude_desktop_config.json`; add:
+
+```json
+{
+  "mcpServers": {
+    "mermoz": {
+      "command": "/Applications/Mermoz.app/Contents/Resources/mermoz",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Then quit and reopen Claude Desktop.
+
+## Add Mermoz to Codex
+
+```sh
+codex mcp add mermoz -- mermoz mcp
+```
+
+Or in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mermoz]
+command = "mermoz"
+args = ["mcp"]
+```
+
+## Any other MCP client
+
+Launch `mermoz mcp` (or `/Applications/Mermoz.app/Contents/Resources/mermoz mcp`) as a stdio server: newline-delimited JSON-RPC 2.0 on stdin and stdout. Discovery documents: [server.json](/server.json) (official MCP registry format) and [/.well-known/mcp.json](/.well-known/mcp.json).
+
+## Tools
+
+### search_mail
+
+Full-text search across all local mail (instant, offline). Supports from:, to:, subject: prefixes. Returns threads best match first.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `limit` | integer | no | (default 20) |
+| `query` | string | yes | search words |
+
+### list_threads
+
+List threads (issues) filtered by status/project/account, newest first. Statuses: unread, todo, waiting, in_progress, backlog, review, done, archive, deleted. Projects are the user's Gmail labels; each thread lists its `projects` and the AI's pending `suggestion`. `suggested`: true for threads with a pending suggestion, or {status, projects} for one destination listed by column_suggestions. `conversations`: one row per conversation (Gmail threads with the same people about the same matter, as the user sees them), each with `conversation_threads`; `kind`: ["feed", "list"] for automated senders and mailing lists.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `account_id` | string | no | account id |
+| `conversations` | boolean | no |  |
+| `kind` | array of string | no |  |
+| `label_id` | string | no | Gmail label id from list_labels (pass its account_id too) |
+| `limit` | integer | no | (default 50) |
+| `project` | string | no | project (Gmail label) name |
+| `status` | array of string | no |  |
+| `suggested` | boolean or object | no |  |
+
+### get_thread
+
+Read a whole thread: every message's plain-text body, recipients and attachment ids. With `conversation`, every message of the conversation it belongs to (each with its `thread_id`), plus its people, files and links.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `conversation` | boolean | no |  |
+| `id` | string | yes | thread id or number like M-1287 |
+
+### split_conversation
+
+Take a thread out of the conversation Mermoz grouped it into (when it is a different matter). Final: it is never grouped with them again.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | thread id or number |
+
+### merge_conversations
+
+Join the conversations of two or more threads into one (same people, same matter).
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `ids` | array of string | yes |  |
+
+### list_files
+
+Files shared in any conversation, newest first, with their attachment id (read with get_attachment) and thread.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `limit` | integer | no | (default 50) |
+| `query` | string | no | part of a file name |
+
+### update_thread
+
+Change a thread's status, priority (0 none,1 urgent,2 high,3 normal,4 low), projects (Gmail labels: add_projects/remove_projects, or projects to replace) or due date (YYYY-MM-DD, null clears). 'deleted' moves the thread to Gmail Trash.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `add_projects` | array of string | no |  |
+| `due` | string or null | no |  |
+| `id` | string | yes | thread id or number |
+| `priority` | integer | no |  |
+| `projects` | array of string | no |  |
+| `remove_projects` | array of string | no |  |
+| `status` | string | no | status key |
+
+### accept_suggestions
+
+Accept the AI's pending suggestion (status, projects, priority) for threads; they count as read. Pass `ids`, or `column` (a status) to accept that column's pending suggestions — all of them, or only the group given by `to_status`/`to_projects` as listed by column_suggestions.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `column` | string | no | status key of the column |
+| `ids` | array of string | no |  |
+| `to_projects` | array of string | no |  |
+| `to_status` | string or null | no | group's target status (null: groups that only add projects) |
+
+### reject_suggestions
+
+Turn down the AI's pending suggestion for threads: they stay where they are and are not suggested again.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `ids` | array of string | yes |  |
+
+### column_suggestions
+
+The AI's pending suggestions in status columns, grouped by target (status + projects) with counts, and how far background sorting has got (classified of total). Nothing moves until accepted.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `account_id` | string | no | limit to an account |
+| `project` | string | no | limit to a project |
+| `statuses` | array of string | yes |  |
+
+### stop_resort
+
+Stop a whole-mailbox sort and clear every suggestion on read threads that nobody reviewed. Accepted and turned-down suggestions are kept; Unread mail keeps its own.
+
+No parameters.
+
+### get_attachment
+
+Get an attachment's local file path (readable offline); text attachments also return their content.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | attachment id from get_thread |
+
+### create_draft
+
+Create a draft. With thread_id it is a reply and recipients/subject default from the thread. Drafts never send by themselves. Attachments are copied into Mermoz; Gmail sends at most 25 MB of files per email.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `attachments` | array of string | no | files to attach: absolute paths |
+| `body` | string | yes | plain text body |
+| `cc` | array of string | no |  |
+| `forward_attachments` | array of string | no | attachment ids from get_thread to send again (forwarding) |
+| `subject` | string | no | subject |
+| `thread_id` | string | no | thread to reply to |
+| `to` | array of string | no |  |
+
+### send_draft
+
+Ask to send a draft. Unless the user enabled agent sending, the draft goes to the user's Review lane and this returns approval_required: tell the user, do not retry.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | draft id |
+
+### search_contacts
+
+Search the user's directory, built automatically from email signatures: names, titles, companies, phones, addresses, websites. Empty query lists recent contacts.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `limit` | integer | no | (default 20) |
+| `query` | string | no | name, email or company |
+
+### list_labels
+
+The user's Gmail labels (mailboxes) with ids, accounts and thread counts.
+
+No parameters.
+
+### list_statuses
+
+Workflow statuses.
+
+No parameters.
+
+### list_projects
+
+Projects: the user's Gmail labels. A thread can be in several.
+
+No parameters.
+
+### chat_about_thread
+
+Ask the user's own AI (the one allowed for the thread's account in Mermoz) about a thread; it sees the thread, its people, status and the user's earlier mail with them, and may search the web. The conversation is kept with the thread and shown in the app. Returns the answer and proposed actions (status, project, follow_up date, draft_reply body); nothing is applied: use update_thread or create_draft to act. Without a question, returns the conversation so far.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | thread id or number |
+| `question` | string | no | what to ask |
+| `research` | boolean | no | allow web search (default True) |
+
+### thread_drive_files
+
+Google Drive files of a thread: those linked in its messages (with access: ok, no_access or not_connected), files shared by or with its participants, and its attachments already saved to Drive. Needs the account's Drive connected in Mermoz.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | thread id or number |
+
+### read_drive_file
+
+A Google Drive file's text: Docs as Markdown, Sheets as CSV (first sheet), Slides as text, plain-text files as they are. Cached locally.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `account_id` | string | yes | account id |
+| `file_id` | string | yes | Drive file id |
+
+### search_drive
+
+Search the account's Google Drive by name and content; without a query, the files the user opened most recently.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `account_id` | string | yes | account id |
+| `limit` | integer | no | (default 20) |
+| `query` | string | no | words to find |
+
+### save_attachment_to_drive
+
+Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing). Returns the folder and an Open in Drive link; saving again returns the same file. Sharing files stays with the user in the app.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | attachment id from get_thread |
+
+### feed
+
+The user's Feed: every open thread as a card (one thing to do), in sections now, today, week, waiting, later, ordered by deadline then urgency. Each card has a kind (reply, decision, sign, promise, event, payment, intro, waiting, cleanup, reading, other), plain-language reasons, the deadline and amount written in the mail, and the AI's words when written. Automated mail and newsletters come as batch cards listing their threads.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `project` | string | no | only this project's cards |
+
+### snooze_thread
+
+Later: hide threads from the Feed until a time (Unix ms) or until new mail arrives in them. until null brings them back now.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `ids` | array of string | yes |  |
+| `until` | integer or null | no |  |
+
+### submit_feedback
+
+Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `text` | string | yes | what went wrong or is missing |
+| `tool` | string | no | tool name |
+
+---
+
+<!-- https://mermoz.xyz/docs/protocol/ · updated 2026-10-13 -->
+
+# Mermoz JSON-RPC protocol (mermozd)
+
+This is the protocol between Mermoz's daemon, `mermozd`, and its clients: the Mac app, the `mermoz` CLI and the MCP server. Use it to build your own client; for agents, the [CLI](/docs/cli/) and the [MCP server](/docs/mcp/) are simpler. Source: [docs/protocol.md](https://github.com/ClementWalter/mermoz/blob/main/docs/protocol.md).
+
+`mermozd` is the only process that touches the network and the database. The
+app, the CLI and the MCP server are clients of this protocol.
+
+## Transport
+
+- Unix domain socket at `$MERMOZ_HOME/mermozd.sock`.
+  `MERMOZ_HOME` defaults to `~/Library/Application Support/Mermoz`;
+  `MERMOZ_SOCKET` overrides the socket path (macOS limits it to 104 bytes).
+- JSON-RPC 2.0, one JSON object per line (`\n` terminated), UTF-8.
+- Requests are answered in order per connection. A connection that called
+  `subscribe` additionally receives notifications (no `id`) at any time.
+
+## Conventions
+
+- Timestamps: integer Unix milliseconds.
+- Dates without time (due dates): `"YYYY-MM-DD"`.
+- Priority: `0` none, `1` urgent, `2` high, `3` normal, `4` low.
+- Status keys: `unread` (entry status), then for read mail `todo`, `waiting`,
+  `in_progress`, `backlog`, `review` (an agent draft awaits approval), `done`,
+  `archive`, `deleted` (Gmail Trash). `done`, `archive` and `deleted` are out of
+  the inbox. Reading an `unread` thread moves it to the open status new mail
+  interrupted, else the router's suggestion, else `todo`; new mail from someone
+  else brings it back to `unread`.
+- Projects are the user's Gmail labels, identified by name (nested with `/`).
+  A thread can be in several.
+- Thread `number` is a stable human id like `"M-1287"`; every method taking a
+  thread `id` also accepts its number.
+
+## Errors
+
+| code   | name                | meaning                                              |
+| ------ | ------------------- | ---------------------------------------------------- |
+| -32601 | method_not_found    |                                                      |
+| -32602 | invalid_params      | `message` says which param and why                   |
+| -32004 | not_found           | unknown thread / draft / account / attachment        |
+| -32010 | approval_required   | send moved to Review; `data: {draft, thread}`        |
+| -32011 | app_only            | method only callable from Mermoz.app                 |
+| -32020 | upstream            | provider (Gmail) error; `data: {status, body}`       |
+
+## Objects
+
+```jsonc
+// Account
+{"id": "acc_1", "email": "me@example.com", "provider": "gmail",
+ "sync": {"state": "initial|idle|syncing|error", "synced": 1200, "total": 5400, "error": null}}
+
+// ThreadSummary
+{"id": "thr_…", "number": "M-1287", "account_id": "acc_1",
+ "subject": "…", "snippet": "…", "participants": ["Marc Petit", "You"],
+ "last_from": "Marc Petit", "last_date": 1791700000000,
+ "unread": true, "message_count": 3, "has_attachments": true,
+ "status": "todo", "priority": 2, "projects": ["Clients/Acme"],
+ "due": "2026-10-16" | null, "summary": "…" | null, "next_action": "…" | null,
+ "suggestion": Suggestion | null,
+ "conversation_id": "thr_…", "conversation_kind": "person|feed|list", "conversation_threads": 2}
+
+// Conversation (threads.get with "conversation": true): Gmail threads with the same
+// people about the same matter, read as one chat. Its id is a thread id; a thread
+// alone is its own conversation. Feeds group an automated sender, lists a mailing list.
+{"id": "thr_…", "kind": "person|feed|list", "threads": [ThreadSummary],
+ "people": [{"name": "Nora Lind", "email": "nora@…", "title": "", "company": "", "messages": 3}],
+ "files": [SharedFile], "links": [{"url": "https://…", "message_id": "msg_…", "from": "Nora Lind", "date": 1791700000000}]}
+
+// SharedFile (newest first)
+{"id": "att_…", "filename": "cellar-plan.pdf", "mime": "application/pdf", "size": 2400,
+ "message_id": "msg_…", "thread_id": "thr_…", "from": "You", "date": 1791700000000}
+
+// Suggestion: the router's pending prediction (absent once read or decided).
+// Fields under the confidence bar are null / empty. On already-read threads in
+// open columns (background sorting) it holds only what would change, at
+// confidence ≥ 0.7, and never a priority.
+{"status": "archive" | null, "status_confidence": 0.93 | null,
+ "projects": ["Receipts"], "project_confidence": 0.88 | null,
+ "priority": 0 | null, "automated": 0.97 | null}
+
+// Message (thread_id: its Gmail thread, inside a conversation of several)
+{"id": "msg_…", "thread_id": "thr_…", "from": {"name": "Marc Petit", "email": "marc@…"},
+ "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
+ "subject": "…", "body_text": "… full text …", "body_new": "… without quoted history, signature or boilerplate …",
+ "has_quoted": true, "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
+ "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000}]}
+
+// Status
+{"key": "todo", "name": "Todo", "order": 2, "color": "#5A7386"}
+
+// Contact (directory entry built from signatures)
+{"email": "marc@acme.example", "name": "Marc Petit", "title": "CFO", "company": "Acme",
+ "phones": ["+33 6 12 34 56 78"], "address": "", "website": "", "socials": [], "last_seen": 1791700000000}
+
+// Project (a Gmail label; id is its name)
+{"id": "Clients/Acme", "name": "Clients/Acme", "color": "#5B8DEF"}
+
+// Draft
+{"id": "dft_…", "account_id": "acc_1", "thread_id": "thr_…" | null,
+ "to": ["a@b.c"], "cc": [], "subject": "…", "body": "…",
+ "state": "draft|review|sent|rejected", "origin": "app|agent",
+ "created": 1791700000000, "updated": 1791700000000}
+
+// ChatMessage: one turn of "Chat about this". Actions are proposals; nothing is applied.
+{"id": "cht_…", "thread_id": "thr_…", "role": "user|assistant", "text": "light Markdown",
+ "actions": [{"kind": "draft_reply", "label": "Draft a reply", "body": "…"},
+             {"kind": "status", "label": "Move to Waiting", "status": "waiting"},
+             {"kind": "project", "label": "File in Finance", "project": "Finance"},
+             {"kind": "follow_up", "label": "Remind me on Oct 20", "due": "2026-10-20"}],
+ "searched": false, "research_unavailable": false, "created": 1791700000000}
+
+// Feed: sections in order (now, today, week, waiting, later), empty ones left out.
+// A section shows its 40 most pressing cards (`more` counts the rest; a batch lists
+// its 50 latest mails). `sorting` is true while Jev has open threads left to judge.
+{"sections": [{"key": "now", "title": "Now", "cards": [Card], "more": 0}], "open": 23, "judged": 21, "sorting": true}
+
+// Card: one thing to do. `kind`: reply | decision | sign | promise | event | payment |
+// intro | waiting | cleanup | reading | other. Batches (`id` "batch:cleanup" /
+// "batch:reading") list their threads in `members`. `due` is the user's follow-up date,
+// else the deadline Jev picked among the dates written in the mail; `amount` is
+// verbatim from the mail. `reasons` explain the card in plain words. `texts` are the
+// AI's words, null until written; `texts_wanted` says the account's AI may write them.
+{"id": "thr_…", "kind": "decision", "section": "now", "thread": ThreadSummary, "members": [],
+ "title": "Choose the kitchen tiles", "why": "…" | null, "reasons": ["The mail asks for it by Fri 16 Oct."],
+ "due": "2026-10-16" | null, "due_time": "18:00" | null, "amount": "126,00 €" | null,
+ "from_backlog": false, "waiting_days": 6 | null, "texts": Texts | null, "texts_wanted": true}
+
+// Texts: the AI's words for a card (cached until new mail). `options` for decisions,
+// `points` for sign / payment / event, `draft` for reply / promise / intro / waiting;
+// a batch carries one summary per member in `lines`.
+{"title": "…", "why": "…", "draft": "…", "summary": "…", "points": ["…"], "lines": ["…"],
+ "options": [{"label": "…", "detail": "…", "recommended": true, "reason": "…", "reply": "…"}]}
+```
+
+## Methods
+
+| method               | params                                                                                   | result                                   |
+| -------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `hello`              | `{}`                                                                                     | `{"version": "0.1.0"}`                   |
+| `accounts.list`      | `{}`                                                                                     | `[Account]`, each with `needs_reconnect` (signed in through another OAuth client: still syncs, sign in again) |
+| `accounts.add_gmail` | `{}`, or the user's own Google client: `{"client_json"}` (the Google Cloud download) or `{"client_id","client_secret"}` | `{"auth_url": "https://…"}`; completes in background, emits `accounts_changed`; an own client is stored with the token and used for the account's later consents (Drive too) |
+| `accounts.sign_in_status` | `{}`                                                                               | `{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?}`; `kind`: `admin_policy`, `unverified`, `org_internal`, `app_blocked`, `declined` |
+| `accounts.reconnect` | `{"account_id"}`                                                                       | `{"auth_url"}`; signs the account in again with the app's client (or the account's own client), keeping local mail; emits `accounts_changed` |
+| `accounts.remove`    | `{"id"}`                                                                                 | `{}`                                     |
+| `statuses.list`      | `{}`                                                                                     | `[Status]`                               |
+| `labels.list`        | `{}`                                                                                     | `[{"account_id","id","name","count"}]` user labels ("mailboxes"), nested with `/` |
+| `projects.list`      | `{}`                                                                                     | `[Project]`                              |
+| `projects.create`    | `{"name", "color"?}` — the Gmail label is created when a thread first gets it            | `Project`                                |
+| `projects.update`    | `{"id", "name"?, "color"?}` — renames the Gmail label (and its sub-labels) on every account | `Project`                             |
+| `projects.delete`    | `{"id"}` — deletes the Gmail label on every account; the mail stays                       | `{"threads": n}`                         |
+| `counts`             | `{"conversations"?: false}` — with `conversations`, one per conversation, plus a `kind` map of open feeds and lists                                                                                    | `{"status": {key: n}, "project": {name: n}, "account": {id: n}}` (open threads only: `done`/`archive`/`deleted` are omitted) |
+| `threads.list`       | `{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "order"?: "last_date"\|"priority"\|"due"\|"created", "reverse"?: false, "limit"?: 200, "offset"?: 0, "conversations"?: false, "kind"?: ["person"\|"feed"\|"list"], "suggested"?: true \| {"status": key \| null, "projects"?: [name]}}` — `suggested`: only threads with a pending suggestion, or with one going to that destination; `conversations` lists only the thread leading each conversation (its latest open thread, else its latest) | `{"threads": [ThreadSummary], "total": n}`; newest / most urgent / soonest first unless `reverse` (no priority / no due date stay last) |
+| `search`             | `{"query", "limit"?: 50, "typing"?: false}` — every word must match as a whole word (accents and case aside); with `typing`, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each | `{"threads": [ThreadSummary]}` |
+| `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every account, for mail Mermoz doesn't hold | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
+| `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
+| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n}` (`earlier`: messages left out by `latest`) |
+| `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
+| `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's                | `{"conversation_id", "threads": n}`      |
+| `conversations.progress` | `{}` — background grouping                                                           | `{"pending": n, "waiting_for_ai": n}`    |
+| `files.list`         | `{"query"?, "limit"?: 200}` — files shared anywhere, newest first                        | `[SharedFile]`                           |
+| `threads.update`     | the other open threads of each conversation follow · `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
+| `threads.accept_suggestions` | `{"ids": [id]}` — applies each pending suggestion and marks the thread read     | `{"accepted": n}`                        |
+| `suggestions.summary` | `{"statuses": [key], "project"?, "account_id"?}` — pending suggestions per column, grouped by target | `{"columns": [{"status", "pending": n, "groups": [{"status": key \| null, "projects": [name], "count": n}]}], "paused": "credits" \| "unavailable" \| null, "calls_today": n, "daily_cap": n}` |
+| `suggestions.resort` | `{"stop": true}` — ends a whole-mailbox sort left by an older version and clears what it suggested (as `suggestions.clear`); starting one is refused | `{"stopped": true, "cleared": n}` |
+| `suggestions.clear`  | `{}` — deletes suggestions on read threads nobody reviewed (and "no change" verdicts); Unread's, accepted and rejected ones stay; the threads go back in the Sort queue | `{"cleared": n}` |
+| `sort.state`         | `{"statuses"?: [key]}` — the Sort queue: read threads in open columns without a decided verdict | `{"to_sort": n, "by_status": [{"status", "count"}], "configured": bool, "paused": "credits" \| "unavailable" \| null, "provider_name": "TypeSafe", "offer": {"provider", "name", "message"} \| null, "learned": [{"sender", "name", "status", "projects", "kind": "rule" \| "avoid", "count"}]}` |
+| `sort.next`          | `{"statuses"?: [key], "exclude"?: [id], "count"?: 3}` — the next cards, newest first; suggestions are asked of the AI for these few threads only (at most 12 calls per request) | `{"cards": [{"thread": ThreadSummary, "why": "…" \| null}], "paused": …, "provider_name": "…", "offer": … }` |
+| `sort.answer`        | `{"id", "answer": "yes" \| "no" \| "change", "status"?, "projects"?}` — yes accepts, no refuses (never offered again for that sender), change refuses and files where given | `{"undo": {"thread", "since"}, "learned": "Learned: mail from X goes to Y" \| null}` |
+| `sort.undo`          | `{"undo"}` from `sort.answer` — the thread returns as it was, the answer is forgotten | `{}` |
+| `suggestions.accept` | `{"status", "project"?, "account_id"?, "target"?: {"status": key \| null, "projects": [name]}}` — accepts the column's pending suggestions, or one group | `{"accepted": n, "before": [ThreadSummary]}` (snapshots for `threads.restore`) |
+| `threads.reject_suggestions` | `{"ids": [id]}` — turns the pending suggestions down; the threads stay put and are not suggested again until new mail | `{"rejected": n}` |
+| `threads.reopen_suggestions` | `{"ids": [id]}` — undoes a rejection: the suggestions are pending again | `{"reopened": n}` |
+| `threads.restore`    | `{"threads": [{"id", "unread", "status", "priority", "projects", "due"}]}` — puts threads back as in the snapshots (a `ThreadSummary` works too) | `{"restored": n}` |
+| `router.get`         | `{}` — instant routing with a System One provider (Settings › Developer); top-level fields describe the picked one | `{"provider": "typesafe" \| "subq", "provider_name": "TypeSafe", "configured": bool, "error": "…" \| null, "model": "jev-latest" \| "subq-snap-preview", "daily_cap": n, "calls_today": n, "paused": "credits" \| "unavailable" \| null, "providers": [{"id", "name", "model", "configured", "error", "paused", "calls_today"}], "offer": {"provider", "name", "message"} \| null}` |
+| `router.set`         | `{"provider"?: "typesafe" \| "subq", "api_key"?: "…" \| null, "key_provider"?: id, "daily_cap"?: n}` — app only; `provider` picks where mail is sent; `api_key` is stored for `key_provider`, else `provider`, else the picked one (null removes it); `daily_cap` bounds background sorting calls per day (default 20,000) | same as `router.get`                     |
+| `router.test`        | `{"api_key"?, "provider"?}` — one tiny call with the given or stored key of the provider (default: the picked one) | `{"ok": true, "ms": n}`                  |
+| `threads.mark_read`  | `{"id", "read"?: true}` — reading marks the whole conversation read                                                                  | `{"thread": ThreadSummary}` as reading left it |
+| `messages.html`      | `{"id", "full"?: false}` — quoted history removed unless `full`                         | `{"html": "…", "has_quoted": bool}` sanitized, remote content stripped |
+| `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |
+| `drafts.list`        | `{"state"?: "review"}`                                                                   | `[Draft]`                                |
+| `drafts.get`         | `{"id"}`                                                                                 | `Draft`                                  |
+| `drafts.create`      | `{"account_id"?, "thread_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}` — with `thread_id`, it is a reply: recipients/subject default from the thread. All attachments are added or none (the draft is not created) | `Draft` |
+| `drafts.attach`      | `{"id", "attachments": [Attach]}` or `{"id", ...Attach}`                                 | `Draft`                                  |
+| `drafts.detach`      | `{"id", "attachment_id"}` (an id from `Draft.attachments`)                               | `Draft`                                  |
+| `drafts.update`      | `{"id", "to"?, "cc"?, "subject"?, "body"?}`                                              | `Draft`                                  |
+| `drafts.delete`      | `{"id"}`                                                                                 | `{}`                                     |
+| `drafts.send`        | `{"id"}`                                                                                 | `{"sent": true}` or error `approval_required` |
+| `review.approve`     | `{"id"}` — app only                                                                      | `{"sent": true}`                         |
+| `review.reject`      | `{"id"}` — app only                                                                      | `{}`                                     |
+| `providers.list`     | `{}`                                                                                     | `[{"id","name","kind","base_url","model","has_key"}]` (keys never leave the daemon) |
+| `providers.save`     | `{"id"?, "name", "kind": "anthropic"\|"openai", "base_url"?, "model", "api_key"?}` — app only | `Provider`                              |
+| `providers.delete`   | `{"id"}` — app only                                                                      | `{}`                                     |
+| `providers.test`     | `{"id"}`                                                                                 | `{"ok", "clean_body"?, "card"?, "error"?}` on a built-in sample |
+| `accounts.agent.get` | `{"account_id"}`                                                                         | `{"provider_ids", "digest_enabled", "done", "pending", "failed", "error"}` |
+| `accounts.agent.set` | `{"account_id", "provider_ids"?: [id\|"*"], "digest_enabled"?}` — app only               | `{}`                                     |
+| `contacts.list`      | `{"query"?, "limit"?: 200}`                                                              | `[Contact]` most recently heard from first |
+| `contacts.get`       | `{"email"}`                                                                              | `{"contact": Contact, "threads": [ThreadSummary]}` |
+| `settings.get`       | `{}`                                                                                     | `{"agents_may_send": false}`             |
+| `settings.set`       | `{"agents_may_send"}` — app only                                                         | `{}`                                     |
+| `chat.get`           | `{"thread_id"}`                                                                          | `{"messages": [ChatMessage], "research_available": bool}` |
+| `chat.send`          | `{"thread_id", "text", "research"?: true}` — asks the account's allowed AI; streams `chat_delta` | `ChatMessage` (the answer)       |
+| `chat.clear`         | `{"thread_id"}`                                                                          | `{"deleted": n}`                         |
+| `feed.list`          | `{"project"?, "account_id"?}` — the Feed: open threads as cards, in sections            | `Feed`                                   |
+| `feed.texts`         | `{"ids": [thread id]}` — asks the account's allowed AI to write these cards' words in the background (cards on screen only); emits `feed_changed` per card | `{"queued": n}` |
+| `feed.snooze`        | `{"ids": [id], "until": ms, "label"?}` — Later: the threads leave the feed and their status columns until `until` (or new mail), then come back Unread and first in the feed with "You set this for <label>" | `{"snoozed": n}` |
+| `later.options`      | `{}` — the Later picker's quick choices for now: this evening (before 17:00), tomorrow morning, this weekend (weekdays), Friday evening (Mon–Thu), next week | `[{"key": "f", "label": "Friday evening", "until": ms, "when": "Fri 18:00"}]` |
+| `later.parse`        | `{"text"}` — plain French or English ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"), read locally | `{"until": ms, "when": "Fri 18:00"}` or `null` |
+| `feed.learn_archive` | `{"ids": [id]}` — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as in the Sort queue (three make a rule; ruled senders' mail is batched) | `{"learned": n}` |
+| `feed.unsnooze`      | `{"ids": [id]}`                                                                          | `{"unsnoozed": n}`                       |
+| `feedback.submit`    | `{"text", "command"?, "agent"?}`                                                         | `{"id"}`                                 |
+| `feedback.list`      | `{}`                                                                                     | `[{"id","text","command","agent","created"}]` |
+| `subscribe`          | `{}`                                                                                     | `{}` then notifications                  |
+
+## Google Drive
+
+Drive has its own consent and refresh token per account (stored apart from the
+Gmail one), so declining or disconnecting Drive never affects mail. Asked scopes:
+`drive.readonly` (read any file the user can open: previews, files shared with a
+thread's people, search) and `drive.file` (files Mermoz created or the user picked:
+saving attachments, sharing a picked file). Google lets the user untick either;
+`drive.status` says what was granted.
+
+```jsonc
+// DriveFile
+{"id": "1Abc…", "name": "Remediation plan", "mime": "application/vnd.google-apps.document",
+ "kind": "Google Doc", "modified": 1791648000000, "owner": {"name": "Marc", "email": "marc@…"} | null,
+ "web_link": "https://docs.google.com/…" | null, "icon_link": "…" | null, "has_thumbnail": true}
+
+// DriveLink: a Drive link found in a thread's messages
+{"file_id": "1Abc…", "url": "https://docs.google.com/document/d/1Abc…/edit", "link_kind": "document",
+ "message_id": "msg_…", "access": "ok|no_access|not_connected|error", "file": DriveFile | null}
+
+// SavedAttachment
+{"attachment_id": "att_…", "file_id": "…", "name": "report.pdf", "web_link": "…",
+ "folder": "Mermoz/Clients/Acme", "created": 1791700000000}
+```
+
+| method | params | result |
+| --- | --- | --- |
+| `drive.status` | `{"account_id"?}` (all accounts without it) | `{"account_id", "email", "connected", "can_read_all", "can_save", "attempt": {"state": "waiting\|connected\|declined\|error", "error"} \| null}` |
+| `drive.connect` | `{"account_id"}` — app only; completes in background, emits `drive_changed` | `{"auth_url"}` |
+| `drive.disconnect` | `{"account_id"}` — app only; forgets the token and the cache (does not call Google's revoke, which would end Gmail access too) | `{}` |
+| `drive.links` | `{"thread_id"}` | `{"account_id", "connected", "links": [DriveLink]}` |
+| `drive.files_for_thread` | `{"thread_id", "limit"?: 20}` — for the thread's Docs tab | `{"account_id", "connected", "can_read_all", "linked": [DriveLink], "shared": [DriveFile] (owned by or shared with its participants, linked ones left out), "saved": [SavedAttachment]}` |
+| `drive.files_for_people` | `{"account_id", "emails": [email], "limit"?: 20}` | `{"files": [DriveFile]}` newest first |
+| `drive.search` | `{"account_id", "query"?, "limit"?: 20}` — no query: recently opened files | `{"files": [DriveFile]}` |
+| `drive.content` | `{"account_id", "file_id"}` — Docs as Markdown, Sheets as CSV (first sheet), Slides and text files as text; cached by version | `{"file": DriveFile, "text": "…" \| null}` |
+| `drive.thumbnail` | `{"account_id", "file_id"}` | `{"mime", "data": base64}` or `null` |
+| `drive.pick` | `{"account_id", "file_ids"?: [id]}` — app only; opens Google's file picker (`drive.file` only); without a Drive connection the pick connects Drive with `drive.file` alone | `{"pick_id", "auth_url"}` |
+| `drive.pick_result` | `{"pick_id"}` | `{"account_id", "state": "waiting\|done\|declined\|error", "files": [DriveFile], "error"}` |
+| `drive.save_attachment` | `{"attachment_id"}` — into `Mermoz/<first project, split on "/">` or `Mermoz/No project`, folders created when missing; saving again returns the first save | `SavedAttachment` |
+| `drive.saved` | `{"thread_id"}` | `[SavedAttachment]` |
+| `drive.share` | `{"account_id", "file_id", "emails": [email], "role": "reader"\|"commenter"}` — app only, after the user confirms; Drive sends no email of its own | `{"shared": [email], "failed": [{"email", "reason"}]}` |
+
+Drive errors: `-32030` `drive_not_connected` (`data: {account_id}`): show "Connect
+Google Drive". `-32031` `drive_needs_access` (`data: {account_id, reason}`):
+`read_all` (the read permission was unticked), `save` (the "files you use with
+Mermoz" permission was unticked) or `pick` (choose the file in Google's picker
+first, then retry).
+
+## Send gate
+
+`Attach` is an absolute file path, or `{"path" | "from_attachment" | "url", "filename"?, "inline"?}`:
+`from_attachment` copies an attachment of a message already in Mermoz (forwarding),
+`url` adds a link listed under the text instead of a file. Files are copied into
+`blobs/drafts/<draft>/` and deleted once the draft is sent or deleted. Each
+`Draft` has `attachments: [{id, kind: "file"|"link", filename, mime, size, path?, url?, inline}]`.
+More than 25 MB of files in one draft is refused with a plain-words message.
+Messages larger than 4 MB go through Gmail's upload endpoint.
+
+`drafts.send` sends immediately when the caller is Mermoz.app, or when
+`agents_may_send` is true. Otherwise the draft moves to state `review`, its
+thread to status `review`, and the call fails with `approval_required`:
+
+```json
+{"code": -32010, "message": "approval_required: draft dft_8f2c is waiting for the user to approve it in Mermoz. Tell the user; do not retry.",
+ "data": {"draft": "dft_8f2c", "thread": "M-1262"}}
+```
+
+The caller is Mermoz.app when the peer process's executable (from the socket's
+peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
+`settings.set` are refused with `app_only` for any other caller.
+
+## Notifications
+
+```json
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "threads_changed", "ids": ["thr_…"]}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "accounts_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "sync_progress", "account_id": "acc_1", "synced": 1200, "total": 5400}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "drafts_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "contacts_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "suggestions_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "drive_changed", "account_id": "acc_1"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "feed_changed"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "chat_delta", "thread_id": "thr_…", "text": "the answer so far"}}
+```
+
+`chat_delta` carries the whole visible answer so far (never the actions block), at
+most every 60 ms while `chat.send` streams; the final answer is `chat.send`'s result.
+A Claude turn paused by its web search loop (`pause_turn`) is resumed automatically, up
+to 3 times, into the same answer; past that, the answer so far is kept.
+
+---
+
+<!-- https://mermoz.xyz/about/ · updated 2026-10-13 -->
+
+# About Mermoz
+
+Mermoz is an email app for the Mac. It connects to Gmail, keeps your whole mailbox on your Mac, and treats every thread like a task with a status: Unread, To do, Waiting, Done. New mail arrives with a suggested status and project, one key moves a thread on, and search answers instantly, even offline.
+
+It is also built for the agents you already use. Everything the app does is available from the `mermoz` command line and from a built-in MCP server, so Claude, Codex or your own scripts can search, read, sort and draft mail. Sending stays with you: an agent's draft waits in your Review lane until you approve it.
+
+## Facts
+
+- **Platform:** macOS 26 or later, downloaded from [GitHub Releases](https://github.com/ClementWalter/mermoz/releases).
+- **Mail:** Gmail and Google Workspace accounts, several at once; Google Drive optional.
+- **Status:** private beta (version 0.1.0) while Google reviews Mermoz's Gmail access. [Join the list](/#beta) and you'll be invited.
+- **Price:** free. **License:** open source (MIT), [source on GitHub](https://github.com/ClementWalter/mermoz).
+- **Built with:** a Rust daemon (`mermozd`) that owns sync and storage, a Rust CLI and MCP server, and a SwiftUI app.
+- **Privacy:** no Mermoz server, no analytics; AI features are off until you turn them on. Details on the [privacy page](/privacy/).
+
+## Who makes it
+
+Mermoz is made by Clément Walter and developed in the open on GitHub, where every change, issue and release is public. Reach us through the [contact page](/contact/).
+
+## The name
+
+In 1930, Jean Mermoz flew the Aéropostale mail across the South Atlantic, from Senegal to Brazil, in a little over twenty hours. Letters that used to take weeks by sea arrived in days. The Aéropostale pilots had a motto: « Le courrier doit passer », the mail must go through. Mermoz keeps that spirit: mail that moves, light and fast, without the heavy machinery around it.
+
+## For developers and agents
+
+- [Developer docs](/docs/): the [CLI](/docs/cli/), the [MCP server](/docs/mcp/) and the [JSON-RPC protocol](/docs/protocol/).
+- [llms.txt](/llms.txt): a summary of Mermoz for language models.
+
+---
+
+<!-- https://mermoz.xyz/contact/ · updated 2026-10-13 -->
+
+# Contact Mermoz
+
+Mermoz is a small, independent project in private beta. The fastest way to reach us depends on what you need.
+
+## Email
+
+Write to **[clement@mermoz.xyz](mailto:clement@mermoz.xyz)** for anything personal: beta access, an invitation that didn't arrive, a privacy question or a request to delete your sign-up address. Beta testers can also simply reply to their invitation email. Every message is read by a person.
+
+## Bugs and ideas
+
+Open an issue on [GitHub](https://github.com/ClementWalter/mermoz/issues). Mermoz is open source, so issues, discussions and fixes are public. Please say which version you run (Mermoz › About Mermoz, or `mermoz --version`) and what you expected to happen. Never paste the content of private emails or an API key into a public issue.
+
+## Feedback from agents
+
+If you drive Mermoz from an AI agent, the agent can report friction itself:
+
+```sh
+mermoz feedback "search ignores accents in subject" --command search --agent claude-code
+```
+
+The MCP server offers the same as the `submit_feedback` tool. Feedback is stored in your local mailbox and listed in Mermoz › Settings › Developer; share it with us by email or in an issue when you want us to see it.
+
+## Joining the beta
+
+Leave the Gmail address you'll use in the form on the [homepage](/#beta). Mermoz is in private beta while Google reviews its Gmail access, so each address is added by hand; you'll get an email when you can sign in.
+
+## Elsewhere
+
+- Source code and releases: [https://github.com/ClementWalter/mermoz](https://github.com/ClementWalter/mermoz)
+- Developer docs: [mermoz.xyz/docs](/docs/)
+- How Mermoz handles your data: [privacy](/privacy/)
+
+---
+
+<!-- https://mermoz.xyz/privacy/ · updated 2026-10-13 -->
+
+# Mermoz privacy
+
+Mermoz is an email app that keeps your mailbox on your Mac. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the [source code](https://github.com/ClementWalter/mermoz).
+
+> **Needs legal review.** This page describes how the software behaves. It is not yet a reviewed privacy policy: the data controller's identity, the legal bases (GDPR), retention periods and the Google API Limited Use statement below must be confirmed by counsel before the public launch.
+
+## Your mail stays on your Mac
+
+- Mermoz downloads your Gmail messages, labels and attachments into `~/Library/Application Support/Mermoz` on your Mac (a local database and a files folder). Search, reading and sorting run there, offline.
+- A single background process, `mermozd`, talks to Google on your behalf. The app, the `mermoz` command line and the MCP server talk to it over a local socket on your Mac.
+- Remote images in emails are not loaded unless you ask for them, since they can tell the sender you opened the mail.
+- Your Google sign-ins, Drive grants and AI provider keys are kept on your Mac: in the macOS Keychain for signed releases, or in files only your user account can read for beta builds.
+- The app has no analytics or tracking. Feedback sent with `mermoz feedback` is stored in your local mailbox database and shown in Settings › Developer; it is not uploaded.
+- Removing an account in Mermoz deletes its messages from the local database and its Google sign-in from your Mac; deleting the folder above removes everything Mermoz stored. Your mail in Gmail is not affected.
+
+## What Mermoz asks Google for
+
+- **Gmail:** the `gmail.modify` scope, to read your mail, apply your labels and statuses (archive, trash, read state) and send the drafts you approve. Mermoz does not ask for permission to delete mail permanently.
+- **Google Drive (optional):** only when you click "Connect Google Drive", in a separate consent: `drive.readonly` (preview documents linked in your mail, files shared with a thread's people, search) and `drive.file` (save attachments into a Mermoz folder, share a file you picked). You can untick either; mail never depends on Drive. Drive file text Mermoz reads is cached on your Mac.
+- Companies can sign in through their own Google client instead of Mermoz's; that client is stored with the account on your Mac.
+
+> **Needs legal review.** Google requires apps using Gmail data to state that their use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. Confirm the exact wording before submitting for Google verification.
+
+## AI providers: off until you turn them on
+
+Mermoz works without any AI. Email content is sent to an AI provider only after you set one up, and only to the provider you chose:
+
+- **Instant sorting (TypeSafe's Jev, or SubQ).** Only if you paste a TypeSafe or SubQ API key in Settings › Developer. New and open threads are then sent to that provider (`api.typesafe.ai` or `api.subq.ai`) to suggest a status, project and priority, and to rank the Feed. Each request carries the thread plus two hints built on your Mac: where you filed earlier mail from the same people, and a short description of your projects. Removing the key stops it.
+- **Your account's AI (Claude by Anthropic, ChatGPT or another OpenAI-compatible service).** Only for the accounts where you allow a provider, connected with your own API key, "Sign in with Anthropic" or "Continue with ChatGPT" (billed to your own plan). It is then used when you:
+  - ask "Chat about this" (the thread, its people, its status and your earlier mail with them; with web research on, the provider may search the web for the answer);
+  - turn on the reading assistant, which writes the Optimized reading version and grows your contact directory from signatures;
+  - open the Feed, whose cards' summaries and draft words it writes, and when Mermoz groups threads into conversations and needs a judgment on an uncertain pair.
+- **Agents you run yourself.** The CLI and MCP server give your own agents (for example Claude Code or Codex) the mail they ask for. What those agents send to their AI provider is governed by that agent and its provider, not by Mermoz. Agents cannot send email without your approval in the app, unless you turn on agent sending.
+
+Each provider handles the content under its own terms: [TypeSafe](https://typesafe.ai), [SubQ](https://subq.ai), [Anthropic](https://www.anthropic.com/legal/privacy), [OpenAI](https://openai.com/policies/privacy-policy/).
+
+> **Needs legal review.** Whether each provider acts as your processor or as an independent controller, and the data-transfer terms that apply, depend on the account or key you use with it.
+
+## This website and the beta sign-up
+
+- mermoz.xyz is a static site hosted on GitHub Pages. It sets no cookies and runs no analytics. GitHub, as the host, receives your IP address and request details; fonts are loaded from Google Fonts, which also sees your IP address.
+- **The beta sign-up form** sends only the email address you type to a Google Form owned by Mermoz's maintainer (Google Forms, operated by Google). The address is used to add you to the beta: it is added as a test user of Mermoz's Google Cloud project (so you can sign in during Google's review) and receives the invitation email, sent from clement@mermoz.xyz through Zoho Mail. It is not sold or shared with anyone else.
+- The download button links to the latest release on GitHub, which serves the file.
+
+> **Needs legal review.** Retention period for sign-up addresses, the legal basis (consent), and how to ask for deletion must be stated; until then, write to clement@mermoz.xyz to have your address removed.
+
+## Contact
+
+Questions or deletion requests: clement@mermoz.xyz. See also the [contact page](/contact/).

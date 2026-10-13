@@ -1,0 +1,10 @@
+{
+  "name": "mermoz-site-edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test worker.test.mjs",
+    "dev": "wrangler dev --var ORIGIN:http://localhost:8000",
+    "deploy": "wrangler deploy"
+  }
+}

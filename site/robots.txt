@@ -1,0 +1,6 @@
+# mermoz.xyz: every page is public; agents and crawlers are welcome.
+# Agent-oriented summary: https://mermoz.xyz/llms.txt (full text: https://mermoz.xyz/llms-full.txt)
+User-agent: *
+Allow: /
+
+Sitemap: https://mermoz.xyz/sitemap.xml

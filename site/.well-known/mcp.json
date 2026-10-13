@@ -1,0 +1,69 @@
+{
+  "name": "Mermoz",
+  "description": "MCP server for the user's local Mermoz mailbox (Gmail on macOS): search, read, sort and draft mail. Sending always waits for the user's approval in the app.",
+  "version": "0.1.0",
+  "protocolVersion": "2025-06-18",
+  "transport": "stdio",
+  "remotes": [],
+  "remoteNote": "Mermoz keeps mail on the user's Mac; there is no hosted or Streamable HTTP endpoint. Run the server locally.",
+  "install": {
+    "transport": "stdio",
+    "requires": "Mermoz.app installed and running on macOS 26 or later, signed in to Gmail",
+    "download": "https://github.com/ClementWalter/mermoz/releases/latest/download/Mermoz.dmg",
+    "command": "mermoz",
+    "args": [
+      "mcp"
+    ],
+    "bundledCommand": "/Applications/Mermoz.app/Contents/Resources/mermoz",
+    "remote": null,
+    "clients": {
+      "claude-code": "claude mcp add mermoz -- mermoz mcp",
+      "codex": "codex mcp add mermoz -- mermoz mcp",
+      "claude-desktop": {
+        "mcpServers": {
+          "mermoz": {
+            "command": "/Applications/Mermoz.app/Contents/Resources/mermoz",
+            "args": [
+              "mcp"
+            ]
+          }
+        }
+      }
+    },
+    "docs": "https://mermoz.xyz/docs/mcp/"
+  },
+  "registry": {
+    "serverJson": "https://mermoz.xyz/server.json",
+    "name": "io.github.ClementWalter/mermoz"
+  },
+  "tools": [
+    "search_mail",
+    "list_threads",
+    "get_thread",
+    "split_conversation",
+    "merge_conversations",
+    "list_files",
+    "update_thread",
+    "accept_suggestions",
+    "reject_suggestions",
+    "column_suggestions",
+    "stop_resort",
+    "get_attachment",
+    "create_draft",
+    "send_draft",
+    "search_contacts",
+    "list_labels",
+    "list_statuses",
+    "list_projects",
+    "chat_about_thread",
+    "thread_drive_files",
+    "read_drive_file",
+    "search_drive",
+    "save_attachment_to_drive",
+    "feed",
+    "snooze_thread",
+    "submit_feedback"
+  ],
+  "documentation": "https://mermoz.xyz/docs/mcp/",
+  "llms": "https://mermoz.xyz/llms.txt"
+}

@@ -269,6 +269,48 @@ Prerequisites: Phases 2 and 3 done; Phase 1 exit criteria met.
   Hacker News (Show HN), Product Hunt, r/macapps.
 - Support: a public issue tracker and a support email on the site.
 
+## Markdown for agents: Cloudflare in front (decision for Clément)
+
+mermoz.xyz is plain GitHub Pages, DNS at GoDaddy (`ns13/ns14.domaincontrol.com`).
+Everything agents need is already published as files: `/llms.txt`, `/llms-full.txt`,
+`/sitemap.xml`, `/server.json`, `/.well-known/mcp.json` and a Markdown twin of every
+page (`/index.md`, `/docs/mcp/index.md`, `/404.md`, …), all built by
+`scripts/site_build.py`. What GitHub Pages cannot do is **content negotiation**:
+answer `Accept: text/markdown` on `/` with Markdown and `Vary: Accept`, or give a
+Markdown body to a 404. That needs an edge in front of Pages. The Worker is ready in
+`site/edge/` (`worker.js`, `wrangler.toml`, tests); it proxies everything to Pages and
+only swaps in the Markdown twin when the client prefers Markdown.
+
+It is optional: it costs a DNS move and adds Cloudflare to the request path (and to the
+privacy page's list of hosts). Steps, if wanted:
+
+1. **Cloudflare account** (free plan) › Add a domain › `mermoz.xyz` › Free. Cloudflare
+   imports the current records; check it lists the four GitHub Pages `A` records
+   (`185.199.108–111.153`), the `www` CNAME if any, and **the Zoho `MX`, SPF/DKIM `TXT`
+   records** (mail from clement@mermoz.xyz must keep working).
+2. Set the `A`/`CNAME` records for `mermoz.xyz` to **Proxied** (orange cloud); leave MX
+   and TXT as DNS only. SSL/TLS mode: **Full**.
+3. **GoDaddy** › My Products › mermoz.xyz › DNS › Nameservers › Change › "I'll use my
+   own nameservers" › paste the two Cloudflare nameservers. Propagation: minutes to
+   24 h; Cloudflare emails when the zone is active.
+4. GitHub › repo Settings › Pages: the custom domain stays `mermoz.xyz`; keep "Enforce
+   HTTPS" (GitHub's certificate renews through the proxy with SSL mode Full).
+5. Deploy the Worker (route `mermoz.xyz/*` is in `wrangler.toml`; no account id is
+   committed, `wrangler login` picks the account):
+   ```
+   cd site/edge && npx wrangler login && npx wrangler deploy
+   ```
+6. Check (the audit's own commands):
+   ```
+   curl -sS -L -i -H 'Accept: text/markdown' https://mermoz.xyz/          # 200 text/markdown, Vary: Accept
+   curl -sS -L -i -H 'Accept: text/html' https://mermoz.xyz/              # 200 text/html, Vary: Accept
+   curl -sS -L -i -H 'Accept: text/markdown' https://mermoz.xyz/nope      # 404 text/markdown
+   ```
+
+Local test before deploying: `python3 -m http.server 8765 -d site`, then
+`cd site/edge && npx wrangler dev --var ORIGIN:http://localhost:8765` and the same curls
+on `http://127.0.0.1:8787`. Unit tests: `node --test site/edge/worker.test.mjs`.
+
 ## Legal and trust (before Phase 3 submission)
 
 - Privacy policy and terms (EU/GDPR: data stays on the device; AI providers act on

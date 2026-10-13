@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermoz developer docs: CLI, MCP server and protocol</title>
+  <meta name="description" content="Drive the Mermoz mailbox from scripts and AI agents: the mermoz command line, the built-in MCP server (stdio) and the mermozd JSON-RPC protocol.">
+  <link rel="canonical" href="https://mermoz.xyz/docs/">
+  <link rel="alternate" type="text/markdown" href="/docs/index.md">
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="apple-touch-icon" href="/assets/icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mermoz.xyz/docs/">
+  <meta property="og:title" content="Mermoz developer docs: CLI, MCP server and protocol">
+  <meta property="og:site_name" content="Mermoz">
+  <meta property="og:description" content="Drive the Mermoz mailbox from scripts and AI agents: the mermoz command line, the built-in MCP server (stdio) and the mermozd JSON-RPC protocol.">
+  <meta property="og:image" content="https://mermoz.xyz/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#EAF3FB">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="page">
+  <div class="beta-bar">Mermoz is in <strong>private beta</strong> — <a href="/#beta">join the list</a> and we'll open your access.</div>
+
+  <header class="nav">
+    <a class="brand" href="/"><img src="/assets/icon.png" alt="" width="34" height="34"> Mermoz</a>
+    <nav>
+      <a href="/#features">Features</a>
+      <a href="/docs/">Docs</a>
+      <a href="/about/">About</a>
+      <a class="nav-cta" href="/#beta">Join the beta</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="prose paper-card">
+<h1 id="mermoz-developer-docs">Mermoz developer docs</h1>
+<p>Mermoz keeps your Gmail mailbox on your Mac and lets your own scripts and AI agents work with it. Everything the app does, the command line does, and an MCP server gives agents the same mailbox as native tools. Search and reading are instant and offline. <strong>Agents never send mail on their own</strong>: a send waits in the Review lane until you approve it in Mermoz.</p>
+<h2 id="how-the-pieces-fit">How the pieces fit</h2>
+<ul>
+<li><strong><code>mermozd</code></strong>, the daemon inside Mermoz.app, is the only process that touches the network and the mailbox database.</li>
+<li><strong><code>mermoz</code></strong>, the command-line tool, and <strong><code>mermoz mcp</code></strong>, the MCP server, are clients of the daemon over a local Unix socket. Mermoz.app must be running.</li>
+<li>The CLI ships inside the app at <code>/Applications/Mermoz.app/Contents/Resources/mermoz</code>. In Mermoz, open <strong>Settings › Developer › Command line tool › Install in PATH</strong> to link it as <code>mermoz</code> (into <code>/usr/local/bin</code> or <code>~/.local/bin</code>).</li>
+</ul>
+<h2 id="pages">Pages</h2>
+<ul>
+<li><a href="/docs/cli/">Mermoz CLI reference</a>: every <code>mermoz</code> command, with its <code>--help</code> text and exit codes.</li>
+<li><a href="/docs/mcp/">Mermoz MCP server</a>: add Mermoz to Claude Code, Claude Desktop or Codex; the 26 tools and their parameters.</li>
+<li><a href="/docs/protocol/">Mermoz JSON-RPC protocol</a>: the <code>mermozd</code> socket protocol, for building your own client.</li>
+</ul>
+<h2 id="quick-start-for-agents">Quick start for agents</h2>
+<pre><code class="language-sh">mermoz list --status todo --json          # threads waiting on the user
+mermoz search &quot;from:marc audit&quot; --json    # instant, offline full-text search
+mermoz thread M-1287 --json               # read a whole thread
+mermoz draft reply M-1287 --file r.txt    # draft a reply (never sends)
+mermoz send dft_8f2c                      # exit 3: waits for the user's approval
+claude mcp add mermoz -- mermoz mcp       # or plug the MCP server into Claude Code
+</code></pre>
+<p>Machine-readable summaries: <a href="/llms.txt">llms.txt</a>, <a href="/llms-full.txt">llms-full.txt</a>, <a href="/server.json">server.json</a> (MCP registry format) and <a href="/.well-known/mcp.json">/.well-known/mcp.json</a>.</p>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <span>© 2026 Mermoz · Made with paper, pencil and Rust</span>
+    <span class="footer-links"><a href="/docs/">Docs</a> <a href="/about/">About</a> <a href="/contact/">Contact</a> <a href="/privacy/">Privacy</a> <a href="/llms.txt">llms.txt</a> <a href="https://github.com/ClementWalter/mermoz">GitHub</a></span>
+  </footer>
+</body>
+</html>

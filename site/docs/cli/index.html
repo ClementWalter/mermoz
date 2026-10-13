@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mermoz CLI reference: the mermoz command for Gmail on Mac</title>
+  <meta name="description" content="Every command of the mermoz command-line tool: search, list, read, sort and draft your Gmail from the terminal, with --json output for agents.">
+  <link rel="canonical" href="https://mermoz.xyz/docs/cli/">
+  <link rel="alternate" type="text/markdown" href="/docs/cli/index.md">
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="apple-touch-icon" href="/assets/icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mermoz.xyz/docs/cli/">
+  <meta property="og:title" content="Mermoz CLI reference: the mermoz command for Gmail on Mac">
+  <meta property="og:site_name" content="Mermoz">
+  <meta property="og:description" content="Every command of the mermoz command-line tool: search, list, read, sort and draft your Gmail from the terminal, with --json output for agents.">
+  <meta property="og:image" content="https://mermoz.xyz/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#EAF3FB">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="page">
+  <div class="beta-bar">Mermoz is in <strong>private beta</strong> — <a href="/#beta">join the list</a> and we'll open your access.</div>
+
+  <header class="nav">
+    <a class="brand" href="/"><img src="/assets/icon.png" alt="" width="34" height="34"> Mermoz</a>
+    <nav>
+      <a href="/#features">Features</a>
+      <a href="/docs/">Docs</a>
+      <a href="/about/">About</a>
+      <a class="nav-cta" href="/#beta">Join the beta</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="prose paper-card">
+<h1 id="mermoz-cli-reference">Mermoz CLI reference</h1>
+<p><code>mermoz</code> is the command line of Mermoz: the same mailbox as the app, instant and offline, for people and agents. Every command is non-interactive and takes <code>--json</code> for machine-readable output. Mermoz.app must be running (the CLI talks to its daemon); otherwise commands exit with code 5.</p>
+<p><strong>Install:</strong> the CLI ships inside the app at <code>/Applications/Mermoz.app/Contents/Resources/mermoz</code>. In Mermoz, <strong>Settings › Developer › Command line tool › Install in PATH</strong> links it as <code>mermoz</code>.</p>
+<p><strong>Sending:</strong> <code>mermoz send</code> never sends by itself. Unless the user turned on agent sending, the draft moves to the Review lane and the command exits with code 3 (<code>approval_required</code>): tell the user, do not retry. There is no <code>--yes</code>.</p>
+<h2 id="exit-codes">Exit codes</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>code</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>ok</td>
+</tr>
+<tr>
+<td>1</td>
+<td>error</td>
+</tr>
+<tr>
+<td>2</td>
+<td>usage</td>
+</tr>
+<tr>
+<td>3</td>
+<td>approval required: tell the user</td>
+</tr>
+<tr>
+<td>4</td>
+<td>not found</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Mermoz is not running</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="overview">Overview</h2>
+<pre><code class="language-text">Your Mermoz mailbox from the terminal. Instant, offline, agent-friendly.
+
+Usage: mermoz [OPTIONS] &lt;COMMAND&gt;
+
+Commands:
+  accounts      List connected accounts and their sync state
+  add-account   Connect a Gmail account (opens the browser).
+  reconnect     Sign an account in to Google again, keeping its mail (opens the browser). Needed when `mermoz accounts` says &quot;sign in again&quot;
+  list          List threads, newest first
+  labels        List your Gmail labels (&quot;mailboxes&quot;) with thread counts
+  contacts      Search the directory built from email signatures (name, email or company)
+  contact       Show one person's card and recent threads
+  search        Full-text search: every word must match, as a whole word, accents and case aside; from:, to:, subject: restrict to a field. Best matches first
+  thread        Show a thread with all messages
+  conversation  Split or join conversations (Gmail threads read as one chat)
+  files         Files shared in any conversation, newest first, optionally matching a name
+  attachments   List a thread's attachments, or save them with --out
+  status        Set the status of one or more threads
+  priority      Set priority: none, urgent, high, normal, low
+  project       Add a thread to a project (a Gmail label, created if missing); &quot;none&quot; clears all
+  accept        Accept the AI's suggested status and projects for threads (marks them read), or for a whole column with --column (optionally only one --to/--to-project group)
+  reject        Turn down the AI's suggestion for threads: they stay where they are and are not suggested again until new mail arrives
+  resort        Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept
+  suggestions   The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with `mermoz accept`)
+  due           Set a follow-up date (YYYY-MM-DD); &quot;none&quot; clears
+  read          Mark a thread read or unread
+  draft         Create and manage drafts
+  drive         Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only
+  send          Ask to send a draft. Unless enabled by the user, it waits for approval in Mermoz (exit 3)
+  statuses      Workflow statuses
+  projects      Projects
+  feedback      Report friction with this CLI so it can improve
+  chat          Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied
+  feed          The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)
+  later         Put a thread off until a time said in plain words (&quot;vendredi soir&quot;, &quot;friday 7pm&quot;, &quot;dans 3 jours&quot;, &quot;15 nov&quot;; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. &quot;none&quot; brings it back now
+  router        Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
+  sync          Trigger an immediate sync
+  mcp           Run an MCP server on stdio
+  help          Print this message or the help of the given subcommand(s)
+
+Options:
+      --json     Machine-readable JSON output
+  -h, --help     Print help
+  -V, --version  Print version
+
+Examples:
+  mermoz list --status todo                 Threads waiting on you
+  mermoz search &quot;from:marc audit&quot; --json    Full-text search, JSON output
+  mermoz thread M-1287                      Read a whole thread
+  mermoz thread M-1287 --conversation       Read every thread of its conversation
+  mermoz list --conversations --status todo One row per conversation
+  mermoz conversation split M-1290          Take a thread out of its conversation
+  mermoz files invoice                      Files shared anywhere, by name
+  mermoz attachments M-1287 --out /tmp/a    Save a thread's attachments
+  mermoz status M-1287 waiting              Change a thread's status
+  mermoz draft reply M-1287 --file r.txt    Draft a reply (never sends)
+  mermoz draft new --to a@x.com --body hi --attach plan.pdf --attach photo.jpg
+                                            Draft with files (25 MB in total at most)
+  mermoz send dft_8f2c                      Ask to send; the user approves in Mermoz
+  mermoz chat M-1287 &quot;should I accept?&quot;     Ask the AI about a thread (proposals only)
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 approval required (tell the user) · 4 not found · 5 Mermoz not running
+</code></pre>
+<h2 id="commands">Commands</h2>
+<h3 id="accounts">mermoz accounts</h3>
+<p>List connected accounts and their sync state</p>
+<pre><code class="language-text">List connected accounts and their sync state
+
+Usage: mermoz accounts [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="add-account">mermoz add-account</h3>
+<p>Connect a Gmail account (opens the browser).</p>
+<pre><code class="language-text">Connect a Gmail account (opens the browser).
+
+A company Google Workspace that blocks Mermoz can sign in through its own
+Google Cloud OAuth client (Desktop app) instead:
+  mermoz add-account --client-json ~/Downloads/client_secret_….json
+  mermoz add-account --client-id ID --client-secret SECRET
+That client is stored with the account and used for its Drive too.
+
+Usage: mermoz add-account [OPTIONS]
+
+Options:
+      --client-json &lt;CLIENT_JSON&gt;
+          The client_secret_*.json downloaded from Google Cloud
+
+      --json
+          Machine-readable JSON output
+
+      --client-id &lt;CLIENT_ID&gt;
+          OAuth client ID (with --client-secret)
+
+      --client-secret &lt;CLIENT_SECRET&gt;
+          OAuth client secret (with --client-id)
+
+      --wait
+          Wait for the browser sign-in to finish and say how it went
+
+  -h, --help
+          Print help (see a summary with '-h')
+</code></pre>
+<h3 id="reconnect">mermoz reconnect</h3>
+<p>Sign an account in to Google again, keeping its mail (opens the browser). Needed when <code>mermoz accounts</code> says "sign in again"</p>
+<pre><code class="language-text">Sign an account in to Google again, keeping its mail (opens the browser). Needed when `mermoz accounts` says &quot;sign in again&quot;
+
+Usage: mermoz reconnect [OPTIONS] &lt;ACCOUNT&gt;
+
+Arguments:
+  &lt;ACCOUNT&gt;  Account id or email
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="list">mermoz list</h3>
+<p>List threads, newest first</p>
+<pre><code class="language-text">List threads, newest first
+
+Usage: mermoz list [OPTIONS]
+
+Options:
+      --json               Machine-readable JSON output
+      --status &lt;STATUS&gt;    Status key(s), comma separated (unread, todo, waiting, archive, ...)
+      --project &lt;PROJECT&gt;  Project, i.e. Gmail label name (e.g. &quot;Clients/Acme&quot;)
+      --account &lt;ACCOUNT&gt;  Account email or id
+      --label &lt;LABEL&gt;      Gmail label (&quot;mailbox&quot;) name, e.g. &quot;Clients/Acme&quot;
+      --conversations      One row per conversation (the thread leading it), as in the app
+      --feeds              Only automated senders and mailing lists (implies --conversations)
+      --limit &lt;LIMIT&gt;      [default: 50]
+  -h, --help               Print help
+</code></pre>
+<h3 id="labels">mermoz labels</h3>
+<p>List your Gmail labels ("mailboxes") with thread counts</p>
+<pre><code class="language-text">List your Gmail labels (&quot;mailboxes&quot;) with thread counts
+
+Usage: mermoz labels [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="contacts">mermoz contacts</h3>
+<p>Search the directory built from email signatures (name, email or company)</p>
+<pre><code class="language-text">Search the directory built from email signatures (name, email or company)
+
+Usage: mermoz contacts [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...  
+
+Options:
+      --json           Machine-readable JSON output
+      --limit &lt;LIMIT&gt;  [default: 50]
+  -h, --help           Print help
+</code></pre>
+<h3 id="contact">mermoz contact</h3>
+<p>Show one person's card and recent threads</p>
+<pre><code class="language-text">Show one person's card and recent threads
+
+Usage: mermoz contact [OPTIONS] &lt;EMAIL&gt;
+
+Arguments:
+  &lt;EMAIL&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="search">mermoz search</h3>
+<p>Full-text search: every word must match, as a whole word, accents and case aside; from:, to:, subject: restrict to a field. Best matches first</p>
+<pre><code class="language-text">Full-text search: every word must match, as a whole word, accents and case aside; from:, to:, subject: restrict to a field. Best matches first
+
+Usage: mermoz search [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...  
+
+Options:
+      --json           Machine-readable JSON output
+      --limit &lt;LIMIT&gt;  [default: 20]
+      --gmail          Search all of Gmail instead (Gmail's own syntax), for mail Mermoz doesn't hold
+  -h, --help           Print help
+</code></pre>
+<h3 id="thread">mermoz thread</h3>
+<p>Show a thread with all messages</p>
+<pre><code class="language-text">Show a thread with all messages
+
+Usage: mermoz thread [OPTIONS] &lt;ID&gt;
+
+Arguments:
+  &lt;ID&gt;  
+
+Options:
+      --conversation  Every message of the thread's conversation (Gmail threads read as one chat)
+      --json          Machine-readable JSON output
+  -h, --help          Print help
+</code></pre>
+<h3 id="conversation">mermoz conversation</h3>
+<p>Split or join conversations (Gmail threads read as one chat)</p>
+<pre><code class="language-text">Split or join conversations (Gmail threads read as one chat)
+
+Usage: mermoz conversation [OPTIONS] &lt;COMMAND&gt;
+
+Commands:
+  split  Take a thread out of its conversation for good
+  merge  Join the conversations of these threads into one
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="conversation-split">mermoz conversation split</h3>
+<p>Take a thread out of its conversation for good</p>
+<pre><code class="language-text">Take a thread out of its conversation for good
+
+Usage: mermoz conversation split [OPTIONS] &lt;THREAD&gt;
+
+Arguments:
+  &lt;THREAD&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="conversation-merge">mermoz conversation merge</h3>
+<p>Join the conversations of these threads into one</p>
+<pre><code class="language-text">Join the conversations of these threads into one
+
+Usage: mermoz conversation merge [OPTIONS] &lt;THREADS&gt; &lt;THREADS&gt;...
+
+Arguments:
+  &lt;THREADS&gt; &lt;THREADS&gt;...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="files">mermoz files</h3>
+<p>Files shared in any conversation, newest first, optionally matching a name</p>
+<pre><code class="language-text">Files shared in any conversation, newest first, optionally matching a name
+
+Usage: mermoz files [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...  
+
+Options:
+      --json           Machine-readable JSON output
+      --limit &lt;LIMIT&gt;  [default: 50]
+  -h, --help           Print help
+</code></pre>
+<h3 id="attachments">mermoz attachments</h3>
+<p>List a thread's attachments, or save them with --out</p>
+<pre><code class="language-text">List a thread's attachments, or save them with --out
+
+Usage: mermoz attachments [OPTIONS] &lt;THREAD&gt;
+
+Arguments:
+  &lt;THREAD&gt;  
+
+Options:
+      --json       Machine-readable JSON output
+      --out &lt;OUT&gt;  
+  -h, --help       Print help
+</code></pre>
+<h3 id="status">mermoz status</h3>
+<p>Set the status of one or more threads</p>
+<pre><code class="language-text">Set the status of one or more threads
+
+Usage: mermoz status [OPTIONS] &lt;ARGS&gt; &lt;ARGS&gt;...
+
+Arguments:
+  &lt;ARGS&gt; &lt;ARGS&gt;...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="priority">mermoz priority</h3>
+<p>Set priority: none, urgent, high, normal, low</p>
+<pre><code class="language-text">Set priority: none, urgent, high, normal, low
+
+Usage: mermoz priority [OPTIONS] &lt;THREAD&gt; &lt;PRIORITY&gt;
+
+Arguments:
+  &lt;THREAD&gt;    
+  &lt;PRIORITY&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="project">mermoz project</h3>
+<p>Add a thread to a project (a Gmail label, created if missing); "none" clears all</p>
+<pre><code class="language-text">Add a thread to a project (a Gmail label, created if missing); &quot;none&quot; clears all
+
+Usage: mermoz project [OPTIONS] &lt;THREAD&gt; &lt;PROJECT&gt;
+
+Arguments:
+  &lt;THREAD&gt;   
+  &lt;PROJECT&gt;  
+
+Options:
+      --json    Machine-readable JSON output
+      --remove  Take the thread out of the project instead
+  -h, --help    Print help
+</code></pre>
+<h3 id="accept">mermoz accept</h3>
+<p>Accept the AI's suggested status and projects for threads (marks them read), or for a whole column with --column (optionally only one --to/--to-project group)</p>
+<pre><code class="language-text">Accept the AI's suggested status and projects for threads (marks them read), or for a whole column with --column (optionally only one --to/--to-project group)
+
+Usage: mermoz accept [OPTIONS] [THREADS]...
+
+Arguments:
+  [THREADS]...  
+
+Options:
+      --column &lt;COLUMN&gt;           Every pending suggestion of this status column
+      --json                      Machine-readable JSON output
+      --to &lt;TO&gt;                   Only the group going to this status (&quot;none&quot;: groups that only add projects)
+      --to-project &lt;TO_PROJECTS&gt;  Only the group adding exactly these projects (repeat for several)
+  -h, --help                      Print help
+
+Examples:
+  mermoz accept M-12 M-14
+  mermoz accept --column backlog
+  mermoz accept --column backlog --to archive --to-project Receipts
+</code></pre>
+<h3 id="reject">mermoz reject</h3>
+<p>Turn down the AI's suggestion for threads: they stay where they are and are not suggested again until new mail arrives</p>
+<pre><code class="language-text">Turn down the AI's suggestion for threads: they stay where they are and are not suggested again until new mail arrives
+
+Usage: mermoz reject [OPTIONS] &lt;THREADS&gt;...
+
+Arguments:
+  &lt;THREADS&gt;...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="resort">mermoz resort</h3>
+<p>Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept</p>
+<pre><code class="language-text">Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept
+
+Usage: mermoz resort [OPTIONS] --stop
+
+Options:
+      --json  Machine-readable JSON output
+      --stop  
+  -h, --help  Print help
+
+Examples:
+  mermoz resort --stop
+</code></pre>
+<h3 id="suggestions">mermoz suggestions</h3>
+<p>The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with <code>mermoz accept</code>)</p>
+<pre><code class="language-text">The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with `mermoz accept`)
+
+Usage: mermoz suggestions [OPTIONS] [STATUS]
+
+Arguments:
+  [STATUS]  
+
+Options:
+      --clear                     Clear every suggestion on read threads that nobody reviewed (Unread mail keeps its own); accepted and turned-down ones are kept
+      --json                      Machine-readable JSON output
+      --to &lt;TO&gt;                   List the threads going to this status (&quot;none&quot;: groups that only add projects)
+      --to-project &lt;TO_PROJECTS&gt;  List the threads going to exactly these projects (repeat for several)
+      --limit &lt;LIMIT&gt;             Most threads to list [default: 50]
+  -h, --help                      Print help
+
+Examples:
+  mermoz suggestions backlog
+  mermoz suggestions backlog --to archive
+  mermoz suggestions backlog --to none --to-project Receipts
+</code></pre>
+<h3 id="due">mermoz due</h3>
+<p>Set a follow-up date (YYYY-MM-DD); "none" clears</p>
+<pre><code class="language-text">Set a follow-up date (YYYY-MM-DD); &quot;none&quot; clears
+
+Usage: mermoz due [OPTIONS] &lt;THREAD&gt; &lt;DATE&gt;
+
+Arguments:
+  &lt;THREAD&gt;  
+  &lt;DATE&gt;    
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="read">mermoz read</h3>
+<p>Mark a thread read or unread</p>
+<pre><code class="language-text">Mark a thread read or unread
+
+Usage: mermoz read [OPTIONS] &lt;THREAD&gt;
+
+Arguments:
+  &lt;THREAD&gt;  
+
+Options:
+      --json    Machine-readable JSON output
+      --unread  
+  -h, --help    Print help
+</code></pre>
+<h3 id="draft">mermoz draft</h3>
+<p>Create and manage drafts</p>
+<pre><code class="language-text">Create and manage drafts
+
+Usage: mermoz draft [OPTIONS] &lt;COMMAND&gt;
+
+Commands:
+  reply   Draft a reply; recipients and subject default from the thread
+  new     Draft a new message
+  attach  Add files to a draft
+  detach  Remove an attachment from a draft (ids are shown by `draft show`)
+  list    List drafts (optionally by state: draft, review, rejected)
+  show    Show a draft
+  edit    Replace a draft's body
+  delete  Delete a draft
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="draft-reply">mermoz draft reply</h3>
+<p>Draft a reply; recipients and subject default from the thread</p>
+<pre><code class="language-text">Draft a reply; recipients and subject default from the thread
+
+Usage: mermoz draft reply [OPTIONS] &lt;THREAD&gt;
+
+Arguments:
+  &lt;THREAD&gt;  
+
+Options:
+      --body &lt;BODY&gt;    
+      --json           Machine-readable JSON output
+      --file &lt;FILE&gt;    Read the body from a file (&quot;-&quot; for stdin)
+      --attach &lt;PATH&gt;  Attach a file; repeat for several
+  -h, --help           Print help
+</code></pre>
+<h3 id="draft-new">mermoz draft new</h3>
+<p>Draft a new message</p>
+<pre><code class="language-text">Draft a new message
+
+Usage: mermoz draft new [OPTIONS] --to &lt;TO&gt;
+
+Options:
+      --json               Machine-readable JSON output
+      --to &lt;TO&gt;            
+      --cc &lt;CC&gt;            
+      --subject &lt;SUBJECT&gt;  [default: &quot;&quot;]
+      --body &lt;BODY&gt;        
+      --file &lt;FILE&gt;        
+      --account &lt;ACCOUNT&gt;  Account email or id to send from
+      --attach &lt;PATH&gt;      Attach a file; repeat for several
+  -h, --help               Print help
+</code></pre>
+<h3 id="draft-attach">mermoz draft attach</h3>
+<p>Add files to a draft</p>
+<pre><code class="language-text">Add files to a draft
+
+Usage: mermoz draft attach [OPTIONS] &lt;ID&gt; &lt;PATH&gt;...
+
+Arguments:
+  &lt;ID&gt;       
+  &lt;PATH&gt;...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="draft-detach">mermoz draft detach</h3>
+<p>Remove an attachment from a draft (ids are shown by <code>draft show</code>)</p>
+<pre><code class="language-text">Remove an attachment from a draft (ids are shown by `draft show`)
+
+Usage: mermoz draft detach [OPTIONS] &lt;ID&gt; &lt;ATTACHMENT&gt;
+
+Arguments:
+  &lt;ID&gt;          
+  &lt;ATTACHMENT&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="draft-list">mermoz draft list</h3>
+<p>List drafts (optionally by state: draft, review, rejected)</p>
+<pre><code class="language-text">List drafts (optionally by state: draft, review, rejected)
+
+Usage: mermoz draft list [OPTIONS]
+
+Options:
+      --json           Machine-readable JSON output
+      --state &lt;STATE&gt;  
+  -h, --help           Print help
+</code></pre>
+<h3 id="draft-show">mermoz draft show</h3>
+<p>Show a draft</p>
+<pre><code class="language-text">Show a draft
+
+Usage: mermoz draft show [OPTIONS] &lt;ID&gt;
+
+Arguments:
+  &lt;ID&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="draft-edit">mermoz draft edit</h3>
+<p>Replace a draft's body</p>
+<pre><code class="language-text">Replace a draft's body
+
+Usage: mermoz draft edit [OPTIONS] &lt;ID&gt;
+
+Arguments:
+  &lt;ID&gt;  
+
+Options:
+      --body &lt;BODY&gt;  
+      --json         Machine-readable JSON output
+      --file &lt;FILE&gt;  
+  -h, --help         Print help
+</code></pre>
+<h3 id="draft-delete">mermoz draft delete</h3>
+<p>Delete a draft</p>
+<pre><code class="language-text">Delete a draft
+
+Usage: mermoz draft delete [OPTIONS] &lt;ID&gt;
+
+Arguments:
+  &lt;ID&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="drive">mermoz drive</h3>
+<p>Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only</p>
+<pre><code class="language-text">Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only
+
+Usage: mermoz drive [OPTIONS] &lt;COMMAND&gt;
+
+Commands:
+  files   Drive files linked in a thread, shared with its people, and attachments saved
+  read    A Drive file's text (Docs as Markdown, Sheets as CSV, Slides as text)
+  search  Search Drive by name and content; no words lists recently opened files
+  save    Save an attachment to Drive, in Mermoz/&lt;thread's project&gt;
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="drive-files">mermoz drive files</h3>
+<p>Drive files linked in a thread, shared with its people, and attachments saved</p>
+<pre><code class="language-text">Drive files linked in a thread, shared with its people, and attachments saved
+
+Usage: mermoz drive files [OPTIONS] &lt;THREAD&gt;
+
+Arguments:
+  &lt;THREAD&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="drive-read">mermoz drive read</h3>
+<p>A Drive file's text (Docs as Markdown, Sheets as CSV, Slides as text)</p>
+<pre><code class="language-text">A Drive file's text (Docs as Markdown, Sheets as CSV, Slides as text)
+
+Usage: mermoz drive read [OPTIONS] &lt;FILE_ID&gt;
+
+Arguments:
+  &lt;FILE_ID&gt;  
+
+Options:
+      --account &lt;ACCOUNT&gt;  Account id or email (default: the first account)
+      --json               Machine-readable JSON output
+  -h, --help               Print help
+</code></pre>
+<h3 id="drive-search">mermoz drive search</h3>
+<p>Search Drive by name and content; no words lists recently opened files</p>
+<pre><code class="language-text">Search Drive by name and content; no words lists recently opened files
+
+Usage: mermoz drive search [OPTIONS] [WORDS]...
+
+Arguments:
+  [WORDS]...  
+
+Options:
+      --account &lt;ACCOUNT&gt;  
+      --json               Machine-readable JSON output
+      --limit &lt;LIMIT&gt;      [default: 20]
+  -h, --help               Print help
+</code></pre>
+<h3 id="drive-save">mermoz drive save</h3>
+<p>Save an attachment to Drive, in Mermoz/<thread's project></p>
+<pre><code class="language-text">Save an attachment to Drive, in Mermoz/&lt;thread's project&gt;
+
+Usage: mermoz drive save [OPTIONS] &lt;ATTACHMENT&gt;
+
+Arguments:
+  &lt;ATTACHMENT&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="send">mermoz send</h3>
+<p>Ask to send a draft. Unless enabled by the user, it waits for approval in Mermoz (exit 3)</p>
+<pre><code class="language-text">Ask to send a draft. Unless enabled by the user, it waits for approval in Mermoz (exit 3)
+
+Usage: mermoz send [OPTIONS] &lt;DRAFT&gt;
+
+Arguments:
+  &lt;DRAFT&gt;  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="statuses">mermoz statuses</h3>
+<p>Workflow statuses</p>
+<pre><code class="language-text">Workflow statuses
+
+Usage: mermoz statuses [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="projects">mermoz projects</h3>
+<p>Projects</p>
+<pre><code class="language-text">Projects
+
+Usage: mermoz projects [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="feedback">mermoz feedback</h3>
+<p>Report friction with this CLI so it can improve</p>
+<pre><code class="language-text">Report friction with this CLI so it can improve
+
+Usage: mermoz feedback [OPTIONS] [TEXT]...
+
+Arguments:
+  [TEXT]...  
+
+Options:
+      --command &lt;COMMAND&gt;  The command that caused trouble
+      --json               Machine-readable JSON output
+      --agent &lt;AGENT&gt;      Who is reporting (e.g. claude-code)
+  -h, --help               Print help
+</code></pre>
+<h3 id="chat">mermoz chat</h3>
+<p>Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied</p>
+<pre><code class="language-text">Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied
+
+Usage: mermoz chat [OPTIONS] &lt;THREAD&gt; [QUESTION]...
+
+Arguments:
+  &lt;THREAD&gt;       
+  [QUESTION]...  
+
+Options:
+      --json         Machine-readable JSON output
+      --no-research  Don't let the AI search the web for this answer
+      --clear        Forget this thread's conversation
+  -h, --help         Print help
+</code></pre>
+<h3 id="feed">mermoz feed</h3>
+<p>The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)</p>
+<pre><code class="language-text">The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)
+
+Usage: mermoz feed [OPTIONS]
+
+Options:
+      --json               Machine-readable JSON output
+      --project &lt;PROJECT&gt;  Only this project's cards
+  -h, --help               Print help
+</code></pre>
+<h3 id="later">mermoz later</h3>
+<p>Put a thread off until a time said in plain words ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. "none" brings it back now</p>
+<pre><code class="language-text">Put a thread off until a time said in plain words (&quot;vendredi soir&quot;, &quot;friday 7pm&quot;, &quot;dans 3 jours&quot;, &quot;15 nov&quot;; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. &quot;none&quot; brings it back now
+
+Usage: mermoz later [OPTIONS] &lt;THREAD&gt; [WHEN]...
+
+Arguments:
+  &lt;THREAD&gt;   
+  [WHEN]...  
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="router">mermoz router</h3>
+<p>Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)</p>
+<pre><code class="language-text">Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
+
+Usage: mermoz router [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="sync">mermoz sync</h3>
+<p>Trigger an immediate sync</p>
+<pre><code class="language-text">Trigger an immediate sync
+
+Usage: mermoz sync [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+<h3 id="mcp">mermoz mcp</h3>
+<p>Run an MCP server on stdio</p>
+<pre><code class="language-text">Run an MCP server on stdio
+
+Usage: mermoz mcp [OPTIONS]
+
+Options:
+      --json  Machine-readable JSON output
+  -h, --help  Print help
+</code></pre>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <span>© 2026 Mermoz · Made with paper, pencil and Rust</span>
+    <span class="footer-links"><a href="/docs/">Docs</a> <a href="/about/">About</a> <a href="/contact/">Contact</a> <a href="/privacy/">Privacy</a> <a href="/llms.txt">llms.txt</a> <a href="https://github.com/ClementWalter/mermoz">GitHub</a></span>
+  </footer>
+</body>
+</html>

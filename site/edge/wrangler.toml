@@ -1,0 +1,15 @@
+# Cloudflare Worker serving Markdown to agents in front of the GitHub Pages site.
+# Deploy steps: docs/release-plan.md › "Markdown for agents: Cloudflare in front".
+# The account is picked at `wrangler login` / CLOUDFLARE_ACCOUNT_ID; none is committed.
+name = "mermoz-site-edge"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = false
+
+# Every request to mermoz.xyz goes through the Worker once the zone is on Cloudflare.
+routes = [
+  { pattern = "mermoz.xyz/*", zone_name = "mermoz.xyz" },
+]
+
+# Local preview against a static server of site/ (see site/README.md):
+#   wrangler dev --var ORIGIN:http://localhost:8000
