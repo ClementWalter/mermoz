@@ -319,6 +319,11 @@ fn spawn_daemon(home: &std::path::Path, port: u16, dport: u16, trusted: bool) ->
             format!("http://127.0.0.1:{dport}/upload"),
         )
         .env("MERMOZ_POLL_SECS", "1")
+        // Clients the user brings carry no token endpoint: they get Google's, i.e. the stub.
+        .env(
+            "MERMOZ_OAUTH_TOKEN_URL",
+            format!("http://127.0.0.1:{port}/token"),
+        )
         .env("MERMOZ_TRUSTED_EXE", trusted_exe)
         .env(
             "RUST_LOG",
@@ -1114,4 +1119,227 @@ fn mail_keeps_syncing_after_reconnect(legacy: World) {
     legacy.wait_until("new mail", |w| {
         w.ok("threads.list", json!({}))["total"] == 4
     });
+}
+
+// ---- an account on the user's own sign-in client ----------------------------
+
+/// Fictional client of a company's own Google Cloud project.
+const COMPANY_CLIENT: &str = "company-project-cid.apps.googleusercontent.com";
+
+/// The client_secret_*.json Google Cloud downloads for a Desktop app client.
+fn company_client_file() -> String {
+    json!({ "installed": {
+        "client_id": COMPANY_CLIENT,
+        "project_id": "company-project",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_secret": "company-secret",
+        "redirect_uris": ["http://localhost"],
+    }})
+    .to_string()
+}
+
+/// Adds the account through `params`' client and answers Google's consent screen.
+/// Returns the consent URL Mermoz opened.
+fn add_with_own_client(w: &World, params: Value) -> String {
+    let url = w.ok("accounts.add_gmail", params)["auth_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    browser_returns(&url, "code=company-code");
+    w.wait_until("the account to be on the company client", |w| {
+        grant_client(&w.gmail_grant()) == COMPANY_CLIENT
+    });
+    url
+}
+
+/// Signed in through the company's client, then Mermoz restarted.
+#[fixture]
+fn own_client(mail: World) -> World {
+    let mut w = mail;
+    add_with_own_client(&w, json!({ "client_json": company_client_file() }));
+    let _ = w.daemon.kill();
+    let _ = w.daemon.wait();
+    w.mailbox.lock().unwrap().token_requests.clear();
+    w.restart();
+    w.wait_until("the token to refresh", |w| {
+        refreshed_with(w, COMPANY_CLIENT)
+    });
+    w
+}
+
+#[rstest]
+fn own_client_consent_uses_that_client(mail: World) {
+    let url = add_with_own_client(&mail, json!({ "client_json": company_client_file() }));
+    assert_eq!(param(&url, "client_id"), COMPANY_CLIENT);
+}
+
+#[rstest]
+fn pasted_client_id_and_secret_are_used(mail: World) {
+    let url = add_with_own_client(
+        &mail,
+        json!({ "client_id": COMPANY_CLIENT, "client_secret": "company-secret" }),
+    );
+    assert_eq!(param(&url, "client_id"), COMPANY_CLIENT);
+}
+
+#[rstest]
+fn own_client_is_stored_with_the_token(own_client: World) {
+    assert_eq!(grant_client(&own_client.gmail_grant()), COMPANY_CLIENT);
+}
+
+#[rstest]
+fn own_client_is_marked_as_chosen(own_client: World) {
+    let g: Value = serde_json::from_str(&own_client.gmail_grant()).unwrap();
+    assert_eq!(g["custom_client"], true);
+}
+
+#[rstest]
+fn own_client_token_never_refreshes_with_the_app_client(own_client: World) {
+    assert!(!refreshed_with(&own_client, "cid"));
+}
+
+#[rstest]
+fn own_client_does_not_need_reconnect(own_client: World) {
+    assert_eq!(needs_reconnect(&own_client), false);
+}
+
+#[rstest]
+fn own_client_keeps_mail_syncing(own_client: World) {
+    own_client.mailbox.lock().unwrap().add_message(
+        "m9",
+        "t9",
+        &["INBOX", "UNREAD"],
+        &raw("Ann <ann@example.org>", "Company mail", "Hi", "m9"),
+        NOW + 1000,
+    );
+    own_client.wait_until("new mail", |w| {
+        w.ok("threads.list", json!({}))["total"] == 4
+    });
+}
+
+#[rstest]
+fn drive_consent_uses_the_own_client(own_client: World) {
+    let url = connect_drive(&own_client, &[READ_ALL, FILE_ONLY]);
+    assert_eq!(param(&url, "client_id"), COMPANY_CLIENT);
+}
+
+#[rstest]
+fn drive_grant_records_the_own_client(own_client: World) {
+    connect_drive(&own_client, &[READ_ALL, FILE_ONLY]);
+    let raw = std::fs::read_to_string(
+        own_client
+            .home
+            .path()
+            .join("tokens/ai.mermoz.drive/me@example.com"),
+    )
+    .unwrap();
+    assert_eq!(grant_client(&raw), COMPANY_CLIENT);
+}
+
+#[rstest]
+fn drive_token_refreshes_with_the_own_client(own_client: World) {
+    let mut w = own_client;
+    connect_drive(&w, &[READ_ALL, FILE_ONLY]);
+    w.restart();
+    w.mailbox.lock().unwrap().token_requests.clear();
+    w.ok("drive.search", json!({ "account_id": w.account() }));
+    assert!(refreshed_with(&w, COMPANY_CLIENT));
+}
+
+#[rstest]
+fn file_pick_uses_the_own_client(own_client: World) {
+    let v = own_client.ok("drive.pick", json!({ "account_id": own_client.account() }));
+    assert_eq!(
+        param(v["auth_url"].as_str().unwrap(), "client_id"),
+        COMPANY_CLIENT
+    );
+}
+
+#[rstest]
+fn signing_in_again_keeps_the_own_client(own_client: World) {
+    let url = own_client.ok(
+        "accounts.reconnect",
+        json!({ "account_id": own_client.account() }),
+    )["auth_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(param(&url, "client_id"), COMPANY_CLIENT);
+}
+
+#[rstest]
+fn a_file_that_is_not_a_client_is_refused(mail: World) {
+    let err = mail
+        .call("accounts.add_gmail", json!({ "client_json": "not json" }))
+        .unwrap_err();
+    assert_eq!(err["code"], -32602);
+}
+
+// ---- Google refusing a company account ---------------------------------------
+
+/// Starts a sign-in and plays Google redirecting back with `answer`; returns
+/// `accounts.sign_in_status` once it settles.
+fn refused(w: &World, params: Value, answer: &str) -> Value {
+    let url = w.ok("accounts.add_gmail", params)["auth_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    browser_returns(&url, answer);
+    let mut status = Value::Null;
+    w.wait_until("the sign-in to settle", |w| {
+        status = w.ok("accounts.sign_in_status", json!({}));
+        status["running"] == false
+    });
+    status
+}
+
+#[rstest]
+fn admin_policy_is_explained(mail: World) {
+    let s = refused(&mail, json!({}), "error=admin_policy_enforced");
+    assert_eq!(
+        s["error"],
+        "Your organization only allows apps it trusts. Ask your Google Workspace admin to trust Mermoz (client ID below), or use your own sign-in client (Settings › Developer)."
+    );
+}
+
+#[rstest]
+fn admin_policy_shows_the_client_to_trust(mail: World) {
+    let s = refused(&mail, json!({}), "error=admin_policy_enforced");
+    assert_eq!(s["problem"]["client_id"], "cid");
+}
+
+#[rstest]
+fn app_access_control_block_is_recognised(mail: World) {
+    let s = refused(
+        &mail,
+        json!({}),
+        "error=access_denied&error_description=Your+admin+has+blocked+access",
+    );
+    assert_eq!(s["problem"]["kind"], "app_blocked");
+}
+
+#[rstest]
+fn own_client_refusal_names_the_own_client(mail: World) {
+    let s = refused(
+        &mail,
+        json!({ "client_json": company_client_file() }),
+        "error=org_internal",
+    );
+    assert_eq!(s["problem"]["client_id"], COMPANY_CLIENT);
+}
+
+#[rstest]
+fn the_app_client_is_shown_before_any_refusal(mail: World) {
+    assert_eq!(
+        mail.ok("accounts.sign_in_status", json!({}))["app_client_id"],
+        "cid"
+    );
+}
+
+#[rstest]
+fn a_successful_sign_in_clears_the_problem(mail: World) {
+    refused(&mail, json!({}), "error=admin_policy_enforced");
+    let s = refused(&mail, json!({}), "code=stub-code");
+    assert_eq!(s["problem"], Value::Null);
 }

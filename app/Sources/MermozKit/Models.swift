@@ -315,6 +315,36 @@ public struct LoginState: Codable, Sendable, Equatable {
     }
 }
 
+/// The last Google mail sign-in. `problem` is Google's refusal in plain words;
+/// `appClientId` is what a Workspace admin allow-lists to trust Mermoz.
+public struct GmailSignIn: Codable, Sendable, Equatable {
+    public var running: Bool
+    public var error: String?
+    public var problem: SignInProblem?
+    public var appClientId: String?
+
+    public init(running: Bool = false, error: String? = nil, problem: SignInProblem? = nil, appClientId: String? = nil) {
+        self.running = running; self.error = error; self.problem = problem; self.appClientId = appClientId
+    }
+}
+
+public struct SignInProblem: Codable, Sendable, Equatable {
+    /// admin_policy, unverified, org_internal, app_blocked or declined.
+    public var kind: String
+    public var message: String
+    /// The client the refused consent used.
+    public var clientId: String
+    /// That client is the user's own, not Mermoz's.
+    public var custom: Bool
+}
+
+/// A Google sign-in client the user brings for one account: the downloaded JSON
+/// file's contents, or the pasted ID and secret.
+public enum OwnGoogleClient: Sendable, Equatable {
+    case file(String)
+    case ids(clientId: String, secret: String)
+}
+
 public struct ProviderTest: Codable, Sendable, Equatable {
     public var ok: Bool
     public var cleanBody: String?

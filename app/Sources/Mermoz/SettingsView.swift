@@ -22,7 +22,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @State private var pane: SettingsPane = .agents
+    private var pane: SettingsPane { model.settingsPane }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -61,7 +61,7 @@ struct SettingsView: View {
     }
 
     private func navButton(_ p: SettingsPane) -> some View {
-        Button { pane = p } label: {
+        Button { model.settingsPane = p } label: {
             HStack(spacing: 9) {
                 // Fixed icon column so labels line up whatever the symbol's width.
                 Image(systemName: p.icon).font(.system(size: 13)).frame(width: 18, alignment: .center)
@@ -137,7 +137,9 @@ struct AccountsPane: View {
                 .buttonStyle(.glass)
             Text("Mermoz opens your browser so you can sign in with Google.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+            GmailSignInStatusView()
         }
+        .task { await model.loadSignInStatus() }
     }
 
     /// Mail keeps syncing meanwhile; signing in again keeps everything already on this Mac.
@@ -485,6 +487,7 @@ struct DeveloperPane: View {
         Text("For people who drive Mermoz from their own scripts and agents. Nothing here is needed for everyday use.")
             .font(.system(size: 12)).foregroundStyle(Theme.text3)
         InstantSortingCard()
+        OwnGoogleClientCard()
         SettingsCard(title: "Command line tool", subtitle: "Same mailbox, same speed, from your shell. Every command supports --json.") {
             Text("$ mermoz search \"from:marc audit\" --json\n$ mermoz thread M-1287\n$ mermoz draft reply M-1287 --file reply.txt\n$ mermoz send <draft>   # waits in Review")
                 .font(.system(size: 11.5, design: .monospaced))

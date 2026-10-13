@@ -102,6 +102,33 @@ Goal: anyone with a Gmail account can sign in, without the 7-day expiry.
 
 **Done when:** the consent screen is "In production" and verified.
 
+### Company accounts (Google Workspace)
+
+Workspace admins commonly block unverified external apps from asking for
+restricted Gmail scopes, so a work account may be refused at sign-in
+(`admin_policy_enforced`, "has not completed the Google verification process",
+`access_denied` from App access control). Mermoz explains the refusal in plain words
+and shows its client ID with a copy button. Two ways in:
+
+- **Admin trusts Mermoz.** In the Google Admin console › Security › API controls ›
+  App access control › Manage third-party app access › Configure new app, the admin
+  searches by Mermoz's client ID and sets it to **Trusted**. Works today, even while
+  Mermoz is unverified.
+- **Own sign-in client.** Someone in the company creates an OAuth client of type
+  **Desktop app** in a Google Cloud project of the company's organization, with an
+  **Internal** consent screen and the Gmail API enabled (plus Drive API and Picker
+  API for Drive). Internal apps need no Google verification for accounts of that
+  organization. The user adds the account in Settings › Developer › "Your own Google
+  sign-in client" (pick the downloaded `client_secret_….json` or paste ID and
+  secret), or `mermoz add-account --client-json PATH`. The client is stored with the
+  account's token (`custom_client: true`), used for its refreshes and for its Drive
+  consent, and never flagged "Reconnect". An `org_internal` refusal means the
+  account is outside that client's organization.
+
+For the public beta, the first path only scales once Mermoz is verified: restricted
+Gmail scopes need Google's verification **and** the CASA assessment above. Until
+then, company users rely on their admin or their own client.
+
 ## Phase 4 — Public launch
 
 Prerequisites: Phases 2 and 3 done; Phase 1 exit criteria met.

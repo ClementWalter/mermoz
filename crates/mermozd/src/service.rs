@@ -30,6 +30,8 @@ type Descriptions = (std::time::Instant, Vec<(String, String)>);
 pub struct Service {
     /// Outcome of the last "Sign in with Anthropic".
     pub login: Mutex<LoginState>,
+    /// Outcome of the last Google mail sign-in, with Google's refusal in plain words.
+    pub gmail_sign_in: Mutex<GmailSignIn>,
     /// The sign-in in flight; a new attempt aborts it (a stuck browser flow never blocks a retry).
     login_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Progress of the AI directory clean-up.
@@ -72,6 +74,7 @@ impl Service {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Self {
             login: Mutex::new(LoginState::default()),
+            gmail_sign_in: Mutex::new(GmailSignIn::default()),
             login_task: Mutex::new(None),
             people_job: Mutex::new(JobState::default()),
             store,
@@ -150,7 +153,7 @@ impl Service {
             None => {
                 // Legacy entry: bind it to the client configured today, which issued it.
                 let c = ClientConfig::load()?;
-                tokens::save_grant(email, &grant.refresh_token, &c)?;
+                tokens::save_grant(email, &grant.refresh_token, &c, false)?;
                 c
             }
         };
@@ -226,15 +229,21 @@ impl Service {
     }
 
     /// Begins Google sign-in; the account appears once the browser flow completes.
-    pub async fn add_gmail(self: &Arc<Self>) -> Result<String> {
-        self.sign_in_gmail(None).await
+    /// `custom` is a sign-in client the user brings (their company's own Google
+    /// project); it is stored with the token and used for every later consent.
+    pub async fn add_gmail(self: &Arc<Self>, custom: Option<ClientConfig>) -> Result<String> {
+        match custom {
+            Some(c) => self.sign_in_gmail(None, c, true).await,
+            None => self.sign_in_gmail(None, ClientConfig::load()?, false).await,
+        }
     }
 
-    /// Signs an existing account in again with the app's OAuth client, replacing its
-    /// token. Mail, labels and settings stay as they are.
+    /// Signs an existing account in again, replacing its token. Mail, labels and
+    /// settings stay as they are. An account on its own client keeps that client.
     pub async fn reconnect_gmail(self: &Arc<Self>, account_id: &str) -> Result<String> {
         let acc = self.store.account(account_id)?;
-        self.sign_in_gmail(Some(acc.email)).await
+        let (cfg, custom) = tokens::consent_client(&acc.email)?;
+        self.sign_in_gmail(Some(acc.email), cfg, custom).await
     }
 
     /// True when the account's running token was issued by another OAuth client.
@@ -246,17 +255,26 @@ impl Service {
             .is_some_and(|w| w.needs_reconnect)
     }
 
-    /// Every consent uses the app's own client, so Google names the app's project;
-    /// `expect` is the account being signed in again.
-    async fn sign_in_gmail(self: &Arc<Self>, expect: Option<String>) -> Result<String> {
-        let cfg = ClientConfig::load()?;
+    /// Consents use the app's own client, so Google names the app's project, unless
+    /// the user chose their own (`custom`); `expect` is the account being signed in again.
+    async fn sign_in_gmail(
+        self: &Arc<Self>,
+        expect: Option<String>,
+        cfg: ClientConfig,
+        custom: bool,
+    ) -> Result<String> {
         let req = oauth::AuthRequest {
             login_hint: expect.clone(),
             ..oauth::AuthRequest::gmail()
         };
         let pending = oauth::start_request(cfg.clone(), req).await?;
         let url = pending.auth_url.clone();
+        *self.gmail_sign_in.lock().unwrap() = GmailSignIn {
+            running: true,
+            ..Default::default()
+        };
         let svc = self.clone();
+        let client_id = cfg.client_id.clone();
         tokio::spawn(async move {
             let result: Result<()> = async {
                 let refresh = pending.finish(Duration::from_secs(600)).await?;
@@ -271,7 +289,7 @@ impl Service {
                     )));
                 }
                 let known = svc.store.account(&email).ok();
-                tokens::save_grant(&email, &refresh, &cfg)?;
+                tokens::save_grant(&email, &refresh, &cfg, custom)?;
                 let acc = svc.store.add_account(&email, "gmail")?;
                 // A known, healthy account keeps its sync position and local data.
                 if known.as_ref().is_none_or(|a| a.sync.state == "error") {
@@ -283,9 +301,14 @@ impl Service {
                 Ok(())
             }
             .await;
-            if let Err(e) = result {
-                warn!("sign-in failed: {e}");
-            }
+            let outcome = match result {
+                Ok(()) => GmailSignIn::default(),
+                Err(e) => {
+                    warn!("sign-in failed: {e}");
+                    GmailSignIn::failed(&e, &client_id, custom)
+                }
+            };
+            *svc.gmail_sign_in.lock().unwrap() = outcome;
             let _ = svc.events.send(Event::AccountsChanged);
         });
         Ok(url)
@@ -307,6 +330,48 @@ pub struct JobState {
     pub done: usize,
     pub total: usize,
     pub error: Option<String>,
+}
+
+/// The last Google mail sign-in. `problem` is set when Google refused it.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct GmailSignIn {
+    pub running: bool,
+    pub error: Option<String>,
+    pub problem: Option<SignInProblem>,
+}
+
+/// Google's refusal in plain words, with the client ID an admin would allow-list.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SignInProblem {
+    pub kind: oauth::Refusal,
+    pub message: String,
+    pub client_id: String,
+    /// The consent used the user's own sign-in client.
+    pub custom: bool,
+}
+
+impl GmailSignIn {
+    fn failed(e: &Error, client_id: &str, custom: bool) -> Self {
+        let said = match e {
+            Error::Declined(s) => s.clone(),
+            Error::Upstream { body, .. } => body.clone(),
+            _ => String::new(),
+        };
+        let problem = oauth::Refusal::classify(&said).map(|kind| SignInProblem {
+            kind,
+            message: kind.message(custom),
+            client_id: client_id.to_string(),
+            custom,
+        });
+        GmailSignIn {
+            running: false,
+            error: Some(match &problem {
+                Some(p) => p.message.clone(),
+                None => e.to_string(),
+            }),
+            problem,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]

@@ -4,6 +4,7 @@ use crate::service::Service;
 use mermoz_core::Error;
 use mermoz_core::model::ThreadState;
 use mermoz_core::model::{Draft, new_id, now_ms};
+use mermoz_core::oauth::ClientConfig;
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
 use mermoz_core::store::{
     AttachmentSource, ColumnScope, NewAttachment, SortAnswer, SortUndo, SuggestedFilter,
@@ -205,7 +206,30 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             }
             Ok(v)
         }
-        "accounts.add_gmail" => Ok(json!({ "auth_url": svc.add_gmail().await? })),
+        "accounts.add_gmail" => {
+            // The user's own sign-in client, from the Google Cloud download or pasted.
+            let (file, id, secret) = (
+                opt_s(p, "client_json"),
+                opt_s(p, "client_id"),
+                opt_s(p, "client_secret"),
+            );
+            let custom = if file.is_some() || id.is_some() || secret.is_some() {
+                Some(ClientConfig::from_user(
+                    file.as_deref(),
+                    id.as_deref(),
+                    secret.as_deref(),
+                )?)
+            } else {
+                None
+            };
+            Ok(json!({ "auth_url": svc.add_gmail(custom).await? }))
+        }
+        "accounts.sign_in_status" => {
+            let mut v = to_value(svc.gmail_sign_in.lock().unwrap().clone())?;
+            // What an admin allow-lists to trust Mermoz, shown with Google's refusals.
+            v["app_client_id"] = json!(ClientConfig::load().ok().map(|c| c.client_id));
+            Ok(v)
+        }
         "accounts.reconnect" => {
             let id = s(p, "account_id")?;
             Ok(json!({ "auth_url": svc.reconnect_gmail(&id).await? }))

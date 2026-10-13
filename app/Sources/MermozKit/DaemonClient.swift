@@ -80,7 +80,19 @@ public final class DaemonClient: Sendable {
     }
 
     public func accounts() async throws -> [Account] { try await call("accounts.list") }
-    public func addGmail() async throws -> AuthStart { try await call("accounts.add_gmail") }
+    public func addGmail(ownClient: OwnGoogleClient? = nil) async throws -> AuthStart {
+        try await call("accounts.add_gmail", Self.addGmailParams(ownClient))
+    }
+
+    static func addGmailParams(_ ownClient: OwnGoogleClient?) -> Params {
+        switch ownClient {
+        case nil: Params()
+        case let .file(json): Params().with("client_json", json)
+        case let .ids(id, secret): Params().with("client_id", id).with("client_secret", secret)
+        }
+    }
+
+    public func signInStatus() async throws -> GmailSignIn { try await call("accounts.sign_in_status") }
     public func reconnectAccount(_ id: String) async throws -> AuthStart {
         try await call("accounts.reconnect", Params().with("account_id", id))
     }

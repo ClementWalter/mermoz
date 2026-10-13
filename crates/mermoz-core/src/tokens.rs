@@ -15,6 +15,10 @@ pub struct GoogleGrant {
     pub client_secret: Option<String>,
     #[serde(default)]
     pub token_url: Option<String>,
+    /// The user chose this client for the account (Settings › Developer, `--client-json`),
+    /// e.g. their company's own Google project; it is kept on every new consent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub custom_client: bool,
 }
 
 impl GoogleGrant {
@@ -25,6 +29,7 @@ impl GoogleGrant {
             client_id: None,
             client_secret: None,
             token_url: None,
+            custom_client: false,
         })
     }
 
@@ -39,21 +44,43 @@ impl GoogleGrant {
     /// Issued by another OAuth client than the app's: it still refreshes with its own
     /// client, but Google shows that client's project on every new consent, so the
     /// user signs in again to move the account onto the app's client.
+    /// A client the user chose on purpose is never flagged.
     pub fn needs_reconnect(&self, app_client_id: &str) -> bool {
-        self.client_id
-            .as_deref()
-            .is_some_and(|id| id != app_client_id)
+        !self.custom_client
+            && self
+                .client_id
+                .as_deref()
+                .is_some_and(|id| id != app_client_id)
     }
 }
 
-pub fn save_grant(account: &str, refresh_token: &str, cfg: &ClientConfig) -> Result<()> {
+/// `custom` marks a client the user chose for this account instead of the app's.
+pub fn save_grant(
+    account: &str,
+    refresh_token: &str,
+    cfg: &ClientConfig,
+    custom: bool,
+) -> Result<()> {
     let g = GoogleGrant {
         refresh_token: refresh_token.into(),
         client_id: Some(cfg.client_id.clone()),
         client_secret: Some(cfg.client_secret.clone()),
         token_url: Some(cfg.token_url.clone()),
+        custom_client: custom,
     };
     save(account, &serde_json::to_string(&g)?)
+}
+
+/// The client a new consent for `account` uses (Gmail again, Drive, the file
+/// picker): the user's own client when they chose one, else the app's.
+pub fn consent_client(account: &str) -> Result<(ClientConfig, bool)> {
+    match load_grant(account) {
+        Ok(g) if g.custom_client => match g.client() {
+            Some(c) => Ok((c, true)),
+            None => Ok((ClientConfig::load()?, false)),
+        },
+        _ => Ok((ClientConfig::load()?, false)),
+    }
 }
 
 pub fn load_grant(account: &str) -> Result<GoogleGrant> {
@@ -227,6 +254,7 @@ mod tests {
             client_id: client_id.map(String::from),
             client_secret: Some("s".into()),
             token_url: None,
+            custom_client: false,
         }
     }
 
@@ -239,5 +267,32 @@ mod tests {
         #[case] expected: bool,
     ) {
         assert_eq!(grant(client_id).needs_reconnect("app-cid"), expected);
+    }
+
+    #[rstest]
+    fn custom_client_never_needs_reconnect() {
+        let g = GoogleGrant {
+            custom_client: true,
+            ..grant(Some("company-cid"))
+        };
+        assert!(!g.needs_reconnect("app-cid"));
+    }
+
+    #[rstest]
+    fn custom_client_marker_survives_a_round_trip() {
+        let g = GoogleGrant {
+            custom_client: true,
+            ..grant(Some("company-cid"))
+        };
+        assert!(GoogleGrant::parse(&serde_json::to_string(&g).unwrap()).custom_client);
+    }
+
+    #[rstest]
+    fn app_client_grant_stores_no_marker() {
+        assert!(
+            !serde_json::to_string(&grant(Some("app-cid")))
+                .unwrap()
+                .contains("custom_client")
+        );
     }
 }

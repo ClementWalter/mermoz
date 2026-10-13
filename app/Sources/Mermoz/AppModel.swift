@@ -97,6 +97,10 @@ final class AppModel {
     var appliedSuggestion: [String: Suggestion] = [:]
     var agentStates: [String: AgentState] = [:]
     var login = LoginState(running: false, error: nil)
+    /// The last Google mail sign-in, with Google's refusal explained.
+    var gmailSignIn = GmailSignIn()
+    /// The Settings pane shown; a sign-in problem can send the user to Developer.
+    var settingsPane: SettingsPane = .agents
     /// One observable cell per badge, so a moved count redraws its badge alone.
     @ObservationIgnored let countCells = CountCells()
     /// Count refreshes merge: one in flight, asks within 100 ms folded into one fetch.
@@ -1334,14 +1338,23 @@ final class AppModel {
 
     // MARK: settings
 
-    func addGmail() {
+    /// `ownClient`: the user's own Google sign-in client (Settings › Developer).
+    func addGmail(ownClient: OwnGoogleClient? = nil) {
         guard let client else { return }
         Task {
             do {
-                let start = try await client.addGmail()
+                let start = try await client.addGmail(ownClient: ownClient)
+                await loadSignInStatus()
                 if let url = URL(string: start.authUrl) { NSWorkspace.shared.open(url) }
-            } catch { report(error) }
+            } catch {
+                gmailSignIn.running = false
+                gmailSignIn.error = (error as? RPCError)?.message ?? error.localizedDescription
+            }
         }
+    }
+
+    func loadSignInStatus() async {
+        if let s = try? await client?.signInStatus() { gmailSignIn = s }
     }
 
     func reconnectAccount(_ id: String) {
@@ -1470,7 +1483,7 @@ final class AppModel {
                 }
             }
         case .accountsChanged:
-            Task { await refreshAll() }
+            Task { await refreshAll(); await loadSignInStatus() }
         case let .syncProgress(acc, synced, total):
             syncProgress[acc] = (synced, total)
         case .providersChanged:

@@ -4,7 +4,7 @@
 use crate::error::{Error, Result};
 use crate::paths;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -46,6 +46,36 @@ impl ClientConfig {
         let v: serde_json::Value = serde_json::from_str(raw)?;
         let inner = v.get("installed").cloned().unwrap_or(v);
         Ok(serde_json::from_value(inner)?)
+    }
+
+    /// A client the user brings for one account: the JSON downloaded from Google Cloud,
+    /// or its ID and secret pasted. Neither may be blank.
+    pub fn from_user(
+        json: Option<&str>,
+        client_id: Option<&str>,
+        client_secret: Option<&str>,
+    ) -> Result<Self> {
+        let cfg = match (json, client_id, client_secret) {
+            (Some(raw), _, _) => Self::parse(raw).map_err(|_| {
+                Error::InvalidParams(
+                    "that file isn't a Google sign-in client (expected the client_secret_….json from Google Cloud)".into(),
+                )
+            })?,
+            (None, Some(id), Some(secret)) => {
+                Self::with_ids(id.trim().into(), secret.trim().into())
+            }
+            _ => {
+                return Err(Error::InvalidParams(
+                    "give the client JSON file, or both the client ID and secret".into(),
+                ));
+            }
+        };
+        if cfg.client_id.trim().is_empty() || cfg.client_secret.trim().is_empty() {
+            return Err(Error::InvalidParams(
+                "the client ID and secret can't be empty".into(),
+            ));
+        }
+        Ok(cfg)
     }
 
     /// Build-time credentials (release builds), then env, then `MERMOZ_HOME/oauth_client.json`.
@@ -256,7 +286,11 @@ impl PendingAuth {
                 );
                 let _ = sock.write_all(resp.as_bytes()).await;
                 if let Some(e) = get("error") {
-                    return Err(Error::Declined(e));
+                    // The description tells a cancel from an organization's block.
+                    return Err(Error::Declined(match get("error_description") {
+                        Some(d) => format!("{e}: {d}"),
+                        None => e,
+                    }));
                 }
                 if get("state").as_deref() != Some(self.state.as_str()) {
                     return Err(Error::other("oauth state mismatch"));
@@ -311,6 +345,82 @@ impl PendingAuth {
                 .collect(),
             picked: redirect.picked,
         })
+    }
+}
+
+/// Why Google refused a sign-in, from what it said (the redirect's `error=`, a token
+/// endpoint body, or the words on its own error page).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Refusal {
+    /// `admin_policy_enforced`: the Workspace only allows apps its admin trusts.
+    AdminPolicy,
+    /// "… has not completed the Google verification process".
+    Unverified,
+    /// `org_internal`: an internal client used with an account outside its organization.
+    OrgInternal,
+    /// `access_denied` from the Workspace's app access control.
+    AppBlocked,
+    /// `access_denied` with nothing more: a cancel, or a block Google didn't explain.
+    Declined,
+}
+
+impl Refusal {
+    pub fn classify(text: &str) -> Option<Self> {
+        let t = text.to_ascii_lowercase();
+        let any = |words: &[&str]| words.iter().any(|w| t.contains(w));
+        // Most specific first: Google's pages also say "access_denied" and "blocked".
+        if t.contains("admin_policy_enforced") {
+            Some(Self::AdminPolicy)
+        } else if t.contains("org_internal") {
+            Some(Self::OrgInternal)
+        } else if any(&["verification process", "not been verified", "unverified"]) {
+            Some(Self::Unverified)
+        } else if any(&["access_denied", "access blocked"]) {
+            if any(&[
+                "admin",
+                "blocked",
+                "organization",
+                "organisation",
+                "institution",
+                "trust",
+            ]) {
+                Some(Self::AppBlocked)
+            } else {
+                Some(Self::Declined)
+            }
+        } else {
+            None
+        }
+    }
+
+    /// The explanation and the fix, in plain words. `custom`: the consent used the
+    /// user's own sign-in client rather than Mermoz's.
+    pub fn message(self, custom: bool) -> String {
+        let trust = if custom {
+            "Ask your Google Workspace admin to trust this sign-in client (client ID below)"
+        } else {
+            "Ask your Google Workspace admin to trust Mermoz (client ID below)"
+        };
+        let own = "or use your own sign-in client (Settings › Developer)";
+        match self {
+            Self::AdminPolicy => {
+                format!("Your organization only allows apps it trusts. {trust}, {own}.")
+            }
+            Self::Unverified => format!(
+                "Google stopped the sign-in because this app hasn't finished Google's review yet. {trust}, {own}."
+            ),
+            Self::OrgInternal => format!(
+                "This sign-in client only works for accounts of the organization that made it. Sign in with an account from that organization, {own}."
+            ),
+            Self::AppBlocked => format!(
+                "Your Google Workspace admin has blocked this app for your organization. {trust}, {own}."
+            ),
+            Self::Declined => format!(
+                "Google didn't give Mermoz access. If you didn't cancel, your organization may only allow apps it trusts: {}, {own}.",
+                trust.replacen("Ask", "ask", 1)
+            ),
+        }
     }
 }
 
@@ -393,6 +503,83 @@ mod tests {
     fn parses_google_console_download() {
         let raw = r#"{"installed":{"client_id":"cid","client_secret":"s","token_uri":"https://oauth2.googleapis.com/token"}}"#;
         assert_eq!(ClientConfig::parse(raw).unwrap().client_id, "cid");
+    }
+
+    #[rstest]
+    #[case::admin_policy("admin_policy_enforced", Refusal::AdminPolicy)]
+    #[case::admin_policy_page("Error 400: admin_policy_enforced", Refusal::AdminPolicy)]
+    #[case::unverified(
+        "Access blocked: Mermoz has not completed the Google verification process. Error 403: access_denied",
+        Refusal::Unverified
+    )]
+    #[case::org_internal("org_internal", Refusal::OrgInternal)]
+    #[case::org_internal_page("Error 403: org_internal", Refusal::OrgInternal)]
+    #[case::app_access_control(
+        "access_denied: Your administrator has blocked access to Mermoz",
+        Refusal::AppBlocked
+    )]
+    #[case::bare_access_denied("access_denied", Refusal::Declined)]
+    fn google_refusals_are_recognised(#[case] text: &str, #[case] expected: Refusal) {
+        assert_eq!(Refusal::classify(text), Some(expected));
+    }
+
+    #[rstest]
+    fn other_errors_are_not_refusals() {
+        assert_eq!(Refusal::classify("invalid_grant"), None);
+    }
+
+    #[rstest]
+    fn admin_policy_offers_both_fixes() {
+        assert_eq!(
+            Refusal::AdminPolicy.message(false),
+            "Your organization only allows apps it trusts. Ask your Google Workspace admin to trust Mermoz (client ID below), or use your own sign-in client (Settings › Developer)."
+        );
+    }
+
+    #[rstest]
+    fn own_client_refusal_names_that_client() {
+        assert!(
+            Refusal::AdminPolicy
+                .message(true)
+                .contains("trust this sign-in client")
+        );
+    }
+
+    #[rstest]
+    fn user_client_from_google_download() {
+        let raw = r#"{"installed":{"client_id":"company-cid","client_secret":"s"}}"#;
+        assert_eq!(
+            ClientConfig::from_user(Some(raw), None, None)
+                .unwrap()
+                .client_id,
+            "company-cid"
+        );
+    }
+
+    #[rstest]
+    fn user_client_from_pasted_ids_is_trimmed() {
+        assert_eq!(
+            ClientConfig::from_user(None, Some(" company-cid \n"), Some("s"))
+                .unwrap()
+                .client_id,
+            "company-cid"
+        );
+    }
+
+    #[rstest]
+    #[case::not_json(Some("hello"), None, None)]
+    #[case::no_secret(None, Some("company-cid"), None)]
+    #[case::blank_secret(None, Some("company-cid"), Some("  "))]
+    #[case::nothing(None, None, None)]
+    fn user_client_must_be_complete(
+        #[case] json: Option<&str>,
+        #[case] id: Option<&str>,
+        #[case] secret: Option<&str>,
+    ) {
+        assert!(matches!(
+            ClientConfig::from_user(json, id, secret),
+            Err(Error::InvalidParams(_))
+        ));
     }
 
     #[rstest]

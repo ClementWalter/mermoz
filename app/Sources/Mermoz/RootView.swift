@@ -205,6 +205,7 @@ struct WelcomeView: View {
             .tint(Theme.accent)
             Text("Mermoz opens your browser so you can sign in with Google.")
                 .font(.system(size: 12)).foregroundStyle(Theme.text3)
+            GmailSignInStatusView()
         }
         .padding(40)
         .frame(width: 440)

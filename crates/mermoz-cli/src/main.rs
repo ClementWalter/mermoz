@@ -50,7 +50,27 @@ enum Cmd {
     /// List connected accounts and their sync state.
     Accounts,
     /// Connect a Gmail account (opens the browser).
-    AddAccount,
+    ///
+    /// A company Google Workspace that blocks Mermoz can sign in through its own
+    /// Google Cloud OAuth client (Desktop app) instead:
+    ///   mermoz add-account --client-json ~/Downloads/client_secret_….json
+    ///   mermoz add-account --client-id ID --client-secret SECRET
+    /// That client is stored with the account and used for its Drive too.
+    #[command(verbatim_doc_comment)]
+    AddAccount {
+        /// The client_secret_*.json downloaded from Google Cloud.
+        #[arg(long, conflicts_with_all = ["client_id", "client_secret"])]
+        client_json: Option<std::path::PathBuf>,
+        /// OAuth client ID (with --client-secret).
+        #[arg(long, requires = "client_secret")]
+        client_id: Option<String>,
+        /// OAuth client secret (with --client-id).
+        #[arg(long, requires = "client_id")]
+        client_secret: Option<String>,
+        /// Wait for the browser sign-in to finish and say how it went.
+        #[arg(long)]
+        wait: bool,
+    },
     /// Sign an account in to Google again, keeping its mail (opens the browser).
     /// Needed when `mermoz accounts` says "sign in again".
     Reconnect {
@@ -370,6 +390,38 @@ fn attach_paths(paths: &[String]) -> Result<Vec<String>, RpcError> {
                 })
         })
         .collect()
+}
+
+/// `accounts.add_gmail` params: the user's own sign-in client, when given.
+fn add_account_params(
+    client_json: Option<&std::path::Path>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+) -> Result<Value, RpcError> {
+    if let Some(p) = client_json {
+        let raw = std::fs::read_to_string(p).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("cannot read {}: {e}", p.display()),
+            data: None,
+        })?;
+        return Ok(json!({ "client_json": raw }));
+    }
+    Ok(match (client_id, client_secret) {
+        (Some(id), Some(secret)) => json!({ "client_id": id, "client_secret": secret }),
+        _ => json!({}),
+    })
+}
+
+/// A failed sign-in in plain words; Google's refusals add the client ID an admin
+/// allow-lists and where.
+fn sign_in_report(status: &Value) -> String {
+    let error = status["error"].as_str().unwrap_or("sign-in failed");
+    match status["problem"]["client_id"].as_str() {
+        Some(id) => format!(
+            "{error}\nClient ID: {id}\nAdmins trust it in the Google Admin console › Security › API controls › App access control.\nOwn client: mermoz add-account --client-json PATH"
+        ),
+        None => error.to_string(),
+    }
 }
 
 fn read_body(body: Option<String>, file: Option<String>) -> Result<String, RpcError> {
@@ -758,19 +810,50 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 "Opened the browser to sign in again. If it didn't open:\n{url}"
             ));
         }
-        Cmd::AddAccount => {
-            let v = c.call("accounts.add_gmail", json!({}))?;
+        Cmd::AddAccount {
+            client_json,
+            client_id,
+            client_secret,
+            wait,
+        } => {
+            let params = add_account_params(client_json.as_deref(), client_id, client_secret)?;
+            let v = c.call("accounts.add_gmail", params)?;
             let url = v["auth_url"].as_str().unwrap_or("");
             let _ = std::process::Command::new("open").arg(url).status();
-            if out.json {
-                return {
+            if !wait {
+                if out.json {
                     out.json(&v);
-                    Ok(())
-                };
+                } else {
+                    out.line(format!(
+                        "Opened the browser to sign in. If it didn't open:\n{url}"
+                    ));
+                }
+                return Ok(());
             }
-            out.line(format!(
-                "Opened the browser to sign in. If it didn't open:\n{url}"
-            ));
+            if !out.json {
+                out.line(format!(
+                    "Opened the browser to sign in. If it didn't open:\n{url}"
+                ));
+            }
+            let status = loop {
+                let s = c.call("accounts.sign_in_status", json!({}))?;
+                if s["running"] != true {
+                    break s;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            };
+            if status["error"].is_string() {
+                return Err(RpcError {
+                    code: -32000,
+                    message: sign_in_report(&status),
+                    data: Some(status),
+                });
+            }
+            if out.json {
+                out.json(&status);
+            } else {
+                out.line("Signed in. Mermoz is syncing the account.");
+            }
         }
         Cmd::List {
             status,
@@ -1824,5 +1907,35 @@ mod tests {
                 .message
                 .contains("--body")
         );
+    }
+
+    #[rstest]
+    fn pasted_client_is_sent_as_ids() {
+        assert_eq!(
+            add_account_params(None, Some("company-cid".into()), Some("s".into())).unwrap(),
+            json!({ "client_id": "company-cid", "client_secret": "s" })
+        );
+    }
+
+    #[rstest]
+    fn client_file_is_sent_as_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("client_secret.json");
+        std::fs::write(&f, r#"{"installed":{"client_id":"company-cid"}}"#).unwrap();
+        assert_eq!(
+            add_account_params(Some(&f), None, None).unwrap()["client_json"],
+            r#"{"installed":{"client_id":"company-cid"}}"#
+        );
+    }
+
+    #[rstest]
+    fn no_client_means_the_app_client() {
+        assert_eq!(add_account_params(None, None, None).unwrap(), json!({}));
+    }
+
+    #[rstest]
+    fn refusal_report_says_where_admins_trust_the_client() {
+        let status = json!({ "error": "Your organization only allows apps it trusts.", "problem": { "client_id": "app-cid" } });
+        assert!(sign_in_report(&status).contains("Client ID: app-cid"));
     }
 }
