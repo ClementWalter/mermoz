@@ -716,10 +716,15 @@ final class AppModel {
                     if d.thread.status == "unread", let sg = d.thread.suggestion, !sg.isEmpty {
                         appliedSuggestion[id] = sg
                     }
-                    try? await client.markRead(id)
-                    if let fresh = try? await client.thread(id), selectedThreadId == id {
-                        detail = fresh
-                        setLocal(id) { $0 = fresh.thread }
+                    // The answer carries the thread as reading left it: patched in place,
+                    // the pane keeps its messages instead of loading them all again.
+                    let read = try? await client.markRead(id)
+                    if let read, selectedThreadId == id, let current = detail, current.thread.id == id {
+                        detail = current.afterReading(read)
+                        // The row only: setLocal would write the pane's detail a second time.
+                        if let i = threads.firstIndex(where: { $0.id == id }), threads[i] != read { threads[i] = read }
+                    } else if let read {
+                        setLocal(id) { $0 = read }
                     } else {
                         setLocal(id) { $0.unread = false }
                     }

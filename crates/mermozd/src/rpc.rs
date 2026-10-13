@@ -392,7 +392,9 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             if let Ok((acc, _)) = st.provider_thread_id(&id) {
                 svc.kick(&acc);
             }
-            Ok(json!({}))
+            // The thread as reading left it (read, maybe filed), so the app patches it in
+            // place instead of fetching the whole conversation again.
+            Ok(json!({ "thread": st.thread(&id)? }))
         }
         "messages.source" => {
             // The email exactly as received (every header, the true From and Reply-To),

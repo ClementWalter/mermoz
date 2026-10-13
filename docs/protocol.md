@@ -167,7 +167,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | `router.get`         | `{}` — instant routing with TypeSafe Jev (Settings › Developer)                         | `{"configured": bool, "error": "…" \| null, "model": "jev-latest", "daily_cap": n, "calls_today": n, "paused": "credits" \| "unavailable" \| null}` |
 | `router.set`         | `{"api_key"?: "…" \| null, "daily_cap"?: n}` — app only; null removes the key and stops routing; `daily_cap` bounds background sorting calls per day (default 20,000) | same as `router.get`                     |
 | `router.test`        | `{"api_key"?}` — one tiny call with the given or stored key                              | `{"ok": true, "ms": n}`                  |
-| `threads.mark_read`  | `{"id", "read"?: true}` — reading marks the whole conversation read                                                                  | `{}`                                     |
+| `threads.mark_read`  | `{"id", "read"?: true}` — reading marks the whole conversation read                                                                  | `{"thread": ThreadSummary}` as reading left it |
 | `messages.html`      | `{"id", "full"?: false}` — quoted history removed unless `full`                         | `{"html": "…", "has_quoted": bool}` sanitized, remote content stripped |
 | `search`             | `{"query", "limit"?: 50}`                                                                | `{"threads": [ThreadSummary]}` full-text, most recent first |
 | `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |

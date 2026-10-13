@@ -187,6 +187,25 @@ public struct ThreadDetail: Codable, Sendable, Equatable {
     public var conversation: Conversation?
 }
 
+extension ThreadDetail {
+    /// The conversation once read: its lead as the daemon left it (maybe filed by the
+    /// AI's suggestion) and every Gmail thread in it read, as `threads.mark_read` does.
+    public func afterReading(_ lead: ThreadSummary) -> ThreadDetail {
+        var d = self
+        d.thread = lead
+        if var c = d.conversation {
+            c.threads = c.threads.map { t in
+                if t.id == lead.id { return lead }
+                var t = t
+                t.unread = false
+                return t
+            }
+            d.conversation = c
+        }
+        return d
+    }
+}
+
 public struct Status: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var key: String
     public var name: String

@@ -216,8 +216,11 @@ public final class DaemonClient: Sendable {
         try await call("router.test", Params().with("api_key", key))
     }
 
-    public func markRead(_ id: String, read: Bool = true) async throws {
-        try await callVoid("threads.mark_read", Params().with("id", id).with("read", read))
+    /// The thread as reading left it; nil from a daemon that answers `{}`.
+    @discardableResult
+    public func markRead(_ id: String, read: Bool = true) async throws -> ThreadSummary? {
+        struct R: Decodable { var thread: ThreadSummary? }
+        return try await call("threads.mark_read", Params().with("id", id).with("read", read), as: R.self).thread
     }
 
     /// `images`: keep remote images (they can tell the sender the mail was opened).

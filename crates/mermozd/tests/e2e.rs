@@ -1151,6 +1151,21 @@ fn router_sends_the_typesafe_key(synced: World) {
 }
 
 #[rstest]
+fn mark_read_answers_with_the_thread_read(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    let r = synced.ok("threads.mark_read", json!({ "id": t["id"] }));
+    assert_eq!(r["thread"]["unread"], false);
+}
+
+#[rstest]
+fn mark_read_answers_with_the_status_reading_applied(synced: World) {
+    enable_router(&synced);
+    let t = synced.thread_by_subject("Audit report v2");
+    let r = synced.ok("threads.mark_read", json!({ "id": t["id"] }));
+    assert_eq!(r["thread"]["status"], "archive");
+}
+
+#[rstest]
 fn reading_applies_the_router_suggestion(synced: World) {
     enable_router(&synced);
     let t = synced.thread_by_subject("Audit report v2");
