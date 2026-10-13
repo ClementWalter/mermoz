@@ -64,13 +64,9 @@ struct ChatStream: View {
             switch row {
             case .summary:
                 hosted[key] = AnyView(SummaryBox(summary: detail.thread.summary ?? "", next: detail.thread.nextAction))
-            case let .marker(threadId, subject, date, joined):
-                hosted[key] = AnyView(ThreadMarker(threadId: threadId, subject: subject, date: date, joined: joined))
             case let .expanded(m):
                 // The whole email stays SwiftUI (HTML, seal, Original / Optimized, files).
                 hosted[key] = AnyView(ExpandedMessage(message: m, kind: conversation.kind))
-            case let .images(m, first):
-                hosted[key] = AnyView(CompactBubble(message: m, firstOfRun: first))
             }
         }
         return ChatStreamHost(rows: rows, hosted: hosted, conversation: detail.thread.id, messages: detail.messages.count) { delta in
@@ -114,6 +110,8 @@ struct ChatStreamHost: NSViewRepresentable, Equatable {
         actions.toggle = { model.toggleMessage($0) }
         actions.showMore = { model.shownInFull.insert($0) }
         actions.showEarlier = { model.chatShowsAll = true }
+        actions.split = { model.splitThread($0) }
+        actions.file = { id in (try? await model.client?.attachment(id)).map { URL(fileURLWithPath: $0.path) } }
         actions.moveFocus = moveFocus
         actions.activate = { if let id = model.focusedMessageId { model.toggleMessage(id) } }
         let hosted = hosted
@@ -137,10 +135,9 @@ struct ConversationHeader: View {
     var body: some View {
         @Bindable var model = model
         VStack(alignment: .leading, spacing: 8) {
-            Text(detail.thread.subject.isEmpty ? "(no subject)" : detail.thread.subject)
-                .font(.system(size: 17, weight: .semibold))
-                .textSelection(.enabled)
-                .lineLimit(2)
+            // Selectable, drawn by TextKit from the shared caches: a SwiftUI selectable
+            // Text cost a few milliseconds every time another conversation opened.
+            SelectableTitle(text: detail.thread.subject.isEmpty ? "(no subject)" : detail.thread.subject)
             Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
             HStack(spacing: 2) {
                 ForEach(ConversationTab.allCases, id: \.self) { tab in
@@ -1065,5 +1062,33 @@ struct MessageDetails: View {
                 }
             }
         }
+    }
+}
+
+/// A conversation's subject: two lines at most, selectable and copyable.
+struct SelectableTitle: NSViewRepresentable {
+    let text: String
+
+    private func style(_ env: EnvironmentValues) -> BubbleTextStyle {
+        let c = Theme.text.resolve(in: env)
+        return BubbleTextStyle(pointSize: (17 * BubbleTextView.scale(env.dynamicTypeSize) * 10).rounded() / 10, lineSpacing: 0,
+                               semibold: true, links: false, red: CGFloat(c.red), green: CGFloat(c.green), blue: CGFloat(c.blue), alpha: 1)
+    }
+
+    func makeNSView(context: Context) -> SelectableBubbleText {
+        let v = SelectableBubbleText.make()
+        v.setAccessibilityRole(.staticText)
+        return v
+    }
+
+    func updateNSView(_ v: SelectableBubbleText, context: Context) {
+        v.setAccessibilityLabel(text)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView v: SelectableBubbleText, context: Context) -> CGSize? {
+        let width = proposal.width.map { $0.isFinite ? $0 : BubbleTextCache.idealWidth } ?? BubbleTextCache.idealWidth
+        let laid = BubbleTextCache.shared.layout(id: "title", text: text, style: style(context.environment), width: width, maxLines: 2)
+        v.show(laid)
+        return laid.size
     }
 }

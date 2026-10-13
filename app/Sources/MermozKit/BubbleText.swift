@@ -13,12 +13,15 @@ import Foundation
 public struct BubbleTextStyle: Hashable, Sendable {
     public var pointSize: CGFloat
     public var lineSpacing: CGFloat
+    public var semibold: Bool
+    /// Web addresses become clickable links (bubbles), or stay plain text (titles).
+    public var links: Bool
     /// sRGB components of the text color.
     public var red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat
 
-    public init(pointSize: CGFloat = 13.5, lineSpacing: CGFloat = 2.5,
+    public init(pointSize: CGFloat = 13.5, lineSpacing: CGFloat = 2.5, semibold: Bool = false, links: Bool = true,
                 red: CGFloat = 0.05, green: CGFloat = 0.14, blue: CGFloat = 0.21, alpha: CGFloat = 0.92) {
-        self.pointSize = pointSize; self.lineSpacing = lineSpacing
+        self.pointSize = pointSize; self.lineSpacing = lineSpacing; self.semibold = semibold; self.links = links
         self.red = red; self.green = green; self.blue = blue; self.alpha = alpha
     }
 
@@ -135,10 +138,11 @@ public final class BubbleTextCache: @unchecked Sendable {
         p.lineSpacing = style.lineSpacing
         p.lineBreakMode = .byWordWrapping
         let s = NSMutableAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: style.pointSize),
+            .font: NSFont.systemFont(ofSize: style.pointSize, weight: style.semibold ? .semibold : .regular),
             .foregroundColor: style.color,
             .paragraphStyle: p,
         ])
+        guard style.links else { return s }
         let whole = NSRange(location: 0, length: (text as NSString).length)
         links?.enumerateMatches(in: text, range: whole) { match, _, _ in
             if let m = match, let url = m.url { s.addAttribute(.link, value: url, range: m.range) }

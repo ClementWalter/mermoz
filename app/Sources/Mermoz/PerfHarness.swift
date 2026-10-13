@@ -23,6 +23,9 @@ enum PerfHarness {
 
     static var enabled: Bool { steps != nil }
 
+    /// The model whose `detail` the windows watch.
+    private static var watched: AppModel?
+
     /// CPU time (user + system) the calling thread has used, in milliseconds.
     static func threadCPU() -> Double {
         var info = thread_basic_info()
@@ -48,8 +51,15 @@ enum PerfHarness {
 
     /// Main-thread CPU spent over one window: `action` and the frame drawn right after it
     /// (`first`), then everything until `gap` has passed (`total`, the frame included).
+    /// Main-thread CPU at the moment the opened conversation reached the pane, in a window.
+    private static var detailAt: Double?
+
     private static func window(gap: Duration, _ action: () -> Void) async -> (action: Double, first: Double, total: Double) {
         let t0 = threadCPU()
+        detailAt = nil
+        if let model = watched {
+            withObservationTracking { _ = model.detail } onChange: { MainActor.assumeIsolated { detailAt = threadCPU() - t0 } }
+        }
         action()
         let acted = threadCPU() - t0
         flush()
@@ -100,6 +110,17 @@ enum PerfHarness {
             return { model.feedMove(1) }
         case "palette":
             return { model.paletteMode = model.paletteMode == nil ? .search : nil }
+        case "highlight":
+            // The selection highlight alone moves (no thread opens): the cheapest visible
+            // change, the window's per-frame floor.
+            let ids = model.displayOrder.map(\.id)
+            var i = 0
+            return {
+                i += 1
+                model.selectionCells.select([ids[i % max(ids.count, 1)]])
+            }
+        case "idle":
+            return {}
         case "resize":
             var wider = true
             return {
@@ -130,14 +151,18 @@ enum PerfHarness {
         var costs: [Double] = []
         var firsts: [Double] = []
         var actions: [Double] = []
+        var beforeDetail: [Double] = []
+        watched = model
         for _ in 0..<n {
             let c = await window(gap: gap, step)
             costs.append(max(0, c.total - base))
             firsts.append(c.first)
             actions.append(c.action)
+            if let d = detailAt { beforeDetail.append(d) }
         }
         let result: [String: Double] = [
             "steps": Double(n), "gap_ms": Double(gapMs), "idle_ms": base,
+            "before_detail_median_ms": pct(beforeDetail, 0.5),
             "median_ms": pct(costs, 0.5), "p95_ms": pct(costs, 0.95), "mean_ms": costs.reduce(0, +) / Double(max(n, 1)),
             "first_median_ms": pct(firsts, 0.5), "first_p95_ms": pct(firsts, 0.95), "action_median_ms": pct(actions, 0.5),
             "bubble_size_hits": Double(BubbleTextCache.shared.sizeHits), "bubble_size_misses": Double(BubbleTextCache.shared.sizeMisses),

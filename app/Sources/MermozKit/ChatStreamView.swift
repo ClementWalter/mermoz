@@ -22,11 +22,27 @@ public struct BubbleSpec: Equatable, Sendable {
     public var files: Int
     /// A line above the bubble, such as how it differs from the previous message.
     public var note: String?
+    /// Pasted images (attachment ids), shown as thumbnails under the text.
+    public var thumbnails: [String]
 
     public init(id: String, content: BubbleContent, mine: Bool, firstOfRun: Bool, sender: String, time: String,
-                focused: Bool, files: Int = 0, note: String? = nil) {
+                focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = []) {
         self.id = id; self.content = content; self.mine = mine; self.firstOfRun = firstOfRun
         self.sender = sender; self.time = time; self.focused = focused; self.files = files; self.note = note
+        self.thumbnails = thumbnails
+    }
+}
+
+/// Where another Gmail thread starts in the chat.
+public struct MarkerSpec: Equatable, Sendable {
+    public var threadId: String
+    /// "date · subject".
+    public var line: String
+    /// The thread was added to the conversation, so it can be taken out.
+    public var joined: Bool
+
+    public init(threadId: String, line: String, joined: Bool) {
+        self.threadId = threadId; self.line = line; self.joined = joined
     }
 }
 
@@ -34,16 +50,9 @@ public enum ChatRowSpec: Equatable, Sendable {
     /// "Show N earlier messages".
     case earlier(Int)
     case bubble(BubbleSpec)
+    case marker(MarkerSpec)
     /// A row the app builds in SwiftUI; `key` names it and changes when its content does.
     case hosted(key: String)
-
-    var reuseKind: Int {
-        switch self {
-        case .earlier: 0
-        case .bubble: 1
-        case .hosted: 2
-        }
-    }
 }
 
 /// Colors the stream draws with, resolved by the app from its theme.
@@ -79,6 +88,10 @@ public struct ChatActions {
     public var activate: () -> Void = {}
     /// The SwiftUI view for a hosted row.
     public var hosted: (String) -> AnyView = { _ in AnyView(EmptyView()) }
+    /// "Not the same conversation" on a marker: takes that thread out.
+    public var split: (String) -> Void = { _ in }
+    /// The file of an attachment, for its thumbnail.
+    public var file: (String) async -> URL? = { _ in nil }
 
     public init() {}
 }
@@ -101,6 +114,10 @@ public enum ChatMetrics {
     public static let earlier: CGFloat = 30
     public static let note: CGFloat = 19
     public static let files: CGFloat = 20
+    public static let thumb = CGSize(width: 96, height: 120)
+    public static let thumbGap: CGFloat = 6
+    public static let markerLine: CGFloat = 20
+    public static let markerJoined: CGFloat = 26
 
     /// Widest the text of a bubble can be in a chat `width` wide.
     public static func textWidth(_ width: CGFloat, mine: Bool) -> CGFloat {
@@ -116,7 +133,11 @@ public enum ChatMetrics {
     /// The bubble's own height with its text taking `text`.
     public static func bubble(text: CGSize, _ spec: BubbleSpec) -> CGFloat {
         text.height + 2 * inset.height + (spec.content.clamped ? showMore : 0) + (spec.files > 0 ? files : 0)
+            + (spec.thumbnails.isEmpty ? 0 : thumbGap + thumb.height)
     }
+
+    /// Height of a thread marker row.
+    public static func marker(_ m: MarkerSpec) -> CGFloat { 12 + markerLine + (m.joined ? markerJoined + 5 : 0) }
 }
 
 // MARK: text
@@ -220,7 +241,8 @@ final class BubbleRowView: NSView {
         text.show(laid)
         let top = ChatMetrics.top(spec)
         // Wide enough for "Show more" and the file count under short text.
-        let floor: CGFloat = spec.content.clamped || spec.files > 0 ? 80 : 0
+        let thumbs = CGFloat(spec.thumbnails.count) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap) - ChatMetrics.thumbGap
+        let floor: CGFloat = max(spec.content.clamped || spec.files > 0 ? 80 : 0, spec.thumbnails.isEmpty ? 0 : thumbs)
         let bubbleSize = CGSize(width: max(laid.size.width, floor) + 2 * ChatMetrics.inset.width,
                                 height: ChatMetrics.bubble(text: laid.size, spec))
         let x = spec.mine
@@ -275,13 +297,44 @@ final class BubbleRowView: NSView {
             let x = spec.mine ? bubbleRect.maxX - line.size().width : bubbleRect.minX
             line.draw(at: CGPoint(x: x, y: bubbleRect.minY - ChatMetrics.note + 2))
         }
-        defer { if spec.files > 0 { drawFiles(spec.files) } }
+        defer {
+            if spec.files > 0 { drawFiles(spec.files) }
+            drawThumbnails(spec.thumbnails)
+        }
         let shape = NSBezierPath(roundedRect: bubbleRect.insetBy(dx: 0.5, dy: 0.5), xRadius: ChatMetrics.radius, yRadius: ChatMetrics.radius)
         (spec.mine ? colors.mineBackground : colors.theirsBackground).setFill()
         shape.fill()
         (spec.focused ? colors.accent.withAlphaComponent(0.6) : colors.border).setStroke()
         shape.lineWidth = spec.focused ? 1.5 : 1
         shape.stroke()
+    }
+
+    var file: (String) async -> URL? = { _ in nil }
+
+    /// Pasted images as thumbnails under the text, decoded small and off the main thread.
+    private func drawThumbnails(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let y = text.frame.maxY + (spec?.content.clamped == true ? ChatMetrics.showMore : 0) + ChatMetrics.thumbGap
+        for (i, id) in ids.enumerated() {
+            let r = CGRect(x: text.frame.minX + CGFloat(i) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap), y: y,
+                           width: ChatMetrics.thumb.width, height: ChatMetrics.thumb.height)
+            let clip = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10)
+            colors.mineBackground.withAlphaComponent(0.6).setFill()
+            clip.fill()
+            if let image = Thumbnails.shared.image(id) {
+                NSGraphicsContext.saveGraphicsState()
+                clip.addClip()
+                // Fill the tile, cropping the longer side.
+                let scale = max(r.width / CGFloat(image.width), r.height / CGFloat(image.height))
+                let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
+                NSImage(cgImage: image, size: size)
+                    .draw(in: CGRect(x: r.midX - size.width / 2, y: r.midY - size.height / 2, width: size.width, height: size.height),
+                          from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                NSGraphicsContext.restoreGraphicsState()
+            } else {
+                Thumbnails.shared.load(id, file: file) { [weak self] in self?.needsDisplay = true }
+            }
+        }
     }
 
     /// "📎 n" at the bottom of the bubble: the files are in the whole email.
@@ -438,6 +491,8 @@ public final class ChatStreamView: NSScrollView {
                 next.append((old as? NSButton) ?? makeEarlierButton())
             case .bubble:
                 next.append((old as? BubbleRowView) ?? (spare.isEmpty ? BubbleRowView() : spare.removeFirst()))
+            case .marker:
+                next.append((old as? MarkerRowView) ?? MarkerRowView())
             case let .hosted(key):
                 if let h = old as? HostedRowView, h.key == key {
                     next.append(h)
@@ -494,7 +549,12 @@ public final class ChatStreamView: NSScrollView {
                     self?.actions.toggle(spec.id)
                 }
                 (v as? BubbleRowView)?.onShowMore = { [weak self] in self?.actions.showMore(spec.id) }
+                (v as? BubbleRowView)?.file = actions.file
                 y += h
+            case let .marker(m):
+                let h = ChatMetrics.marker(m)
+                v.frame = CGRect(x: 0, y: y, width: width, height: h)
+                (v as? MarkerRowView)?.configure(m, colors: colors) { [weak self] in self?.actions.split(m.threadId) }
             case .hosted:
                 let inner = width - 2 * ChatMetrics.sidePadding
                 let h = (v as? HostedRowView)?.height(at: inner) ?? 0
@@ -566,6 +626,11 @@ public final class ChatStreamView: NSScrollView {
     /// Presses "Show N earlier messages", as a click would.
     public func pressEarlier() { views.compactMap { $0 as? NSButton }.first?.performClick(nil) }
 
+    /// Presses "Not the same conversation" on the first joined thread's marker.
+    public func pressSplit() {
+        for v in views { if let m = v as? MarkerRowView, m.pressSplit() { return } }
+    }
+
     /// The title on the "Show N earlier messages" row.
     public var earlierTitle: String? { views.compactMap { $0 as? NSButton }.first?.attributedTitle.string }
 
@@ -580,4 +645,129 @@ public final class ChatStreamView: NSScrollView {
 
     /// The row views on screen, in order.
     public var rowViews: [NSView] { views }
+}
+
+/// Where another Gmail thread starts: "date · subject" in a thin capsule, and for a thread
+/// joined to the conversation, "Added from another email · Not the same conversation".
+final class MarkerRowView: NSView {
+    private var spec: MarkerSpec?
+    private var colors = ChatColors.plain
+    private let split = NSButton(title: "Not the same conversation", target: nil, action: nil)
+    private var onSplit: (() -> Void)?
+
+    override var isFlipped: Bool { true }
+
+    init() {
+        super.init(frame: .zero)
+        split.isBordered = false
+        split.target = self
+        split.action = #selector(splitThread)
+        split.toolTip = "Show this email on its own again"
+        addSubview(split)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func splitThread() { onSplit?() }
+
+    /// Presses the link if this marker has it.
+    func pressSplit() -> Bool {
+        guard !split.isHidden else { return false }
+        split.performClick(nil)
+        return true
+    }
+
+    func configure(_ spec: MarkerSpec, colors: ChatColors, onSplit: @escaping () -> Void) {
+        self.spec = spec
+        self.colors = colors
+        self.onSplit = onSplit
+        split.isHidden = !spec.joined
+        split.attributedTitle = NSAttributedString(string: "Not the same conversation", attributes: [
+            .font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: colors.accent,
+        ])
+        split.sizeToFit()
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel((spec.joined ? "Added from another email. " : "") + spec.line)
+        needsDisplay = true
+    }
+
+    override func layout() {
+        super.layout()
+        guard let spec, spec.joined else { return }
+        let added = NSAttributedString(string: "Added from another email", attributes: [.font: NSFont.systemFont(ofSize: 11.5)])
+        let total = added.size().width + 8 + split.frame.width
+        split.frame.origin = CGPoint(x: bounds.midX - total / 2 + added.size().width + 8, y: 6 + 4)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let spec else { return }
+        var y: CGFloat = 6
+        if spec.joined {
+            let added = NSAttributedString(string: "Added from another email", attributes: [
+                .font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: colors.secondary,
+            ])
+            let total = added.size().width + 8 + split.frame.width
+            let pill = CGRect(x: bounds.midX - total / 2 - 10, y: y, width: total + 20, height: ChatMetrics.markerJoined)
+            colors.mineBackground.withAlphaComponent(0.7).setFill()
+            NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+            added.draw(at: CGPoint(x: pill.minX + 10, y: y + 5))
+            y += ChatMetrics.markerJoined + 5
+        }
+        let line = NSAttributedString(string: spec.line, attributes: [
+            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: colors.secondary,
+        ])
+        let w = min(line.size().width, bounds.width - 80)
+        let capsule = CGRect(x: bounds.midX - w / 2 - 10, y: y, width: w + 20, height: ChatMetrics.markerLine)
+        let path = NSBezierPath(roundedRect: capsule.insetBy(dx: 0.5, dy: 0.5), xRadius: capsule.height / 2, yRadius: capsule.height / 2)
+        colors.border.setStroke()
+        path.stroke()
+        line.draw(with: CGRect(x: capsule.minX + 10, y: y + 3, width: w, height: 14),
+                  options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
+}
+
+/// Small decoded thumbnails of pasted images, by attachment id. Files are read and
+/// decoded off the main thread, at the size a tile shows.
+final class Thumbnails: @unchecked Sendable {
+    static let shared = Thumbnails()
+    private let lock = NSLock()
+    private var images: [String: CGImage] = [:]
+    private var loading: Set<String> = []
+
+    func image(_ id: String) -> CGImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return images[id]
+    }
+
+    @MainActor
+    func load(_ id: String, file: @escaping (String) async -> URL?, done: @escaping @MainActor () -> Void) {
+        lock.lock()
+        guard !loading.contains(id), images[id] == nil else { lock.unlock(); return }
+        loading.insert(id)
+        lock.unlock()
+        Task {
+            guard let url = await file(id) else { return }
+            let image = await Task.detached(priority: .utility) { Self.decode(url) }.value
+            self.store(id, image)
+            done()
+        }
+    }
+
+    private func store(_ id: String, _ image: CGImage?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if images.count > 500 { images.removeAll() }
+        images[id] = image
+    }
+
+    static func decode(_ url: URL) -> CGImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(src, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 320,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ] as CFDictionary)
+    }
 }

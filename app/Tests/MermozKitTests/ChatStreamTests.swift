@@ -108,6 +108,7 @@ private final class Harness {
     var earlier = 0
     var moves: [Int] = []
     var activated = 0
+    var split: [String] = []
 
     init(_ rows: [ChatRowSpec], conversation: String = "c1") {
         var a = ChatActions()
@@ -116,6 +117,7 @@ private final class Harness {
         a.showEarlier = { [unowned self] in earlier += 1 }
         a.moveFocus = { [unowned self] in moves.append($0) }
         a.activate = { [unowned self] in activated += 1 }
+        a.split = { [unowned self] in split.append($0) }
         stream.actions = a
         window.contentView = stream
         stream.frame = window.contentView!.bounds
@@ -222,4 +224,34 @@ private let chat = [message("a", body: "Is Saturday still on?", from: "nora@frie
     let h = Harness(rows(chat))
     let row = h.stream.rowViews.first { ($0 as? NSView)?.accessibilityLabel()?.hasPrefix("Message from") == true }
     #expect(row?.accessibilityLabel() == "Message from nora@friends.example")
+}
+
+// MARK: thread markers and pasted images
+
+private let joined: [TimelineItem] = [
+    .marker(threadId: "t1", subject: "Flat sale", date: 1_000, joined: false),
+    .message(message("a", body: "The buyers signed.", from: "nora@agency.example", date: 1_000)),
+    .marker(threadId: "t2", subject: "Keys", date: 2_000, joined: true),
+    .message(message("b", body: "Keys are at the desk.", from: "nora@agency.example", date: 2_000)),
+]
+
+private func joinedRows() -> [ChatRowSpec] {
+    ChatRows.build(items: joined, hidden: 0, summary: nil, expanded: [], shownInFull: [], focused: nil,
+                   time: { _ in "09:41" }).rows
+}
+
+@Test func aThreadStartIsAMarkerRow() {
+    #expect(joinedRows()[2] == .marker(MarkerSpec(threadId: "t2", line: "09:41 · Keys", joined: true)))
+}
+
+@MainActor @Test func notTheSameConversationTakesTheThreadOut() {
+    let h = Harness(joinedRows())
+    h.stream.pressSplit()
+    #expect(h.split == ["t2"])
+}
+
+@Test func pastedImagesBecomeThumbnailsOfTheBubble() {
+    var m = message("p", body: "Look at the view!")
+    m.attachments = [Attachment(id: "img1", filename: "view.jpg", mime: "image/jpeg", size: 1_000, inline: true)]
+    #expect(bubble(rows([m])[0])?.thumbnails == ["img1"])
 }

@@ -44,10 +44,7 @@ public enum NearDuplicate {
 /// A row the app draws in SwiftUI.
 public enum HostedRow: Sendable {
     case summary
-    case marker(threadId: String, subject: String, date: Int64, joined: Bool)
     case expanded(Message)
-    /// A bubble with pasted images, which load as thumbnails.
-    case images(Message, firstOfRun: Bool)
 }
 
 public enum ChatRows {
@@ -71,9 +68,8 @@ public enum ChatRows {
         for item in items {
             switch item {
             case let .marker(threadId, subject, date, joined):
-                let key = "marker:\(threadId):\(joined)"
-                rows.append(.hosted(key: key))
-                hosted[key] = .marker(threadId: threadId, subject: subject, date: date, joined: joined)
+                rows.append(.marker(MarkerSpec(threadId: threadId, line: "\(time(date)) · \(subject.isEmpty ? "(no subject)" : subject)",
+                                               joined: joined)))
                 previous = nil
             case let .message(m):
                 let first = runs.contains(m.id)
@@ -84,10 +80,6 @@ public enum ChatRows {
                     let key = "expanded:\(m.id):\(m.bodyText.utf8.count):\(m.auth ?? ""):\(m.attachments.count)"
                     rows.append(.hosted(key: key))
                     hosted[key] = .expanded(m)
-                } else if !parts.thumbnails.isEmpty {
-                    let key = "images:\(m.id):\(first)"
-                    rows.append(.hosted(key: key))
-                    hosted[key] = .images(m, firstOfRun: first)
                 } else {
                     var note: String?
                     if let p = previous, !first, p.message.from.email.lowercased() == m.from.email.lowercased(),
@@ -96,7 +88,8 @@ public enum ChatRows {
                     }
                     rows.append(.bubble(BubbleSpec(
                         id: m.id, content: content, mine: m.isFromMe, firstOfRun: first, sender: m.from.display,
-                        time: time(m.date), focused: focused == m.id, files: parts.fileCount, note: note)))
+                        time: time(m.date), focused: focused == m.id, files: parts.fileCount, note: note,
+                        thumbnails: parts.thumbnails.map(\.id))))
                 }
                 previous = (m, parts.text)
             }

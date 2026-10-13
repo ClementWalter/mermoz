@@ -99,7 +99,8 @@ public struct BubbleParts: Equatable, Sendable {
     /// The message's new text only: quoted history and signature already folded locally.
     /// Worked out once per message and kept: the chat asks again on every redraw.
     public static func compact(_ m: Message) -> BubbleParts {
-        let key = "\(m.id)|\(m.bodyText.utf8.count)|\(m.bodyNew?.utf8.count ?? -1)|\(m.attachments.count)"
+        // Keyed by the texts themselves: an edited message never reuses its old parts.
+        let key = "\(m.id)|\(m.bodyText.hashValue)|\(m.bodyNew?.hashValue ?? 0)|\(m.attachments.count)"
         return CompactParts.shared.parts(key) { build(m) }
     }
 
