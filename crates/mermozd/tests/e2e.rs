@@ -3464,3 +3464,32 @@ fn the_source_is_the_email_as_received(synced: World) {
             .contains("Content-ID: <ii_chart1>")
     );
 }
+
+/// The demo feed with a TypeSafe key whose credits ran out.
+#[fixture]
+fn broke_demo(demo: World) -> World {
+    demo.mailbox.lock().unwrap().jev_out_of_credits = true;
+    demo.ok("router.set", json!({ "api_key": "jev-test" }));
+    demo.wait_until("the AI hold", |w| w.feed()["paused"] == "credits");
+    demo
+}
+
+#[rstest]
+fn feed_says_sorting_is_paused_when_credits_ran_out(broke_demo: World) {
+    assert_eq!(broke_demo.feed()["sorting"], false);
+}
+
+#[rstest]
+fn feed_answers_at_once_when_credits_ran_out(broke_demo: World) {
+    let t = Instant::now();
+    broke_demo.feed();
+    assert!(t.elapsed() < Duration::from_millis(150));
+}
+
+#[rstest]
+fn feed_stops_asking_jev_once_credits_ran_out(broke_demo: World) {
+    let before = broke_demo.mailbox.lock().unwrap().jev_auth.len();
+    broke_demo.ok("sync.now", json!({}));
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(broke_demo.mailbox.lock().unwrap().jev_auth.len(), before);
+}

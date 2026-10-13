@@ -9,6 +9,8 @@ public struct Feed: Codable, Sendable, Equatable {
     public var judged: Int
     /// Jev still has open threads to judge.
     public var sorting: Bool
+    /// Why the AI is on hold ("credits", "unavailable"); cards stay code-built meanwhile.
+    public var paused: String?
 
     public init(sections: [FeedSection], open: Int = 0, judged: Int = 0, sorting: Bool = false) {
         self.sections = sections; self.open = open; self.judged = judged; self.sorting = sorting
@@ -70,17 +72,17 @@ public enum FeedKind: String, Codable, Sendable, CaseIterable {
     /// The label at the top of the card.
     public var label: String {
         switch self {
-        case .reply: "Reply needed"
-        case .decision: "Decision"
+        case .reply: "To answer"
+        case .decision: "To decide"
         case .sign: "To sign"
         case .promise: "You promised"
-        case .event: "Date"
+        case .event: "Event"
         case .payment: "To pay"
-        case .intro: "New person"
-        case .waiting: "Waiting on"
-        case .cleanup: "Clean-up"
-        case .reading: "Reading"
-        case .other: "To look at"
+        case .intro: "Someone new"
+        case .waiting: "Waiting for an answer"
+        case .cleanup: "Automatic mail"
+        case .reading: "Newsletter"
+        case .other: "To read"
         }
     }
 
@@ -188,10 +190,8 @@ public enum FeedActions {
     /// The label of the primary button.
     public static func primaryLabel(_ card: FeedCard) -> String {
         switch card.kind {
-        case .reply, .promise: "Reply"
-        case .intro: "Answer"
-        case .waiting: "Nudge"
-        case .decision: "Reply"
+        case .reply, .promise, .intro, .decision: "Reply"
+        case .waiting: "Follow up"
         case .event: card.due == nil ? "Open" : "Add to Calendar"
         case .cleanup, .reading: card.members.count > 1 ? "Archive \(card.members.count)" : "Archive"
         case .sign: "Open to sign"
@@ -203,6 +203,13 @@ public enum FeedActions {
     public static func option(_ n: Int, of card: FeedCard) -> FeedAction? {
         guard card.kind == .decision, let options = card.texts?.options, n >= 1, n <= options.count else { return nil }
         return .draft(options[n - 1].reply)
+    }
+}
+
+public enum FeedSelection {
+    /// The mail a card shows in the reading pane: its thread, or a batch's latest mail.
+    public static func thread(of card: FeedCard) -> String {
+        card.members.first?.id ?? card.thread.id
     }
 }
 
@@ -262,13 +269,27 @@ public enum FeedWords {
         case 1: return "tomorrow"
         case -1: return "yesterday"
         default:
-            let f = DateFormatter()
-            f.calendar = calendar
-            f.timeZone = calendar.timeZone
-            f.locale = Locale(identifier: "en_GB")
-            f.dateFormat = "EEE d MMM"
+            // A formatter costs far more to make than to use: one per calendar, reused.
+            let f = formatter(calendar)
             return f.string(from: d)
         }
+    }
+
+    nonisolated(unsafe) private static var formatters: [String: DateFormatter] = [:]
+    private static let lock = NSLock()
+
+    private static func formatter(_ calendar: Calendar) -> DateFormatter {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = calendar.timeZone.identifier
+        if let f = formatters[key] { return f }
+        let f = DateFormatter()
+        f.calendar = calendar
+        f.timeZone = calendar.timeZone
+        f.locale = Locale(identifier: "en_GB")
+        f.dateFormat = "EEE d MMM"
+        formatters[key] = f
+        return f
     }
 
     /// The start of a "YYYY-MM-DD" day.

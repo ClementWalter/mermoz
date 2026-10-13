@@ -26,9 +26,11 @@ pub fn list(svc: &Service, scope: &ColumnScope) -> Result<Value> {
     let units = st.feed_units(scope, feed::today(), now_ms())?;
     let mut f = feed::assemble(units, feed::today(), &st.ai_accounts()?);
     st.complete_feed(&mut f)?;
-    let sorting = jev::load_key().is_some() && f.judged < f.open;
+    let paused = svc.paused();
+    let sorting = jev::load_key().is_some() && f.judged < f.open && paused.is_none();
     let mut v = serde_json::to_value(f)?;
     v["sorting"] = json!(sorting);
+    v["paused"] = json!(paused);
     Ok(v)
 }
 
@@ -49,8 +51,10 @@ pub fn start(svc: &Arc<Service>) {
 async fn judge_loop(svc: Arc<Service>) {
     let mut last_backoff: Option<Duration> = None;
     loop {
+        // While the AI is on hold (credits ran out, rate limit), the feed asks nothing.
         let round = match jev::load_key() {
             None => Round::Idle,
+            Some(_) if svc.paused().is_some() => Round::Idle,
             Some(key) => judge_round(&svc, &key).await.unwrap_or_else(|e| {
                 warn!("feed: {e}");
                 Round::Pause(None)
@@ -137,7 +141,13 @@ async fn judge_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
                 judged.push(tid);
             }
             Err(e) => match pause_reason(&e) {
-                Some(asked) => pause = Some(asked.or(pause.flatten())),
+                Some(asked) => {
+                    if matches!(e, mermoz_core::Error::OutOfCredits) {
+                        // The same hold as the router's: everything waits for a top-up.
+                        svc.pause_for(&e, None);
+                    }
+                    pause = Some(asked.or(pause.flatten()))
+                }
                 // Specific to this thread: record "no judgment" so it is not retried forever.
                 None => {
                     warn!(thread = %tid, "feed skipped thread: {e}");

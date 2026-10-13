@@ -491,7 +491,7 @@ fn unlearned_clean_up_card_can_wait() {
 #[rstest]
 fn unlearned_clean_up_card_says_how_it_learns() {
     let u = unit("a", "unread", Some(judged(Kind::Cleanup)));
-    assert!(reasons_of(&u)[0].starts_with("Looks automated."));
+    assert!(reasons_of(&u)[0].starts_with("Looks like automatic mail."));
 }
 
 #[rstest]
@@ -595,4 +595,72 @@ fn backlog_is_judged_only_when_a_date_is_close(
         backlog_worth_judging(&dates::candidates(text, today), today),
         want
     );
+}
+
+// ---- stale mail -------------------------------------------------------------------------
+
+/// A unit whose last message is `days` before the fixture's Monday.
+fn idle(id: &str, status: &str, days: i64) -> FeedUnit {
+    let mut u = unit(id, status, None);
+    let day = today() - chrono::Duration::days(days);
+    u.threads[0].last_date = day
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_local_timezone(chrono::Local)
+        .unwrap()
+        .timestamp_millis();
+    u
+}
+
+#[rstest]
+#[case::recent(10, Section::Week)]
+#[case::months_old(400, Section::Later)]
+fn untouched_mail_can_wait(#[case] days: i64, #[case] want: Section) {
+    let u = idle("t", "todo", days);
+    assert_eq!(section(&u, Kind::Other, today()), want);
+}
+
+#[rstest]
+fn a_coming_date_keeps_old_mail_current() {
+    let mut u = idle("t", "todo", 400);
+    u.threads[0].due = Some((today() + chrono::Duration::days(3)).to_string());
+    assert_eq!(section(&u, Kind::Other, today()), Section::Today);
+}
+
+#[rstest]
+#[case::overdue(10, Section::Today)]
+#[case::years_old(5000, Section::Later)]
+fn a_wait_nobody_answered_for_months_can_wait(#[case] days: i64, #[case] want: Section) {
+    let u = FeedUnit {
+        waiting_days: Some(days),
+        ..unit("t", "waiting", None)
+    };
+    assert_eq!(section(&u, Kind::Waiting, today()), want);
+}
+
+#[rstest]
+fn an_old_wait_says_so_in_years() {
+    let u = FeedUnit {
+        waiting_days: Some(5000),
+        ..unit("t", "waiting", None)
+    };
+    assert_eq!(
+        reasons_of(&u)[0],
+        "No answer for 13 years. Archive it if it no longer matters."
+    );
+}
+
+#[rstest]
+#[case::days(12, "12 days")]
+#[case::under_two_months(45, "45 days")]
+#[case::months(120, "4 months")]
+#[case::years(800, "2 years")]
+fn spans_read_naturally(#[case] days: i64, #[case] want: &str) {
+    assert_eq!(span(days), want);
+}
+
+#[rstest]
+fn most_recent_first_when_nothing_else_differs() {
+    let f = feed(vec![idle("older", "todo", 5), idle("newer", "todo", 1)]);
+    assert_eq!(ids(&f), vec!["newer", "older"]);
 }

@@ -4,6 +4,10 @@
 import AppKit
 import Foundation
 import MermozKit
+import SwiftUI
+import os
+
+private let log = Logger(subsystem: "ai.mermoz.app", category: "feed")
 
 extension AppModel {
     // MARK: loading
@@ -28,9 +32,13 @@ extension AppModel {
 
     func loadFeed() async {
         guard let client else { return }
+        let started = ContinuousClock.now
+        // The first load is timed to its first card on screen (see `cardAppeared`).
+        if feed == nil, feedOpening == nil { feedOpening = started }
         do {
             let scope = feedScope
             let f = try await client.feed(project: scope.project, accountId: scope.accountId)
+            log.info("feed fetched: \(f.cards.count) cards in \((ContinuousClock.now - started).ms) ms")
             // Cards folding away stay until their strip is gone, so nothing jumps.
             let leaving = feed?.cards.filter { feedStrips[$0.id] != nil } ?? []
             var next = f
@@ -68,6 +76,10 @@ extension AppModel {
     // MARK: card words
 
     func cardAppeared(_ id: String) {
+        if let opening = feedOpening {
+            log.info("feed on screen after \((ContinuousClock.now - opening).ms) ms")
+            feedOpening = nil
+        }
         feedVisible.insert(id)
         requestVisibleTexts()
     }
@@ -92,9 +104,18 @@ extension AppModel {
 
     // MARK: focus
 
+    /// j/k: the next card at once, and its mail in the reading pane as soon as the keys
+    /// pause, so holding j glides through the cards instead of loading every mail.
     func feedMove(_ delta: Int) {
-        guard let ids = feed?.cards.map(\.id) else { return }
-        feedFocus = FeedFocus.step(ids, from: feedFocus, by: delta)
+        guard let feed else { return }
+        feedFocus = FeedFocus.step(feed.cards.map(\.id), from: feedFocus, by: delta)
+        guard let card = feed.card(feedFocus) else { return }
+        feedPaneTask?.cancel()
+        feedPaneTask = Task {
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            open(FeedSelection.thread(of: card), record: false)
+        }
     }
 
     func focus(_ card: FeedCard) { feedFocus = card.id }
@@ -127,7 +148,7 @@ extension AppModel {
     /// Opens the mail on the right, like a click on a row.
     func openCard(_ card: FeedCard) {
         feedFocus = card.id
-        open(card.thread.id)
+        open(FeedSelection.thread(of: card))
     }
 
     /// Opens the composer on the card's thread with the AI's words in it; the user sends.
@@ -222,14 +243,16 @@ extension AppModel {
     private func leave(_ card: FeedCard, label: String) {
         let ids = feed?.cards.map(\.id) ?? []
         if feedFocus == card.id { feedFocus = FeedFocus.after(removing: card.id, from: ids) }
-        feedStrips[card.id] = label
+        withAnimation(.easeInOut(duration: 0.25)) { feedStrips[card.id] = label }
         Task {
             try? await Task.sleep(for: .milliseconds(1300))
             guard feedStrips[card.id] != nil else { return }
-            feedStrips[card.id] = nil
-            if let s = feed?.sections.firstIndex(where: { $0.cards.contains { $0.id == card.id } }) {
-                feed?.sections[s].cards.removeAll { $0.id == card.id }
-                feed?.sections.removeAll { $0.cards.isEmpty }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                feedStrips[card.id] = nil
+                if let s = feed?.sections.firstIndex(where: { $0.cards.contains { $0.id == card.id } }) {
+                    feed?.sections[s].cards.removeAll { $0.id == card.id }
+                    feed?.sections.removeAll { $0.cards.isEmpty }
+                }
             }
         }
     }
@@ -246,4 +269,9 @@ extension AppModel {
     func toggleKept(_ id: String) {
         if feedKept.contains(id) { feedKept.remove(id) } else { feedKept.insert(id) }
     }
+}
+
+extension Duration {
+    /// Whole milliseconds, for timing logs.
+    var ms: Int64 { components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000 }
 }

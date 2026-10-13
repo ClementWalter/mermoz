@@ -429,20 +429,20 @@ actions with their keys.
 
 | Type | Body | Primary action (↩) |
 | --- | --- | --- |
-| Reply needed | two-line draft peek | Open the draft in the composer |
-| Decision | option tiles, the AI's pick with its reason | 1–3 open the reply choosing it |
+| To answer | two-line draft peek | Open the draft in the composer |
+| To decide | option tiles, the AI's pick with its reason | 1–3 open the reply choosing it |
 | Document to sign | three key points + file | Open the mail |
 | You promised | your own words, the deadline | Open the draft |
-| Date | calendar tile with day and time | Add to Calendar |
+| Event | calendar tile with day and time | Add to Calendar |
 | To pay | amount first, reference, due date | Open the mail; e marks it paid |
-| New person | who they are, who introduced them | Open the draft |
-| Waiting on | one quiet line; how long, how long they usually take | Open a nudge |
-| Clean-up | automated mail grouped by sender, untick to keep | Archive them (undo) |
-| Reading | one line per newsletter | Archive them (undo) |
+| Someone new | who they are, who introduced them | Open the draft |
+| Waiting for an answer | one quiet line; how long, how long they usually take | Follow up (a reminder draft) |
+| Automatic mail | grouped by sender, untick to keep | Archive them (undo) |
+| Newsletter | one line per newsletter | Archive them (undo) |
 
 Drafts always open in the composer; nothing is ever sent from a card.
 
-**Batches are learned, never guessed.** Clean-up and Reading batches only hold
+**Batches are learned, never guessed.** Automatic-mail and newsletter batches only hold
 mail from senders the user taught Mermoz to archive: the Sort queue's sender rule
 (three consistent yes, never a no) says Archive. Other automated mail, even when
 Jev is sure it is a receipt, is a card of its own in Can wait, decided one at a
@@ -452,13 +452,16 @@ latest mails; the List shows the rest.
 
 **Sections.** Now (due within two days, or urgent with someone waiting on you),
 Today (due within a week, urgent, or a wait past twice the sender's usual answer
-time), This week, Waiting on others, Can wait (clean-ups and reading). A short
+time), This week, Waiting for answers, Can wait (automatic mail, newsletters, and
+anything with no news for two months and no date ahead). A short
 header counts what is left.
 
 **Keys.** Same as the rest of the app: j/k move, e Done, a Archive, y accept, r
 reply, ⌘Z undo, t ask about this (the "Chat about this" panel). New in the feed:
 ↩ runs the card's primary action, 1–3 pick an option, l Later (until tomorrow
-morning), ⇧L Later until a chosen day, o open the mail on the right. A handled
+morning), ⇧L Later until a chosen day. Like a row in the List, clicking a card or
+moving to it with j/k shows its mail in the reading pane (the pane follows once the
+keys pause); the card's own action stays on its button and on ↩. A handled
 card slides out, leaves a short "Done · Undo" strip that folds away, and focus
 moves to the next card. "Why this card?" explains a card in plain words, never
 with percentages.

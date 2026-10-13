@@ -193,6 +193,10 @@ final class AppModel {
     var feedLaterCard: String?
     var feedRefreshTask: Task<Void, Never>?
     var feedTextsTask: Task<Void, Never>?
+    /// Opens the focused card's mail once j/k pause.
+    var feedPaneTask: Task<Void, Never>?
+    /// When the Feed started opening, until its first card is on screen.
+    var feedOpening: ContinuousClock.Instant?
     private var events: Connection?
     private var refreshTask: Task<Void, Never>?
 

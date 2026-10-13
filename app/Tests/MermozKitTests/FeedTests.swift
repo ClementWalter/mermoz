@@ -98,6 +98,17 @@ private var utcCalendar: Calendar {
     #expect(FeedActions.primary(c) == .archive(["x", "y"]))
 }
 
+@Test func waitingCardSaysFollowUp() {
+    #expect(FeedActions.primaryLabel(card("w", .waiting)) == "Follow up")
+}
+
+@Test(arguments: FeedKind.allCases)
+func cardLabelsUsePlainWords(kind: FeedKind) {
+    let jargon = ["nudge", "clean-up", "digest", "fyi", "waiting on", "triage"]
+    let words = (kind.label + " " + FeedActions.primaryLabel(card("x", kind))).lowercased()
+    #expect(!jargon.contains { words.contains($0) })
+}
+
 @Test func batchButtonCountsItsMails() {
     let c = card("batch:cleanup", .cleanup, members: [thread("x"), thread("y")])
     #expect(FeedActions.primaryLabel(c) == "Archive 2")
@@ -247,4 +258,26 @@ func dueInWords(date: String, want: String) {
     c.thread.lastFrom = "You"
     c.thread.participants = ["Inès Garnier", "You"]
     #expect(c.person == "Inès Garnier")
+}
+
+// MARK: reading pane
+
+@Test func aCardShowsItsOwnThread() {
+    #expect(FeedSelection.thread(of: card("thr_9", .reply)) == "thr_9")
+}
+
+@Test func aBatchShowsItsLatestMail() {
+    let c = card("batch:cleanup", .cleanup, members: [thread("latest"), thread("older")])
+    #expect(FeedSelection.thread(of: c) == "latest")
+}
+
+@Test func jMovesTheReadingPaneToTheNextCard() {
+    let f = Feed(sections: [FeedSection(key: "now", title: "Now", cards: [card("a", .reply), card("b", .decision)])])
+    let next = FeedFocus.step(f.cards.map(\.id), from: "a", by: 1)
+    #expect(f.card(next).map(FeedSelection.thread) == "b")
+}
+
+@Test func feedDecodesWhyTheAIIsOnHold() throws {
+    let f = try RPCCoding.decoder().decode(Feed.self, from: Data(#"{"sections":[],"open":0,"judged":0,"sorting":false,"paused":"credits"}"#.utf8))
+    #expect(f.paused == "credits")
 }

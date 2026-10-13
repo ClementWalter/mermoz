@@ -55,7 +55,8 @@ naming the person or thing (\"Confirm the 21 Oct talk with Thomas\"). For a news
 (a deadline, who is waiting, an amount, a clash). Never mention AI, models, scores or percentages.\n\
 - draft: when the card kind is reply, promise, intro or waiting, the message the user would send next, \
 in the language of the thread, short, warm and ready to send: no subject line, no placeholders, signed with the user's first name if known. \
-For waiting, a polite nudge. Otherwise an empty string.\n\
+For waiting, a polite follow-up asking where things stand. Otherwise an empty string. \
+Write titles in plain everyday words (\"Follow up with…\", never \"Nudge\").\n\
 - options: when the kind is decision, the 2 or 3 choices the user is asked to make, each with label (at most 5 words), \
 detail (at most 10 words: price, delay, consequence), recommended (true for at most one, only when the thread gives a reason), \
 reason (why, or empty) and reply (the message choosing it, in the language of the thread). Otherwise an empty list.\n\

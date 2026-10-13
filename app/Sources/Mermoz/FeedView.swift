@@ -35,7 +35,9 @@ struct FeedView: View {
                             ForEach(f.sections) { s in
                                 FeedSectionHeader(section: s)
                                 ForEach(s.cards) { c in
-                                    FeedCardView(card: c, focused: model.feedFocus == c.id)
+                                    // Equatable: only the cards that changed render again on j/k.
+                                    FeedCardView(card: c, focused: model.feedFocus == c.id, strip: model.feedStrips[c.id])
+                                        .equatable()
                                         .id(c.id)
                                         .onAppear { model.cardAppeared(c.id) }
                                         .onDisappear { model.cardDisappeared(c.id) }
@@ -56,12 +58,12 @@ struct FeedView: View {
                 }
                 .scrollIndicators(.automatic)
                 .onChange(of: model.feedFocus) { _, id in
-                    if let id { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) } }
+                    // No anchor: the list only moves when the card would leave the screen.
+                    if let id { proxy.scrollTo(id) }
                 }
             }
             .listPanel()
         }
-        .animation(.easeInOut(duration: 0.25), value: model.feedStrips)
         .sheet(isPresented: Binding(get: { model.feedLaterCard != nil }, set: { if !$0 { model.feedLaterCard = nil } })) {
             if let card = model.feed?.card(model.feedLaterCard) { LaterPicker(card: card) }
         }
@@ -85,7 +87,7 @@ struct FeedBrief: View {
             Text(Date().formatted(.dateTime.weekday(.wide).day().month(.wide)))
                 .font(.system(size: 21, weight: .semibold, design: .serif))
             Text(FeedHeader.line(feed)).font(.system(size: 13.5)).foregroundStyle(Theme.text2)
-            if feed.sorting {
+            if feed.sorting && feed.paused == nil {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
                     Text("Sorting your mail · \(feed.judged) of \(feed.open)")
@@ -125,13 +127,19 @@ struct AllClear: View {
 
 // MARK: card shell
 
-struct FeedCardView: View {
+struct FeedCardView: View, Equatable {
     @Environment(AppModel.self) private var model
     let card: FeedCard
     let focused: Bool
+    /// "Done · Undo" shown in place of the card for a moment after it was handled.
+    let strip: String?
+
+    nonisolated static func == (a: FeedCardView, b: FeedCardView) -> Bool {
+        a.focused == b.focused && a.strip == b.strip && a.card == b.card
+    }
 
     var body: some View {
-        if let label = model.feedStrips[card.id] {
+        if let label = strip {
             DoneStripView(label: label) { model.undoStrip(card.id) }
                 .transition(.asymmetric(insertion: .opacity, removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))))
         } else {
@@ -160,8 +168,8 @@ struct FeedCardView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused ? Theme.accent : Theme.line, lineWidth: focused ? 2 : 1))
         .shadow(color: Theme.accent.opacity(focused ? 0.10 : 0), radius: 12, y: 6)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.openCard(card) }
-        .onTapGesture { model.focus(card) }
+        // Like a row in the List: a click shows the mail in the reading pane.
+        .onTapGesture { model.openCard(card) }
     }
 }
 

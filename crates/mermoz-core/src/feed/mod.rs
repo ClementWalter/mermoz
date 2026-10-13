@@ -230,7 +230,7 @@ impl Section {
             Section::Now => "Now",
             Section::Today => "Today",
             Section::Week => "This week",
-            Section::Waiting => "Waiting on others",
+            Section::Waiting => "Waiting for answers",
             Section::Later => "Can wait",
         }
     }
@@ -317,6 +317,10 @@ pub fn section(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Section {
     if matches!(kind, Kind::Cleanup | Kind::Reading) {
         return Section::Later;
     }
+    // Mail nobody touched for months, with no date ahead, is not today's work.
+    if is_stale(u, kind, today) {
+        return Section::Later;
+    }
     if kind == Kind::Waiting {
         let overdue =
             u.waiting_days.unwrap_or(0) >= nudge_after_days(j.and_then(|j| j.typical_reply_days));
@@ -342,8 +346,44 @@ pub fn section(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Section {
     }
 }
 
+/// Past this many days without news, open mail with no date ahead can wait.
+pub const STALE_AFTER_DAYS: i64 = 60;
+
+/// Days since the thread's last message.
+fn idle_days(u: &FeedUnit, today: NaiveDate) -> i64 {
+    (today - day_of(u.primary().last_date)).num_days().max(0)
+}
+
+/// Nothing happened for [`STALE_AFTER_DAYS`] and no date is coming: a wait nobody
+/// answered, or mail left open long ago.
+pub fn is_stale(u: &FeedUnit, kind: Kind, today: NaiveDate) -> bool {
+    let idle = if kind == Kind::Waiting {
+        u.waiting_days.unwrap_or(0)
+    } else {
+        idle_days(u, today)
+    };
+    let date_ahead = due_of(u)
+        .and_then(|d| days_until(&d, today))
+        .is_some_and(|d| d >= 0);
+    idle > STALE_AFTER_DAYS && !date_ahead
+}
+
+/// "3 days", "4 months", "14 years".
+pub fn span(days: i64) -> String {
+    let (n, unit) = match days {
+        d if d < 60 => (d, "day"),
+        d if d < 730 => (d / 30, "month"),
+        d => (d / 365, "year"),
+    };
+    if n == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{n} {unit}s")
+    }
+}
+
 /// Within a section: earliest deadline first, then how much the user answers these
-/// people times urgency, then the oldest first. Returns a sortable key.
+/// people times urgency, then the most recent first. Returns a sortable key.
 fn order_key(u: &FeedUnit, today: NaiveDate) -> (i64, i64, i64) {
     let j = u.judgment.as_ref();
     let days = due_of(u)
@@ -353,7 +393,7 @@ fn order_key(u: &FeedUnit, today: NaiveDate) -> (i64, i64, i64) {
     let weight = j.map_or(0.0, |j| j.sender_weight);
     let reply = j.and_then(|j| j.needs_reply).unwrap_or(0.0);
     let score = urgency * (1.0 + weight) + reply;
-    (days, -(score * 1000.0) as i64, u.primary().last_date)
+    (days, -(score * 1000.0) as i64, -u.primary().last_date)
 }
 
 /// "Thu 16 Oct".
@@ -388,12 +428,21 @@ pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
         let days = u.waiting_days.unwrap_or(0);
         let usual = j.and_then(|j| j.typical_reply_days);
         out.push(match usual {
+            _ if days > STALE_AFTER_DAYS => format!(
+                "No answer for {}. Archive it if it no longer matters.",
+                span(days)
+            ),
             Some(u) if days >= nudge_after_days(Some(u)) => format!(
                 "No answer for {days} days; they usually answer within {}.",
                 plural_days(u.ceil() as i64)
             ),
             _ => format!("You wrote last, {} ago.", plural_days(days)),
         });
+    } else if is_stale(u, kind, today) {
+        out.push(format!(
+            "Nothing new for {}. Archive it if it no longer matters.",
+            span(idle_days(u, today))
+        ));
     }
     if let Some(due) = due_of(u) {
         let words = due_words(&due, today);
@@ -412,7 +461,7 @@ pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
             None => "There is something to pay.".into(),
         }),
         Kind::Cleanup => out.push(
-            "Looks automated. Archive it: after three from this sender, they are cleared together."
+            "Looks like automatic mail. Archive it: after three from this sender, they are cleared together."
                 .into(),
         ),
         Kind::Reading => out.push(
@@ -562,9 +611,9 @@ fn batch(kind: Kind, mut units: Vec<FeedUnit>, ai: &HashSet<String>) -> Card {
         _ => (
             "batch:cleanup",
             if n == 1 {
-                "Clear 1 automated mail".to_string()
+                "1 automatic mail to archive".to_string()
             } else {
-                format!("Clear {n} automated mails")
+                format!("{n} automatic mails to archive")
             },
             "You taught Mermoz to archive mail from these senders.",
         ),
