@@ -70,7 +70,7 @@ struct BoardView: View {
         case let .project(id): model.project(id)?.name ?? "Project"
         case let .account(id): model.accounts.first { $0.id == id }?.email ?? "Account"
         case .people: "People"
-        case .feeds: "Feeds"
+        case .feeds: Subscriptions.title
         case .docs: "Docs"
         case .sort: "Sort"
         case let .label(acc, id): model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label"

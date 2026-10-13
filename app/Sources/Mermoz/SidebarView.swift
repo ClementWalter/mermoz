@@ -64,8 +64,9 @@ struct SidebarView: View {
                         SidebarRow(sel: .people, title: "People", icon: .symbol("person.2", Theme.text2))
                         SidebarRow(sel: .docs, title: "Docs", icon: .symbol("doc.on.doc", Theme.text2))
                         // Automated senders and mailing lists, one conversation each.
-                        SidebarRow(sel: .feeds, title: "Feeds", icon: .symbol("dot.radiowaves.up.forward", Theme.text2),
+                        SidebarRow(sel: .feeds, title: Subscriptions.title, icon: .symbol("dot.radiowaves.up.forward", Theme.text2),
                                    count: model.countCells.cell(.feeds))
+                            .help(Subscriptions.tooltip)
                     }
                     VStack(alignment: .leading, spacing: 1) {
                         // Projects are the user's Gmail labels, nested with "/".
@@ -188,7 +189,7 @@ struct StatusRow: View {
     var body: some View {
         let on = model.selection == .status(status.key)
         HStack(spacing: 9) {
-            StatusIcon(key: status.key, color: Color(hex: status.color))
+            SidebarIconSlot { StatusIcon(key: status.key, color: Color(hex: status.color)) }
             Text(status.name)
             Spacer(minLength: 4)
             if let count { CountBadge(cell: count) }
@@ -260,7 +261,8 @@ struct CountBadge: View {
 
     var body: some View {
         if let n = cell.value, n > 0 {
-            Text(n.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
+            // Tabular digits, so counts in a column line up on their right edge.
+            Text(n.formatted()).font(.system(size: 12)).monospacedDigit().foregroundStyle(Theme.text3)
                 .contentTransition(.identity)
                 .transaction { $0.animation = nil }
         }
@@ -293,10 +295,13 @@ struct SidebarRow: View, Equatable {
         let on = model.selection == sel
         Button { model.select(sel) } label: {
             HStack(spacing: 9) {
-                switch icon {
-                case let .symbol(name, color): Image(systemName: name).font(.system(size: 11)).foregroundStyle(color)
-                case let .dot(color): Circle().fill(color).frame(width: 8, height: 8)
-                case let .square(color): RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 9, height: 9)
+                // One box width for every icon, so every label starts at the same x.
+                SidebarIconSlot {
+                    switch icon {
+                    case let .symbol(name, color): Image(systemName: name).font(.system(size: 11)).foregroundStyle(color)
+                    case let .dot(color): Circle().fill(color).frame(width: 8, height: 8)
+                    case let .square(color): RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 9, height: 9)
+                    }
                 }
                 Text(title).lineLimit(1).truncationMode(middle ? .middle : .tail)
                 Spacer(minLength: 4)
@@ -314,6 +319,7 @@ struct SidebarRow: View, Equatable {
 }
 
 /// Browse › Sort, shown once the AI sorts or mail waits; observes only the Sort figures.
+/// No count: the unsorted total counts every thread never sorted, not cards ready to answer.
 struct SortSidebarRow: View {
     @Environment(AppModel.self) private var model
 
@@ -324,12 +330,9 @@ struct SortSidebarRow: View {
         if info.configured || info.toSort > 0 {
             Button { model.openSort() } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: "sparkles").font(.system(size: 11)).foregroundStyle(Theme.accent)
+                    SidebarIconSlot { Image(systemName: "sparkles").font(.system(size: 11)).foregroundStyle(Theme.accent) }
                     Text("Sort")
                     Spacer(minLength: 4)
-                    if info.toSort > 0 {
-                        Text(info.toSort.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
-                    }
                 }
                 .font(.system(size: 13, weight: on ? .semibold : .regular))
                 .foregroundStyle(Theme.text)
