@@ -74,6 +74,10 @@ pub struct Mailbox {
     pub granted_scope: Option<String>,
     /// Every call to the token endpoint, as (grant_type, client_id).
     pub token_requests: Vec<(String, String)>,
+    /// The stub AI's answers to "Ask Mermoz to do", in order; the last one repeats.
+    pub do_plans: Vec<Value>,
+    /// Bodies of the "Ask Mermoz to do" requests the stub AI received.
+    pub do_asks: Vec<Value>,
     next_label: u64,
 }
 
@@ -617,6 +621,22 @@ async fn llm(
             .collect();
         let text = json!({ "groups": [{ "ids": ids, "name": "Tidy Name", "kind": "person" }] })
             .to_string();
+        return Json(
+            json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
+        );
+    }
+    // "Ask Mermoz to do" (schema starting with "understood"): the plan the test set.
+    if body["output_config"]["format"]["schema"]["required"][0] == "understood" {
+        let text = {
+            let mut m = s.lock().unwrap();
+            let n = m.do_asks.len();
+            m.do_asks.push(body.clone());
+            m.do_plans
+                .get(n.min(m.do_plans.len().saturating_sub(1)))
+                .cloned()
+                .unwrap_or(json!({ "understood": false, "question": "No plan.", "steps": [] }))
+                .to_string()
+        };
         return Json(
             json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": text }] }),
         );

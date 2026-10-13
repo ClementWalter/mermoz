@@ -34,13 +34,18 @@ struct CommandPalette: View {
                         .textFieldStyle(.plain)
                         .font(.system(size: 16))
                         .focused($focused)
-                        .onSubmit { runSelected() }
+                        // While a plan shows, Enter confirms it; the hidden list never runs.
+                        .onSubmit { askFlow.isActive ? confirmAsk() : runSelected() }
                         .onKeyPress(.downArrow) { cursor = min(cursor + 1, max(items.count - 1, 0)); return .handled }
                         .onKeyPress(.upArrow) { cursor = max(cursor - 1, 0); return .handled }
-                        .onKeyPress(.escape) { close(); return .handled }
+                        // Esc drops a plan first, then closes the palette.
+                        .onKeyPress(.escape) { askFlow.isActive ? askFlow.cancel() : close(); return .handled }
                 }
                 .padding(.horizontal, 18).frame(height: 56)
                 Divider().overlay(Color(hex: "#E3EDF6"))
+                if askFlow.isActive {
+                    AskPanel(flow: askFlow)
+                } else {
                 ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -73,8 +78,16 @@ struct CommandPalette: View {
                     if items.indices.contains(c) { proxy.scrollTo(items[c].id) }
                 }
                 }
+                }
                 HStack(spacing: 16) {
-                    Text("↑↓ navigate"); Text("↩ run"); Text("esc close")
+                    if askFlow.preview != nil {
+                        Text(askFlow.preview?.needsTypedCount == true ? "type the count, then ↩ delete" : "↩ do it")
+                        Text("esc cancel")
+                    } else if askFlow.isActive {
+                        Text("esc back")
+                    } else {
+                        Text("↑↓ navigate"); Text("↩ run"); Text("esc close")
+                    }
                     Spacer()
                 }
                 .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
@@ -92,7 +105,13 @@ struct CommandPalette: View {
             try? await Task.sleep(for: .milliseconds(30))
             focused = true
         }
-        .onChange(of: query) { cursor = 0; gmail = nil }
+        .onChange(of: query) {
+            cursor = 0
+            gmail = nil
+            // Editing the sentence drops a plan made for the old one.
+            askFlow.cancel()
+        }
+        .task { await askFlow.refreshAvailability(model.client) }
         .task(id: query) {
             guard model.paletteMode == .search else { return }
             // Debounce keystrokes so the daemon only sees settled queries.
@@ -159,7 +178,12 @@ struct CommandPalette: View {
                 .sorted { $0.1 > $1.1 }
                 .prefix(8)
                 .map(\.0.item)
-            return ranked + mail + fallback
+            // An instruction gets "Ask Mermoz to do" on top; the usual rows stay below.
+            let ask = Self.askItem(typed, otherMatches: !ranked.isEmpty || !results.isEmpty,
+                                   availability: askFlow.availability) {
+                if askFlow.availability?.available == false { openWindow(id: "settings") } else { model.startAsk(typed) }
+            }
+            return (ask.map { [$0] } ?? []) + ranked + mail + fallback
         }
     }
 
@@ -264,6 +288,26 @@ struct CommandPalette: View {
         return out
     }
 
+    private var askFlow: AskFlow { model.askFlow }
+
+    /// The "Ask Mermoz to do" row, when the text reads as an instruction. Without an AI
+    /// the row says where to connect one, and opens Settings.
+    static func askItem(_ text: String, otherMatches: Bool, availability: DoAvailability?,
+                        run: @escaping @MainActor () -> Void) -> PaletteItem? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard AskIntent.isInstruction(t, otherMatches: otherMatches) else { return nil }
+        let noAI = availability?.available == false
+        return PaletteItem(id: "ask", title: "✦ Ask Mermoz to do: “\(t)”",
+                           detail: noAI ? "Connect an AI first: Settings › Agents" : "",
+                           icon: AnyView(Image(systemName: "sparkles").foregroundStyle(Theme.accent)),
+                           keepsOpen: true, run: run)
+    }
+
+    private func confirmAsk() {
+        guard askFlow.canConfirm else { return }
+        model.confirmAsk()
+    }
+
     private func runSelected() {
         guard items.indices.contains(cursor) else { return }
         let item = items[cursor]
@@ -272,6 +316,7 @@ struct CommandPalette: View {
     }
 
     private func close() {
+        askFlow.cancel()
         model.paletteMode = nil
         query = ""
     }

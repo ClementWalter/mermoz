@@ -32,6 +32,8 @@ Examples:
                                             Draft with files (25 MB in total at most)
   mermoz send dft_8f2c                      Ask to send; the user approves in Mermoz
   mermoz chat M-1287 \"should I accept?\"     Ask the AI about a thread (proposals only)
+  mermoz do \"archive mail older than 5 months not in done\"
+                                            Plan a bulk change and show it (--yes runs it)
 
 Exit codes: 0 ok · 1 error · 2 usage · 3 approval required (tell the user) · 4 not found · 5 Mermoz not running";
 
@@ -265,6 +267,35 @@ enum Cmd {
     /// "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes
     /// back Unread then, or when new mail arrives. "none" brings it back now.
     Later { thread: String, when: Vec<String> },
+    /// Ask Mermoz to do something to many threads in plain words ("archive all messages
+    /// past 5 months not in done"). The account's AI turns it into a plan; Mermoz shows
+    /// what it would change and how many threads. Dry run unless --yes. Nothing here can
+    /// send, reply to or forward mail.
+    ///   mermoz do "archive everything from news.example older than a month"
+    ///   mermoz do "archive everything from news.example older than a month" --yes
+    ///   mermoz do "delete the promos from shop.example" --yes --confirm 37
+    ///   mermoz do --plan plan.json            A plan written by hand (see docs/protocol.md)
+    ///   mermoz do --undo bop_8f2c             Put every thread of a run back
+    #[command(verbatim_doc_comment)]
+    Do {
+        /// What to do, in plain words.
+        sentence: Vec<String>,
+        /// Run the plan (otherwise only show it).
+        #[arg(long)]
+        yes: bool,
+        /// Deleting needs the number of threads, as the preview shows it.
+        #[arg(long)]
+        confirm: Option<i64>,
+        /// A plan as JSON (a file, or - for stdin) instead of asking the AI.
+        #[arg(long, conflicts_with = "undo")]
+        plan: Option<String>,
+        /// Undo a run by its id.
+        #[arg(long, conflicts_with_all = ["sentence", "yes"])]
+        undo: Option<String>,
+        /// The last runs, newest first.
+        #[arg(long, conflicts_with_all = ["sentence", "yes", "undo", "plan"])]
+        history: bool,
+    },
     /// Instant sorting: the provider in use, whether it has a key, and today's calls.
     /// Keys and the provider are changed in the app (Settings › Developer).
     Router,
@@ -377,6 +408,37 @@ impl Out {
     }
     fn json(&self, v: &Value) {
         self.line(serde_json::to_string_pretty(v).unwrap_or_default());
+    }
+}
+
+/// A previewed plan: each step's sentence, how it was read, counts per status and a sample.
+fn print_plan(out: &Out, v: &Value) {
+    for st in v["steps"].as_array().into_iter().flatten() {
+        out.line(st["summary"].as_str().unwrap_or(""));
+        out.line(format!(
+            "  I understood: {}",
+            st["interpretation"].as_str().unwrap_or("")
+        ));
+        let counts: Vec<String> = st["by_status"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| format!("{} {}", c["name"].as_str().unwrap_or(""), c["count"]))
+            .collect();
+        if !counts.is_empty() {
+            out.line(format!("  {}", counts.join(" · ")));
+        }
+        for t in st["sample"].as_array().into_iter().flatten() {
+            out.line(format!(
+                "  {:<8} {}  ({})",
+                t["number"].as_str().unwrap_or(""),
+                t["subject"].as_str().unwrap_or(""),
+                t["last_from"].as_str().unwrap_or("")
+            ));
+        }
+    }
+    if let Some(w) = v["warning"].as_str() {
+        out.line(format!("note: {w}"));
     }
 }
 
@@ -1677,6 +1739,106 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 };
             }
             out.line("thanks, feedback recorded");
+        }
+        Cmd::Do {
+            sentence,
+            yes,
+            confirm,
+            plan,
+            undo,
+            history,
+        } => {
+            let invalid = |m: String| RpcError {
+                code: -32602,
+                message: m,
+                data: None,
+            };
+            if history {
+                let v = c.call("do.list", json!({}))?;
+                if out.json {
+                    out.json(&v);
+                } else {
+                    for o in v.as_array().into_iter().flatten() {
+                        out.line(format!(
+                            "{}  {:<7} {}",
+                            o["id"].as_str().unwrap_or(""),
+                            o["state"].as_str().unwrap_or(""),
+                            o["summary"].as_str().unwrap_or("")
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            if let Some(id) = undo {
+                let v = c.call("do.undo", json!({ "id": id }))?;
+                if out.json {
+                    out.json(&v);
+                } else {
+                    out.line(format!("undone: {} threads put back", v["restored"]));
+                }
+                return Ok(());
+            }
+            let text = sentence.join(" ");
+            let v = match plan {
+                Some(path) => {
+                    let raw = if path == "-" {
+                        let mut s = String::new();
+                        std::io::stdin()
+                            .read_to_string(&mut s)
+                            .map_err(|e| invalid(format!("cannot read stdin: {e}")))?;
+                        s
+                    } else {
+                        std::fs::read_to_string(&path)
+                            .map_err(|e| invalid(format!("cannot read {path}: {e}")))?
+                    };
+                    let plan: Value = serde_json::from_str(&raw)
+                        .map_err(|e| invalid(format!("{path} is not JSON: {e}")))?;
+                    c.call("do.preview", json!({ "plan": plan, "text": text }))?
+                }
+                None if text.trim().is_empty() => {
+                    return Err(invalid(
+                        "say what to do, e.g. mermoz do \"archive newsletters older than a month\""
+                            .into(),
+                    ));
+                }
+                None => c.call("do.ask", json!({ "text": text }))?,
+            };
+            if v["kind"] != "plan" {
+                // No AI, or the AI asked back: nothing was planned.
+                if out.json {
+                    out.json(&v);
+                }
+                return Err(invalid(
+                    v["message"]
+                        .as_str()
+                        .unwrap_or("nothing planned")
+                        .to_string(),
+                ));
+            }
+            if !yes {
+                if out.json {
+                    out.json(&v);
+                } else {
+                    print_plan(&out, &v);
+                    out.line(if v["deletes"] == true {
+                        format!("dry run: nothing changed. To delete, run again with --yes --confirm {}", v["total"])
+                    } else {
+                        "dry run: nothing changed. Run again with --yes to do it.".into()
+                    });
+                }
+                return Ok(());
+            }
+            let r = c.call("do.run", json!({ "id": v["id"], "confirm": confirm }))?;
+            if out.json {
+                out.json(&json!({ "plan": v, "run": r }));
+            } else {
+                print_plan(&out, &v);
+                out.line(format!(
+                    "done: {} threads changed. Undo: mermoz do --undo {}",
+                    r["done"],
+                    r["id"].as_str().unwrap_or("")
+                ));
+            }
         }
         Cmd::Chat {
             thread,

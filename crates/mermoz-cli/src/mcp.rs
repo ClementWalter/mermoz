@@ -58,6 +58,12 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "project": s("only this project's cards") } } },
         { "name": "snooze_thread", "description": "Later: hide threads from the Feed until a time (Unix ms) or until new mail arrives in them. until null brings them back now.",
           "inputSchema": { "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "string" } }, "until": { "type": ["integer", "null"] } }, "required": ["ids"] } },
+        { "name": "plan_bulk_action", "description": "Plan a change to many threads from a plain-words instruction (\"archive all messages past 5 months not in done\"), the way the user's Ask Mermoz bar does: the user's own AI turns it into a typed plan (filters + set status / add or remove project / mark read or unread / later / delete to Trash; nothing can send, reply or forward), and Mermoz previews it: a sentence per step, how it was understood, counts per status and sample subjects. Nothing changes. Pass `plan` (the same JSON shape as a returned `plan`) instead of `sentence` to skip the AI. Show the user the summary, then call run_bulk_action.",
+          "inputSchema": { "type": "object", "properties": { "sentence": s("what to do, in plain words"), "plan": { "type": "object", "description": "a plan as returned in `plan`" } } } },
+        { "name": "run_bulk_action", "description": "Run a plan from plan_bulk_action. `confirm` must be the plan's `total` (the number of threads it changes), as a confirmation that the preview was read. Applies in batches and returns the run id for undo_bulk_action.",
+          "inputSchema": { "type": "object", "properties": { "id": s("plan id from plan_bulk_action"), "confirm": { "type": "integer", "description": "the plan's total" } }, "required": ["id", "confirm"] } },
+        { "name": "undo_bulk_action", "description": "Put every thread a bulk run changed back as it was.",
+          "inputSchema": { "type": "object", "properties": { "id": s("run id") }, "required": ["id"] } },
         { "name": "submit_feedback", "description": "Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.",
           "inputSchema": { "type": "object", "properties": { "text": s("what went wrong or is missing"), "tool": s("tool name") }, "required": ["text"] } }
     ])
@@ -189,6 +195,29 @@ fn call_tool(c: &mut Client, name: &str, a: &Value) -> Result<Value, String> {
             "drive.save_attachment",
             json!({ "attachment_id": a["id"] }),
         )),
+        "plan_bulk_action" => match a.get("plan").filter(|p| p.is_object()) {
+            Some(plan) => r(c.call(
+                "do.preview",
+                json!({ "plan": plan, "text": a.get("sentence").cloned().unwrap_or(json!("")) }),
+            )),
+            None => r(c.call(
+                "do.ask",
+                json!({ "text": a.get("sentence").cloned().unwrap_or(json!("")) }),
+            )),
+        },
+        "run_bulk_action" => {
+            let id = a["id"].as_str().unwrap_or("");
+            let op = r(c.call("do.get", json!({ "id": id })))?;
+            // The agent echoes the count it showed the user; a mismatch means it didn't read it.
+            if a["confirm"].as_i64() != op["total"].as_i64() {
+                return Err(format!(
+                    "confirm must be this plan's total ({}): show the user what will change first",
+                    op["total"]
+                ));
+            }
+            r(c.call("do.run", json!({ "id": id, "confirm": a["confirm"] })))
+        }
+        "undo_bulk_action" => r(c.call("do.undo", json!({ "id": a["id"] }))),
         "submit_feedback" => r(c.call(
             "feedback.submit",
             json!({ "text": a["text"], "command": a.get("tool"), "agent": "mcp" }),

@@ -13,7 +13,7 @@ Mermoz keeps your Gmail mailbox on your Mac and lets your own scripts and AI age
 ## Pages
 
 - [Mermoz CLI reference](/docs/cli/): every `mermoz` command, with its `--help` text and exit codes.
-- [Mermoz MCP server](/docs/mcp/): add Mermoz to Claude Code, Claude Desktop or Codex; the 26 tools and their parameters.
+- [Mermoz MCP server](/docs/mcp/): add Mermoz to Claude Code, Claude Desktop or Codex; the 29 tools and their parameters.
 - [Mermoz JSON-RPC protocol](/docs/protocol/): the `mermozd` socket protocol, for building your own client.
 
 ## Quick start for agents

@@ -2,7 +2,7 @@
 
 # Mermoz MCP server
 
-`mermoz mcp` runs an MCP server on **stdio** that gives AI agents the user's Mermoz mailbox as 26 tools: search, read, sort, draft, Drive files and more. It is local: it runs on the user's Mac, next to Mermoz.app, and talks to the app's daemon over a Unix socket. There is no hosted or remote (Streamable HTTP) endpoint: Mermoz has no server of its own that holds mail.
+`mermoz mcp` runs an MCP server on **stdio** that gives AI agents the user's Mermoz mailbox as 29 tools: search, read, sort, draft, Drive files and more. It is local: it runs on the user's Mac, next to Mermoz.app, and talks to the app's daemon over a Unix socket. There is no hosted or remote (Streamable HTTP) endpoint: Mermoz has no server of its own that holds mail.
 
 - **Requires:** Mermoz.app installed and running (macOS 26 or later), signed in to Gmail. If the app isn't running, tools answer "Mermoz isn't running. Ask the user to open Mermoz.app."
 - **Command:** `mermoz mcp` once the CLI is in PATH (Mermoz › Settings › Developer › Install in PATH), or the full path `/Applications/Mermoz.app/Contents/Resources/mermoz mcp`.
@@ -278,6 +278,32 @@ Later: hide threads from the Feed until a time (Unix ms) or until new mail arriv
 | --- | --- | --- | --- |
 | `ids` | array of string | yes |  |
 | `until` | integer or null | no |  |
+
+### plan_bulk_action
+
+Plan a change to many threads from a plain-words instruction ("archive all messages past 5 months not in done"), the way the user's Ask Mermoz bar does: the user's own AI turns it into a typed plan (filters + set status / add or remove project / mark read or unread / later / delete to Trash; nothing can send, reply or forward), and Mermoz previews it: a sentence per step, how it was understood, counts per status and sample subjects. Nothing changes. Pass `plan` (the same JSON shape as a returned `plan`) instead of `sentence` to skip the AI. Show the user the summary, then call run_bulk_action.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `plan` | object | no | a plan as returned in `plan` |
+| `sentence` | string | no | what to do, in plain words |
+
+### run_bulk_action
+
+Run a plan from plan_bulk_action. `confirm` must be the plan's `total` (the number of threads it changes), as a confirmation that the preview was read. Applies in batches and returns the run id for undo_bulk_action.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `confirm` | integer | yes | the plan's total |
+| `id` | string | yes | plan id from plan_bulk_action |
+
+### undo_bulk_action
+
+Put every thread a bulk run changed back as it was.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | run id |
 
 ### submit_feedback
 

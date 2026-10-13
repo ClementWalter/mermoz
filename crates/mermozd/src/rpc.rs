@@ -1097,6 +1097,44 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             Ok(json!({ "deleted": st.clear_chat(&id)? }))
         }
         "feed.list" => Ok(crate::feed::list(svc, &column_scope(p))?),
+        "do.status" => Ok(crate::bulk::status(svc)?),
+        "do.ask" => {
+            let origin = if caller.is_app { "app" } else { "agent" };
+            match crate::bulk::ask(svc, &s(p, "text")?, origin).await {
+                Ok(v) => Ok(v),
+                Err(Error::Upstream {
+                    status: 401 | 403, ..
+                }) => Err(RpcError::invalid(
+                    "Your AI sign-in expired. Sign in again in Settings › Agents.",
+                )),
+                Err(e @ (Error::Http(_) | Error::Upstream { .. })) => {
+                    tracing::warn!("do.ask failed: {e}");
+                    Err(RpcError::invalid(
+                        "Your AI couldn't answer right now. Try again in a moment.",
+                    ))
+                }
+                Err(e) => Err(e.into()),
+            }
+        }
+        "do.preview" => {
+            let origin = if caller.is_app { "app" } else { "agent" };
+            let plan = p
+                .get("plan")
+                .ok_or_else(|| RpcError::invalid("missing 'plan'"))?;
+            let text = opt_s(p, "text").unwrap_or_default();
+            Ok(crate::bulk::preview_json(svc, &text, plan, origin)?)
+        }
+        "do.run" => {
+            let id = s(p, "id")?;
+            let confirm = p.get("confirm").and_then(|v| v.as_i64());
+            Ok(crate::bulk::run(svc, &id, confirm).await?)
+        }
+        "do.undo" => Ok(crate::bulk::undo(svc, &s(p, "id")?)?),
+        "do.get" => to_value(st.bulk_op(&s(p, "id")?)?),
+        "do.list" => {
+            let limit = p.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
+            to_value(st.bulk_ops(limit)?)
+        }
         "feed.texts" => {
             let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
             Ok(json!({ "queued": crate::feed::request_texts(svc, &ids)? }))

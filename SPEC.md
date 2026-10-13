@@ -420,6 +420,38 @@ untick either and the app adapts.
 - **Keyboard-first:** j/k navigation, single-key status/priority changes, ⌘K
   command palette (also hosts "ask your mailbox").
 
+### Ask Mermoz to do (built 2026-10-13)
+
+For "I want to do something and I'm not sure how": type it in ⌘K and the connected
+AI plans it.
+
+- **Intent.** Text that starts with an instruction verb ("archive…", "delete…", "mark…",
+  "déplace…"), or three words or more that match nothing, gets a top row
+  "✦ Ask Mermoz to do: “…”". The usual commands and search results stay below.
+- **Plan, don't act.** The first account's allowed AI turns the sentence into a typed
+  plan: filters (status in / not in, older / newer than, sender or domain, project,
+  unread, attachment, account, words) and one action per step (set status, Archive and
+  Done included; add or remove a project; read / unread; Later until a day; delete to
+  Trash), at most five steps. The AI sees the sentence and the names of statuses,
+  projects and accounts, never mail. Every plan is checked strictly; an unknown action,
+  field, status or project is refused and asked again once with the reason. Send, reply
+  and forward don't exist in the schema.
+- **Preview.** Mermoz resolves the filter locally and shows the plan in plain words
+  ("Archive 1,842 threads older than 5 months that aren't Done"), how it was read
+  ("I understood: status ≠ Done AND older than 5 months"), a count per current status
+  and the first five subjects. Enter runs it, Esc drops it. A delete asks to type the
+  count first. Nothing matching says so, with the interpretation. The Trash is never
+  matched unless the sentence asks for it.
+- **Run and undo.** Batches of 200 through the same store changes as the RPCs, so Gmail
+  labels follow; progress shows in the palette, then a toast and one ⌘Z for the whole
+  run. Every thread's state before the run is logged, so undo works after a restart.
+- **Without AI** the row says to connect one in Settings › Agents and opens Settings.
+- **CLI / MCP:** `mermoz do "<sentence>"` prints the plan and counts (dry run);
+  `--yes` runs it (`--confirm N` for a delete), `--undo <id>`, `--history`, `--plan
+  file.json` without the AI. MCP `plan_bulk_action`, `run_bulk_action` (needs the plan's
+  total as `confirm`) and `undo_bulk_action`. Agents could already change statuses one
+  thread at a time, so the approval model is unchanged: only sending is gated.
+
 ### Feed view (decided 2026-10-12)
 
 A third layout next to Board and List: **Board | List | Feed**, never the default.

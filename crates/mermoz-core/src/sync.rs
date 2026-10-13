@@ -38,6 +38,12 @@ pub enum Event {
         thread_id: String,
         text: String,
     },
+    /// An "Ask Mermoz to do" run changed `done` of its `total` threads so far.
+    DoProgress {
+        id: String,
+        done: i64,
+        total: i64,
+    },
 }
 
 pub struct AccountSync {

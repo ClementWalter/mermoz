@@ -57,6 +57,15 @@ Commands:
   chat          Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied
   feed          The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)
   later         Put a thread off until a time said in plain words ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. "none" brings it back now
+  do            Ask Mermoz to do something to many threads in plain words ("archive all messages
+                past 5 months not in done"). The account's AI turns it into a plan; Mermoz shows
+                what it would change and how many threads. Dry run unless --yes. Nothing here can
+                send, reply to or forward mail.
+                  mermoz do "archive everything from news.example older than a month"
+                  mermoz do "archive everything from news.example older than a month" --yes
+                  mermoz do "delete the promos from shop.example" --yes --confirm 37
+                  mermoz do --plan plan.json            A plan written by hand (see docs/protocol.md)
+                  mermoz do --undo bop_8f2c             Put every thread of a run back
   router        Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
   sync          Trigger an immediate sync
   mcp           Run an MCP server on stdio
@@ -82,6 +91,8 @@ Examples:
                                             Draft with files (25 MB in total at most)
   mermoz send dft_8f2c                      Ask to send; the user approves in Mermoz
   mermoz chat M-1287 "should I accept?"     Ask the AI about a thread (proposals only)
+  mermoz do "archive mail older than 5 months not in done"
+                                            Plan a bulk change and show it (--yes runs it)
 
 Exit codes: 0 ok · 1 error · 2 usage · 3 approval required (tell the user) · 4 not found · 5 Mermoz not running
 ```
@@ -903,6 +914,36 @@ Arguments:
 Options:
       --json  Machine-readable JSON output
   -h, --help  Print help
+```
+
+### mermoz do
+
+Ask Mermoz to do something to many threads in plain words ("archive all messages
+
+```text
+Ask Mermoz to do something to many threads in plain words ("archive all messages
+past 5 months not in done"). The account's AI turns it into a plan; Mermoz shows
+what it would change and how many threads. Dry run unless --yes. Nothing here can
+send, reply to or forward mail.
+  mermoz do "archive everything from news.example older than a month"
+  mermoz do "archive everything from news.example older than a month" --yes
+  mermoz do "delete the promos from shop.example" --yes --confirm 37
+  mermoz do --plan plan.json            A plan written by hand (see docs/protocol.md)
+  mermoz do --undo bop_8f2c             Put every thread of a run back
+
+Usage: mermoz do [OPTIONS] [SENTENCE]...
+
+Arguments:
+  [SENTENCE]...  What to do, in plain words
+
+Options:
+      --json               Machine-readable JSON output
+      --yes                Run the plan (otherwise only show it)
+      --confirm <CONFIRM>  Deleting needs the number of threads, as the preview shows it
+      --plan <PLAN>        A plan as JSON (a file, or - for stdin) instead of asking the AI
+      --undo <UNDO>        Undo a run by its id
+      --history            The last runs, newest first
+  -h, --help               Print help
 ```
 
 ### mermoz router

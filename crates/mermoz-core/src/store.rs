@@ -17,8 +17,10 @@ mod counts;
 pub use conversations::{GroupingPlan, PairCandidate};
 
 mod feed;
+mod plan;
 mod readings;
 pub use feed::FEED_STATUSES;
+pub use plan::{BulkOp, PlanMatch};
 
 /// Writer settings. Each ingested message runs in a savepoint whose sub-journal stays in
 /// memory, and a 32 MB page cache keeps a sync batch's pages from being evicted and
@@ -125,6 +127,7 @@ const MIGRATIONS: &[&str] = &[
     feed::LATER_MIGRATION,
     addresses::MIGRATION,
     readings::MIGRATION,
+    plan::MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and

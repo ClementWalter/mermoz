@@ -180,6 +180,8 @@ final class AppModel {
         var answeredDate: Int64 = 0
         /// A Later: undone by bringing these threads back into the feed.
         var unsnooze: [String] = []
+        /// An "Ask Mermoz to do" run: undone as a whole by the daemon.
+        var doOperation: String?
     }
 
     var paletteMode: PaletteMode?
@@ -195,6 +197,8 @@ final class AppModel {
     private(set) var client: DaemonClient?
     /// Google Drive state (AppModel+Drive.swift).
     let drive = DriveModel()
+    /// "Ask Mermoz to do" in ⌘K (AskFlow.swift, AppModel+Ask.swift).
+    let askFlow = AskFlow()
 
     /// "Chat about this" (AppModel+Chat.swift): the panel beside the open thread.
     var chatOpen = false
@@ -1004,6 +1008,13 @@ final class AppModel {
         guard let entry = undoStack.popLast(), let client else { toast = "Nothing to undo"; return }
         Task {
             do {
+                if let op = entry.doOperation {
+                    try await client.doUndo(op)
+                    toast = "Undid \(entry.label)"
+                    refreshCounts()
+                    await loadList()
+                    return
+                }
                 if let token = entry.answerUndo, let s = entry.answered {
                     try await feedSuggester.undo(token, s, lastDate: entry.answeredDate, client: client)
                     toast = "Undid \(entry.label)"

@@ -143,6 +143,54 @@ app, the CLI and the MCP server are clients of this protocol.
  "options": [{"label": "…", "detail": "…", "recommended": true, "reason": "…", "reply": "…"}]}
 ```
 
+## Ask Mermoz to do
+
+A sentence typed in ⌘K ("archive all messages past 5 months not in done") goes to the
+first account's allowed AI with only the names of statuses, projects and accounts (never
+mail). The AI fills a fixed schema; the daemon checks it strictly (unknown fields, actions,
+statuses or projects are refused and asked again once with the reason) and resolves it
+locally. Nothing in the schema can send, reply to or forward mail.
+
+```jsonc
+// Plan: 1–5 steps, each a filter (every field narrows; empty ones don't) and one action.
+{"steps": [{"filter": {"status_in": [key], "status_not_in": [key],
+                       "older_than": {"amount": 5, "unit": "day|week|month|year"}, "newer_than": …,
+                       "from": ["nora@lind.example", "news.example", "Paul"],  // address, domain, or name
+                       "projects": [name], "not_projects": [name], "unread": bool, "has_attachment": bool,
+                       "account": "acc_1", "query": "words"},
+            "action": {"kind": "set_status", "status": "archive"}       // any status but unread / review
+                      | {"kind": "add_project" | "remove_project", "project": name}
+                      | {"kind": "mark_read" | "mark_unread"}
+                      | {"kind": "later", "until": "2026-10-20"}        // that day, 08:00 local
+                      | {"kind": "delete"}}]}                          // Gmail Trash
+// Trash is never matched unless status_in asks for deleted.
+
+// DoPreview (do.ask / do.preview). `kind`: plan | question (unclear, or not doable) | needs_ai.
+{"kind": "plan", "id": "bop_…", "sentence": "…", "plan": Plan,
+ "summary": "Archive 1,842 threads older than 5 months that aren't Done",
+ "interpretation": "status ≠ Done AND older than 5 months",
+ "steps": [{"summary", "interpretation", "action": "Archive", "count": 1842,
+            "by_status": [{"status": "todo", "name": "To do", "count": 1200}],
+            "sample": [{"id", "number", "status", "subject", "last_from", "last_date"}]}],   // first 5
+ "total": 1842, "deletes": false, "confirm": "enter" | "type_count",
+ "warning": "Nothing matches. I understood: …" | "This applies to every email in Mermoz." | null}
+{"kind": "question" | "needs_ai", "message": "…"}
+
+// DoOperation (the operation log; survives restarts)
+{"id": "bop_…", "sentence", "plan": Plan, "summary", "state": "planned|running|done|failed|undone",
+ "total", "done", "origin": "app|agent", "error", "created", "finished", "undone"}
+```
+
+| method | params | result |
+| --- | --- | --- |
+| `do.status` | `{}` | `{"available": true, "provider_name"}` or `{"available": false, "message"}` |
+| `do.ask` | `{"text"}` — the AI plans, the daemon previews; nothing changes | `DoPreview` |
+| `do.preview` | `{"plan", "text"?}` — a plan given as JSON, checked and previewed without the AI | `DoPreview` |
+| `do.run` | `{"id", "confirm"?}` — runs a planned preview once, 200 threads per write through the same store changes as `threads.update` / `threads.mark_read` / `feed.snooze` (Gmail write-back included), logging each thread's state first; emits `do_progress`. A plan that deletes needs `confirm` equal to its `total` | `{"id", "done", "total", "undo_label"}` |
+| `do.undo` | `{"id"}` — puts every thread the run changed back as it was (Later is lifted) | `{"id", "restored"}` |
+| `do.get` | `{"id"}` | `DoOperation` |
+| `do.list` | `{"limit"?: 20}` — runs, newest first | `[DoOperation]` |
+
 ## Methods
 
 | method               | params                                                                                   | result                                   |
@@ -305,6 +353,7 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "drive_changed", "account_id": "acc_1"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "feed_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "chat_delta", "thread_id": "thr_…", "text": "the answer so far"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "do_progress", "id": "bop_…", "done": 400, "total": 1842}}
 ```
 
 `chat_delta` carries the whole visible answer so far (never the actions block), at

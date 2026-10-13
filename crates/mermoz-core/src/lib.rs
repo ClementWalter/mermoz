@@ -23,6 +23,7 @@ pub mod model;
 pub mod newsletter;
 pub mod oauth;
 pub mod paths;
+pub mod plan;
 pub mod quote;
 pub mod reading;
 pub mod sanitize;

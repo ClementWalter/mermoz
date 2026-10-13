@@ -62,6 +62,9 @@
     "save_attachment_to_drive",
     "feed",
     "snooze_thread",
+    "plan_bulk_action",
+    "run_bulk_action",
+    "undo_bulk_action",
     "submit_feedback"
   ],
   "documentation": "https://mermoz.xyz/docs/mcp/",

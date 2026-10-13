@@ -209,6 +209,86 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 {&quot;title&quot;: &quot;…&quot;, &quot;why&quot;: &quot;…&quot;, &quot;draft&quot;: &quot;…&quot;, &quot;summary&quot;: &quot;…&quot;, &quot;points&quot;: [&quot;…&quot;], &quot;lines&quot;: [&quot;…&quot;],
  &quot;options&quot;: [{&quot;label&quot;: &quot;…&quot;, &quot;detail&quot;: &quot;…&quot;, &quot;recommended&quot;: true, &quot;reason&quot;: &quot;…&quot;, &quot;reply&quot;: &quot;…&quot;}]}
 </code></pre>
+<h2 id="ask-mermoz-to-do">Ask Mermoz to do</h2>
+<p>A sentence typed in ⌘K ("archive all messages past 5 months not in done") goes to the
+first account's allowed AI with only the names of statuses, projects and accounts (never
+mail). The AI fills a fixed schema; the daemon checks it strictly (unknown fields, actions,
+statuses or projects are refused and asked again once with the reason) and resolves it
+locally. Nothing in the schema can send, reply to or forward mail.</p>
+<pre><code class="language-jsonc">// Plan: 1–5 steps, each a filter (every field narrows; empty ones don't) and one action.
+{&quot;steps&quot;: [{&quot;filter&quot;: {&quot;status_in&quot;: [key], &quot;status_not_in&quot;: [key],
+                       &quot;older_than&quot;: {&quot;amount&quot;: 5, &quot;unit&quot;: &quot;day|week|month|year&quot;}, &quot;newer_than&quot;: …,
+                       &quot;from&quot;: [&quot;nora@lind.example&quot;, &quot;news.example&quot;, &quot;Paul&quot;],  // address, domain, or name
+                       &quot;projects&quot;: [name], &quot;not_projects&quot;: [name], &quot;unread&quot;: bool, &quot;has_attachment&quot;: bool,
+                       &quot;account&quot;: &quot;acc_1&quot;, &quot;query&quot;: &quot;words&quot;},
+            &quot;action&quot;: {&quot;kind&quot;: &quot;set_status&quot;, &quot;status&quot;: &quot;archive&quot;}       // any status but unread / review
+                      | {&quot;kind&quot;: &quot;add_project&quot; | &quot;remove_project&quot;, &quot;project&quot;: name}
+                      | {&quot;kind&quot;: &quot;mark_read&quot; | &quot;mark_unread&quot;}
+                      | {&quot;kind&quot;: &quot;later&quot;, &quot;until&quot;: &quot;2026-10-20&quot;}        // that day, 08:00 local
+                      | {&quot;kind&quot;: &quot;delete&quot;}}]}                          // Gmail Trash
+// Trash is never matched unless status_in asks for deleted.
+
+// DoPreview (do.ask / do.preview). `kind`: plan | question (unclear, or not doable) | needs_ai.
+{&quot;kind&quot;: &quot;plan&quot;, &quot;id&quot;: &quot;bop_…&quot;, &quot;sentence&quot;: &quot;…&quot;, &quot;plan&quot;: Plan,
+ &quot;summary&quot;: &quot;Archive 1,842 threads older than 5 months that aren't Done&quot;,
+ &quot;interpretation&quot;: &quot;status ≠ Done AND older than 5 months&quot;,
+ &quot;steps&quot;: [{&quot;summary&quot;, &quot;interpretation&quot;, &quot;action&quot;: &quot;Archive&quot;, &quot;count&quot;: 1842,
+            &quot;by_status&quot;: [{&quot;status&quot;: &quot;todo&quot;, &quot;name&quot;: &quot;To do&quot;, &quot;count&quot;: 1200}],
+            &quot;sample&quot;: [{&quot;id&quot;, &quot;number&quot;, &quot;status&quot;, &quot;subject&quot;, &quot;last_from&quot;, &quot;last_date&quot;}]}],   // first 5
+ &quot;total&quot;: 1842, &quot;deletes&quot;: false, &quot;confirm&quot;: &quot;enter&quot; | &quot;type_count&quot;,
+ &quot;warning&quot;: &quot;Nothing matches. I understood: …&quot; | &quot;This applies to every email in Mermoz.&quot; | null}
+{&quot;kind&quot;: &quot;question&quot; | &quot;needs_ai&quot;, &quot;message&quot;: &quot;…&quot;}
+
+// DoOperation (the operation log; survives restarts)
+{&quot;id&quot;: &quot;bop_…&quot;, &quot;sentence&quot;, &quot;plan&quot;: Plan, &quot;summary&quot;, &quot;state&quot;: &quot;planned|running|done|failed|undone&quot;,
+ &quot;total&quot;, &quot;done&quot;, &quot;origin&quot;: &quot;app|agent&quot;, &quot;error&quot;, &quot;created&quot;, &quot;finished&quot;, &quot;undone&quot;}
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>method</th>
+<th>params</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>do.status</code></td>
+<td><code>{}</code></td>
+<td><code>{"available": true, "provider_name"}</code> or <code>{"available": false, "message"}</code></td>
+</tr>
+<tr>
+<td><code>do.ask</code></td>
+<td><code>{"text"}</code> — the AI plans, the daemon previews; nothing changes</td>
+<td><code>DoPreview</code></td>
+</tr>
+<tr>
+<td><code>do.preview</code></td>
+<td><code>{"plan", "text"?}</code> — a plan given as JSON, checked and previewed without the AI</td>
+<td><code>DoPreview</code></td>
+</tr>
+<tr>
+<td><code>do.run</code></td>
+<td><code>{"id", "confirm"?}</code> — runs a planned preview once, 200 threads per write through the same store changes as <code>threads.update</code> / <code>threads.mark_read</code> / <code>feed.snooze</code> (Gmail write-back included), logging each thread's state first; emits <code>do_progress</code>. A plan that deletes needs <code>confirm</code> equal to its <code>total</code></td>
+<td><code>{"id", "done", "total", "undo_label"}</code></td>
+</tr>
+<tr>
+<td><code>do.undo</code></td>
+<td><code>{"id"}</code> — puts every thread the run changed back as it was (Later is lifted)</td>
+<td><code>{"id", "restored"}</code></td>
+</tr>
+<tr>
+<td><code>do.get</code></td>
+<td><code>{"id"}</code></td>
+<td><code>DoOperation</code></td>
+</tr>
+<tr>
+<td><code>do.list</code></td>
+<td><code>{"limit"?: 20}</code> — runs, newest first</td>
+<td><code>[DoOperation]</code></td>
+</tr>
+</tbody>
+</table></div>
 <h2 id="methods">Methods</h2>
 <div class="table-wrap"><table>
 <thead>
@@ -729,6 +809,7 @@ peer pid) lives inside a bundle named <code>Mermoz.app</code>. <code>review.*</c
 {&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;drive_changed&quot;, &quot;account_id&quot;: &quot;acc_1&quot;}}
 {&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;feed_changed&quot;}}
 {&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;chat_delta&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;text&quot;: &quot;the answer so far&quot;}}
+{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;method&quot;: &quot;event&quot;, &quot;params&quot;: {&quot;kind&quot;: &quot;do_progress&quot;, &quot;id&quot;: &quot;bop_…&quot;, &quot;done&quot;: 400, &quot;total&quot;: 1842}}
 </code></pre>
 <p><code>chat_delta</code> carries the whole visible answer so far (never the actions block), at
 most every 60 ms while <code>chat.send</code> streams; the final answer is <code>chat.send</code>'s result.

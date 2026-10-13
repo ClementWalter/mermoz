@@ -73,7 +73,7 @@ Mermoz keeps your Gmail mailbox on your Mac and lets your own scripts and AI age
 ## Pages
 
 - [Mermoz CLI reference](/docs/cli/): every `mermoz` command, with its `--help` text and exit codes.
-- [Mermoz MCP server](/docs/mcp/): add Mermoz to Claude Code, Claude Desktop or Codex; the 26 tools and their parameters.
+- [Mermoz MCP server](/docs/mcp/): add Mermoz to Claude Code, Claude Desktop or Codex; the 29 tools and their parameters.
 - [Mermoz JSON-RPC protocol](/docs/protocol/): the `mermozd` socket protocol, for building your own client.
 
 ## Quick start for agents
@@ -150,6 +150,15 @@ Commands:
   chat          Ask the account's AI about a thread (kept with the thread, like in the app). Without a question, shows the conversation so far. Proposals are listed, never applied
   feed          The Feed: open mail as cards, one thing to do each, in order (now, today, this week, waiting on others, can wait)
   later         Put a thread off until a time said in plain words ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes back Unread then, or when new mail arrives. "none" brings it back now
+  do            Ask Mermoz to do something to many threads in plain words ("archive all messages
+                past 5 months not in done"). The account's AI turns it into a plan; Mermoz shows
+                what it would change and how many threads. Dry run unless --yes. Nothing here can
+                send, reply to or forward mail.
+                  mermoz do "archive everything from news.example older than a month"
+                  mermoz do "archive everything from news.example older than a month" --yes
+                  mermoz do "delete the promos from shop.example" --yes --confirm 37
+                  mermoz do --plan plan.json            A plan written by hand (see docs/protocol.md)
+                  mermoz do --undo bop_8f2c             Put every thread of a run back
   router        Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
   sync          Trigger an immediate sync
   mcp           Run an MCP server on stdio
@@ -175,6 +184,8 @@ Examples:
                                             Draft with files (25 MB in total at most)
   mermoz send dft_8f2c                      Ask to send; the user approves in Mermoz
   mermoz chat M-1287 "should I accept?"     Ask the AI about a thread (proposals only)
+  mermoz do "archive mail older than 5 months not in done"
+                                            Plan a bulk change and show it (--yes runs it)
 
 Exit codes: 0 ok · 1 error · 2 usage · 3 approval required (tell the user) · 4 not found · 5 Mermoz not running
 ```
@@ -998,6 +1009,36 @@ Options:
   -h, --help  Print help
 ```
 
+### mermoz do
+
+Ask Mermoz to do something to many threads in plain words ("archive all messages
+
+```text
+Ask Mermoz to do something to many threads in plain words ("archive all messages
+past 5 months not in done"). The account's AI turns it into a plan; Mermoz shows
+what it would change and how many threads. Dry run unless --yes. Nothing here can
+send, reply to or forward mail.
+  mermoz do "archive everything from news.example older than a month"
+  mermoz do "archive everything from news.example older than a month" --yes
+  mermoz do "delete the promos from shop.example" --yes --confirm 37
+  mermoz do --plan plan.json            A plan written by hand (see docs/protocol.md)
+  mermoz do --undo bop_8f2c             Put every thread of a run back
+
+Usage: mermoz do [OPTIONS] [SENTENCE]...
+
+Arguments:
+  [SENTENCE]...  What to do, in plain words
+
+Options:
+      --json               Machine-readable JSON output
+      --yes                Run the plan (otherwise only show it)
+      --confirm <CONFIRM>  Deleting needs the number of threads, as the preview shows it
+      --plan <PLAN>        A plan as JSON (a file, or - for stdin) instead of asking the AI
+      --undo <UNDO>        Undo a run by its id
+      --history            The last runs, newest first
+  -h, --help               Print help
+```
+
 ### mermoz router
 
 Instant sorting: the provider in use, whether it has a key, and today's calls. Keys and the provider are changed in the app (Settings › Developer)
@@ -1046,7 +1087,7 @@ Options:
 
 # Mermoz MCP server
 
-`mermoz mcp` runs an MCP server on **stdio** that gives AI agents the user's Mermoz mailbox as 26 tools: search, read, sort, draft, Drive files and more. It is local: it runs on the user's Mac, next to Mermoz.app, and talks to the app's daemon over a Unix socket. There is no hosted or remote (Streamable HTTP) endpoint: Mermoz has no server of its own that holds mail.
+`mermoz mcp` runs an MCP server on **stdio** that gives AI agents the user's Mermoz mailbox as 29 tools: search, read, sort, draft, Drive files and more. It is local: it runs on the user's Mac, next to Mermoz.app, and talks to the app's daemon over a Unix socket. There is no hosted or remote (Streamable HTTP) endpoint: Mermoz has no server of its own that holds mail.
 
 - **Requires:** Mermoz.app installed and running (macOS 26 or later), signed in to Gmail. If the app isn't running, tools answer "Mermoz isn't running. Ask the user to open Mermoz.app."
 - **Command:** `mermoz mcp` once the CLI is in PATH (Mermoz › Settings › Developer › Install in PATH), or the full path `/Applications/Mermoz.app/Contents/Resources/mermoz mcp`.
@@ -1323,6 +1364,32 @@ Later: hide threads from the Feed until a time (Unix ms) or until new mail arriv
 | `ids` | array of string | yes |  |
 | `until` | integer or null | no |  |
 
+### plan_bulk_action
+
+Plan a change to many threads from a plain-words instruction ("archive all messages past 5 months not in done"), the way the user's Ask Mermoz bar does: the user's own AI turns it into a typed plan (filters + set status / add or remove project / mark read or unread / later / delete to Trash; nothing can send, reply or forward), and Mermoz previews it: a sentence per step, how it was understood, counts per status and sample subjects. Nothing changes. Pass `plan` (the same JSON shape as a returned `plan`) instead of `sentence` to skip the AI. Show the user the summary, then call run_bulk_action.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `plan` | object | no | a plan as returned in `plan` |
+| `sentence` | string | no | what to do, in plain words |
+
+### run_bulk_action
+
+Run a plan from plan_bulk_action. `confirm` must be the plan's `total` (the number of threads it changes), as a confirmation that the preview was read. Applies in batches and returns the run id for undo_bulk_action.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `confirm` | integer | yes | the plan's total |
+| `id` | string | yes | plan id from plan_bulk_action |
+
+### undo_bulk_action
+
+Put every thread a bulk run changed back as it was.
+
+| parameter | type | required | notes |
+| --- | --- | --- | --- |
+| `id` | string | yes | run id |
+
 ### submit_feedback
 
 Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.
@@ -1482,6 +1549,54 @@ app, the CLI and the MCP server are clients of this protocol.
 {"title": "…", "why": "…", "draft": "…", "summary": "…", "points": ["…"], "lines": ["…"],
  "options": [{"label": "…", "detail": "…", "recommended": true, "reason": "…", "reply": "…"}]}
 ```
+
+## Ask Mermoz to do
+
+A sentence typed in ⌘K ("archive all messages past 5 months not in done") goes to the
+first account's allowed AI with only the names of statuses, projects and accounts (never
+mail). The AI fills a fixed schema; the daemon checks it strictly (unknown fields, actions,
+statuses or projects are refused and asked again once with the reason) and resolves it
+locally. Nothing in the schema can send, reply to or forward mail.
+
+```jsonc
+// Plan: 1–5 steps, each a filter (every field narrows; empty ones don't) and one action.
+{"steps": [{"filter": {"status_in": [key], "status_not_in": [key],
+                       "older_than": {"amount": 5, "unit": "day|week|month|year"}, "newer_than": …,
+                       "from": ["nora@lind.example", "news.example", "Paul"],  // address, domain, or name
+                       "projects": [name], "not_projects": [name], "unread": bool, "has_attachment": bool,
+                       "account": "acc_1", "query": "words"},
+            "action": {"kind": "set_status", "status": "archive"}       // any status but unread / review
+                      | {"kind": "add_project" | "remove_project", "project": name}
+                      | {"kind": "mark_read" | "mark_unread"}
+                      | {"kind": "later", "until": "2026-10-20"}        // that day, 08:00 local
+                      | {"kind": "delete"}}]}                          // Gmail Trash
+// Trash is never matched unless status_in asks for deleted.
+
+// DoPreview (do.ask / do.preview). `kind`: plan | question (unclear, or not doable) | needs_ai.
+{"kind": "plan", "id": "bop_…", "sentence": "…", "plan": Plan,
+ "summary": "Archive 1,842 threads older than 5 months that aren't Done",
+ "interpretation": "status ≠ Done AND older than 5 months",
+ "steps": [{"summary", "interpretation", "action": "Archive", "count": 1842,
+            "by_status": [{"status": "todo", "name": "To do", "count": 1200}],
+            "sample": [{"id", "number", "status", "subject", "last_from", "last_date"}]}],   // first 5
+ "total": 1842, "deletes": false, "confirm": "enter" | "type_count",
+ "warning": "Nothing matches. I understood: …" | "This applies to every email in Mermoz." | null}
+{"kind": "question" | "needs_ai", "message": "…"}
+
+// DoOperation (the operation log; survives restarts)
+{"id": "bop_…", "sentence", "plan": Plan, "summary", "state": "planned|running|done|failed|undone",
+ "total", "done", "origin": "app|agent", "error", "created", "finished", "undone"}
+```
+
+| method | params | result |
+| --- | --- | --- |
+| `do.status` | `{}` | `{"available": true, "provider_name"}` or `{"available": false, "message"}` |
+| `do.ask` | `{"text"}` — the AI plans, the daemon previews; nothing changes | `DoPreview` |
+| `do.preview` | `{"plan", "text"?}` — a plan given as JSON, checked and previewed without the AI | `DoPreview` |
+| `do.run` | `{"id", "confirm"?}` — runs a planned preview once, 200 threads per write through the same store changes as `threads.update` / `threads.mark_read` / `feed.snooze` (Gmail write-back included), logging each thread's state first; emits `do_progress`. A plan that deletes needs `confirm` equal to its `total` | `{"id", "done", "total", "undo_label"}` |
+| `do.undo` | `{"id"}` — puts every thread the run changed back as it was (Later is lifted) | `{"id", "restored"}` |
+| `do.get` | `{"id"}` | `DoOperation` |
+| `do.list` | `{"limit"?: 20}` — runs, newest first | `[DoOperation]` |
 
 ## Methods
 
@@ -1645,6 +1760,7 @@ peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "drive_changed", "account_id": "acc_1"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "feed_changed"}}
 {"jsonrpc": "2.0", "method": "event", "params": {"kind": "chat_delta", "thread_id": "thr_…", "text": "the answer so far"}}
+{"jsonrpc": "2.0", "method": "event", "params": {"kind": "do_progress", "id": "bop_…", "done": 400, "total": 1842}}
 ```
 
 `chat_delta` carries the whole visible answer so far (never the actions block), at

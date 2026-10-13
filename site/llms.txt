@@ -16,7 +16,7 @@ Not a fit for: Windows, Linux, iOS or web; mail providers other than Gmail; remo
 
 - [Mermoz developer docs](https://mermoz.xyz/docs/): overview of the CLI, the MCP server and the protocol.
 - [Mermoz CLI reference](https://mermoz.xyz/docs/cli/): every `mermoz` command with its real `--help` text.
-- [Mermoz MCP server](https://mermoz.xyz/docs/mcp/): install in Claude Code, Claude Desktop and Codex; all 26 tools with their parameters.
+- [Mermoz MCP server](https://mermoz.xyz/docs/mcp/): install in Claude Code, Claude Desktop and Codex; all 29 tools with their parameters.
 - [Mermoz JSON-RPC protocol](https://mermoz.xyz/docs/protocol/): the `mermozd` socket protocol the app, the CLI and the MCP server use.
 - [MCP registry entry](https://mermoz.xyz/server.json): `server.json` in the official MCP registry format (local stdio server, no remote endpoint).
 - [MCP discovery document](https://mermoz.xyz/.well-known/mcp.json): how to install and launch the local stdio server.
@@ -61,6 +61,9 @@ Not a fit for: Windows, Linux, iOS or web; mail providers other than Gmail; remo
 - [save_attachment_to_drive](https://mermoz.xyz/docs/mcp/#save_attachment_to_drive): Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing).
 - [feed](https://mermoz.xyz/docs/mcp/#feed): The user's Feed: every open thread as a card (one thing to do), in sections now, today, week, waiting, later, ordered by deadline then urgency.
 - [snooze_thread](https://mermoz.xyz/docs/mcp/#snooze_thread): Later: hide threads from the Feed until a time (Unix ms) or until new mail arrives in them.
+- [plan_bulk_action](https://mermoz.xyz/docs/mcp/#plan_bulk_action): Plan a change to many threads from a plain-words instruction ("archive all messages past 5 months not in done"), the way the user's Ask Mermoz bar does: the user's own AI turns it into a typed plan (filters + set status / add or remove project / mark read or unread / later / delete to Trash; nothing can send, reply or forward), and Mermoz previews it: a sentence per step, how it was understood, counts per status and sample subjects.
+- [run_bulk_action](https://mermoz.xyz/docs/mcp/#run_bulk_action): Run a plan from plan_bulk_action.
+- [undo_bulk_action](https://mermoz.xyz/docs/mcp/#undo_bulk_action): Put every thread a bulk run changed back as it was.
 - [submit_feedback](https://mermoz.xyz/docs/mcp/#submit_feedback): Report friction with these tools (missing option, confusing result, slowness) so Mermoz can improve.
 
 ## About
