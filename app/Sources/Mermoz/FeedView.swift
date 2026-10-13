@@ -518,8 +518,10 @@ struct CardActions: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            // Key hints keep their room on every card and only show on the focused one: focus
+            // moving then changes no button's size, so no card is laid out again.
             Button { model.runPrimary(card) } label: {
-                HStack(spacing: 6) { Text(FeedActions.primaryLabel(card)); if focused { KeyHint("↩") } }
+                HStack(spacing: 6) { Text(FeedActions.primaryLabel(card)); KeyHint("↩").opacity(focused ? 1 : 0) }
             }
             .buttonStyle(.glassProminent).tint(Theme.accent).controlSize(.small)
             if card.kind == .payment {
@@ -549,14 +551,14 @@ struct CardActions: View {
 
     private func secondary(_ title: String, key: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) { Text(title); if focused { KeyHint(key) } }
+            HStack(spacing: 6) { Text(title); KeyHint(key).opacity(focused ? 1 : 0) }
         }
         .buttonStyle(.glass).controlSize(.small)
     }
 
     private func quiet(_ title: String, key: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 5) { Text(title); if focused { KeyHint(key) } }
+            HStack(spacing: 5) { Text(title); KeyHint(key).opacity(focused ? 1 : 0) }
         }
         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.text3)
     }
