@@ -144,6 +144,29 @@ async fn handle(svc: Arc<Service>, stream: UnixStream) {
     let _ = writer.await;
 }
 
+/// Moves HTML still stored in message rows to its own table, in short writes spaced
+/// out so a sync or a click never waits behind it.
+async fn move_html(store: Arc<Store>) {
+    let (t0, mut after, mut batches) = (std::time::Instant::now(), 0i64, 0u64);
+    loop {
+        let st = store.clone();
+        match tokio::task::spawn_blocking(move || st.move_html_batch(after, 25)).await {
+            Ok(Ok(Some(last))) => (after, batches) = (last, batches + 1),
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => return warn!("moving message HTML: {e}"),
+            Err(e) => return warn!("moving message HTML: {e}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    if batches > 0 {
+        info!(
+            batches,
+            ms = t0.elapsed().as_millis() as u64,
+            "message HTML moved out of the rows"
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -169,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
     info!("mermozd listening on {}", sock.display());
     // The feed only reads the store and Jev, so it also runs on demo data.
     feed::start(&svc);
+    tokio::spawn(move_html(svc.store.clone()));
     // MERMOZ_NO_SYNC serves the local store only (demo data, offline UI work).
     if std::env::var_os("MERMOZ_NO_SYNC").is_none() {
         svc.start_all();

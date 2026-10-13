@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod bodies;
 mod conversations;
 mod counts;
 pub use conversations::{GroupingPlan, PairCandidate};
@@ -107,6 +108,7 @@ const MIGRATIONS: &[&str] = &[
     FEED,
     INLINE_PARTS,
     counts::MIGRATION,
+    bodies::MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
@@ -995,10 +997,11 @@ fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
 fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Message>> {
     let mut st = conn.prepare_cached(&format!(
         "SELECT m.id, m.thread_id, from_name, from_email, to_json, cc_json, date, subject, body_text,
-           body_html IS NOT NULL, is_from_me,
+           {}, is_from_me,
            (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json,
            m.list_id IS NOT NULL
-         FROM messages m WHERE {filter} ORDER BY date, m.rowid"
+         FROM messages m WHERE {filter} ORDER BY date, m.rowid",
+        bodies::HAS_HTML_OF_M
     ))?;
     let mut msgs = st
         .query_map([arg], |r| {
@@ -1045,7 +1048,7 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
             // A newsletter's plain part is often a dump of links: read its HTML instead.
             let html: Option<String> = conn
                 .query_row(
-                    "SELECT body_html FROM messages WHERE id = ?1",
+                    &format!("SELECT {} FROM messages m WHERE id = ?1", bodies::HTML_OF_M),
                     [&m.id],
                     |r| r.get(0),
                 )
@@ -1601,7 +1604,7 @@ impl Store {
                 date,
                 p.subject,
                 p.body_text,
-                p.body_html,
+                None::<String>,
                 labels_json,
                 is_from_me as i64,
                 unread as i64,
@@ -1613,6 +1616,10 @@ impl Store {
             ],
         )?;
         let fts_rowid = fts_rowid(date, tx.last_insert_rowid());
+        if let Some(html) = &p.body_html {
+            tx.prepare_cached("INSERT INTO message_html (message_id, html) VALUES (?1, ?2)")?
+                .execute(params![mid, html])?;
+        }
         tx.execute(
             "UPDATE messages SET fts_rowid = ?2 WHERE id = ?1",
             params![mid, fts_rowid],
@@ -2114,7 +2121,10 @@ impl Store {
     pub fn message_html(&self, id: &str) -> Result<(Option<String>, String)> {
         let r = self.r.lock().unwrap();
         r.query_row(
-            "SELECT body_html, subject FROM messages WHERE id = ?1",
+            &format!(
+                "SELECT {}, subject FROM messages m WHERE id = ?1",
+                bodies::HTML_OF_M
+            ),
             [id],
             |r| Ok((r.get::<_, Option<String>>(0)?, r.get(1)?)),
         )

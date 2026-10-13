@@ -93,6 +93,13 @@ fn main() {
                     }],
                     subject: sentence(&mut rng, 6),
                     body_text: sentence(&mut rng, 120),
+                    // Newsletters and rich replies: ~10 KB of HTML on a third of the mail.
+                    body_html: rng.random_bool(0.3).then(|| {
+                        format!(
+                            "<html><body><p>{}</p></body></html>",
+                            sentence(&mut rng, 1500)
+                        )
+                    }),
                     message_id: Some(format!("<m{i}@x>")),
                     ..Default::default()
                 },
