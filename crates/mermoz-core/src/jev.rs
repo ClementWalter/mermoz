@@ -442,23 +442,15 @@ pub fn calls_left(used_today: i64, cap: i64) -> i64 {
     (cap - used_today).max(0)
 }
 
-/// One-line project description built from the mail already filed there.
-pub fn describe(name: &str, correspondents: &[String], subjects: &[String]) -> String {
+/// One-line project description built from the mail already filed there. Correspondents
+/// only: example subjects cost twice the tokens and lowered routing accuracy.
+pub fn describe(name: &str, correspondents: &[String]) -> String {
     let who = if correspondents.is_empty() {
         "unknown".to_string()
     } else {
         correspondents.join(", ")
     };
-    let what = if subjects.is_empty() {
-        "none".to_string()
-    } else {
-        subjects
-            .iter()
-            .map(|s| s.chars().take(60).collect::<String>())
-            .collect::<Vec<_>>()
-            .join(" | ")
-    };
-    format!("Folder '{name}'. Frequent correspondents: {who}. Example subjects: {what}.")
+    format!("Folder '{name}'. Frequent correspondents: {who}.")
 }
 
 pub struct Client {
@@ -1021,10 +1013,11 @@ mod tests {
     }
 
     #[rstest]
-    fn description_lists_people_and_subjects() {
-        assert_eq!(
-            describe("Immo", &["Oralia".into()], &["PV assemblée".into()]),
-            "Folder 'Immo'. Frequent correspondents: Oralia. Example subjects: PV assemblée."
-        );
+    #[case::one(&["Oralia"], "Folder 'Immo'. Frequent correspondents: Oralia.")]
+    #[case::several(&["Oralia", "Marc Petit"], "Folder 'Immo'. Frequent correspondents: Oralia, Marc Petit.")]
+    #[case::nobody(&[], "Folder 'Immo'. Frequent correspondents: unknown.")]
+    fn description_lists_the_folders_people(#[case] who: &[&str], #[case] want: &str) {
+        let who: Vec<String> = who.iter().map(|s| s.to_string()).collect();
+        assert_eq!(describe("Immo", &who), want);
     }
 }

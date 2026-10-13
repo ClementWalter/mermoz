@@ -1157,6 +1157,24 @@ fn router_suggests_a_project(synced: World) {
     );
 }
 
+/// A folder holding "Audit report v2" is described to Jev by its people alone.
+#[rstest]
+fn router_describes_a_folder_without_its_subjects(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "add_projects": ["Receipts"] }),
+    );
+    synced.ok("router.set", json!({ "api_key": "jev-test" }));
+    synced.wait_until("routing", |w| {
+        !w.mailbox.lock().unwrap().folder_criteria.is_empty()
+    });
+    assert_eq!(
+        synced.mailbox.lock().unwrap().folder_criteria[0]["Receipts"],
+        "Folder 'Receipts'. Frequent correspondents: Marc Petit."
+    );
+}
+
 #[rstest]
 fn router_sends_the_typesafe_key(synced: World) {
     enable_router(&synced);

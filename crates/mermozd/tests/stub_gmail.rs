@@ -56,6 +56,8 @@ pub struct Mailbox {
     pub system_one_models: Vec<(&'static str, String)>,
     /// How long each System One call takes, to exercise slow providers.
     pub system_one_delay_ms: u64,
+    /// Folder descriptions of every routing call, in order.
+    pub folder_criteria: Vec<Value>,
     /// Status the stub Jev picks; "archive" when unset.
     pub jev_status: Option<String>,
     /// Conversation questions the AI answered.
@@ -394,6 +396,12 @@ async fn system_one(
         .unwrap_or("")
         .to_string();
     let questions = &body["questions"];
+    if let Some(c) = questions.get("project") {
+        s.lock()
+            .unwrap()
+            .folder_criteria
+            .push(c["criteria"].clone());
+    }
     // Feed calls (they ask for a card kind) get answers shaped by the subject.
     let feed_kind = questions
         .get("kind")

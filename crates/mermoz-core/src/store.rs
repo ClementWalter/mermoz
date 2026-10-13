@@ -3275,22 +3275,10 @@ impl Store {
     }
 
     /// Every project with a description built from the mail filed in it: its four most
-    /// frequent correspondents and five latest subjects.
+    /// frequent correspondents.
     pub fn project_descriptions(&self) -> Result<Vec<(String, String)>> {
         let names: Vec<String> = self.projects()?.into_iter().map(|p| p.name).collect();
         let r = self.r.lock().unwrap();
-        let mut subjects: std::collections::HashMap<String, Vec<String>> = Default::default();
-        let mut st = r.prepare_cached(
-            "SELECT tp.name, t.subject FROM thread_projects tp JOIN threads t ON t.id = tp.thread_id
-             WHERE t.subject != '' ORDER BY t.last_date DESC",
-        )?;
-        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-            let (n, subj) = row?;
-            let v = subjects.entry(n).or_default();
-            if v.len() < 5 {
-                v.push(subj);
-            }
-        }
         let mut people: std::collections::HashMap<String, Vec<String>> = Default::default();
         let mut st = r.prepare_cached(
             "SELECT tp.name, MAX(m.from_name), lower(m.from_email), COUNT(DISTINCT m.thread_id) n
@@ -3313,11 +3301,7 @@ impl Store {
         Ok(names
             .into_iter()
             .map(|n| {
-                let d = crate::jev::describe(
-                    &n,
-                    people.get(&n).map(Vec::as_slice).unwrap_or(&[]),
-                    subjects.get(&n).map(Vec::as_slice).unwrap_or(&[]),
-                );
+                let d = crate::jev::describe(&n, people.get(&n).map(Vec::as_slice).unwrap_or(&[]));
                 (n, d)
             })
             .collect())
@@ -6752,7 +6736,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             s.project_descriptions().unwrap(),
-            vec![("Immo".to_string(), "Folder 'Immo'. Frequent correspondents: Marc Petit. Example subjects: Audit report v2.".to_string())]
+            vec![(
+                "Immo".to_string(),
+                "Folder 'Immo'. Frequent correspondents: Marc Petit.".to_string()
+            )]
         );
     }
 
