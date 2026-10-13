@@ -3379,7 +3379,8 @@ impl Store {
                    decided = CASE WHEN {keep} OR projects_json != '[]' THEN NULL ELSE ?1 END
                  WHERE decision IS NULL
                    AND ((status IS NOT NULL AND NOT {keep}) OR priority IS NOT NULL)
-                   AND thread_id IN (SELECT id FROM threads WHERE (?1 - last_date) / {} > ?2)",
+                   AND EXISTS (SELECT 1 FROM threads t WHERE t.id = suggestions.thread_id
+                                 AND (?1 - t.last_date) / {} > ?2)",
                 crate::jev::DAY_MS
             ),
             params![now, crate::jev::STALE_AFTER_DAYS],

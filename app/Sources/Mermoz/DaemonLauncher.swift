@@ -10,13 +10,14 @@ enum DaemonLauncher {
     static func connect(onClose: (@Sendable () -> Void)? = nil) async throws -> Connection {
         if let c = try? Connection(path: DaemonPaths.socket, onClose: onClose) { return c }
         try spawn()
-        var delay: UInt64 = 50
+        // The daemon listens within ~20 ms; a short fixed poll connects as soon as it does
+        // (a failed connect on a missing socket costs microseconds).
+        let delay: UInt64 = 10
         var waited: UInt64 = 0
         while waited < 3000 {
             try await Task.sleep(nanoseconds: delay * 1_000_000)
             waited += delay
             if let c = try? Connection(path: DaemonPaths.socket, onClose: onClose) { return c }
-            delay = min(delay * 2, 400)
         }
         throw RPCError(code: RPCError.transport, message: "Mermoz couldn't start its background service.")
     }
