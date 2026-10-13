@@ -956,7 +956,9 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         }
         "sort.state" => {
             let statuses = str_list(p, "statuses")?.unwrap_or_default();
-            let counts = st.sort_counts(&statuses)?;
+            // While the AI cannot be asked, only prepared cards are work that is there.
+            let hold = svc.sort_hold();
+            let counts = st.sort_counts(&statuses, hold.is_some())?;
             // A list, not an object: status keys such as `in_progress` must reach
             // clients as written.
             let by_status: Vec<Value> = counts
@@ -967,7 +969,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 "to_sort": counts.iter().map(|(_, n)| n).sum::<i64>(),
                 "by_status": by_status,
                 "configured": svc.active_key().is_some(),
-                "paused": svc.paused(),
+                "paused": hold.filter(|h| h != "no_key"),
                 "provider_name": svc.provider().name(),
                 "offer": svc.offer(),
                 "learned": st.learned(20)?,
@@ -976,8 +978,10 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "sort.next" => {
             let statuses = str_list(p, "statuses")?.unwrap_or_default();
             let exclude = str_list(p, "exclude")?.unwrap_or_default();
+            // `limit` reads as `count`, the name the other list methods use.
             let want = p
                 .get("count")
+                .or_else(|| p.get("limit"))
                 .and_then(|v| v.as_u64())
                 .map_or(crate::service::SORT_AHEAD, |n| n as usize)
                 .clamp(1, 10);

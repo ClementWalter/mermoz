@@ -3455,13 +3455,19 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Threads waiting in the Sort queue, per open column.
-    pub fn sort_counts(&self, statuses: &[String]) -> Result<Vec<(String, i64)>> {
+    /// Threads waiting in the Sort queue, per open column; with `ready_only`, only those
+    /// whose card is already prepared (while the AI cannot be asked for more).
+    pub fn sort_counts(&self, statuses: &[String], ready_only: bool) -> Result<Vec<(String, i64)>> {
         let (cols, args) = sort_columns(statuses);
+        let ready = if ready_only {
+            " AND s.decision IS NULL AND s.for_date >= t.last_date AND s.for_status IS t.status"
+        } else {
+            ""
+        };
         let r = self.r.lock().unwrap();
         let mut st = r.prepare(&format!(
             "SELECT t.status, COUNT(*) FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
-             WHERE t.status IN ({cols}) AND {SORT_DUE} GROUP BY t.status"
+             WHERE t.status IN ({cols}) AND {SORT_DUE}{ready} GROUP BY t.status"
         ))?;
         Ok(st
             .query_map(params_from_iter(args.iter()), |r| {
@@ -7898,7 +7904,7 @@ mod tests {
         open_thread(&env, "1", "backlog", 0);
         open_thread(&env, "2", "backlog", 0);
         open_thread(&env, "3", "todo", 0);
-        let mut counts = env.store.sort_counts(&[]).unwrap();
+        let mut counts = env.store.sort_counts(&[], false).unwrap();
         counts.sort();
         assert_eq!(counts, vec![("backlog".into(), 2), ("todo".into(), 1)]);
     }
@@ -8122,5 +8128,16 @@ mod tests {
         classify(&env, &next, &to_voyage());
         answered(&env, "1", "ana@travel.example", SortAnswer::No);
         assert!(!env.store.close_if_refused(&next).unwrap());
+    }
+
+    #[rstest]
+    fn held_queue_counts_only_prepared_cards(env: Env) {
+        let ready = open_thread(&env, "1", "backlog", 0);
+        open_thread(&env, "2", "backlog", 1000);
+        classify(&env, &ready, &jev_archive());
+        assert_eq!(
+            env.store.sort_counts(&[], true).unwrap(),
+            vec![("backlog".to_string(), 1)]
+        );
     }
 }

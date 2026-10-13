@@ -770,6 +770,19 @@ impl Service {
             .map(|h| h.reason.clone())
     }
 
+    /// Why the Sort queue cannot ask the AI for new cards right now (see
+    /// [`jev::sort_hold`]); "no_key" is left to the caller's key check.
+    pub fn sort_hold(&self) -> Option<String> {
+        jev::sort_hold(
+            self.active_key().is_some(),
+            self.paused().as_deref(),
+            self.store
+                .background_daily_cap()
+                .unwrap_or(jev::DEFAULT_DAILY_CAP),
+            self.store.background_calls_today().unwrap_or(0),
+        )
+    }
+
     /// The other provider, in plain words, when the picked one ran out of credits and
     /// the other has a key. Only offered: switching is the user's call.
     pub fn offer(&self) -> Option<serde_json::Value> {
@@ -985,7 +998,8 @@ impl Service {
             let Some((p, key)) = self.active_key() else {
                 break;
             };
-            if self.paused_on(p).is_some() || calls_left == 0 {
+            // A hold is reported with the cards, never a silent empty queue.
+            if self.sort_hold().is_some() || calls_left == 0 {
                 break;
             }
             let room = jev::calls_left(
@@ -1051,7 +1065,7 @@ impl Service {
         cards.truncate(want);
         Ok(SortBatch {
             cards,
-            paused: self.paused(),
+            paused: self.sort_hold().filter(|h| h != "no_key"),
             provider_name: self.provider().name(),
             offer: self.offer(),
         })

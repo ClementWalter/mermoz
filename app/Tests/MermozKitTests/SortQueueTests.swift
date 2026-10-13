@@ -90,6 +90,8 @@ func moreCardsAreAskedForBelowTheLookahead(_ held: Int, _ want: Bool) {
 @Test(arguments: [
     ("credits", "Sorting paused: your TypeSafe credits ran out"),
     ("unavailable", "Sorting paused: the AI is busy, trying again soon"),
+    ("off", "Sorting is off. Set a daily limit in Settings › Developer to turn it on."),
+    ("limit", "Today's sorting limit is reached. It starts again tomorrow, or raise it in Settings › Developer."),
 ])
 func pauseIsSaidInPlainWords(_ reason: String, _ want: String) {
     #expect(SortText.paused(reason) == want)

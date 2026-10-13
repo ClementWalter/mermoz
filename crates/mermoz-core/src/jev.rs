@@ -416,6 +416,27 @@ pub fn column_suggestion(
     })
 }
 
+/// Why the Sort queue cannot ask the AI for new cards, if it cannot: no key, the
+/// provider on hold ("credits", "unavailable"), sorting turned off (a daily limit of
+/// 0: "off"), or today's limit used up ("limit").
+pub fn sort_hold(
+    has_key: bool,
+    provider_hold: Option<&str>,
+    daily_cap: i64,
+    used_today: i64,
+) -> Option<String> {
+    if !has_key {
+        return Some("no_key".into());
+    }
+    if let Some(h) = provider_hold {
+        return Some(h.into());
+    }
+    if daily_cap <= 0 {
+        return Some("off".into());
+    }
+    (calls_left(used_today, daily_cap) == 0).then(|| "limit".into())
+}
+
 /// How many more background calls fit today's cap.
 pub fn calls_left(used_today: i64, cap: i64) -> i64 {
     (cap - used_today).max(0)
@@ -899,6 +920,22 @@ mod tests {
         #[case] want: Duration,
     ) {
         assert_eq!(backoff(asked, previous), want);
+    }
+
+    #[rstest]
+    #[case::no_key(false, None, 100, 0, Some("no_key"))]
+    #[case::out_of_credits(true, Some("credits"), 100, 0, Some("credits"))]
+    #[case::turned_off(true, None, 0, 0, Some("off"))]
+    #[case::limit_used_up(true, None, 100, 100, Some("limit"))]
+    #[case::room_left(true, None, 100, 99, None)]
+    fn sort_hold_says_why(
+        #[case] key: bool,
+        #[case] provider: Option<&str>,
+        #[case] cap: i64,
+        #[case] used: i64,
+        #[case] want: Option<&str>,
+    ) {
+        assert_eq!(sort_hold(key, provider, cap, used).as_deref(), want);
     }
 
     #[rstest]

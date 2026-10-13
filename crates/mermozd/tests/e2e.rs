@@ -1754,9 +1754,22 @@ fn out_of_credits_pauses_sorting(synced: World) {
 fn out_of_credits_leaves_the_thread_in_the_queue(synced: World) {
     out_of_credits(&synced);
     sort_todo(&synced);
+    // Topped up: the thread was never judged, so it is still waiting.
+    synced.mailbox.lock().unwrap().jev_out_of_credits = false;
+    synced.ok("router.set", json!({ "api_key": "jev-topped-up" }));
     assert_eq!(
         synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
         1
+    );
+}
+
+#[rstest]
+fn out_of_credits_counts_no_work(synced: World) {
+    out_of_credits(&synced);
+    sort_todo(&synced);
+    assert_eq!(
+        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
+        0
     );
 }
 
@@ -4196,4 +4209,47 @@ fn a_town_letter_bubble_starts_with_words(synced: World) {
             .unwrap()
             .starts_with("Camille Durand - Maire de Villeneuve\n\nChers Habitants,")
     );
+}
+
+// ---- the Sort queue with each provider, and when it is held ---------------
+
+#[rstest]
+#[case::typesafe("typesafe")]
+#[case::subq("subq")]
+fn sort_queue_shows_a_card_with_each_provider(synced: World, #[case] provider: &str) {
+    if provider == "subq" {
+        subq_router(&synced);
+    } else {
+        enable_router(&synced);
+    }
+    assert_eq!(
+        sort_todo(&synced)["cards"][0]["thread"]["subject"],
+        "Budget sheet"
+    );
+}
+
+#[rstest]
+fn turned_off_sorting_is_said(synced: World) {
+    synced.ok("router.set", json!({ "daily_cap": 0 }));
+    enable_router(&synced);
+    assert_eq!(sort_todo(&synced)["paused"], "off");
+}
+
+#[rstest]
+fn turned_off_sorting_counts_no_work(synced: World) {
+    synced.ok("router.set", json!({ "daily_cap": 0 }));
+    enable_router(&synced);
+    assert_eq!(
+        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
+        0
+    );
+}
+
+#[rstest]
+fn used_up_limit_is_said(synced: World) {
+    synced.ok("router.set", json!({ "daily_cap": 1 }));
+    more_from_jonas(&synced, 3);
+    enable_router(&synced);
+    sort_todo(&synced);
+    assert_eq!(sort_todo(&synced)["paused"], "limit");
 }
