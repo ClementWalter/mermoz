@@ -233,6 +233,11 @@ public struct ThreadDetail: Codable, Sendable, Equatable {
 }
 
 extension ThreadDetail {
+    /// What the pane shows of a card until its messages arrive: the header and subject.
+    public static func placeholder(_ thread: ThreadSummary) -> ThreadDetail {
+        ThreadDetail(thread: thread, messages: [])
+    }
+
     /// The conversation once read: its lead as the daemon left it (maybe filed by the
     /// AI's suggestion) and every Gmail thread in it read, as `threads.mark_read` does.
     public func afterReading(_ lead: ThreadSummary) -> ThreadDetail {

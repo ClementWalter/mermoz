@@ -104,18 +104,53 @@ extension AppModel {
 
     // MARK: focus
 
-    /// j/k: the next card at once, and its mail in the reading pane as soon as the keys
-    /// pause, so holding j glides through the cards instead of loading every mail.
+    /// j/k and the arrows: the next card, and its mail in the reading pane in the same
+    /// turn (from memory when fetched before; the neighbours are fetched ahead).
     func feedMove(_ delta: Int) {
         guard let feed else { return }
-        feedFocus = FeedFocus.step(feed.cards.map(\.id), from: feedFocus, by: delta)
-        guard let card = feed.card(feedFocus) else { return }
-        feedPaneTask?.cancel()
-        feedPaneTask = Task {
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled else { return }
-            open(FeedSelection.thread(of: card), record: false)
+        var nav = FeedNavigator(focus: feedFocus, pane: selectedThreadId)
+        nav.move(by: delta, in: feed)
+        apply(nav)
+    }
+
+    /// Puts focus and pane where the navigator says, together.
+    func apply(_ nav: FeedNavigator) {
+        if feedFocus != nav.focus { feedFocus = nav.focus }
+        guard let id = nav.pane, let feed else { return }
+        open(id, record: false)
+        // Not fetched yet: the card's header and subject until its messages arrive.
+        if detail?.thread.id != id, let card = feed.cards.first(where: { FeedSelection.thread(of: $0) == id }) {
+            detail = .placeholder(card.members.first ?? card.thread)
         }
+        prefetch(nav.neighbours(in: feed))
+    }
+
+    /// Fetches the cards around the focus ahead, off the main thread's way.
+    func prefetch(_ ids: [String]) {
+        prefetchTask?.cancel()
+        let wanted = ids.filter { detailCache.get($0) == nil }
+        guard !wanted.isEmpty, let client else { return }
+        let window = detailWindow
+        let full = shownInFull
+        prefetchTask = Task {
+            for id in wanted {
+                guard !Task.isCancelled, let d = try? await client.thread(id, latest: window) else { continue }
+                let messages = d.messages
+                await Task.detached(priority: .utility) {
+                    let bubbles = messages.map { (id: $0.id, content: BubbleContent.compact($0, showAll: full.contains($0.id))) }
+                    BubbleTextCache.shared.prepare(bubbles)
+                }.value
+                detailCache.put(d, for: id)
+            }
+        }
+    }
+
+    /// Undo brought these threads back: their card is focused and in the pane again.
+    func feedRestore(_ threadIds: [String]) {
+        guard let feed, !threadIds.isEmpty else { return }
+        var nav = FeedNavigator(focus: feedFocus, pane: selectedThreadId)
+        nav.restore(threadIds, in: feed)
+        apply(nav)
     }
 
     func focus(_ card: FeedCard) { feedFocus = card.id }
@@ -230,8 +265,12 @@ extension AppModel {
 
     /// Swaps the card for a "Done · Undo" strip, then folds it away and moves focus on.
     func leave(_ card: FeedCard, label: String) {
-        let ids = feed?.cards.map(\.id) ?? []
-        if feedFocus == card.id { feedFocus = FeedFocus.after(removing: card.id, from: ids) }
+        // The next card and its mail, in the same turn as the action.
+        if let feed {
+            var nav = FeedNavigator(focus: feedFocus, pane: selectedThreadId)
+            nav.leave(card.id, in: feed)
+            if nav != FeedNavigator(focus: feedFocus, pane: selectedThreadId) { apply(nav) }
+        }
         withAnimation(.easeInOut(duration: 0.25)) { feedStrips[card.id] = label }
         Task {
             try? await Task.sleep(for: .milliseconds(1300))

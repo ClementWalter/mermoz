@@ -146,6 +146,10 @@ final class AppModel {
     /// Where a ⇧-range starts.
     private var anchorId: String?
     var detail: ThreadDetail?
+    /// Conversations fetched lately (and the Feed's neighbours, fetched ahead), so the
+    /// pane shows a card's mail the moment it is focused.
+    var detailCache = DetailCache()
+    var prefetchTask: Task<Void, Never>?
     var compose: ComposeContext?
     /// The reading pane's tab; back to Messages when another conversation opens.
     var conversationTab: ConversationTab = .messages
@@ -720,6 +724,8 @@ final class AppModel {
         if compose != nil { compose = nil }
         detailTask?.cancel()
         guard let id, let client else { detail = nil; return }
+        // Shown at once from the cache; the fetch below refreshes it and marks it read.
+        if detail?.thread.id != id, let cached = detailCache.get(id) { detail = cached }
         detailTask = Task {
             if settle {
                 try? await Task.sleep(for: .milliseconds(Self.settleMs))
@@ -738,6 +744,7 @@ final class AppModel {
                 }.value
                 guard selectedThreadId == id else { return }
                 detail = d
+                detailCache.put(d, for: id)
                 learnAddresses(from: d)
                 if d.thread.unread {
                     // Reading an Unread thread applies the AI's suggestion; remember it for Undo.
@@ -1020,6 +1027,10 @@ final class AppModel {
                     sortQueue.putBack(card)
                     showCurrentCard()
                     toast = "Undid \(entry.label)"
+                if showsFeed {
+                    await loadFeed()
+                    feedRestore(entry.before.map(\.id) + entry.unsnooze)
+                }
                     await refreshSortInfo()
                     return
                 }
@@ -1488,6 +1499,8 @@ final class AppModel {
     private func handle(_ e: DaemonEvent) {
         switch e {
         case let .threadsChanged(ids):
+            // A changed thread is fetched again before the pane shows it from memory.
+            for id in ids { detailCache.drop(id) }
             scheduleRefresh()
             // Any thread of the open conversation changing (one joining, too) refreshes it.
             let shown = Set([selectedThreadId].compactMap { $0 } + (detail?.conversation?.threads.map(\.id) ?? []))

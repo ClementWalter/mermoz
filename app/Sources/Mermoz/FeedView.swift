@@ -629,8 +629,12 @@ enum FeedKeys {
         case .ask: model.askAbout(card)
         case .reply: model.draftReply(to: card, body: card.texts?.draft ?? "")
         case .accept:
-            guard card.thread.suggestion != nil else { return false }
+            guard let sg = card.thread.suggestion else { return false }
             model.acceptSuggestions([card.thread.id])
+            // Accepted into a closed status, the card leaves; focus and pane move on with it.
+            if let st = sg.status, ["done", "archive", "deleted"].contains(st) {
+                model.leave(card, label: "Done as suggested")
+            }
         case .next, .previous: return false
         }
         return true

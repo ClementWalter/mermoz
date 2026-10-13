@@ -54,17 +54,37 @@ enum PerfHarness {
     /// Main-thread CPU at the moment the opened conversation reached the pane, in a window.
     private static var detailAt: Double?
 
+    /// Wall time from the step until the pane held the selected thread's messages.
+    private static var paneReady: Double?
+
     private static func window(gap: Duration, _ action: () -> Void) async -> (action: Double, first: Double, total: Double) {
         let t0 = threadCPU()
         detailAt = nil
+        paneReady = nil
         if let model = watched {
             withObservationTracking { _ = model.detail } onChange: { MainActor.assumeIsolated { detailAt = threadCPU() - t0 } }
         }
+        let wall = ContinuousClock.now
         action()
         let acted = threadCPU() - t0
         flush()
         let first = threadCPU() - t0
-        try? await Task.sleep(for: gap)
+        // Polled every millisecond until the pane shows what was stepped to (the focused
+        // Feed card's mail, else the selection), then the rest of the gap.
+        if let model = watched {
+            let target = model.feedFocus.flatMap { model.feed?.card($0) }.map(FeedSelection.thread) ?? model.selectedThreadId
+            while ContinuousClock.now - wall < gap {
+                if let d = model.detail, d.thread.id == target || d.messages.contains(where: { $0.threadId == target }),
+                   !d.messages.isEmpty {
+                    let e = ContinuousClock.now - wall
+                    paneReady = Double(e.components.seconds) * 1000 + Double(e.components.attoseconds) / 1e15
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        let left = gap - (ContinuousClock.now - wall)
+        if left > .zero { try? await Task.sleep(for: left) }
         flush()
         return (acted, first, threadCPU() - t0)
     }
@@ -152,6 +172,7 @@ enum PerfHarness {
         var firsts: [Double] = []
         var actions: [Double] = []
         var beforeDetail: [Double] = []
+        var ready: [Double] = []
         watched = model
         for _ in 0..<n {
             let c = await window(gap: gap, step)
@@ -159,10 +180,12 @@ enum PerfHarness {
             firsts.append(c.first)
             actions.append(c.action)
             if let d = detailAt { beforeDetail.append(d) }
+            if let r = paneReady { ready.append(r) }
         }
         let result: [String: Double] = [
             "steps": Double(n), "gap_ms": Double(gapMs), "idle_ms": base,
             "before_detail_median_ms": pct(beforeDetail, 0.5),
+            "pane_ready_median_ms": pct(ready, 0.5), "pane_ready_p95_ms": pct(ready, 0.95), "pane_ready_count": Double(ready.count),
             "median_ms": pct(costs, 0.5), "p95_ms": pct(costs, 0.95), "mean_ms": costs.reduce(0, +) / Double(max(n, 1)),
             "first_median_ms": pct(firsts, 0.5), "first_p95_ms": pct(firsts, 0.95), "action_median_ms": pct(actions, 0.5),
             "bubble_size_hits": Double(BubbleTextCache.shared.sizeHits), "bubble_size_misses": Double(BubbleTextCache.shared.sizeMisses),
