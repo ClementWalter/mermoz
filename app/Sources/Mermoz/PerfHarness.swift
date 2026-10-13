@@ -6,10 +6,12 @@
 /// windows of the same length. Results go to the log and, with `MERMOZ_PERF_OUT`, to a
 /// JSON file; the app then quits.
 import AppKit
+import QuartzCore
 import Darwin
 import Foundation
 import MermozKit
 import os
+import SwiftUI
 
 private let log = Logger(subsystem: "ai.mermoz.app", category: "perf")
 
@@ -55,6 +57,27 @@ enum PerfHarness {
         try? await Task.sleep(for: gap)
         flush()
         return (acted, first, threadCPU() - t0)
+    }
+
+    /// Renders the main window's layer tree (what SwiftUI drew) to a PNG, without capturing
+    /// the screen: works while another app is in front or the screen is locked.
+    private static func snapshotWindow(to path: String) {
+        guard let view = NSApp.windows.first(where: { $0.isVisible && $0.frame.height > 300 })?.contentView,
+              let layer = view.layer else { return }
+        let scale: CGFloat = 2
+        let size = view.bounds.size
+        guard let ctx = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+                                  bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return }
+        // Core Animation draws top-down; the bitmap context is bottom-up.
+        ctx.translateBy(x: 0, y: size.height * scale)
+        ctx.scaleBy(x: scale, y: -scale)
+        layer.render(in: ctx)
+        if let image = ctx.makeImage() {
+            try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: path))
+        }
     }
 
     private static func pct(_ v: [Double], _ p: Double) -> Double {
@@ -124,6 +147,15 @@ enum PerfHarness {
         if let out = ProcessInfo.processInfo.environment["MERMOZ_PERF_OUT"],
            let data = try? JSONSerialization.data(withJSONObject: ["summary": result, "steps_ms": costs, "first_ms": firsts]) {
             try? data.write(to: URL(fileURLWithPath: out))
+        }
+        // `MERMOZ_PERF_HEADER_SHOTS`: a folder to save the window into at several List widths.
+        if let dir = ProcessInfo.processInfo.environment["MERMOZ_PERF_HEADER_SHOTS"] {
+            for width in [420, 360, 300] {
+                UserDefaults.standard.set(Double(width), forKey: "layout.listWidth")
+                try? await Task.sleep(for: .milliseconds(800))
+                flush()
+                snapshotWindow(to: "\(dir)/list-\(width).png")
+            }
         }
         // `MERMOZ_PERF_HOLD_S`: stay up that long after the run, to capture the window.
         if let hold = ProcessInfo.processInfo.environment["MERMOZ_PERF_HOLD_S"].flatMap(Double.init) {

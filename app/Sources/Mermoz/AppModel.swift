@@ -38,6 +38,15 @@ enum LayoutMode: String, CaseIterable {
     case board = "Board"
     /// Everything open as a stream of cards, one thing to do each (FeedView).
     case feed = "Feed"
+
+    /// The layout's icon in the compact switch.
+    var symbol: String {
+        switch self {
+        case .list: "list.bullet"
+        case .board: "rectangle.split.3x1"
+        case .feed: "rectangle.stack"
+        }
+    }
 }
 
 enum ConnectionState: Equatable {

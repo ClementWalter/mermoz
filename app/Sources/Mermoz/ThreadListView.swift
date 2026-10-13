@@ -188,17 +188,26 @@ struct ListHeader: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
+        // The title reads in full first: the controls shrink to icons, then the count goes,
+        // and only then does the title end with an ellipsis. Never a column of letters.
+        ViewThatFits(in: .horizontal) {
+            row(count: true, compact: false)
+            row(count: true, compact: true)
+            row(count: false, compact: true)
+        }
+        .padding(.leading, 16).padding(.trailing, 12)
+        .frame(height: 50)
+        .onChange(of: model.layout) { Task { await model.loadList() } }
+    }
+
+    private func row(count: Bool, compact: Bool) -> some View {
         HStack(spacing: 10) {
-            // A narrow list drops the count first, then ends the title with an ellipsis;
-            // one line always, never a column of letters.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    title
+            HStack(spacing: 10) {
+                title
+                if count {
                     Text(model.isReview ? "\(model.reviewDrafts.count)" : model.totalThreads.formatted())
                         .font(.system(size: 12)).foregroundStyle(Theme.text3)
                 }
-                HStack(spacing: 10) { title }
             }
             .lineLimit(1)
             .truncationMode(.tail)
@@ -207,16 +216,10 @@ struct ListHeader: View {
                 Chip(small: true) { Text("\(model.multiSelection.count) selected") }
                     .help("Actions apply to all of them · Esc to clear")
             }
-            Spacer()
+            Spacer(minLength: 0)
             if !model.isReview {
-                DisplayMenu()
-                Picker("", selection: $model.layout) {
-                    ForEach(LayoutMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 170)
-                .onChange(of: model.layout) { Task { await model.loadList() } }
+                DisplayMenu(compact: compact)
+                LayoutSwitch(compact: compact)
             }
             Button { model.startNew() } label: { Image(systemName: "square.and.pencil") }
                 .buttonStyle(.plain)
@@ -224,8 +227,6 @@ struct ListHeader: View {
                 .help("New message (c)")
                 .accessibilityLabel("New message")
         }
-        .padding(.leading, 16).padding(.trailing, 12)
-        .frame(height: 50)
     }
 
     @ViewBuilder private var title: some View {
@@ -344,6 +345,8 @@ struct AcceptAllButton: View {
 /// Linear-style Display menu: grouping, sub-grouping and ordering.
 struct DisplayMenu: View {
     @Environment(AppModel.self) private var model
+    /// Icon only, the label in the tooltip, when the list is narrow.
+    var compact = false
 
     var body: some View {
         Menu {
@@ -361,10 +364,14 @@ struct DisplayMenu: View {
                 Text(model.display.ordering.directions.1).tag(true)
             }
         } label: {
-            Label("Display", systemImage: "slider.horizontal.3").font(.system(size: 12))
+            if compact {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 12)).accessibilityLabel("Display")
+            } else {
+                Label("Display", systemImage: "slider.horizontal.3").font(.system(size: 12))
+            }
         }
         .menuStyle(.button).fixedSize()
-        .help("Grouping, sub-grouping, ordering and direction")
+        .help(compact ? "Display: grouping, sub-grouping, ordering and direction" : "Grouping, sub-grouping, ordering and direction")
     }
 
     private func binding<T>(_ kp: WritableKeyPath<DisplayOptions, T>) -> Binding<T> {
@@ -479,4 +486,31 @@ struct ConversationMenu: View {
 extension NSResponder {
     /// Text is being typed here: a field or the composer, not a read-only bubble.
     var isTyping: Bool { (self as? NSText)?.isEditable ?? false }
+}
+
+/// List / Board / Feed. Words when there is room; icons with a tooltip each when the
+/// list is narrow.
+struct LayoutSwitch: View {
+    @Environment(AppModel.self) private var model
+    let compact: Bool
+
+    var body: some View {
+        @Bindable var model = model
+        Picker("", selection: $model.layout) {
+            ForEach(LayoutMode.allCases, id: \.self) { mode in
+                Group {
+                    if compact {
+                        Image(systemName: mode.symbol).help(mode.rawValue).accessibilityLabel(mode.rawValue)
+                    } else {
+                        Text(mode.rawValue)
+                    }
+                }
+                .tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: compact ? 96 : 170)
+        .help(compact ? "List, Board or Feed" : "")
+    }
 }
