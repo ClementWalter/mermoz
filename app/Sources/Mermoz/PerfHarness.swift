@@ -148,6 +148,14 @@ enum PerfHarness {
            let data = try? JSONSerialization.data(withJSONObject: ["summary": result, "steps_ms": costs, "first_ms": firsts]) {
             try? data.write(to: URL(fileURLWithPath: out))
         }
+        // `MERMOZ_PERF_OPEN` + `MERMOZ_PERF_SHOT`: open one thread and save the window.
+        if let id = ProcessInfo.processInfo.environment["MERMOZ_PERF_OPEN"],
+           let shot = ProcessInfo.processInfo.environment["MERMOZ_PERF_SHOT"] {
+            model.open(id)
+            try? await Task.sleep(for: .seconds(2))
+            flush()
+            snapshotWindow(to: shot)
+        }
         // `MERMOZ_PERF_HEADER_SHOTS`: a folder to save the window into at several List widths.
         if let dir = ProcessInfo.processInfo.environment["MERMOZ_PERF_HEADER_SHOTS"] {
             for width in [420, 360, 300] {

@@ -97,7 +97,13 @@ public struct BubbleParts: Equatable, Sendable {
     public var fileCount: Int
 
     /// The message's new text only: quoted history and signature already folded locally.
+    /// Worked out once per message and kept: the chat asks again on every redraw.
     public static func compact(_ m: Message) -> BubbleParts {
+        let key = "\(m.id)|\(m.bodyText.utf8.count)|\(m.bodyNew?.utf8.count ?? -1)|\(m.attachments.count)"
+        return CompactParts.shared.parts(key) { build(m) }
+    }
+
+    static func build(_ m: Message) -> BubbleParts {
         // Never a blank bubble: its new text, else its whole text (a truly empty message
         // then reads "(empty message)").
         let new = tidy(withoutLinkLines(plainMarkdown(m.displayBody)))
@@ -182,7 +188,9 @@ public struct BubbleParts: Equatable, Sendable {
 
     /// Compact text longer than about eight lines starts clamped, behind "Show more".
     public static func clampsCompact(_ text: String) -> Bool {
-        text.utf8.count > 700 && text.count > 700 || text.split(separator: "\n", omittingEmptySubsequences: false).count > 8
+        // Blank lines between paragraphs do not count: a short letter is not clamped.
+        text.utf8.count > 700 && text.count > 700
+            || text.split(separator: "\n").filter { !$0.allSatisfy(\.isWhitespace) }.count > 8
     }
 
     /// What a clamped bubble shows: enough of the start to fill its eight lines (at most
@@ -217,5 +225,25 @@ public enum ChatRuns {
             }
         }
         return out
+    }
+}
+
+/// Compact bubble parts by message, safe from any thread; starts over past a few
+/// thousand messages.
+final class CompactParts: @unchecked Sendable {
+    static let shared = CompactParts()
+    private let lock = NSLock()
+    private var parts: [String: BubbleParts] = [:]
+
+    func parts(_ key: String, _ make: () -> BubbleParts) -> BubbleParts {
+        lock.lock()
+        if let p = parts[key] { lock.unlock(); return p }
+        lock.unlock()
+        let p = make()
+        lock.lock()
+        if parts.count >= 4000 { parts.removeAll(keepingCapacity: true) }
+        parts[key] = p
+        lock.unlock()
+        return p
     }
 }

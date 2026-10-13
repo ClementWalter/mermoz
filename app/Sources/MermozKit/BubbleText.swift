@@ -1,6 +1,7 @@
 /// Chat bubble text drawn by TextKit: attributed strings built once per message and
-/// sizes measured once per message and width, so stepping through conversations reuses
-/// both instead of laying text out again.
+/// whole layouts (text storage, glyphs, line breaks) made once per message and width.
+/// A bubble view draws straight from its cached layout, so stepping through
+/// conversations neither measures nor typesets text again.
 ///
 /// Everything here runs on any thread (TextKit 1 objects not attached to a view), so a
 /// conversation's bubbles are prepared off the main thread before it is shown.
@@ -60,7 +61,7 @@ public final class BubbleTextCache: @unchecked Sendable {
 
     private let lock = NSLock()
     private var strings: [TextKey: NSAttributedString] = [:]
-    private var sizes: [SizeKey: CGSize] = [:]
+    private var layouts: [SizeKey: BubbleTextLayout.Laid] = [:]
     /// The width and style bubbles were last laid out at, to measure ahead at.
     private var last: (width: CGFloat, style: BubbleTextStyle)?
     /// Entries kept before the caches start over; a few conversations' worth many times.
@@ -68,7 +69,7 @@ public final class BubbleTextCache: @unchecked Sendable {
     public private(set) var sizeHits = 0
     public private(set) var sizeMisses = 0
 
-    public init(limit: Int = 4000) { self.limit = limit }
+    public init(limit: Int = 1500) { self.limit = limit }
 
     private static let links = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
@@ -88,18 +89,23 @@ public final class BubbleTextCache: @unchecked Sendable {
 
     /// Size of the text laid out at `width` (at most `maxLines` lines; 0: no limit).
     public func size(id: String, text: String, style: BubbleTextStyle, width: CGFloat, maxLines: Int) -> CGSize {
+        layout(id: id, text: text, style: style, width: width, maxLines: maxLines).size
+    }
+
+    /// The text laid out at `width`, ready to draw: made once, then reused.
+    public func layout(id: String, text: String, style: BubbleTextStyle, width: CGFloat, maxLines: Int) -> BubbleTextLayout.Laid {
         let width = min(max(width, Self.minWidth), Self.idealWidth)
         let key = SizeKey(text: TextKey(id: id, text: text, style: style), width: Int(width.rounded(.down)), maxLines: maxLines)
         lock.lock()
         // Probes for the ideal (unbounded) or minimum size are not the bubble's width.
         if width > Self.minWidth, width < Self.idealWidth { last = (width, style) }
-        if let s = sizes[key] { sizeHits += 1; lock.unlock(); return s }
+        if let s = layouts[key] { sizeHits += 1; lock.unlock(); return s }
         sizeMisses += 1
         lock.unlock()
-        let s = Self.measure(attributed(id: id, text: text, style: style), width: CGFloat(key.width), maxLines: maxLines)
+        let s = Self.lay(attributed(id: id, text: text, style: style), width: CGFloat(key.width), maxLines: maxLines)
         lock.lock()
-        if sizes.count >= limit { sizes.removeAll(keepingCapacity: true) }
-        sizes[key] = s
+        if layouts.count >= limit { layouts.removeAll(keepingCapacity: true) }
+        layouts[key] = s
         lock.unlock()
         return s
     }
@@ -140,9 +146,9 @@ public final class BubbleTextCache: @unchecked Sendable {
         return s
     }
 
-    /// TextKit 1 layout configured exactly like `BubbleTextLayout.configure`, so the size
-    /// measured here is the size the text view draws.
-    static func measure(_ s: NSAttributedString, width: CGFloat, maxLines: Int) -> CGSize {
+    /// TextKit 1 layout configured with `BubbleTextLayout.configure`; the text view that
+    /// draws it takes this very container, so what is measured is what is drawn.
+    static func lay(_ s: NSAttributedString, width: CGFloat, maxLines: Int) -> BubbleTextLayout.Laid {
         let storage = NSTextStorage(attributedString: s)
         let manager = NSLayoutManager()
         let container = NSTextContainer(size: CGSize(width: max(width, 1), height: .greatestFiniteMagnitude))
@@ -151,12 +157,44 @@ public final class BubbleTextCache: @unchecked Sendable {
         storage.addLayoutManager(manager)
         manager.ensureLayout(for: container)
         let r = manager.usedRect(for: container)
-        return CGSize(width: ceil(r.width), height: ceil(r.height))
+        return BubbleTextLayout.Laid(storage: storage, manager: manager, container: container,
+                                     size: CGSize(width: ceil(r.width), height: ceil(r.height)))
     }
 }
 
 /// The text container settings shared by measuring and drawing.
 public enum BubbleTextLayout {
+    /// Puts a cached layout into a text view so the view draws it. The container is
+    /// linked both ways (container.textView and view.textContainer): with only the view's
+    /// side set, the layout manager never asks the view to draw and the bubble stays
+    /// blank until a click forces it. A container another view already draws is copied,
+    /// since a container draws into one view only. Returns the layout now shown.
+    @MainActor
+    public static func attach(_ laid: Laid, to view: NSTextView, replacing old: Laid?) -> Laid {
+        var laid = laid
+        if let other = laid.container.textView, other !== view {
+            laid = BubbleTextCache.lay(NSAttributedString(attributedString: laid.storage),
+                                       width: laid.container.size.width, maxLines: laid.container.maximumNumberOfLines)
+        }
+        if let old, old !== laid, old.container.textView === view { old.container.textView = nil }
+        laid.container.textView = view
+        view.needsDisplay = true
+        return laid
+    }
+
+    /// A finished TextKit stack: the storage, its laid-out glyphs and the container, plus
+    /// the size the text takes. A text view draws it by adopting `container`.
+    public final class Laid: @unchecked Sendable {
+        public let storage: NSTextStorage
+        public let manager: NSLayoutManager
+        public let container: NSTextContainer
+        public let size: CGSize
+
+        init(storage: NSTextStorage, manager: NSLayoutManager, container: NSTextContainer, size: CGSize) {
+            self.storage = storage; self.manager = manager; self.container = container; self.size = size
+        }
+    }
+
     public static func configure(_ c: NSTextContainer, maxLines: Int) {
         c.lineFragmentPadding = 0
         c.maximumNumberOfLines = maxLines

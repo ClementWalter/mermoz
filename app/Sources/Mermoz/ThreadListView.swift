@@ -432,7 +432,8 @@ struct ThreadRow: View, Equatable {
                 if let sg = thread.suggestion, !sg.isEmpty { SuggestionChip(suggestion: sg, threadId: thread.id) }
                 ProjectChips(names: thread.projects)
                 if let due = thread.due { Chip(small: true) { Text("Due \(Format.due(due))") } }
-                Text(Format.short(thread.lastDate)).font(.system(size: 12)).foregroundStyle(Theme.text3)
+                // Never wraps: a narrow list shortens the sender and subject instead.
+                Text(Format.short(thread.lastDate)).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1).fixedSize()
             }
             Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
                 .font(.system(size: 13, weight: thread.unread ? .semibold : .regular))
@@ -466,6 +467,8 @@ struct ThreadCountPill: View {
         if thread.groupsThreads, let n = thread.conversationThreads {
             Text("\(n) threads")
                 .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.accent)
+                // One line always: a narrow row must not stack the pill's words.
+                .lineLimit(1).fixedSize()
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Theme.accentSoft, in: Capsule())
                 .help("\(n) emails on the same subject with the same people, read as one conversation")

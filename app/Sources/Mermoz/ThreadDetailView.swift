@@ -41,7 +41,8 @@ struct ThreadDetailView: View {
 }
 
 /// The messages of one conversation as a chat. A long conversation opens on its latest
-/// messages; the earlier ones join on request, so opening it lays out a screenful.
+/// messages; the earlier ones join on request. Drawn by AppKit (ChatStreamView): this
+/// view only turns the conversation and what is open, focused or shown in full into rows.
 struct ChatStream: View {
     @Environment(AppModel.self) private var model
     let detail: ThreadDetail
@@ -53,60 +54,77 @@ struct ChatStream: View {
         let all = Timeline.items(detail.messages, threads: conversation.threads)
         let (items, kept) = model.chatShowsAll ? (all, 0) : Timeline.recent(all, keep: Self.opening)
         let hidden = kept + (model.chatShowsAll ? 0 : detail.earlier ?? 0)
-        let runs = ChatRuns.startsRun(items)
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    if let s = detail.thread.summary, !s.isEmpty { SummaryBox(summary: s, next: detail.thread.nextAction) }
-                    if hidden > 0 {
-                        Button("Show \(hidden) earlier message\(hidden == 1 ? "" : "s")") { model.chatShowsAll = true }
-                            .buttonStyle(.link).font(.system(size: 12))
-                            .frame(maxWidth: .infinity).padding(.vertical, 6)
-                    }
-                    // Rows are keyed by place, not message: the next conversation reuses
-                    // these views and SwiftUI updates them rather than building new ones.
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                        switch item {
-                        case let .marker(threadId, subject, date, joined):
-                            ThreadMarker(threadId: threadId, subject: subject, date: date, joined: joined)
-                        case let .message(m):
-                            MessageRow(message: m, firstOfRun: runs.contains(m.id), kind: conversation.kind)
-                        }
-                    }
-                }
-                .padding(.horizontal, 22).padding(.vertical, 16)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        let built = ChatRows.build(
+            items: items, hidden: hidden, summary: detail.thread.summary,
+            expanded: model.expandedMessages, shownInFull: model.shownInFull, focused: model.focusedMessageId,
+            time: Format.short)
+        let rows = built.rows
+        var hosted: [String: AnyView] = [:]
+        for (key, row) in built.hosted {
+            switch row {
+            case .summary:
+                hosted[key] = AnyView(SummaryBox(summary: detail.thread.summary ?? "", next: detail.thread.nextAction))
+            case let .marker(threadId, subject, date, joined):
+                hosted[key] = AnyView(ThreadMarker(threadId: threadId, subject: subject, date: date, joined: joined))
+            case let .expanded(m):
+                // The whole email stays SwiftUI (HTML, seal, Original / Optimized, files).
+                hosted[key] = AnyView(ExpandedMessage(message: m, kind: conversation.kind))
+            case let .images(m, first):
+                hosted[key] = AnyView(CompactBubble(message: m, firstOfRun: first))
             }
-            // ↑/↓ move between messages, Enter opens or folds the one in focus.
-            .focusable()
-            .focusEffectDisabled()
-            .onKeyPress(.upArrow) { moveFocus(-1, proxy); return .handled }
-            .onKeyPress(.downArrow) { moveFocus(1, proxy); return .handled }
-            .onKeyPress(.return) {
-                guard let id = model.focusedMessageId else { return .ignored }
-                model.toggleMessage(id)
-                return .handled
-            }
-            // A chat opens on its latest message. The anchor places it there without laying
-            // out every bubble above, which scrolling to the last one would.
-            .defaultScrollAnchor(.bottom)
-            // Another conversation, or new mail in this one, shows its latest message.
-            .onChange(of: "\(detail.thread.id)/\(detail.messages.count)") { proxy.scrollTo(items.count - 1, anchor: .bottom) }
         }
+        return ChatStreamHost(rows: rows, hosted: hosted, conversation: detail.thread.id, messages: detail.messages.count) { delta in
+            moveFocus(delta)
+        }
+        .equatable()
     }
 
-    private func moveFocus(_ delta: Int, _ proxy: ScrollViewProxy) {
+    /// ↑/↓ between messages; stepping above the latest ones brings the earlier ones in.
+    private func moveFocus(_ delta: Int) {
         let ids = detail.messages.sorted { $0.date < $1.date }.map(\.id)
         guard !ids.isEmpty else { return }
         let at = model.focusedMessageId.flatMap { ids.firstIndex(of: $0) } ?? (delta > 0 ? -1 : ids.count)
         let i = min(max(at + delta, 0), ids.count - 1)
-        // Stepping above the latest messages brings the earlier ones in.
         if i < ids.count - Self.opening { model.chatShowsAll = true }
         model.focusedMessageId = ids[i]
-        let all = Timeline.items(detail.messages, threads: conversation.threads)
-        let shown = model.chatShowsAll ? all : Timeline.recent(all, keep: Self.opening).items
-        guard let row = shown.firstIndex(where: { $0.id == ids[i] }) else { return }
-        withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(row, anchor: .center) }
+    }
+}
+
+/// Puts ChatStreamView in the SwiftUI pane and wires its actions to the model.
+struct ChatStreamHost: NSViewRepresentable, Equatable {
+    @Environment(AppModel.self) private var model
+    let rows: [ChatRowSpec]
+    /// The SwiftUI views for the hosted rows, by key.
+    let hosted: [String: AnyView]
+    let conversation: String
+    let messages: Int
+    let moveFocus: (Int) -> Void
+
+    nonisolated static func == (a: ChatStreamHost, b: ChatStreamHost) -> Bool {
+        a.rows == b.rows && a.conversation == b.conversation && a.messages == b.messages
+            && Set(a.hosted.keys) == Set(b.hosted.keys)
+    }
+
+    func makeNSView(context: Context) -> ChatStreamView { ChatStreamView() }
+
+    func updateNSView(_ v: ChatStreamView, context: Context) {
+        let env = context.environment
+        let model = model
+        var actions = ChatActions()
+        actions.toggle = { model.toggleMessage($0) }
+        actions.showMore = { model.shownInFull.insert($0) }
+        actions.showEarlier = { model.chatShowsAll = true }
+        actions.moveFocus = moveFocus
+        actions.activate = { if let id = model.focusedMessageId { model.toggleMessage(id) } }
+        let hosted = hosted
+        actions.hosted = { key in AnyView((hosted[key] ?? AnyView(EmptyView())).environment(model)) }
+        v.actions = actions
+        v.style = BubbleTextView.bubbleStyle(env)
+        v.colors = ChatColors(
+            text: NSColor(Theme.text), secondary: NSColor(Theme.text3), accent: NSColor(Theme.accent),
+            mineBackground: NSColor(Theme.accentSoft), theirsBackground: .white, border: NSColor(Color(hex: "#E3EDF6")),
+            avatars: Theme.accountPalette.map { NSColor(Color(hex: $0)) })
+        v.show(rows, conversation: conversation, messages: messages)
     }
 }
 

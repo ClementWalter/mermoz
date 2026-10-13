@@ -22,12 +22,13 @@ struct BubbleTextView: NSViewRepresentable {
     var chrome: BubbleChrome?
     let onClick: () -> Void
 
-    @Environment(\.dynamicTypeSize) private var typeSize
-
     /// The text color resolved for the current appearance; dark mode gets its own key.
-    private func style(_ env: EnvironmentValues) -> BubbleTextStyle {
+    private func style(_ env: EnvironmentValues) -> BubbleTextStyle { Self.bubbleStyle(env) }
+
+    /// Bubble text for an environment: its text size setting and color scheme.
+    static func bubbleStyle(_ env: EnvironmentValues) -> BubbleTextStyle {
         let c = Theme.text.resolve(in: env)
-        return BubbleTextStyle(pointSize: (13.5 * Self.scale(typeSize)).rounded(toPlaces: 1), lineSpacing: 2.5,
+        return BubbleTextStyle(pointSize: (13.5 * scale(env.dynamicTypeSize)).rounded(toPlaces: 1), lineSpacing: 2.5,
                                red: CGFloat(c.red), green: CGFloat(c.green), blue: CGFloat(c.blue), alpha: 0.92)
     }
 
@@ -46,7 +47,8 @@ struct BubbleTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> BubbleNSTextView {
-        let v = BubbleNSTextView(frame: .zero)
+        // TextKit 1: the view adopts containers laid out by the cache.
+        let v = BubbleNSTextView(usingTextLayoutManager: false)
         v.isEditable = false
         v.isSelectable = true
         v.drawsBackground = false
@@ -62,14 +64,7 @@ struct BubbleTextView: NSViewRepresentable {
         let style = style(context.environment)
         v.onClick = onClick
         v.setAccessibilityLabel(content.text)
-        if let c = v.textContainer { BubbleTextLayout.configure(c, maxLines: content.maxLines) }
-        let s = BubbleTextCache.shared.attributed(id: id, text: content.text, style: style)
-        // Reused views keep their storage when the text is the same (j/k back and forth).
-        if v.shown !== s {
-            v.textStorage?.setAttributedString(s)
-            v.shown = s
-        }
-        v.style = style
+        v.source = (id, content, style)
         let inset = chrome == nil ? .zero : BubbleChrome.inset
         if v.textContainerInset != inset { v.textContainerInset = inset }
         if let chrome {
@@ -88,18 +83,35 @@ struct BubbleTextView: NSViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, nsView v: BubbleNSTextView, context: Context) -> CGSize? {
         let inset = chrome == nil ? .zero : BubbleChrome.inset
         let width = proposal.width.map { $0.isFinite ? $0 - 2 * inset.width : BubbleTextCache.idealWidth } ?? BubbleTextCache.idealWidth
-        let size = BubbleTextCache.shared.size(id: id, text: content.text, style: style(context.environment),
-                                               width: width, maxLines: content.maxLines)
-        v.textContainer?.size = CGSize(width: max(size.width, 1), height: .greatestFiniteMagnitude)
-        return CGSize(width: size.width + 2 * inset.width, height: size.height + 2 * inset.height)
+        let laid = BubbleTextCache.shared.layout(id: id, text: content.text, style: style(context.environment),
+                                                 width: width, maxLines: content.maxLines)
+        let size = CGSize(width: laid.size.width + 2 * inset.width, height: laid.size.height + 2 * inset.height)
+        // The frame SwiftUI settles on is one of the sizes answered here: remember its layout.
+        v.offered[Int(size.width)] = laid
+        return size
     }
 }
 
 final class BubbleNSTextView: NSTextView {
     var onClick: (() -> Void)?
-    /// The string on screen, compared by identity with the cache's.
-    var shown: NSAttributedString?
-    var style: BubbleTextStyle?
+    /// What to draw: message id, text and style, to find layouts for a width.
+    var source: (id: String, content: BubbleContent, style: BubbleTextStyle)?
+    /// Layouts answered to SwiftUI by width; the final frame picks one.
+    var offered: [Int: BubbleTextLayout.Laid] = [:]
+    /// The cached layout on screen.
+    private var drawn: BubbleTextLayout.Laid?
+
+    /// Draws the cached layout that matches the frame: no measuring, no typesetting.
+    override func layout() {
+        super.layout()
+        guard let source else { return }
+        let laid = offered[Int(bounds.width)] ?? BubbleTextCache.shared.layout(
+            id: source.id, text: source.content.text, style: source.style,
+            width: bounds.width - 2 * textContainerInset.width, maxLines: source.content.maxLines)
+        offered.removeAll(keepingCapacity: true)
+        guard laid !== drawn else { return }
+        drawn = BubbleTextLayout.attach(laid, to: self, replacing: drawn)
+    }
     /// Who had the keyboard before a click, given it back unless text was selected.
     private weak var previous: NSResponder?
 
