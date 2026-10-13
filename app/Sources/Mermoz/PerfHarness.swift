@@ -8,6 +8,7 @@
 import AppKit
 import Darwin
 import Foundation
+import MermozKit
 import os
 
 private let log = Logger(subsystem: "ai.mermoz.app", category: "perf")
@@ -86,6 +87,7 @@ enum PerfHarness {
             "steps": Double(n), "gap_ms": Double(gapMs), "idle_ms": base,
             "median_ms": pct(costs, 0.5), "p95_ms": pct(costs, 0.95), "mean_ms": costs.reduce(0, +) / Double(max(n, 1)),
             "first_median_ms": pct(firsts, 0.5), "first_p95_ms": pct(firsts, 0.95), "action_median_ms": pct(actions, 0.5),
+            "bubble_size_hits": Double(BubbleTextCache.shared.sizeHits), "bubble_size_misses": Double(BubbleTextCache.shared.sizeMisses),
         ]
         log.info("perf: \(result.description, privacy: .public)")
         if let out = ProcessInfo.processInfo.environment["MERMOZ_PERF_OUT"],

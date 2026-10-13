@@ -44,7 +44,7 @@ struct MermozApp: App {
             // ⌘Z undoes the last change to threads, unless a text field is being edited.
             CommandGroup(replacing: .undoRedo) {
                 Button(model.undoLabel.map { "Undo \($0)" } ?? "Undo") {
-                    if NSApp.keyWindow?.firstResponder is NSText {
+                    if NSApp.keyWindow?.firstResponder?.isTyping ?? false {
                         NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
                     } else {
                         model.undo()

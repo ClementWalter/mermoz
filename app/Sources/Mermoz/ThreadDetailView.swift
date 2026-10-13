@@ -228,17 +228,37 @@ struct CompactBubble: View {
         .padding(.top, firstOfRun ? 6 : 0)
     }
 
-    private func bubble(_ parts: BubbleParts) -> some View {
-        let clamped = !model.shownInFull.contains(message.id) && BubbleParts.clampsCompact(parts.text)
-        // A clamped bubble lays out only its opening, not the whole long email.
-        let text = clamped ? BubbleParts.opening(parts.text) : parts.text
+    @ViewBuilder private func bubble(_ parts: BubbleParts) -> some View {
+        let content = BubbleContent.compact(message, showAll: model.shownInFull.contains(message.id))
+        let background = message.isFromMe ? Theme.accentSoft : Color.white
+        if !content.clamped, parts.thumbnails.isEmpty, parts.fileCount == 0 {
+            // Most bubbles are text alone: one AppKit view draws the text, background and border.
+            BubbleTextView(id: message.id, content: content,
+                           chrome: BubbleChrome(background: background,
+                                                border: focused ? Theme.accent.opacity(0.6) : Color(hex: "#E3EDF6"),
+                                                borderWidth: focused ? 1.5 : 1)) { model.toggleMessage(message.id) }
+                .help("Open the whole email")
+                .accessibilityLabel("Message from \(message.isFromMe ? "you" : message.from.display)")
+                .accessibilityValue(content.text)
+                .accessibilityHint("Opens the whole email")
+                .accessibilityAddTraits(.isButton)
+        } else {
+            framedBubble(parts, content: content, background: background)
+        }
+    }
+
+    private func framedBubble(_ parts: BubbleParts, content: BubbleContent, background: Color) -> some View {
+        let clamped = content.clamped
         return VStack(alignment: .leading, spacing: 6) {
-            Text(text.isEmpty ? "(empty message)" : text)
-                .font(.system(size: 13.5)).lineSpacing(2.5)
-                .foregroundStyle(Theme.text.opacity(0.92))
-                .lineLimit(clamped ? 8 : nil)
-                .fixedSize(horizontal: false, vertical: true)
-                .modifier(FadeOut(on: clamped))
+            // TextKit draws the text from caches keyed by message and width (BubbleTextCache).
+            BubbleTextView(id: message.id, content: content) { model.toggleMessage(message.id) }
+                .overlay(alignment: .bottom) {
+                    // A long message fades out at its eighth line; "Show more" lets it all in.
+                    if clamped {
+                        LinearGradient(colors: [background.opacity(0), background], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 22).allowsHitTesting(false)
+                    }
+                }
             if clamped {
                 Button("Show more") { model.shownInFull.insert(message.id) }.buttonStyle(.link).font(.system(size: 12))
             }
@@ -257,12 +277,15 @@ struct CompactBubble: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(message.isFromMe ? Theme.accentSoft : Color.white, in: RoundedRectangle(cornerRadius: 15))
+        .background(background, in: RoundedRectangle(cornerRadius: 15))
         .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(focused ? Theme.accent.opacity(0.6) : Color(hex: "#E3EDF6"),
                                                                     lineWidth: focused ? 1.5 : 1))
         .contentShape(Rectangle())
         .onTapGesture { model.toggleMessage(message.id) }
         .help("Open the whole email")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Message from \(message.isFromMe ? "you" : message.from.display)")
+        .accessibilityHint("Opens the whole email")
         .accessibilityAddTraits(.isButton)
     }
 }
@@ -1022,22 +1045,6 @@ struct MessageDetails: View {
                     }
                 }
             }
-        }
-    }
-}
-
-/// A long message fades out at its eighth line; "Show more" lets it all in. Short ones
-/// get no mask, which would cost an offscreen pass per bubble.
-struct FadeOut: ViewModifier {
-    let on: Bool
-
-    func body(content: Content) -> some View {
-        if on {
-            content.mask(alignment: .bottom) {
-                LinearGradient(colors: [.black, .black, .clear], startPoint: .top, endPoint: .bottom)
-            }
-        } else {
-            content
         }
     }
 }

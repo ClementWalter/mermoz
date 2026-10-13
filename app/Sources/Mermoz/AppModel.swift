@@ -709,6 +709,11 @@ final class AppModel {
             do {
                 let d = try await client.thread(id)
                 guard selectedThreadId == id else { return }
+                // Bubble text is built and measured off the main thread before it shows.
+                let full = shownInFull
+                let bubbles = d.messages.map { (id: $0.id, content: BubbleContent.compact($0, showAll: full.contains($0.id))) }
+                await Task.detached(priority: .userInitiated) { BubbleTextCache.shared.prepare(bubbles) }.value
+                guard selectedThreadId == id else { return }
                 detail = d
                 learnAddresses(from: d)
                 if d.thread.unread {

@@ -129,7 +129,7 @@ enum ThreadKeys {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let f = event.modifierFlags
             guard let window = event.window, window.title != "Mermoz Settings",
-                  !(window.firstResponder is NSText),
+                  !(window.firstResponder?.isTyping ?? false),
                   model.compose == nil, model.paletteMode == nil,
                   let c = ShortcutKey.normalize(event.characters ?? "", command: f.contains(.command),
                                                 control: f.contains(.control), option: f.contains(.option),
@@ -460,4 +460,9 @@ struct ConversationMenu: View {
         Button("Join into one conversation (⇧M)") { model.mergeSelected() }
             .disabled(model.targetIds.count < 2)
     }
+}
+
+extension NSResponder {
+    /// Text is being typed here: a field or the composer, not a read-only bubble.
+    var isTyping: Bool { (self as? NSText)?.isEditable ?? false }
 }

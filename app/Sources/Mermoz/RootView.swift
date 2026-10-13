@@ -60,6 +60,7 @@ struct MainLayout: View {
         @Bindable var model = model
         HStack(spacing: 0) {
             SidebarView()
+                .layoutBoundary()
                 .frame(width: sidebarWidth)
             ResizeHandle(width: $sidebarWidth, range: 180...360)
             if model.selection == .people {
@@ -90,9 +91,10 @@ struct MainLayout: View {
                 Group {
                     if model.isReview { ReviewListView() } else { ThreadListView() }
                 }
+                .layoutBoundary()
                 .frame(width: listWidth)
                 ResizeHandle(width: $listWidth, range: 300...760)
-                DetailPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+                DetailPane().layoutBoundary()
             }
         }
         // The traffic lights get their own strip so they never collide with a panel corner.
@@ -238,5 +240,14 @@ struct ToastView: View {
                     if model.toast == t { model.toast = nil }
                 }
         }
+    }
+}
+
+extension View {
+    /// Fills the space offered and never reports its content's size back up, so a change
+    /// inside (another conversation, a moved selection) lays out this pane alone instead of
+    /// the whole window.
+    func layoutBoundary() -> some View {
+        Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).overlay { self }
     }
 }
