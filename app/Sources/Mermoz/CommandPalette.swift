@@ -217,7 +217,7 @@ struct CommandPalette: View {
                 model.layout = .feed
                 Task { await model.loadList() }
             },
-            command("c-settings", "Settings", "gearshape", detail: "⌘,", keywords: ["preferences", "options", "typesafe", "ai"]) { openWindow(id: "settings") },
+            command("c-settings", "Settings", "gearshape", detail: "⌘,", keywords: ["preferences", "options", "typesafe", "subq", "ai"]) { openWindow(id: "settings") },
             command("c-shortcuts", "Keyboard shortcuts", "keyboard", detail: "?", keywords: ["help", "keys"]) { model.showShortcuts = true },
             command("c-account", "Add Gmail account", "person.crop.circle.badge.plus", keywords: ["sign", "login", "connect"]) { model.addGmail() },
             command("c-people", "Go to People", "person.2", keywords: ["directory", "contacts"], navigation: true) { model.select(.people) },

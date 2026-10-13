@@ -144,8 +144,14 @@ project's column.
 
 - On arrival a fast **decision model** predicts, per thread: post-read status,
   project among the user's labels, priority and "automated", with probabilities.
-  It is TypeSafe Jev with the user's own key (Settings › Developer); OpenAI's
-  Decisions API stays a candidate once access is confirmed.
+  It is a System One model with the user's own key (Settings › Developer): TypeSafe
+  Jev (`jev-latest`) or SubQ Snap (`subq-snap-preview`), which serve the same API.
+  The user picks the provider and keeps one key per provider; Unread routing, the
+  Sort queue, conversation pairing and Feed judgments all use the picked one.
+  SubQ is on par at the same thresholds, about twice as slow (~500 ms a call): the
+  Sort queue hides it by preparing cards ahead, and Unread routing runs apart from
+  everything on screen. OpenAI's Decisions API stays a candidate once access is
+  confirmed.
 - Jev sees the thread plus two hints built locally: where earlier threads from
   the same senders were filed, and a one-line description of every project
   (frequent correspondents, recent subjects). Measured on a real mailbox (300
@@ -192,9 +198,11 @@ on a column.
 - **Change** is a No for the suggestion and a Yes for the chosen destination.
 - Earlier answers for the sender go to Jev with every new card. The panel lists
   what was learned in plain words.
-- **Out of credits** (HTTP 402) pauses sorting ("Sorting paused: your TypeSafe
-  credits ran out"); nothing is recorded on threads and nothing is retried for
-  15 minutes or until a new key. A daily allowance (default 20,000 calls) stays as
+- **Out of credits** (HTTP 402) pauses sorting on that provider ("Sorting paused:
+  your TypeSafe credits ran out"); nothing is recorded on threads and nothing is
+  retried for 15 minutes or until a new key. When the other provider has a key,
+  Mermoz offers it ("TypeSafe credits ran out. Use SubQ instead?") and never
+  switches on its own. A daily allowance (default 20,000 calls) stays as
   a safety net.
 
 Why the column suggestions were wrong: sender history told Jev only where the

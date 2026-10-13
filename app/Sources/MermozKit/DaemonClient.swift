@@ -206,14 +206,19 @@ public final class DaemonClient: Sendable {
         try await call("router.set", Params().with("daily_cap", cap))
     }
 
-    /// `nil` removes the key and stops instant sorting.
-    public func setRouterKey(_ key: String?) async throws -> RouterState {
+    /// Stores `provider`'s key without switching to it; `nil` removes it.
+    public func setRouterKey(_ key: String?, provider: String) async throws -> RouterState {
         let p = key.map { Params().with("api_key", $0) } ?? Params().null("api_key")
-        return try await call("router.set", p)
+        return try await call("router.set", p.with("key_provider", provider))
     }
 
-    public func testRouter(key: String?) async throws -> RouterTest {
-        try await call("router.test", Params().with("api_key", key))
+    /// Picks the instant sorting provider; its own key, if saved, is used from now on.
+    public func setRouterProvider(_ provider: String) async throws -> RouterState {
+        try await call("router.set", Params().with("provider", provider))
+    }
+
+    public func testRouter(key: String?, provider: String) async throws -> RouterTest {
+        try await call("router.test", Params().with("api_key", key).with("provider", provider))
     }
 
     /// The thread as reading left it; nil from a daemon that answers `{}`.

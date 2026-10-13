@@ -95,6 +95,26 @@ func pauseIsSaidInPlainWords(_ reason: String, _ want: String) {
     #expect(SortText.paused(reason) == want)
 }
 
+@Test func spentCreditsNameTheProvider() {
+    #expect(SortText.paused("credits", provider: "SubQ") == "Sorting paused: your SubQ credits ran out")
+}
+
+@Test func routerStateReadsTheProviders() throws {
+    let json = #"{"configured": true, "model": "subq-snap-preview", "provider": "subq", "provider_name": "SubQ", "providers": [{"id": "subq", "name": "SubQ", "model": "subq-snap-preview", "configured": true, "calls_today": 4}], "offer": null}"#
+    let d = JSONDecoder()
+    d.keyDecodingStrategy = .convertFromSnakeCase
+    let r = try d.decode(RouterState.self, from: Data(json.utf8))
+    #expect(r.providers?.first?.callsToday == 4)
+}
+
+@Test func routerStateFromAnOlderDaemonHasNoProviders() throws {
+    let json = #"{"configured": true, "model": "jev-latest"}"#
+    let d = JSONDecoder()
+    d.keyDecodingStrategy = .convertFromSnakeCase
+    let r = try d.decode(RouterState.self, from: Data(json.utf8))
+    #expect(r.providers == nil)
+}
+
 @Test func noPauseSaysNothing() {
     #expect(SortText.paused(nil) == nil)
 }

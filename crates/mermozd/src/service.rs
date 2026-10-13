@@ -39,14 +39,14 @@ pub struct Service {
     workers: Mutex<HashMap<String, Arc<Worker>>>,
     /// Wakes the router (new mail, key changed).
     pub router_kick: Arc<Notify>,
-    /// Last router problem (refused key, outage), shown in settings.
-    pub router_error: Mutex<Option<String>>,
+    /// Last problem per provider (refused key, outage), shown in settings.
+    router_error: Mutex<HashMap<jev::Provider, String>>,
     /// Threads whose senders are being verified, so reopening one doesn't refetch.
     verifying: Mutex<std::collections::HashSet<String>>,
     /// Project descriptions for the router, rebuilt every [`DESCRIPTIONS_TTL`].
     descriptions: Mutex<Option<Descriptions>>,
-    /// Why the AI is on hold, and until when (out of credits, rate limited…).
-    pub pause: Mutex<Option<Pause>>,
+    /// Why each provider is on hold, and until when (out of credits, rate limited…).
+    pause: Mutex<HashMap<jev::Provider, Pause>>,
     /// Wakes conversation grouping (new mail routed, key or AI changed).
     pub grouping_kick: Arc<Notify>,
     /// Google Drive connections, picks and the local Drive cache.
@@ -78,10 +78,10 @@ impl Service {
             events,
             workers: Mutex::new(HashMap::new()),
             router_kick: Arc::new(Notify::new()),
-            router_error: Mutex::new(None),
+            router_error: Mutex::new(HashMap::new()),
             verifying: Mutex::new(Default::default()),
             descriptions: Mutex::new(None),
-            pause: Mutex::new(None),
+            pause: Mutex::new(HashMap::new()),
             grouping_kick: Arc::new(Notify::new()),
             drive: Default::default(),
             feed_kick: Arc::new(Notify::new()),
@@ -663,7 +663,7 @@ struct RouteKit {
     known: Arc<Vec<String>>,
 }
 
-/// The AI is on hold: `reason` is "credits" (TypeSafe credits ran out) or
+/// A provider is on hold: `reason` is "credits" (its credits ran out) or
 /// "unavailable" (rate limited or down); nothing is asked before `until`.
 #[derive(Debug, Clone)]
 pub struct Pause {
@@ -680,39 +680,93 @@ impl Service {
         tokio::spawn(crate::grouping::grouping_loop(self.clone()));
     }
 
-    /// Why the AI is on hold right now, if it is.
+    /// The System One provider the user picked.
+    pub fn provider(&self) -> jev::Provider {
+        self.store.jev_provider().unwrap_or_default()
+    }
+
+    /// The picked provider with its key, when it has one.
+    pub fn active_key(&self) -> Option<(jev::Provider, String)> {
+        let p = self.provider();
+        jev::load_key(p).map(|k| (p, k))
+    }
+
+    /// Why the picked provider is on hold right now, if it is.
     pub fn paused(&self) -> Option<String> {
+        self.paused_on(self.provider())
+    }
+
+    pub fn paused_on(&self, p: jev::Provider) -> Option<String> {
         self.pause
             .lock()
             .unwrap()
-            .as_ref()
-            .filter(|p| p.until > std::time::Instant::now())
-            .map(|p| p.reason.clone())
+            .get(&p)
+            .filter(|h| h.until > std::time::Instant::now())
+            .map(|h| h.reason.clone())
     }
 
-    /// Puts the AI on hold after a refusal that says to stop asking for a while.
-    pub fn pause_for(&self, e: &Error, previous: Option<Duration>) -> Duration {
+    /// The other provider, in plain words, when the picked one ran out of credits and
+    /// the other has a key. Only offered: switching is the user's call.
+    pub fn offer(&self) -> Option<serde_json::Value> {
+        let p = self.provider();
+        let o = p.other();
+        (self.paused_on(p).as_deref() == Some("credits") && jev::load_key(o).is_some()).then(|| {
+            serde_json::json!({
+                "provider": o.id(),
+                "name": o.name(),
+                "message": format!("{} credits ran out. Use {} instead?", p.name(), o.name()),
+            })
+        })
+    }
+
+    pub fn last_error(&self, p: jev::Provider) -> Option<String> {
+        self.router_error.lock().unwrap().get(&p).cloned()
+    }
+
+    pub fn set_error(&self, p: jev::Provider, e: Option<String>) {
+        let mut m = self.router_error.lock().unwrap();
+        match e {
+            Some(e) => m.insert(p, e),
+            None => m.remove(&p),
+        };
+    }
+
+    /// Puts `p` on hold after a refusal that says to stop asking for a while.
+    pub fn pause_for(&self, p: jev::Provider, e: &Error, previous: Option<Duration>) -> Duration {
         let (reason, wait) = match e {
-            Error::OutOfCredits => ("credits", CREDITS_RETRY),
+            Error::OutOfCredits(_) => ("credits", CREDITS_RETRY),
             Error::RateLimited { retry_after } => {
                 ("unavailable", jev::backoff(*retry_after, previous))
             }
             _ => ("unavailable", jev::backoff(None, previous)),
         };
-        warn!(reason, wait_s = wait.as_secs(), "AI sorting paused");
-        *self.pause.lock().unwrap() = Some(Pause {
-            reason: reason.into(),
-            until: std::time::Instant::now() + wait,
-        });
+        warn!(
+            provider = p.id(),
+            reason,
+            wait_s = wait.as_secs(),
+            "AI sorting paused"
+        );
+        self.pause.lock().unwrap().insert(
+            p,
+            Pause {
+                reason: reason.into(),
+                until: std::time::Instant::now() + wait,
+            },
+        );
         wait
     }
 
-    /// A new key (or a top-up) lifts any hold at once.
-    pub fn resume(&self) {
-        *self.pause.lock().unwrap() = None;
+    /// A new key (or a top-up) lifts that provider's hold at once.
+    pub fn resume(&self, p: jev::Provider) {
+        self.pause.lock().unwrap().remove(&p);
     }
 
-    fn route_kit(&self, key: &str) -> Result<RouteKit> {
+    /// A new daily limit lifts every hold.
+    pub fn resume_all(&self) {
+        self.pause.lock().unwrap().clear();
+    }
+
+    fn route_kit(&self, p: jev::Provider, key: &str) -> Result<RouteKit> {
         let mut cache = self.descriptions.lock().unwrap();
         if cache
             .as_ref()
@@ -725,7 +779,7 @@ impl Service {
         }
         let descs = &cache.as_ref().unwrap().1;
         Ok(RouteKit {
-            client: Arc::new(jev::Client::new(key.to_string())),
+            client: Arc::new(jev::Client::new(p, key.to_string())),
             questions: Arc::new(jev::questions(descs)),
             known: Arc::new(descs.iter().map(|(n, _)| n.clone()).collect()),
         })
@@ -775,7 +829,7 @@ async fn route_many(
 /// verdict on the thread.
 pub(crate) fn pause_reason(e: &Error) -> Option<Option<Duration>> {
     match e {
-        Error::OutOfCredits => Some(Some(CREDITS_RETRY)),
+        Error::OutOfCredits(_) => Some(Some(CREDITS_RETRY)),
         Error::RateLimited { retry_after } => Some(*retry_after),
         Error::InvalidParams(_) | Error::Http(_) => Some(None),
         Error::Upstream { status, .. } if *status == 429 || *status >= 500 => Some(None),
@@ -807,11 +861,14 @@ pub struct SortCard {
     pub why: Option<String>,
 }
 
-/// What a Sort request returns: the cards ready now, and why the AI is on hold if it is.
+/// What a Sort request returns: the cards ready now, why the AI is on hold if it is,
+/// and the other provider to offer when it ran out of credits.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SortBatch {
     pub cards: Vec<SortCard>,
     pub paused: Option<String>,
+    pub provider_name: &'static str,
+    pub offer: Option<serde_json::Value>,
 }
 
 impl Service {
@@ -860,8 +917,10 @@ impl Service {
             if cards.len() >= want || to_route.is_empty() {
                 continue;
             }
-            let Some(key) = jev::load_key() else { break };
-            if self.paused().is_some() || calls_left == 0 {
+            let Some((p, key)) = self.active_key() else {
+                break;
+            };
+            if self.paused_on(p).is_some() || calls_left == 0 {
                 break;
             }
             let room = jev::calls_left(
@@ -877,12 +936,14 @@ impl Service {
                 break;
             }
             calls_left -= to_route.len();
-            let kit = self.route_kit(&key)?;
+            let kit = self.route_kit(p, &key)?;
             let outcomes = route_many(self, &kit, &to_route, SORT_PARALLEL).await;
             let tokens = input_tokens(&outcomes);
             let ok = outcomes.iter().filter(|(_, _, r)| r.is_ok()).count() as i64;
             let calls_today = self.store.add_background_calls(ok)?;
+            self.store.add_provider_calls(p, ok)?;
             info!(
+                provider = p.id(),
                 calls = ok,
                 input_tokens = tokens,
                 calls_today,
@@ -895,7 +956,7 @@ impl Service {
                         if self.store.save_column_suggestion(
                             &tid,
                             &r.suggestion,
-                            "jev-latest",
+                            p.model(),
                             last_date,
                         )? {
                             cards.push(self.sort_card(&tid)?);
@@ -903,8 +964,8 @@ impl Service {
                     }
                     // No verdict is recorded: the thread stays in the queue for later.
                     Err(e) if pause_reason(&e).is_some() => {
-                        backoff = Some(self.pause_for(&e, backoff));
-                        *self.router_error.lock().unwrap() = Some(e.to_string());
+                        backoff = Some(self.pause_for(p, &e, backoff));
+                        self.set_error(p, Some(e.to_string()));
                         stop = true;
                     }
                     Err(e) => {
@@ -912,7 +973,7 @@ impl Service {
                         self.store.save_column_suggestion(
                             &tid,
                             &Default::default(),
-                            "jev-latest",
+                            p.model(),
                             last_date,
                         )?;
                     }
@@ -926,6 +987,8 @@ impl Service {
         Ok(SortBatch {
             cards,
             paused: self.paused(),
+            provider_name: self.provider().name(),
+            offer: self.offer(),
         })
     }
 
@@ -1000,28 +1063,40 @@ fn target_words(sg: &mermoz_core::model::Suggestion) -> String {
     parts.join(" · ")
 }
 
-/// Routes every new Unread thread through Jev while a TypeSafe key is set and the
-/// AI is not on hold.
+/// New mail routed per round: one wave of requests, so the first suggestions land
+/// after one call's latency rather than after a long batch.
+const ROUTE_BATCH: i64 = 8;
+
+/// Routes every new Unread thread while the picked provider has a key and is not on
+/// hold. Runs apart from sync and RPC: nothing on screen waits for it.
 async fn router_loop(svc: Arc<Service>) {
     let mut backoff = None;
     loop {
-        if let Some(key) = jev::load_key().filter(|_| svc.paused().is_none()) {
-            match route_pending(&svc, &key).await {
-                Ok(n) => {
+        let mut more = false;
+        if let Some((p, key)) = svc
+            .active_key()
+            .filter(|(p, _)| svc.paused_on(*p).is_none())
+        {
+            match route_pending(&svc, p, &key).await {
+                Ok((n, full)) => {
                     if n > 0 {
-                        info!(routed = n, "routed new mail");
+                        info!(provider = p.id(), routed = n, "routed new mail");
                     }
-                    *svc.router_error.lock().unwrap() = None;
+                    svc.set_error(p, None);
                     backoff = None;
+                    more = full;
                 }
                 Err(e) => {
-                    warn!("router: {e}");
+                    warn!(provider = p.id(), "router: {e}");
                     if pause_reason(&e).is_some() {
-                        backoff = Some(svc.pause_for(&e, backoff));
+                        backoff = Some(svc.pause_for(p, &e, backoff));
                     }
-                    *svc.router_error.lock().unwrap() = Some(e.to_string());
+                    svc.set_error(p, Some(e.to_string()));
                 }
             }
+        }
+        if more {
+            continue;
         }
         tokio::select! {
             _ = tokio::time::sleep(poll_interval()) => {}
@@ -1030,22 +1105,27 @@ async fn router_loop(svc: Arc<Service>) {
     }
 }
 
-/// Routes up to one batch of pending Unread threads, eight requests in flight.
-async fn route_pending(svc: &Arc<Service>, key: &str) -> Result<usize> {
-    let pending = svc.store.threads_to_route(32)?;
+/// Routes up to one batch of pending Unread threads, all in flight at once. Returns how
+/// many were routed and whether the batch was full (more may be waiting).
+async fn route_pending(svc: &Arc<Service>, p: jev::Provider, key: &str) -> Result<(usize, bool)> {
+    let pending = svc.store.threads_to_route(ROUTE_BATCH)?;
     if pending.is_empty() {
-        return Ok(0);
+        return Ok((0, false));
     }
-    let kit = svc.route_kit(key)?;
-    let outcomes = route_many(svc, &kit, &pending, 8).await;
+    let full = pending.len() as i64 >= ROUTE_BATCH;
+    let kit = svc.route_kit(p, key)?;
+    let started = std::time::Instant::now();
+    let outcomes = route_many(svc, &kit, &pending, ROUTE_BATCH as usize).await;
     let tokens = input_tokens(&outcomes);
+    let answered = outcomes.iter().filter(|(_, _, r)| r.is_ok()).count() as i64;
+    svc.store.add_provider_calls(p, answered)?;
     let mut routed = vec![];
     let mut stop = None;
     for (tid, last_date, res) in outcomes {
         match res {
             Ok(r) => {
                 svc.store
-                    .save_suggestion(&tid, &r.suggestion, "jev-latest", last_date)?;
+                    .save_suggestion(&tid, &r.suggestion, p.model(), last_date)?;
                 routed.push(tid);
             }
             // A refused key or an outage stops the round; it retries on the next tick.
@@ -1055,14 +1135,16 @@ async fn route_pending(svc: &Arc<Service>, key: &str) -> Result<usize> {
             Err(e) => {
                 warn!(thread = %tid, "router skipped thread: {e}");
                 svc.store
-                    .save_suggestion(&tid, &Default::default(), "jev-latest", last_date)?;
+                    .save_suggestion(&tid, &Default::default(), p.model(), last_date)?;
             }
         }
     }
     if tokens > 0 {
         info!(
+            provider = p.id(),
             threads = routed.len(),
             input_tokens = tokens,
+            wave_ms = started.elapsed().as_millis() as u64,
             "routed new mail"
         );
     }
@@ -1074,11 +1156,14 @@ async fn route_pending(svc: &Arc<Service>, key: &str) -> Result<usize> {
         Some(
             e @ (Error::InvalidParams(_)
             | Error::Http(_)
-            | Error::OutOfCredits
+            | Error::OutOfCredits(_)
             | Error::RateLimited { .. }),
         ) => Err(e),
-        Some(_) => Err(Error::other("TypeSafe is unavailable right now")),
-        None => Ok(n),
+        Some(_) => Err(Error::other(format!(
+            "{} is unavailable right now",
+            p.name()
+        ))),
+        None => Ok((n, full)),
     }
 }
 
@@ -1090,7 +1175,7 @@ mod tests {
 
     #[rstest]
     fn out_of_credits_pauses_instead_of_judging_the_thread() {
-        assert!(pause_reason(&Error::OutOfCredits).is_some());
+        assert!(pause_reason(&Error::OutOfCredits("TypeSafe")).is_some());
     }
 
     #[rstest]

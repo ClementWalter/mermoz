@@ -18,7 +18,9 @@ struct SortPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if let paused = SortText.paused(model.sortInfo.paused) {
+            if let offer = model.sortInfo.offer {
+                ProviderOfferBanner(offer: offer)
+            } else if let paused = SortText.paused(model.sortInfo.paused, provider: model.sortInfo.providerName) {
                 Label(paused, systemImage: "pause.circle")
                     .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
@@ -66,7 +68,7 @@ struct SortPanel: View {
 
     @ViewBuilder private var empty: some View {
         if !model.sortInfo.configured && !model.router.configured {
-            Text("Add your TypeSafe key in Settings › Developer to get suggestions.")
+            Text("Add a key for instant sorting in Settings › Developer to get suggestions.")
                 .font(.system(size: 13)).foregroundStyle(Theme.text2)
         } else {
             VStack(alignment: .leading, spacing: 6) {
@@ -183,5 +185,24 @@ struct SortStartButton: View {
             .buttonStyle(.plain)
             .help("Go through this column one email at a time")
         }
+    }
+}
+
+/// "TypeSafe credits ran out. Use SubQ instead?" with a button: the switch happens only
+/// when the user presses it.
+struct ProviderOfferBanner: View {
+    @Environment(AppModel.self) private var model
+    let offer: ProviderOffer
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(offer.message, systemImage: "pause.circle")
+                .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+            Spacer(minLength: 4)
+            Button("Use \(offer.name)") { Task { await model.setRouterProvider(offer.provider) } }
+                .buttonStyle(.glassProminent).controlSize(.small)
+        }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.accentSoft.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
     }
 }

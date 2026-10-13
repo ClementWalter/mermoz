@@ -40,6 +40,8 @@ extension AppModel {
             let batch = try await client.sortNext(statuses: sortColumns, exclude: sortQueue.exclude)
             sortQueue.add(batch.cards)
             sortInfo.paused = batch.paused
+            sortInfo.offer = batch.offer
+            if let name = batch.providerName { sortInfo.providerName = name }
         } catch { report(error) }
     }
 

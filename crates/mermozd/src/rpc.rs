@@ -618,43 +618,61 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         }
         "router.get" => Ok(router_state(svc)),
         "router.set" => {
-            // The key pays for every routed thread: only the app may change it.
+            // The keys pay for every routed thread, and the provider decides where mail
+            // is sent: only the app may change them.
             app_only(caller, method)?;
-            if let Some(cap) = p.get("daily_cap") {
+            let provider = opt_provider(p, "provider")?;
+            let key_for = opt_provider(p, "key_provider")?
+                .or(provider)
+                .unwrap_or_else(|| svc.provider());
+            let cap = p.get("daily_cap");
+            if cap.is_none() && provider.is_none() && p.get("api_key").is_none() {
+                return Err(RpcError::invalid(
+                    "missing 'api_key' (string, or null to remove), 'provider' or 'daily_cap'",
+                ));
+            }
+            if let Some(cap) = cap {
                 let cap = cap
                     .as_i64()
                     .filter(|c| *c >= 0)
                     .ok_or_else(|| RpcError::invalid("'daily_cap' must be a number ≥ 0"))?;
                 st.set_setting("jev_daily_cap", &cap.to_string())?;
-                svc.resume();
-                if p.get("api_key").is_none() {
-                    return Ok(router_state(svc));
-                }
+                svc.resume_all();
             }
             match p.get("api_key") {
-                Some(Value::String(k)) if !k.trim().is_empty() => mermoz_core::jev::save_key(k)?,
-                Some(Value::Null) | Some(Value::String(_)) => {
-                    let _ = mermoz_core::jev::delete_key();
-                    *svc.router_error.lock().unwrap() = None;
+                Some(Value::String(k)) if !k.trim().is_empty() => {
+                    mermoz_core::jev::save_key(key_for, k)?;
+                    svc.resume(key_for);
+                    svc.set_error(key_for, None);
                 }
-                _ => {
+                Some(Value::Null) | Some(Value::String(_)) => {
+                    let _ = mermoz_core::jev::delete_key(key_for);
+                    svc.set_error(key_for, None);
+                }
+                Some(_) => {
                     return Err(RpcError::invalid(
-                        "missing 'api_key' (string, or null to remove)",
+                        "'api_key' must be a string, or null to remove",
                     ));
                 }
+                None => {}
+            }
+            if let Some(provider) = provider {
+                st.set_jev_provider(provider)?;
+                tracing::info!(provider = provider.id(), "instant sorting provider picked");
             }
             svc.router_kick.notify_one();
-            svc.resume();
             svc.feed_kick.notify_one();
+            svc.grouping_kick.notify_one();
             Ok(router_state(svc))
         }
         "router.test" => {
+            let provider = opt_provider(p, "provider")?.unwrap_or_else(|| svc.provider());
             let key = opt_s(p, "api_key")
-                .or_else(mermoz_core::jev::load_key)
-                .ok_or_else(|| RpcError::invalid("No TypeSafe key to test."))?;
+                .or_else(|| mermoz_core::jev::load_key(provider))
+                .ok_or_else(|| RpcError::invalid(format!("No {} key to test.", provider.name())))?;
             let t = std::time::Instant::now();
             let q = json!({ "q": { "type": "noul", "instructions": "Is this an email about a meeting?" } });
-            mermoz_core::jev::Client::new(key)
+            mermoz_core::jev::Client::new(provider, key)
                 .ask(&json!({ "subject": "Lunch on Friday?" }), &q)
                 .await?;
             Ok(json!({ "ok": true, "ms": t.elapsed().as_millis() as i64 }))
@@ -863,6 +881,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 "columns": columns,
                 "sorting": false,
                 "paused": svc.paused(),
+                "provider_name": svc.provider().name(),
                 "calls_today": st.background_calls_today()?,
                 "daily_cap": st.background_daily_cap()?,
                 "resort": null,
@@ -897,8 +916,10 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             Ok(json!({
                 "to_sort": counts.iter().map(|(_, n)| n).sum::<i64>(),
                 "by_status": by_status,
-                "configured": mermoz_core::jev::load_key().is_some(),
+                "configured": svc.active_key().is_some(),
                 "paused": svc.paused(),
+                "provider_name": svc.provider().name(),
+                "offer": svc.offer(),
                 "learned": st.learned(20)?,
             }))
         }
@@ -1138,13 +1159,46 @@ fn column_scope(p: &Value) -> ColumnScope {
     }
 }
 
+/// A System One provider id (`typesafe`, `subq`) under `key`, when given.
+fn opt_provider(p: &Value, key: &str) -> Result<Option<mermoz_core::jev::Provider>, RpcError> {
+    opt_s(p, key)
+        .map(|id| {
+            mermoz_core::jev::Provider::parse(&id).ok_or_else(|| {
+                RpcError::invalid(format!("unknown '{key}' {id:?}: use typesafe or subq"))
+            })
+        })
+        .transpose()
+}
+
+/// Instant sorting as Settings shows it: the picked provider at the top level, and
+/// each provider's key, last error, hold and calls today.
 fn router_state(svc: &Service) -> Value {
+    use mermoz_core::jev::{self, Provider};
+    let active = svc.provider();
+    let providers: Vec<Value> = Provider::ALL
+        .into_iter()
+        .map(|p| {
+            json!({
+                "id": p.id(),
+                "name": p.name(),
+                "model": p.model(),
+                "configured": jev::load_key(p).is_some(),
+                "error": svc.last_error(p),
+                "paused": svc.paused_on(p),
+                "calls_today": svc.store.provider_calls_today(p).unwrap_or(0),
+            })
+        })
+        .collect();
     json!({
-        "configured": mermoz_core::jev::load_key().is_some(),
-        "error": *svc.router_error.lock().unwrap(),
-        "model": "jev-latest",
-        "daily_cap": svc.store.background_daily_cap().unwrap_or(mermoz_core::jev::DEFAULT_DAILY_CAP),
+        "provider": active.id(),
+        "provider_name": active.name(),
+        "configured": jev::load_key(active).is_some(),
+        "error": svc.last_error(active),
+        "model": active.model(),
+        "daily_cap": svc.store.background_daily_cap().unwrap_or(jev::DEFAULT_DAILY_CAP),
         "calls_today": svc.store.background_calls_today().unwrap_or(0),
         "paused": svc.paused(),
+        "providers": providers,
+        "offer": svc.offer(),
     })
 }

@@ -27,7 +27,7 @@ pub fn list(svc: &Service, scope: &ColumnScope) -> Result<Value> {
     let mut f = feed::assemble(units, feed::today(), &st.ai_accounts()?);
     st.complete_feed(&mut f)?;
     let paused = svc.paused();
-    let sorting = jev::load_key().is_some() && f.judged < f.open && paused.is_none();
+    let sorting = svc.active_key().is_some() && f.judged < f.open && paused.is_none();
     let mut v = serde_json::to_value(f)?;
     v["sorting"] = json!(sorting);
     v["paused"] = json!(paused);
@@ -102,15 +102,15 @@ async fn later_loop(svc: Arc<Service>) {
     }
 }
 
-/// Judges every open thread once per new message, while a TypeSafe key is set.
+/// Judges every open thread once per new message, while the picked provider has a key.
 async fn judge_loop(svc: Arc<Service>) {
     let mut last_backoff: Option<Duration> = None;
     loop {
         // While the AI is on hold (credits ran out, rate limit), the feed asks nothing.
-        let round = match jev::load_key() {
+        let round = match svc.active_key() {
             None => Round::Idle,
-            Some(_) if svc.paused().is_some() => Round::Idle,
-            Some(key) => judge_round(&svc, &key).await.unwrap_or_else(|e| {
+            Some((p, _)) if svc.paused_on(p).is_some() => Round::Idle,
+            Some((p, key)) => judge_round(&svc, p, &key).await.unwrap_or_else(|e| {
                 warn!("feed: {e}");
                 Round::Pause(None)
             }),
@@ -137,7 +137,7 @@ async fn judge_loop(svc: Arc<Service>) {
     }
 }
 
-async fn judge_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
+async fn judge_round(svc: &Arc<Service>, p: jev::Provider, key: &str) -> Result<Round> {
     let st = &svc.store;
     let today = feed::today();
     let today_s = today.to_string();
@@ -149,7 +149,7 @@ async fn judge_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
     if batch.is_empty() {
         return Ok(Round::Idle);
     }
-    let client = Arc::new(jev::Client::new(key.to_string()));
+    let client = Arc::new(jev::Client::new(p, key.to_string()));
     let mut set = tokio::task::JoinSet::new();
     let mut outcomes = vec![];
     let mut scanned = vec![];
@@ -185,6 +185,7 @@ async fn judge_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
         }
     }
     st.add_background_calls(outcomes.len() as i64)?;
+    st.add_provider_calls(p, outcomes.iter().filter(|o| o.4.is_ok()).count() as i64)?;
     let mut judged = scanned;
     let mut pause = None;
     for (tid, last_date, found, amounts, res) in outcomes {
@@ -197,9 +198,9 @@ async fn judge_round(svc: &Arc<Service>, key: &str) -> Result<Round> {
             }
             Err(e) => match pause_reason(&e) {
                 Some(asked) => {
-                    if matches!(e, mermoz_core::Error::OutOfCredits) {
-                        // The same hold as the router's: everything waits for a top-up.
-                        svc.pause_for(&e, None);
+                    if matches!(e, mermoz_core::Error::OutOfCredits(_)) {
+                        // The same hold as the router's: this provider waits for a top-up.
+                        svc.pause_for(p, &e, None);
                     }
                     pause = Some(asked.or(pause.flatten()))
                 }

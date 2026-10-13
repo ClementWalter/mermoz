@@ -40,6 +40,8 @@ public struct SortCard: Codable, Sendable, Equatable, Identifiable {
 public struct SortBatch: Codable, Sendable {
     public var cards: [SortCard]
     public var paused: String?
+    public var providerName: String?
+    public var offer: ProviderOffer?
 }
 
 /// `sort.answer`.
@@ -85,12 +87,17 @@ public struct SortInfo: Codable, Sendable, Equatable {
     public var byStatus: [SortColumnCount]
     public var configured: Bool
     public var paused: String?
+    /// The instant sorting provider in use, by name.
+    public var providerName: String?
+    public var offer: ProviderOffer?
     public var learned: [LearnedItem]
 
     public init(toSort: Int = 0, byStatus: [SortColumnCount] = [], configured: Bool = false,
-                paused: String? = nil, learned: [LearnedItem] = []) {
+                paused: String? = nil, providerName: String? = nil, offer: ProviderOffer? = nil,
+                learned: [LearnedItem] = []) {
         self.toSort = toSort; self.byStatus = byStatus; self.configured = configured
-        self.paused = paused; self.learned = learned
+        self.paused = paused; self.providerName = providerName; self.offer = offer
+        self.learned = learned
     }
 
     /// Threads of one column waiting to be sorted.
@@ -158,9 +165,9 @@ public enum SortText {
     }
 
     /// Why sorting is on hold, for the user; nil when it is not.
-    public static func paused(_ reason: String?) -> String? {
+    public static func paused(_ reason: String?, provider: String? = nil) -> String? {
         switch reason {
-        case "credits": "Sorting paused: your TypeSafe credits ran out"
+        case "credits": "Sorting paused: your \(provider ?? "TypeSafe") credits ran out"
         case nil: nil
         default: "Sorting paused: the AI is busy, trying again soon"
         }

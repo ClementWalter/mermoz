@@ -48,6 +48,14 @@ pub struct Mailbox {
     pub jev_rate_limited: usize,
     /// Jev answers 402 (no credits left) while set.
     pub jev_out_of_credits: bool,
+    /// Authorization headers seen by the stub SubQ endpoint.
+    pub subq_auth: Vec<String>,
+    /// SubQ answers 402 (no credits left) while set.
+    pub subq_out_of_credits: bool,
+    /// (provider path, model) of every System One call, in order.
+    pub system_one_models: Vec<(&'static str, String)>,
+    /// How long each System One call takes, to exercise slow providers.
+    pub system_one_delay_ms: u64,
     /// Status the stub Jev picks; "archive" when unset.
     pub jev_status: Option<String>,
     /// Conversation questions the AI answered.
@@ -295,6 +303,24 @@ async fn modify_thread(
 /// unsure when the later subject says "Maybe", unlikely when it says "Unrelated";
 /// other yes/no questions answer 0.96.
 async fn jev_systemone(
+    state: State<Shared>,
+    headers: axum::http::HeaderMap,
+    body: Json<Value>,
+) -> axum::response::Response {
+    system_one("jev", state, headers, body).await
+}
+
+/// Stub SubQ: the same API and answers as the stub Jev, on its own path.
+async fn subq_systemone(
+    state: State<Shared>,
+    headers: axum::http::HeaderMap,
+    body: Json<Value>,
+) -> axum::response::Response {
+    system_one("subq", state, headers, body).await
+}
+
+async fn system_one(
+    which: &'static str,
     State(s): State<Shared>,
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
@@ -305,10 +331,22 @@ async fn jev_systemone(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    let delay = s.lock().unwrap().system_one_delay_ms;
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
     let status = {
         let mut m = s.lock().unwrap();
-        m.jev_auth.push(auth);
-        if m.jev_out_of_credits {
+        let model = body["model"].as_str().unwrap_or("").to_string();
+        m.system_one_models.push((which, model));
+        let out_of_credits = if which == "subq" {
+            m.subq_auth.push(auth);
+            m.subq_out_of_credits
+        } else {
+            m.jev_auth.push(auth);
+            m.jev_out_of_credits
+        };
+        if out_of_credits {
             return (
                 axum::http::StatusCode::PAYMENT_REQUIRED,
                 r#"{"error":{"type":"billing_error","message":"credit balance is too low"}}"#,
@@ -791,6 +829,7 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/gmail/threads/{id}/modify", post(modify_thread))
                 .route("/gmail/threads/{id}/trash", post(trash_thread))
                 .route("/jev/v1/systemone", post(jev_systemone))
+                .route("/subq/v1/systemone", post(subq_systemone))
                 .route("/gmail/threads/{id}/untrash", post(untrash_thread))
                 .route("/gmail/labels/{id}", axum::routing::delete(delete_label))
                 .with_state(mailbox);

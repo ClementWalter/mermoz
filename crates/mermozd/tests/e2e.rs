@@ -257,6 +257,7 @@ fn launch(home: tempfile::TempDir, mailbox: Shared, extra_env: &[(&str, &str)]) 
         )
         .env("MERMOZ_POLL_SECS", "1")
         .env("MERMOZ_JEV_BASE", format!("http://127.0.0.1:{port}/jev"))
+        .env("MERMOZ_SUBQ_BASE", format!("http://127.0.0.1:{port}/subq"))
         .env("MERMOZ_TRUSTED_EXE", std::env::current_exe().unwrap())
         .envs(extra_env.iter().copied())
         .env(
@@ -1766,6 +1767,292 @@ fn a_new_key_resumes_sorting(synced: World) {
     synced.mailbox.lock().unwrap().jev_out_of_credits = false;
     synced.ok("router.set", json!({ "api_key": "jev-topped-up" }));
     assert!(sort_todo(&synced)["paused"].is_null());
+}
+
+// ---- instant sorting providers ---------------------------------------------
+
+/// SubQ picked with its own key; new mail is routed through it.
+fn subq_router(w: &World) {
+    w.ok("projects.create", json!({ "name": "Receipts" }));
+    w.ok(
+        "router.set",
+        json!({ "provider": "subq", "api_key": "subq-test" }),
+    );
+    w.wait_until("routing", |w| {
+        !w.thread_by_subject("Audit report v2")["suggestion"].is_null()
+    });
+}
+
+/// Models asked of one stub path, without repeats.
+fn models_sent(w: &World, which: &str) -> Vec<String> {
+    let mut m: Vec<String> = w
+        .mailbox
+        .lock()
+        .unwrap()
+        .system_one_models
+        .iter()
+        .filter(|(p, _)| *p == which)
+        .map(|(_, m)| m.clone())
+        .collect();
+    m.dedup();
+    m
+}
+
+#[rstest]
+fn router_reports_typesafe_by_default(synced: World) {
+    assert_eq!(synced.ok("router.get", json!({}))["provider"], "typesafe");
+}
+
+#[rstest]
+fn router_reports_the_picked_provider(synced: World) {
+    synced.ok("router.set", json!({ "provider": "subq" }));
+    assert_eq!(synced.ok("router.get", json!({}))["provider"], "subq");
+}
+
+#[rstest]
+fn router_refuses_an_unknown_provider(synced: World) {
+    assert!(
+        synced
+            .call("router.set", json!({ "provider": "openai" }))
+            .is_err()
+    );
+}
+
+#[rstest]
+fn subq_is_sent_its_own_key(synced: World) {
+    subq_router(&synced);
+    assert!(
+        synced
+            .mailbox
+            .lock()
+            .unwrap()
+            .subq_auth
+            .contains(&"Bearer subq-test".to_string())
+    );
+}
+
+#[rstest]
+fn subq_is_asked_for_its_model(synced: World) {
+    subq_router(&synced);
+    assert_eq!(models_sent(&synced, "subq"), vec!["subq-snap-preview"]);
+}
+
+#[rstest]
+fn typesafe_is_asked_for_jev(synced: World) {
+    enable_router(&synced);
+    assert_eq!(models_sent(&synced, "jev"), vec!["jev-latest"]);
+}
+
+#[rstest]
+fn picking_subq_sends_nothing_to_typesafe(synced: World) {
+    subq_router(&synced);
+    synced.ok(
+        "router.set",
+        json!({ "api_key": "jev-test", "key_provider": "typesafe" }),
+    );
+    sort_todo(&synced);
+    assert!(synced.mailbox.lock().unwrap().jev_auth.is_empty());
+}
+
+#[rstest]
+fn router_reports_the_model_of_the_picked_provider(synced: World) {
+    synced.ok("router.set", json!({ "provider": "subq" }));
+    assert_eq!(
+        synced.ok("router.get", json!({}))["model"],
+        "subq-snap-preview"
+    );
+}
+
+/// A key saved for each provider, TypeSafe in use.
+fn both_keys(w: &World) {
+    w.ok("router.set", json!({ "api_key": "jev-test" }));
+    w.ok(
+        "router.set",
+        json!({ "api_key": "subq-test", "key_provider": "subq" }),
+    );
+}
+
+fn keys_held(w: &World) -> Vec<bool> {
+    w.ok("router.get", json!({}))["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["configured"].as_bool().unwrap())
+        .collect()
+}
+
+#[rstest]
+fn each_provider_keeps_its_key(synced: World) {
+    both_keys(&synced);
+    assert_eq!(keys_held(&synced), vec![true, true]);
+}
+
+#[rstest]
+fn a_key_for_the_other_provider_does_not_switch(synced: World) {
+    both_keys(&synced);
+    assert_eq!(synced.ok("router.get", json!({}))["provider"], "typesafe");
+}
+
+#[rstest]
+fn removing_one_key_keeps_the_other(synced: World) {
+    both_keys(&synced);
+    synced.ok(
+        "router.set",
+        json!({ "api_key": null, "key_provider": "subq" }),
+    );
+    assert_eq!(keys_held(&synced), vec![true, false]);
+}
+
+#[rstest]
+fn switching_back_finds_the_kept_key(synced: World) {
+    both_keys(&synced);
+    synced.ok("router.set", json!({ "provider": "subq" }));
+    synced.ok("router.set", json!({ "provider": "typesafe" }));
+    assert_eq!(synced.ok("router.get", json!({}))["configured"], true);
+}
+
+#[rstest]
+fn provider_calls_are_counted_per_provider(synced: World) {
+    subq_router(&synced);
+    let v = synced.ok("router.get", json!({}));
+    assert!(v["providers"][1]["calls_today"].as_i64().unwrap() > 0);
+}
+
+#[rstest]
+fn router_test_uses_the_named_provider(synced: World) {
+    synced.ok(
+        "router.test",
+        json!({ "provider": "subq", "api_key": "subq-probe" }),
+    );
+    assert!(
+        synced
+            .mailbox
+            .lock()
+            .unwrap()
+            .subq_auth
+            .contains(&"Bearer subq-probe".to_string())
+    );
+}
+
+#[rstest]
+fn agents_cannot_pick_the_provider(synced: World) {
+    let script = r#"
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": "router.set", "params": {"provider": "subq"}}) + "\n").encode())
+print(s.makefile().readline())
+"#;
+    let out = Command::new("python3")
+        .args(["-c", script, synced.sock().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], -32011);
+}
+
+/// TypeSafe in use and out of credits, with a SubQ key saved.
+fn typesafe_spent_subq_ready(w: &World) {
+    out_of_credits(w);
+    w.ok(
+        "router.set",
+        json!({ "api_key": "subq-test", "key_provider": "subq" }),
+    );
+    sort_todo(w);
+}
+
+#[rstest]
+fn out_of_credits_offers_the_other_provider(synced: World) {
+    typesafe_spent_subq_ready(&synced);
+    assert_eq!(
+        synced.ok("router.get", json!({}))["offer"]["message"],
+        "TypeSafe credits ran out. Use SubQ instead?"
+    );
+}
+
+#[rstest]
+fn the_sort_queue_carries_the_offer(synced: World) {
+    typesafe_spent_subq_ready(&synced);
+    assert_eq!(
+        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["offer"]["provider"],
+        "subq"
+    );
+}
+
+#[rstest]
+fn out_of_credits_never_switches_by_itself(synced: World) {
+    typesafe_spent_subq_ready(&synced);
+    assert_eq!(synced.ok("router.get", json!({}))["provider"], "typesafe");
+}
+
+#[rstest]
+fn no_offer_without_a_key_for_the_other(synced: World) {
+    out_of_credits(&synced);
+    sort_todo(&synced);
+    assert!(synced.ok("router.get", json!({}))["offer"].is_null());
+}
+
+#[rstest]
+fn the_hold_stays_with_the_spent_provider(synced: World) {
+    typesafe_spent_subq_ready(&synced);
+    synced.ok("router.set", json!({ "provider": "subq" }));
+    assert!(sort_todo(&synced)["paused"].is_null());
+}
+
+#[rstest]
+fn the_other_provider_sorts_after_the_switch(synced: World) {
+    typesafe_spent_subq_ready(&synced);
+    synced.ok("router.set", json!({ "provider": "subq" }));
+    synced.wait_until("sort queue", |w| {
+        sort_todo(w);
+        !w.thread_by_subject("Budget sheet")["suggestion"].is_null()
+    });
+    assert_eq!(
+        synced.thread_by_subject("Budget sheet")["suggestion"]["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+fn switching_back_finds_the_provider_still_on_hold(synced: World) {
+    typesafe_spent_subq_ready(&synced);
+    synced.ok("router.set", json!({ "provider": "subq" }));
+    synced.ok("router.set", json!({ "provider": "typesafe" }));
+    assert_eq!(sort_todo(&synced)["paused"], "credits");
+}
+
+#[rstest]
+fn subq_out_of_credits_is_said_with_its_name(synced: World) {
+    subq_router(&synced);
+    synced.mailbox.lock().unwrap().subq_out_of_credits = true;
+    sort_todo(&synced);
+    assert_eq!(
+        synced.ok("router.get", json!({}))["error"],
+        "Sorting paused: your SubQ credits ran out"
+    );
+}
+
+#[rstest]
+fn new_mail_shows_while_the_provider_is_slow(synced: World) {
+    enable_router(&synced);
+    {
+        let mut m = synced.mailbox.lock().unwrap();
+        m.system_one_delay_ms = 4000;
+        m.add_message(
+            "m9",
+            "t9",
+            &["INBOX", "UNREAD"],
+            &raw("Lina <lina@example.com>", "Slow day", "Hello", "m9"),
+            NOW + 9000,
+        );
+    }
+    synced.wait_until("new mail", |w| {
+        w.ok("threads.list", json!({ "limit": 100 }))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Slow day")
+    });
+    assert!(synced.thread_by_subject("Slow day")["suggestion"].is_null());
 }
 
 // ---- answering cards, and what the queue learns ---------------------------

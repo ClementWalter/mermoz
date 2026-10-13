@@ -94,7 +94,8 @@ public struct Suggestion: Codable, Sendable, Equatable, Hashable {
     public var isEmpty: Bool { status == nil && projects.isEmpty }
 }
 
-/// Instant sorting (TypeSafe) state, from `router.get`.
+/// Instant sorting state, from `router.get`: the top-level fields describe the
+/// provider in use.
 public struct RouterState: Codable, Sendable, Equatable {
     public var configured: Bool
     public var error: String?
@@ -102,11 +103,53 @@ public struct RouterState: Codable, Sendable, Equatable {
     /// Background sorting allowance per day, and how much of it today used.
     public var dailyCap: Int?
     public var callsToday: Int?
+    /// Id of the provider in use ("typesafe", "subq"); nil from older daemons.
+    public var provider: String?
+    public var providerName: String?
+    /// Every provider with its own key, last error and calls today.
+    public var providers: [RouterProvider]?
+    /// The other provider, when the one in use ran out of credits.
+    public var offer: ProviderOffer?
 
     public init(configured: Bool = false, error: String? = nil, model: String = "",
-                dailyCap: Int? = nil, callsToday: Int? = nil) {
+                dailyCap: Int? = nil, callsToday: Int? = nil, provider: String? = nil,
+                providerName: String? = nil, providers: [RouterProvider]? = nil,
+                offer: ProviderOffer? = nil) {
         self.configured = configured; self.error = error; self.model = model
         self.dailyCap = dailyCap; self.callsToday = callsToday
+        self.provider = provider; self.providerName = providerName
+        self.providers = providers; self.offer = offer
+    }
+
+    /// Whether any provider holds a key.
+    public var anyKey: Bool { configured || (providers ?? []).contains { $0.configured } }
+}
+
+/// One instant sorting provider in `router.get`.
+public struct RouterProvider: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var model: String
+    public var configured: Bool
+    public var error: String?
+    public var paused: String?
+    public var callsToday: Int?
+
+    public init(id: String, name: String, model: String = "", configured: Bool = false,
+                error: String? = nil, paused: String? = nil, callsToday: Int? = nil) {
+        self.id = id; self.name = name; self.model = model; self.configured = configured
+        self.error = error; self.paused = paused; self.callsToday = callsToday
+    }
+}
+
+/// "TypeSafe credits ran out. Use SubQ instead?": a switch the user may accept.
+public struct ProviderOffer: Codable, Sendable, Equatable {
+    public var provider: String
+    public var name: String
+    public var message: String
+
+    public init(provider: String, name: String, message: String) {
+        self.provider = provider; self.name = name; self.message = message
     }
 }
 

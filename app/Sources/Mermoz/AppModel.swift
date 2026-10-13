@@ -1364,12 +1364,24 @@ final class AppModel {
         if let r = try? await client.router() { router = r }
     }
 
-    func setRouterKey(_ key: String?) async -> Bool {
+    /// Saves (or with `nil` removes) one provider's key; the provider in use stays.
+    func setRouterKey(_ key: String?, provider: String) async -> Bool {
         guard let client else { return false }
         do {
-            router = try await client.setRouterKey(key)
+            router = try await client.setRouterKey(key, provider: provider)
             return true
         } catch { report(error); return false }
+    }
+
+    /// Switches instant sorting to `provider`; only ever on the user's say.
+    func setRouterProvider(_ provider: String) async {
+        guard let client, provider != router.provider else { return }
+        do {
+            router = try await client.setRouterProvider(provider)
+            await refreshSortInfo()
+            sortQueue.reset()
+            if selection == .sort { await loadSortQueue() }
+        } catch { report(error) }
     }
 
     /// Daily allowance of background sorting requests.
@@ -1391,9 +1403,9 @@ final class AppModel {
         }
     }
 
-    func testRouter(key: String?) async -> RouterTest? {
+    func testRouter(key: String?, provider: String) async -> RouterTest? {
         guard let client else { return nil }
-        do { return try await client.testRouter(key: key) } catch { report(error); return nil }
+        do { return try await client.testRouter(key: key, provider: provider) } catch { report(error); return nil }
     }
 
     func setAgentsMaySend(_ v: Bool) {

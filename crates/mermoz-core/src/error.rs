@@ -13,8 +13,9 @@ pub enum Error {
     #[error("upstream error {status}: {body}")]
     Upstream { status: u16, body: String },
     /// HTTP 402: the AI account has no credits left; nothing is retried until topped up.
-    #[error("Sorting paused: your TypeSafe credits ran out")]
-    OutOfCredits,
+    /// Carries the provider's name, for the message.
+    #[error("Sorting paused: your {0} credits ran out")]
+    OutOfCredits(&'static str),
     /// HTTP 429; `retry_after` is the wait the server asked for, when it said.
     #[error("rate limited")]
     RateLimited {

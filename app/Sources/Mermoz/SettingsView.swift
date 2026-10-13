@@ -517,38 +517,40 @@ struct DeveloperPane: View {
     }
 }
 
-/// Bring-your-own TypeSafe key: new mail gets a suggested status and project in a
-/// fraction of a second.
+/// Instant sorting with the user's own key: new mail gets a suggested status and project
+/// in a fraction of a second. Each provider keeps its own key; one is in use at a time.
 struct InstantSortingCard: View {
     @Environment(AppModel.self) private var model
-    @State private var key = ""
-    @State private var busy = false
-    @State private var result: String?
     @State private var confirmResort = false
 
+    /// Providers the daemon lists; TypeSafe alone from an older daemon.
+    private var providers: [RouterProvider] {
+        model.router.providers ?? [RouterProvider(id: "typesafe", name: "TypeSafe",
+                                                  configured: model.router.configured,
+                                                  error: model.router.error)]
+    }
+
     var body: some View {
-        SettingsCard(title: "Instant sorting (TypeSafe)",
-                     subtitle: "Suggests a status and a project for each new email in about a quarter second, and works through older mail in your open columns in the background. Each email is sent to TypeSafe to be sorted; nothing moves until you accept.") {
-            if model.router.configured {
-                HStack(spacing: 8) {
-                    Circle().fill(model.router.error == nil ? Theme.ok : Theme.danger).frame(width: 8, height: 8)
-                    Text(model.router.error ?? "On — new mail is sorted as it arrives").font(.system(size: 12.5))
-                    Spacer()
-                    Button("Test") { Task { await test(nil) } }.buttonStyle(.glass).disabled(busy)
-                    Button("Remove key", role: .destructive) { Task { _ = await model.setRouterKey(nil) } }.buttonStyle(.glass)
+        SettingsCard(title: "Instant sorting",
+                     subtitle: "Suggests a status and a project for each new email in under a second, and works through older mail in your open columns in the background. Each email is sent to the provider you pick to be sorted; nothing moves until you accept.") {
+            HStack(spacing: 8) {
+                Text("Instant sorting provider").font(.system(size: 12.5))
+                Spacer()
+                Picker("Instant sorting provider", selection: Binding(
+                    get: { model.router.provider ?? "typesafe" },
+                    set: { id in Task { await model.setRouterProvider(id) } })) {
+                    ForEach(providers) { Text($0.name).tag($0.id) }
                 }
-            } else {
-                HStack(spacing: 8) {
-                    SecureField("TypeSafe API key", text: $key)
-                        .textFieldStyle(.plain)
-                        .padding(.horizontal, 10).frame(height: 30)
-                        .background(Color(hex: "#F2F7FC"), in: RoundedRectangle(cornerRadius: 8))
-                    Button("Turn on") { Task { await save() } }
-                        .buttonStyle(.glassProminent)
-                        .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || busy)
-                }
+                .labelsHidden().pickerStyle(.segmented).fixedSize()
             }
-            if model.router.configured, let cap = model.router.dailyCap {
+            if let offer = model.router.offer {
+                ProviderOfferBanner(offer: offer)
+            }
+            ForEach(providers) { p in
+                ProviderKeyRow(provider: p, inUse: p.id == (model.router.provider ?? "typesafe"))
+                Divider()
+            }
+            if model.router.anyKey, let cap = model.router.dailyCap {
                 HStack(spacing: 8) {
                     Text("Older mail sorted today: \((model.router.callsToday ?? 0).formatted()) emails")
                         .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
@@ -559,7 +561,7 @@ struct InstantSortingCard: View {
                     .fixedSize()
                 }
             }
-            if model.router.configured {
+            if model.router.anyKey {
                 HStack(spacing: 8) {
                     Text("Suggestions waiting on emails you already read.")
                         .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
@@ -573,7 +575,6 @@ struct InstantSortingCard: View {
                     Text("Emails stay where they are. Suggestions you accepted or turned down are kept, and new emails keep getting theirs.")
                 }
             }
-            if let result { Text(result).font(.system(size: 12)).foregroundStyle(Theme.text2) }
         }
         .task { await model.loadRouter() }
     }
@@ -582,19 +583,73 @@ struct InstantSortingCard: View {
     static func caps(including cap: Int) -> [Int] {
         Array(Set([0, 2_000, 5_000, 20_000, 50_000, cap])).sorted()
     }
+}
+
+/// One provider's key: add it (tested first), test it, remove it; with its last
+/// problem and how many emails it sorted today.
+struct ProviderKeyRow: View {
+    @Environment(AppModel.self) private var model
+    let provider: RouterProvider
+    let inUse: Bool
+    @State private var key = ""
+    @State private var busy = false
+    @State private var result: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(provider.name).font(.system(size: 12.5, weight: .medium))
+                if inUse {
+                    Text("In use").font(.system(size: 11)).foregroundStyle(Theme.text3)
+                }
+                Spacer()
+                if provider.configured {
+                    Button("Test") { Task { await test(nil) } }.buttonStyle(.glass).disabled(busy)
+                    Button("Remove key", role: .destructive) {
+                        Task { _ = await model.setRouterKey(nil, provider: provider.id) }
+                    }
+                    .buttonStyle(.glass)
+                }
+            }
+            if provider.configured {
+                HStack(spacing: 8) {
+                    Circle().fill(provider.error == nil ? Theme.ok : Theme.danger).frame(width: 8, height: 8)
+                    Text(status).font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    SecureField("\(provider.name) API key", text: $key)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 10).frame(height: 30)
+                        .background(Color(hex: "#F2F7FC"), in: RoundedRectangle(cornerRadius: 8))
+                    Button("Save key") { Task { await save() } }
+                        .buttonStyle(.glassProminent)
+                        .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || busy)
+                }
+            }
+            if let result { Text(result).font(.system(size: 12)).foregroundStyle(Theme.text2) }
+        }
+    }
+
+    /// The last problem, else what the key is doing and today's count.
+    private var status: String {
+        if let e = provider.error { return e }
+        let today = "\((provider.callsToday ?? 0).formatted()) emails sorted today"
+        return inUse ? "On — new mail is sorted as it arrives · \(today)" : "Key saved · \(today)"
+    }
 
     /// Checks the key with one tiny request before keeping it.
     private func save() async {
         let k = key.trimmingCharacters(in: .whitespaces)
         guard await test(k) else { return }
-        if await model.setRouterKey(k) { key = "" }
+        if await model.setRouterKey(k, provider: provider.id) { key = "" }
     }
 
     @discardableResult
     private func test(_ k: String?) async -> Bool {
         busy = true
         defer { busy = false }
-        guard let r = await model.testRouter(key: k) else { result = nil; return false }
+        guard let r = await model.testRouter(key: k, provider: provider.id) else { result = nil; return false }
         result = "Working · answered in \(r.ms) ms"
         return r.ok
     }

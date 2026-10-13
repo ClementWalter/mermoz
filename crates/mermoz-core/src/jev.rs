@@ -8,16 +8,109 @@
 //!
 //! Age is told to Jev as words and numbers, and enforced in code: past
 //! [`STALE_AFTER_DAYS`] of silence a thread is never suggested as still live.
+//!
+//! The same System One API is served by more than one [`Provider`]; the user picks one
+//! in Settings › Developer and keeps a key for each.
 
 use crate::model::{ROUTABLE_STATUSES, Suggestion};
 use crate::{Error, Result};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tracing::{debug, info};
 
-const SERVICE: &str = "ai.mermoz.typesafe";
 const ACCOUNT: &str = "api_key";
-const MODEL: &str = "jev-latest";
+
+/// A service answering the System One API: same request, answers and errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Provider {
+    #[default]
+    TypeSafe,
+    SubQ,
+}
+
+impl Provider {
+    pub const ALL: [Provider; 2] = [Provider::TypeSafe, Provider::SubQ];
+
+    /// Stable id, used in settings and over RPC.
+    pub fn id(self) -> &'static str {
+        match self {
+            Provider::TypeSafe => "typesafe",
+            Provider::SubQ => "subq",
+        }
+    }
+
+    pub fn parse(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.id() == id)
+    }
+
+    /// The name the user knows it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Provider::TypeSafe => "TypeSafe",
+            Provider::SubQ => "SubQ",
+        }
+    }
+
+    pub fn model(self) -> &'static str {
+        match self {
+            Provider::TypeSafe => "jev-latest",
+            Provider::SubQ => "subq-snap-preview",
+        }
+    }
+
+    /// Secret-store service holding this provider's key, so each keeps its own.
+    pub fn secret_service(self) -> &'static str {
+        match self {
+            Provider::TypeSafe => "ai.mermoz.typesafe",
+            Provider::SubQ => "ai.mermoz.subq",
+        }
+    }
+
+    /// Environment variable that points this provider elsewhere (tests, proxies).
+    pub fn base_env(self) -> &'static str {
+        match self {
+            Provider::TypeSafe => "MERMOZ_JEV_BASE",
+            Provider::SubQ => "MERMOZ_SUBQ_BASE",
+        }
+    }
+
+    pub fn default_base(self) -> &'static str {
+        match self {
+            Provider::TypeSafe => "https://api.typesafe.ai",
+            Provider::SubQ => "https://api.subq.ai",
+        }
+    }
+
+    /// The API base, from [`Provider::base_env`] when set.
+    pub fn base(self) -> String {
+        resolve_base(self, std::env::var(self.base_env()).ok())
+    }
+
+    /// The one to offer when this one cannot answer.
+    pub fn other(self) -> Self {
+        match self {
+            Provider::TypeSafe => Provider::SubQ,
+            Provider::SubQ => Provider::TypeSafe,
+        }
+    }
+}
+
+/// An override wins unless blank.
+pub fn resolve_base(p: Provider, overridden: Option<String>) -> String {
+    overridden
+        .map(|b| b.trim().trim_end_matches('/').to_string())
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| p.default_base().to_string())
+}
+
+/// The stored provider setting; unset or unknown reads as the default.
+pub fn provider_from_setting(v: Option<&str>) -> Provider {
+    v.and_then(Provider::parse).unwrap_or_default()
+}
+
+/// A call slower than this is logged at info level; the rest at debug.
+const SLOW_CALL: Duration = Duration::from_millis(1500);
 
 /// Below these, a prediction is dropped rather than suggested.
 pub const MIN_PROJECT_CONFIDENCE: f64 = 0.7;
@@ -89,18 +182,18 @@ const PRIORITY_CRITERIA: &[(&str, &str, i64)] = &[
     ("none", "No action needed.", 0),
 ];
 
-pub fn save_key(key: &str) -> Result<()> {
-    crate::tokens::secret_set(SERVICE, ACCOUNT, key.trim())
+pub fn save_key(p: Provider, key: &str) -> Result<()> {
+    crate::tokens::secret_set(p.secret_service(), ACCOUNT, key.trim())
 }
 
-pub fn load_key() -> Option<String> {
-    crate::tokens::secret_get(SERVICE, ACCOUNT)
+pub fn load_key(p: Provider) -> Option<String> {
+    crate::tokens::secret_get(p.secret_service(), ACCOUNT)
         .ok()
         .filter(|k| !k.is_empty())
 }
 
-pub fn delete_key() -> Result<()> {
-    crate::tokens::secret_delete(SERVICE, ACCOUNT)
+pub fn delete_key(p: Provider) -> Result<()> {
+    crate::tokens::secret_delete(p.secret_service(), ACCOUNT)
 }
 
 /// One recent message as Jev sees it.
@@ -349,19 +442,27 @@ pub fn describe(name: &str, correspondents: &[String], subjects: &[String]) -> S
 
 pub struct Client {
     http: reqwest::Client,
+    provider: Provider,
     base: String,
     key: String,
 }
 
 impl Client {
-    pub fn new(key: String) -> Self {
+    pub fn new(provider: Provider, key: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .build()
             .expect("http client");
-        let base =
-            std::env::var("MERMOZ_JEV_BASE").unwrap_or_else(|_| "https://api.typesafe.ai".into());
-        Self { http, base, key }
+        Self {
+            http,
+            provider,
+            base: provider.base(),
+            key,
+        }
+    }
+
+    pub fn provider(&self) -> Provider {
+        self.provider
     }
 
     /// Raw `systemone` call; returns the `answers` object.
@@ -371,13 +472,23 @@ impl Client {
 
     /// `systemone` call returning the answers and the input tokens billed, when reported.
     async fn ask_metered(&self, state: &Value, questions: &Value) -> Result<(Value, Option<i64>)> {
-        let resp = self
+        let p = self.provider;
+        let started = Instant::now();
+        let sent = self
             .http
             .post(format!("{}/v1/systemone", self.base))
             .bearer_auth(&self.key)
-            .json(&json!({ "state": state, "model": MODEL, "questions": questions }))
+            .json(&json!({ "state": state, "model": p.model(), "questions": questions }))
             .send()
-            .await?;
+            .await;
+        let ms = started.elapsed().as_millis() as u64;
+        // Providers differ in speed: every call's time is logged for comparison.
+        if started.elapsed() >= SLOW_CALL {
+            info!(provider = p.id(), ms, "slow system one call");
+        } else {
+            debug!(provider = p.id(), ms, "system one call");
+        }
+        let resp = sent?;
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let retry = retry_after(
@@ -387,10 +498,11 @@ impl Client {
             );
             let body = resp.text().await.unwrap_or_default();
             return Err(match status {
-                401 | 403 => Error::InvalidParams(
-                    "The TypeSafe key was refused. Check it in Settings › Developer.".into(),
-                ),
-                402 => Error::OutOfCredits,
+                401 | 403 => Error::InvalidParams(format!(
+                    "The {} key was refused. Check it in Settings › Developer.",
+                    p.name()
+                )),
+                402 => Error::OutOfCredits(p.name()),
                 429 => Error::RateLimited { retry_after: retry },
                 _ => Error::Upstream { status, body },
             });
@@ -424,7 +536,7 @@ pub struct Routed {
     pub input_tokens: Option<i64>,
 }
 
-/// TypeSafe's `Retry-After` is in milliseconds; anything unreadable means "not said".
+/// System One's `Retry-After` is in milliseconds; anything unreadable means "not said".
 pub fn retry_after(header: Option<&str>) -> Option<Duration> {
     header?
         .trim()
@@ -782,6 +894,64 @@ mod tests {
     #[case::cap_lowered_below_use(2500, 2000, 0)]
     fn calls_left_never_goes_negative(#[case] used: i64, #[case] cap: i64, #[case] want: i64) {
         assert_eq!(calls_left(used, cap), want);
+    }
+
+    #[rstest]
+    #[case::typesafe("typesafe", Some(Provider::TypeSafe))]
+    #[case::subq("subq", Some(Provider::SubQ))]
+    #[case::unknown("openai", None)]
+    fn provider_parses_its_id(#[case] id: &str, #[case] want: Option<Provider>) {
+        assert_eq!(Provider::parse(id), want);
+    }
+
+    #[rstest]
+    #[case::unset(None, Provider::TypeSafe)]
+    #[case::subq(Some("subq"), Provider::SubQ)]
+    #[case::typesafe(Some("typesafe"), Provider::TypeSafe)]
+    #[case::unknown(Some("gone"), Provider::TypeSafe)]
+    fn provider_setting_falls_back_to_typesafe(
+        #[case] stored: Option<&str>,
+        #[case] want: Provider,
+    ) {
+        assert_eq!(provider_from_setting(stored), want);
+    }
+
+    #[rstest]
+    #[case::typesafe(Provider::TypeSafe, "jev-latest")]
+    #[case::subq(Provider::SubQ, "subq-snap-preview")]
+    fn each_provider_has_its_model(#[case] p: Provider, #[case] want: &str) {
+        assert_eq!(p.model(), want);
+    }
+
+    #[rstest]
+    #[case::typesafe(Provider::TypeSafe, "ai.mermoz.typesafe")]
+    #[case::subq(Provider::SubQ, "ai.mermoz.subq")]
+    fn each_provider_keeps_its_own_key(#[case] p: Provider, #[case] want: &str) {
+        assert_eq!(p.secret_service(), want);
+    }
+
+    #[rstest]
+    #[case::typesafe_default(Provider::TypeSafe, None, "https://api.typesafe.ai")]
+    #[case::subq_default(Provider::SubQ, None, "https://api.subq.ai")]
+    #[case::overridden(
+        Provider::SubQ,
+        Some("http://127.0.0.1:9/subq/"),
+        "http://127.0.0.1:9/subq"
+    )]
+    #[case::blank_override(Provider::SubQ, Some("  "), "https://api.subq.ai")]
+    fn base_url_resolves(
+        #[case] p: Provider,
+        #[case] overridden: Option<&str>,
+        #[case] want: &str,
+    ) {
+        assert_eq!(resolve_base(p, overridden.map(String::from)), want);
+    }
+
+    #[rstest]
+    #[case::typesafe(Provider::TypeSafe, Provider::SubQ)]
+    #[case::subq(Provider::SubQ, Provider::TypeSafe)]
+    fn the_other_provider_is_offered(#[case] p: Provider, #[case] want: Provider) {
+        assert_eq!(p.other(), want);
     }
 
     #[rstest]

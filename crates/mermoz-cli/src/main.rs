@@ -241,6 +241,9 @@ enum Cmd {
     /// "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes
     /// back Unread then, or when new mail arrives. "none" brings it back now.
     Later { thread: String, when: Vec<String> },
+    /// Instant sorting: the provider in use, whether it has a key, and today's calls.
+    /// Keys and the provider are changed in the app (Settings › Developer).
+    Router,
     /// Trigger an immediate sync.
     Sync,
     /// Run an MCP server on stdio.
@@ -1171,11 +1174,10 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             out.line(format!(
                 "{} pending{}",
                 col["pending"].as_i64().unwrap_or(0),
-                match v["paused"].as_str() {
-                    Some("credits") => " · sorting paused: your TypeSafe credits ran out",
-                    Some(_) => " · sorting paused: AI unavailable, retrying later",
-                    None => "",
-                }
+                paused_words(
+                    v["paused"].as_str(),
+                    v["provider_name"].as_str().unwrap_or("TypeSafe")
+                )
             ));
             for g in col["groups"].as_array().into_iter().flatten() {
                 let mut to: Vec<String> =
@@ -1635,6 +1637,18 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             print_drive(&out, &v);
         }
+        Cmd::Router => {
+            let v = c.call("router.get", json!({}))?;
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            for line in router_lines(&v) {
+                out.line(line);
+            }
+        }
         Cmd::Sync => {
             let v = c.call("sync.now", json!({}))?;
             if out.json {
@@ -1648,6 +1662,51 @@ fn run(cli: Cli) -> Result<(), RpcError> {
         Cmd::Mcp => unreachable!(),
     }
     Ok(())
+}
+
+/// " · sorting paused: …" after a pending count; empty when not paused.
+fn paused_words(reason: Option<&str>, provider: &str) -> String {
+    match reason {
+        Some("credits") => format!(" · sorting paused: your {provider} credits ran out"),
+        Some(_) => " · sorting paused: AI unavailable, retrying later".into(),
+        None => String::new(),
+    }
+}
+
+/// `router.get` for people: the provider in use first, then each provider's key.
+fn router_lines(v: &Value) -> Vec<String> {
+    let name = v["provider_name"].as_str().unwrap_or("TypeSafe");
+    let state = if !v["configured"].as_bool().unwrap_or(false) {
+        "no key".to_string()
+    } else if let Some(r) = v["paused"].as_str() {
+        paused_words(Some(r), name).trim_start_matches(" · ").into()
+    } else {
+        "on".into()
+    };
+    let mut lines = vec![format!(
+        "provider: {name} ({}) · {state}",
+        v["model"].as_str().unwrap_or("")
+    )];
+    for p in v["providers"].as_array().into_iter().flatten() {
+        lines.push(format!(
+            "  {:<9} {:<7} {} calls today{}",
+            p["name"].as_str().unwrap_or(""),
+            if p["configured"].as_bool().unwrap_or(false) {
+                "key"
+            } else {
+                "no key"
+            },
+            p["calls_today"].as_i64().unwrap_or(0),
+            p["error"]
+                .as_str()
+                .map(|e| format!(" · {e}"))
+                .unwrap_or_default()
+        ));
+    }
+    if let Some(m) = v["offer"]["message"].as_str() {
+        lines.push(format!("{m} (Settings › Developer in Mermoz)"));
+    }
+    lines
 }
 
 fn main() -> ExitCode {
@@ -1707,6 +1766,54 @@ mod tests {
     #[case::long("abcdefgh", 5, "abcd…")]
     fn truncation(#[case] input: &str, #[case] n: usize, #[case] want: &str) {
         assert_eq!(truncate(input, n), want);
+    }
+
+    fn router_state(provider: &str, configured: bool, paused: Option<&str>) -> Value {
+        json!({
+            "provider_name": provider,
+            "model": "subq-snap-preview",
+            "configured": configured,
+            "paused": paused,
+            "providers": [],
+        })
+    }
+
+    #[rstest]
+    #[case::on("SubQ", true, None, "provider: SubQ (subq-snap-preview) · on")]
+    #[case::no_key("SubQ", false, None, "provider: SubQ (subq-snap-preview) · no key")]
+    #[case::out_of_credits(
+        "SubQ",
+        true,
+        Some("credits"),
+        "provider: SubQ (subq-snap-preview) · sorting paused: your SubQ credits ran out"
+    )]
+    fn router_names_the_provider_first(
+        #[case] provider: &str,
+        #[case] configured: bool,
+        #[case] paused: Option<&str>,
+        #[case] want: &str,
+    ) {
+        assert_eq!(
+            router_lines(&router_state(provider, configured, paused))[0],
+            want
+        );
+    }
+
+    #[rstest]
+    fn router_lists_each_provider_s_key() {
+        let mut v = router_state("TypeSafe", true, None);
+        v["providers"] = json!([{ "name": "SubQ", "configured": true, "calls_today": 12 }]);
+        assert_eq!(router_lines(&v)[1], "  SubQ      key     12 calls today");
+    }
+
+    #[rstest]
+    fn router_passes_on_the_offer() {
+        let mut v = router_state("TypeSafe", true, Some("credits"));
+        v["offer"] = json!({ "message": "TypeSafe credits ran out. Use SubQ instead?" });
+        assert_eq!(
+            router_lines(&v)[1],
+            "TypeSafe credits ran out. Use SubQ instead? (Settings › Developer in Mermoz)"
+        );
     }
 
     #[rstest]

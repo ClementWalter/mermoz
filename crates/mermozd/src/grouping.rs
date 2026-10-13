@@ -59,7 +59,7 @@ pub async fn grouping_loop(svc: Arc<Service>) {
 }
 
 async fn grouping_round(svc: &Arc<Service>) -> Result<Round> {
-    let key = jev::load_key();
+    let key = svc.active_key();
     let st = &svc.store;
     let mut changed: Vec<String> = vec![];
     let mut recent = false;
@@ -74,7 +74,8 @@ async fn grouping_round(svc: &Arc<Service>) -> Result<Round> {
     }
 
     let mut pause = None;
-    if let Some(key) = key {
+    // A provider on hold is not asked; its key still holds new mail for the router.
+    if let Some((p, key)) = key.filter(|(p, _)| svc.paused_on(*p).is_none()) {
         let left = jev::calls_left(st.background_calls_today()?, st.background_daily_cap()?);
         let batch = if left == 0 {
             pause = Some(None);
@@ -84,7 +85,7 @@ async fn grouping_round(svc: &Arc<Service>) -> Result<Round> {
         };
         if !batch.is_empty() {
             worked = true;
-            let (joined, older_only, stop) = judge(svc, &key, &batch).await?;
+            let (joined, older_only, stop) = judge(svc, p, &key, &batch).await?;
             recent |= !older_only;
             changed.extend(joined);
             pause = stop.or(pause);
@@ -122,11 +123,12 @@ async fn grouping_round(svc: &Arc<Service>) -> Result<Round> {
 /// why to pause when Jev refused or is overloaded.
 async fn judge(
     svc: &Arc<Service>,
+    p: jev::Provider,
     key: &str,
     batch: &[String],
 ) -> Result<(Vec<String>, bool, Option<Option<Duration>>)> {
     let st = &svc.store;
-    let client = Arc::new(jev::Client::new(key.to_string()));
+    let client = Arc::new(jev::Client::new(p, key.to_string()));
     let questions = Arc::new(conv::questions());
     let mut older_only = true;
     let mut plans = vec![];
@@ -163,6 +165,10 @@ async fn judge(
         }
     }
     st.add_background_calls(answers.len() as i64)?;
+    st.add_provider_calls(
+        p,
+        answers.iter().filter(|(_, _, r)| r.is_ok()).count() as i64,
+    )?;
     let mut stop = None;
     let mut joined = vec![];
     for (tid, people, join_at, _) in plans {
@@ -176,6 +182,10 @@ async fn judge(
                     None => failed = true,
                 },
                 Err(e) => {
+                    if matches!(e, Error::OutOfCredits(_)) {
+                        // The same hold as the router's: this provider waits for a top-up.
+                        svc.pause_for(p, e, None);
+                    }
                     if let Some(asked) = pause_reason(e) {
                         stop = Some(asked);
                     }
@@ -197,6 +207,7 @@ async fn judge(
 
 fn pause_reason(e: &Error) -> Option<Option<Duration>> {
     match e {
+        Error::OutOfCredits(_) => Some(None),
         Error::RateLimited { retry_after } => Some(*retry_after),
         Error::InvalidParams(_) | Error::Http(_) => Some(None),
         Error::Upstream { status, .. } if *status == 429 || *status >= 500 => Some(None),

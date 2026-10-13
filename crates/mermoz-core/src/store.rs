@@ -470,6 +470,17 @@ fn background_calls_key() -> String {
     format!("jev_calls:{}", chrono::Utc::now().format("%Y-%m-%d"))
 }
 
+/// Every System One call to one provider today (UTC), foreground and background.
+fn provider_calls_key(p: crate::jev::Provider) -> String {
+    format!(
+        "jev_provider_calls:{}:{}",
+        p.id(),
+        chrono::Utc::now().format("%Y-%m-%d")
+    )
+}
+
+const PROVIDER_SETTING: &str = "jev_provider";
+
 /// Restricts a column to the board or list on screen: one project and/or one account.
 #[derive(Debug, Clone, Default)]
 pub struct ColumnScope {
@@ -3007,7 +3018,7 @@ impl Store {
 
     /// Unread threads without a prediction for their latest message, newest first.
     pub fn threads_to_route(&self, limit: i64) -> Result<Vec<(String, i64)>> {
-        let r = self.r.lock().unwrap();
+        let r = self.bg.lock().unwrap();
         let mut st = r.prepare_cached(
             "SELECT t.id, t.last_date FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
              WHERE t.status = 'unread' AND (s.thread_id IS NULL OR s.for_date < t.last_date)
@@ -3739,6 +3750,34 @@ impl Store {
             params![background_calls_key(), n],
             |r| r.get(0),
         )?)
+    }
+
+    /// The System One provider the user picked.
+    pub fn jev_provider(&self) -> Result<crate::jev::Provider> {
+        Ok(crate::jev::provider_from_setting(
+            self.setting(PROVIDER_SETTING)?.as_deref(),
+        ))
+    }
+
+    pub fn set_jev_provider(&self, p: crate::jev::Provider) -> Result<()> {
+        self.set_setting(PROVIDER_SETTING, p.id())
+    }
+
+    /// Calls made to `p` today (UTC), for Settings.
+    pub fn provider_calls_today(&self, p: crate::jev::Provider) -> Result<i64> {
+        Ok(self
+            .setting(&provider_calls_key(p))?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
+    }
+
+    pub fn add_provider_calls(&self, p: crate::jev::Provider, n: i64) -> Result<()> {
+        self.w.lock().unwrap().execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + ?2",
+            params![provider_calls_key(p), n],
+        )?;
+        Ok(())
     }
 
     /// The daily cap on background router calls.
@@ -6899,6 +6938,41 @@ mod tests {
         env.store.add_background_calls(3).unwrap();
         env.store.add_background_calls(4).unwrap();
         assert_eq!(env.store.background_calls_today().unwrap(), 7);
+    }
+
+    #[rstest]
+    fn provider_defaults_to_typesafe(env: Env) {
+        assert_eq!(
+            env.store.jev_provider().unwrap(),
+            crate::jev::Provider::TypeSafe
+        );
+    }
+
+    #[rstest]
+    fn chosen_provider_is_kept(env: Env) {
+        env.store
+            .set_jev_provider(crate::jev::Provider::SubQ)
+            .unwrap();
+        assert_eq!(
+            env.store.jev_provider().unwrap(),
+            crate::jev::Provider::SubQ
+        );
+    }
+
+    #[rstest]
+    fn provider_calls_are_counted_apart(env: Env) {
+        env.store
+            .add_provider_calls(crate::jev::Provider::TypeSafe, 5)
+            .unwrap();
+        env.store
+            .add_provider_calls(crate::jev::Provider::SubQ, 2)
+            .unwrap();
+        assert_eq!(
+            env.store
+                .provider_calls_today(crate::jev::Provider::SubQ)
+                .unwrap(),
+            2
+        );
     }
 
     #[rstest]
