@@ -773,7 +773,7 @@ Options:
 
 ### mermoz drive save
 
-Save an attachment to Drive, in Mermoz/<thread's project>
+Save an attachment to Drive, in Mermoz/&lt;thread's project&gt;
 
 ```text
 Save an attachment to Drive, in Mermoz/<thread's project>

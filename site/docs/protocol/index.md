@@ -82,9 +82,23 @@ app, the CLI and the MCP server are clients of this protocol.
 // Message (thread_id: its Gmail thread, inside a conversation of several)
 {"id": "msg_…", "thread_id": "thr_…", "from": {"name": "Marc Petit", "email": "marc@…"},
  "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
- "subject": "…", "body_text": "… full text …", "body_new": "… without quoted history, signature or boilerplate …",
- "has_quoted": true, "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
+ "subject": "…", "body_text": "… full text …", "body_new": "… what the bubble shows …",
+ "has_quoted": true, "has_signature": true, "forwarded": false, "forwarded_from": "Bank" | null, "quoted_only": false,
+ "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
  "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000}]}
+
+// Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
+// body_new    only what the sender newly wrote: greeting, body, sign-off name. LF line
+//             ends, no blank first/last line, never empty when the message has text.
+//             Quoted history, reply headers, signatures, disclaimers, tracking links,
+//             bulk-mail boilerplate and Markdown/HTML artefacts are removed. Clients
+//             display it as is.
+// has_quoted  quoted history was folded away
+// has_signature  a signature, mobile footer or disclaimer was folded away
+// forwarded   the message forwards an email: body_new is the note, a blank line, then
+//             the forwarded text (its header block removed); forwarded_from names its
+//             author
+// quoted_only the message adds no words of its own; body_new is the text it quotes
 
 // Status
 {"key": "todo", "name": "Todo", "order": 2, "color": "#5A7386"}
@@ -163,10 +177,11 @@ app, the CLI and the MCP server are clients of this protocol.
 | `threads.accept_suggestions` | `{"ids": [id]}` — applies each pending suggestion and marks the thread read     | `{"accepted": n}`                        |
 | `suggestions.summary` | `{"statuses": [key], "project"?, "account_id"?}` — pending suggestions per column, grouped by target | `{"columns": [{"status", "pending": n, "groups": [{"status": key \| null, "projects": [name], "count": n}]}], "paused": "credits" \| "unavailable" \| null, "calls_today": n, "daily_cap": n}` |
 | `suggestions.resort` | `{"stop": true}` — ends a whole-mailbox sort left by an older version and clears what it suggested (as `suggestions.clear`); starting one is refused | `{"stopped": true, "cleared": n}` |
-| `suggestions.clear`  | `{}` — deletes suggestions on read threads nobody reviewed (and "no change" verdicts); Unread's, accepted and rejected ones stay; the threads go back in the Sort queue | `{"cleared": n}` |
-| `sort.state`         | `{"statuses"?: [key]}` — the Sort queue: read threads in open columns without a decided verdict | `{"to_sort": n, "by_status": [{"status", "count"}], "configured": bool, "paused": "credits" \| "unavailable" \| null, "provider_name": "TypeSafe", "offer": {"provider", "name", "message"} \| null, "learned": [{"sender", "name", "status", "projects", "kind": "rule" \| "avoid", "count"}]}` |
-| `sort.next`          | `{"statuses"?: [key], "exclude"?: [id], "count"?: 3}` — the next cards, newest first; suggestions are asked of the AI for these few threads only (at most 12 calls per request) | `{"cards": [{"thread": ThreadSummary, "why": "…" \| null}], "paused": …, "provider_name": "…", "offer": … }` |
-| `sort.answer`        | `{"id", "answer": "yes" \| "no" \| "change", "status"?, "projects"?}` — yes accepts, no refuses (never offered again for that sender), change refuses and files where given | `{"undo": {"thread", "since"}, "learned": "Learned: mail from X goes to Y" \| null}` |
+| `suggestions.clear`  | `{}` — deletes suggestions on read threads nobody reviewed (and "no change" verdicts); Unread's, accepted and rejected ones stay; they are suggested again when next shown | `{"cleared": n}` |
+| `threads.suggest`    | `{"ids": [id]}` — the Feed's cards on screen and the next few (at most 6): each read thread in an open column gets its suggestion just in time (stored, a learned sender rule, else one AI call); while sorting is held (`paused`: "credits", "unavailable", "off" = daily limit 0, "limit" = today's limit used up) only stored and learned ones come back. Only confident suggestions that would change something are returned | `{"suggestions": [{"id", "suggestion": Suggestion, "why": "…" \| null}], "paused": … \| null, "provider_name": "TypeSafe", "offer": {"provider", "name", "message"} \| null}` |
+| `learned.list`       | `{}` — what the answers taught, newest first | `{"learned": [{"sender", "name", "status", "projects", "kind": "rule" \| "avoid", "count"}]}` |
+| `learned.forget`     | `{"item"}` (one of `learned.list`) — forgets that rule's yes answers, or that refusal's no answers | `{"forgotten": n}` |
+| `sort.answer`        | `{"id", "answer": "yes" \| "no" \| "change", "status"?, "projects"?}` — answers a suggestion shown on a Feed card: yes accepts, no refuses (never offered again for that sender), change refuses and files where given; three consistent yes for a sender make a rule | `{"undo": {"thread", "since"}, "learned": "Learned: mail from X goes to Y" \| null}` |
 | `sort.undo`          | `{"undo"}` from `sort.answer` — the thread returns as it was, the answer is forgotten | `{}` |
 | `suggestions.accept` | `{"status", "project"?, "account_id"?, "target"?: {"status": key \| null, "projects": [name]}}` — accepts the column's pending suggestions, or one group | `{"accepted": n, "before": [ThreadSummary]}` (snapshots for `threads.restore`) |
 | `threads.reject_suggestions` | `{"ids": [id]}` — turns the pending suggestions down; the threads stay put and are not suggested again until new mail | `{"rejected": n}` |
@@ -206,7 +221,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | `feed.snooze`        | `{"ids": [id], "until": ms, "label"?}` — Later: the threads leave the feed and their status columns until `until` (or new mail), then come back Unread and first in the feed with "You set this for <label>" | `{"snoozed": n}` |
 | `later.options`      | `{}` — the Later picker's quick choices for now: this evening (before 17:00), tomorrow morning, this weekend (weekdays), Friday evening (Mon–Thu), next week | `[{"key": "f", "label": "Friday evening", "until": ms, "when": "Fri 18:00"}]` |
 | `later.parse`        | `{"text"}` — plain French or English ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"), read locally | `{"until": ms, "when": "Fri 18:00"}` or `null` |
-| `feed.learn_archive` | `{"ids": [id]}` — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as in the Sort queue (three make a rule; ruled senders' mail is batched) | `{"learned": n}` |
+| `feed.learn_archive` | `{"ids": [id]}` — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as `sort.answer` records (three make a rule; ruled senders' mail is batched) | `{"learned": n}` |
 | `feed.unsnooze`      | `{"ids": [id]}`                                                                          | `{"unsnoozed": n}`                       |
 | `feedback.submit`    | `{"text", "command"?, "agent"?}`                                                         | `{"id"}`                                 |
 | `feedback.list`      | `{}`                                                                                     | `[{"id","text","command","agent","created"}]` |

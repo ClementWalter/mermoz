@@ -256,7 +256,7 @@ Search the account's Google Drive by name and content; without a query, the file
 
 ### save_attachment_to_drive
 
-Save an attachment to the user's Google Drive, in Mermoz/<the thread's project> (created if missing). Returns the folder and an Open in Drive link; saving again returns the same file. Sharing files stays with the user in the app.
+Save an attachment to the user's Google Drive, in Mermoz/&lt;the thread's project&gt; (created if missing). Returns the folder and an Open in Drive link; saving again returns the same file. Sharing files stays with the user in the app.
 
 | parameter | type | required | notes |
 | --- | --- | --- | --- |

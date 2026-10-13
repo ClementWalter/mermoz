@@ -145,9 +145,23 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 // Message (thread_id: its Gmail thread, inside a conversation of several)
 {&quot;id&quot;: &quot;msg_…&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;from&quot;: {&quot;name&quot;: &quot;Marc Petit&quot;, &quot;email&quot;: &quot;marc@…&quot;},
  &quot;to&quot;: [{&quot;name&quot;: &quot;&quot;, &quot;email&quot;: &quot;…&quot;}], &quot;cc&quot;: [], &quot;date&quot;: 1791700000000,
- &quot;subject&quot;: &quot;…&quot;, &quot;body_text&quot;: &quot;… full text …&quot;, &quot;body_new&quot;: &quot;… without quoted history, signature or boilerplate …&quot;,
- &quot;has_quoted&quot;: true, &quot;body_clean&quot;: &quot;… agent's reading version …&quot; | null, &quot;has_html&quot;: true, &quot;is_from_me&quot;: false,
+ &quot;subject&quot;: &quot;…&quot;, &quot;body_text&quot;: &quot;… full text …&quot;, &quot;body_new&quot;: &quot;… what the bubble shows …&quot;,
+ &quot;has_quoted&quot;: true, &quot;has_signature&quot;: true, &quot;forwarded&quot;: false, &quot;forwarded_from&quot;: &quot;Bank&quot; | null, &quot;quoted_only&quot;: false,
+ &quot;body_clean&quot;: &quot;… agent's reading version …&quot; | null, &quot;has_html&quot;: true, &quot;is_from_me&quot;: false,
  &quot;attachments&quot;: [{&quot;id&quot;: &quot;att_…&quot;, &quot;filename&quot;: &quot;report.pdf&quot;, &quot;mime&quot;: &quot;application/pdf&quot;, &quot;size&quot;: 2400000}]}
+
+// Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
+// body_new    only what the sender newly wrote: greeting, body, sign-off name. LF line
+//             ends, no blank first/last line, never empty when the message has text.
+//             Quoted history, reply headers, signatures, disclaimers, tracking links,
+//             bulk-mail boilerplate and Markdown/HTML artefacts are removed. Clients
+//             display it as is.
+// has_quoted  quoted history was folded away
+// has_signature  a signature, mobile footer or disclaimer was folded away
+// forwarded   the message forwards an email: body_new is the note, a blank line, then
+//             the forwarded text (its header block removed); forwarded_from names its
+//             author
+// quoted_only the message adds no words of its own; body_new is the text it quotes
 
 // Status
 {&quot;key&quot;: &quot;todo&quot;, &quot;name&quot;: &quot;Todo&quot;, &quot;order&quot;: 2, &quot;color&quot;: &quot;#5A7386&quot;}
@@ -337,22 +351,27 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 </tr>
 <tr>
 <td><code>suggestions.clear</code></td>
-<td><code>{}</code> — deletes suggestions on read threads nobody reviewed (and "no change" verdicts); Unread's, accepted and rejected ones stay; the threads go back in the Sort queue</td>
+<td><code>{}</code> — deletes suggestions on read threads nobody reviewed (and "no change" verdicts); Unread's, accepted and rejected ones stay; they are suggested again when next shown</td>
 <td><code>{"cleared": n}</code></td>
 </tr>
 <tr>
-<td><code>sort.state</code></td>
-<td><code>{"statuses"?: [key]}</code> — the Sort queue: read threads in open columns without a decided verdict</td>
-<td><code>{"to_sort": n, "by_status": [{"status", "count"}], "configured": bool, "paused": "credits" | "unavailable" | null, "provider_name": "TypeSafe", "offer": {"provider", "name", "message"} | null, "learned": [{"sender", "name", "status", "projects", "kind": "rule" | "avoid", "count"}]}</code></td>
+<td><code>threads.suggest</code></td>
+<td><code>{"ids": [id]}</code> — the Feed's cards on screen and the next few (at most 6): each read thread in an open column gets its suggestion just in time (stored, a learned sender rule, else one AI call); while sorting is held (<code>paused</code>: "credits", "unavailable", "off" = daily limit 0, "limit" = today's limit used up) only stored and learned ones come back. Only confident suggestions that would change something are returned</td>
+<td><code>{"suggestions": [{"id", "suggestion": Suggestion, "why": "…" | null}], "paused": … | null, "provider_name": "TypeSafe", "offer": {"provider", "name", "message"} | null}</code></td>
 </tr>
 <tr>
-<td><code>sort.next</code></td>
-<td><code>{"statuses"?: [key], "exclude"?: [id], "count"?: 3}</code> — the next cards, newest first; suggestions are asked of the AI for these few threads only (at most 12 calls per request)</td>
-<td><code>{"cards": [{"thread": ThreadSummary, "why": "…" | null}], "paused": …, "provider_name": "…", "offer": … }</code></td>
+<td><code>learned.list</code></td>
+<td><code>{}</code> — what the answers taught, newest first</td>
+<td><code>{"learned": [{"sender", "name", "status", "projects", "kind": "rule" | "avoid", "count"}]}</code></td>
+</tr>
+<tr>
+<td><code>learned.forget</code></td>
+<td><code>{"item"}</code> (one of <code>learned.list</code>) — forgets that rule's yes answers, or that refusal's no answers</td>
+<td><code>{"forgotten": n}</code></td>
 </tr>
 <tr>
 <td><code>sort.answer</code></td>
-<td><code>{"id", "answer": "yes" | "no" | "change", "status"?, "projects"?}</code> — yes accepts, no refuses (never offered again for that sender), change refuses and files where given</td>
+<td><code>{"id", "answer": "yes" | "no" | "change", "status"?, "projects"?}</code> — answers a suggestion shown on a Feed card: yes accepts, no refuses (never offered again for that sender), change refuses and files where given; three consistent yes for a sender make a rule</td>
 <td><code>{"undo": {"thread", "since"}, "learned": "Learned: mail from X goes to Y" | null}</code></td>
 </tr>
 <tr>
@@ -552,7 +571,7 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 </tr>
 <tr>
 <td><code>feed.learn_archive</code></td>
-<td><code>{"ids": [id]}</code> — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as in the Sort queue (three make a rule; ruled senders' mail is batched)</td>
+<td><code>{"ids": [id]}</code> — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as <code>sort.answer</code> records (three make a rule; ruled senders' mail is batched)</td>
 <td><code>{"learned": n}</code></td>
 </tr>
 <tr>

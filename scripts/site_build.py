@@ -119,6 +119,12 @@ def load_json(name: str):
 # ---------------------------------------------------------------- generated sections
 
 
+def prose(text: str) -> str:
+    """Help and tool text as literal Markdown: placeholders like `<project>` are words,
+    not HTML tags (Python-Markdown's raw-HTML parsing differs across Python versions)."""
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
 def cli_section() -> str:
     """Every CLI command with its real --help text, one heading per command."""
     snap = load_json("cli-help.json")
@@ -126,7 +132,7 @@ def cli_section() -> str:
     for cmd in snap["commands"]:
         anchor = cmd["name"].replace(" ", "-")
         out.append(f'### mermoz {cmd["name"]} {{#{anchor}}}\n')
-        out.append(f'{cmd["about"]}\n')
+        out.append(f'{prose(cmd["about"])}\n')
         out.append("```text\n" + cmd["help"].rstrip() + "\n```\n")
     return "\n".join(out)
 
@@ -141,7 +147,7 @@ def mcp_tools_section() -> str:
     out = []
     for tool in load_json("mcp-tools.json")["tools"]:
         out.append(f'### {tool["name"]} {{#{tool["name"]}}}\n')
-        out.append(tool["description"] + "\n")
+        out.append(prose(tool["description"]) + "\n")
         schema = tool.get("inputSchema", {})
         props = schema.get("properties", {})
         required = set(schema.get("required", []))
@@ -154,7 +160,7 @@ def mcp_tools_section() -> str:
                     ptype = " or ".join(ptype)
                 if ptype == "array" and "items" in p:
                     ptype = f'array of {p["items"].get("type", "")}'
-                notes = p.get("description", "")
+                notes = prose(p.get("description", ""))
                 if "default" in p:
                     notes = (notes + f' (default {p["default"]})').strip()
                 out.append(f"| `{pname}` | {ptype} | {'yes' if pname in required else 'no'} | {notes} |")
