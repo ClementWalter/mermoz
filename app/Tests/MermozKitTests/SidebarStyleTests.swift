@@ -1,5 +1,4 @@
-/// Sidebar icons share one box width whatever their shape; the automated-mail view is
-/// called Subscriptions.
+/// Sidebar icons share one box width whatever their shape.
 import AppKit
 import SwiftUI
 import Testing
@@ -21,16 +20,4 @@ private func slotWidth<V: View>(_ icon: V) -> CGFloat {
 
 @MainActor @Test func aSquareTakesTheSharedWidth() {
     #expect(slotWidth(RoundedRectangle(cornerRadius: 3).frame(width: 9, height: 9)) == SidebarMetrics.iconWidth)
-}
-
-@Test func theViewIsCalledSubscriptions() {
-    #expect(Subscriptions.title == "Subscriptions")
-}
-
-@Test func theTooltipSaysWhatItHolds() {
-    #expect(Subscriptions.tooltip == "Newsletters, receipts and notifications, grouped by sender")
-}
-
-@Test func thePaletteStillFindsItByItsOldName() {
-    #expect(Subscriptions.keywords.contains("feeds"))
 }

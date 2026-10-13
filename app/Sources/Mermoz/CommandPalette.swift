@@ -237,8 +237,6 @@ struct CommandPalette: View {
             command("c-shortcuts", "Keyboard shortcuts", "keyboard", detail: "?", keywords: ["help", "keys"]) { model.showShortcuts = true },
             command("c-account", "Add Gmail account", "person.crop.circle.badge.plus", keywords: ["sign", "login", "connect"]) { model.addGmail() },
             command("c-people", "Go to People", "person.2", keywords: ["directory", "contacts"], navigation: true) { model.select(.people) },
-            command("c-subscriptions", "Go to \(Subscriptions.title)", "dot.radiowaves.up.forward", detail: Subscriptions.tooltip,
-                    keywords: Subscriptions.keywords, navigation: true) { model.select(.feeds) },
         ]
         out += model.statuses.map { s in
             command("g-s-\(s.key)", "Go to \(s.name)", "circle", keywords: ["status", "open", "show"], navigation: true) { model.select(.status(s.key)) }

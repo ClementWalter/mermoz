@@ -16,8 +16,6 @@ enum SidebarSelection: Hashable {
     case label(String, String)
     /// The directory built from signatures.
     case people
-    /// Automated senders and mailing lists, one conversation each.
-    case feeds
     /// Files shared in every conversation.
     case docs
     /// One email at a time with the AI's suggestion: yes, no, change or skip.
@@ -259,7 +257,7 @@ final class AppModel {
         switch selection {
         case let .status(k): kind = .status(k)
         case .project, .label: kind = .mailbox
-        case .account, .feeds: kind = .open
+        case .account: kind = .open
         case .people, .docs, .sort: return nil
         }
         return ViewStatuses.visible(kind, all: statuses.map(\.key), open: openStatuses.map(\.key), board: layout == .board)
@@ -357,11 +355,7 @@ final class AppModel {
             async let r = client.drafts(state: "review")
             let (fresh, review) = try await (c, r)
             if review != reviewDrafts { reviewDrafts = review }
-            let feeds = (fresh.kind ?? [:]).values.reduce(0, +)
-            countCells.apply(fresh, extra: [
-                .reviewBadge: max(review.count, fresh.status["review"] ?? 0),
-                .feeds: feeds > 0 ? feeds : nil,
-            ])
+            countCells.apply(fresh, extra: [.reviewBadge: max(review.count, fresh.status["review"] ?? 0)])
         } catch { report(error) }
     }
 
@@ -415,10 +409,9 @@ final class AppModel {
         case let .project(id): project = id
         case let .account(id): accountId = id
         case let .label(acc, id): accountId = acc; labelId = id
-        case .feeds: break
         case .people, .docs, .sort: return
         }
-        let kind: [String]? = selection == .feeds ? ["feed", "list"] : nil
+        let kind: [String]? = nil
         do {
             var fetched: [ThreadSummary] = []
             var total = 0

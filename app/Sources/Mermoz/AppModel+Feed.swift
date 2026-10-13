@@ -16,7 +16,7 @@ extension AppModel {
     var showsFeed: Bool {
         guard layout == .feed, !isReview else { return false }
         switch selection {
-        case .people, .docs, .feeds, .sort: return false
+        case .people, .docs, .sort: return false
         default: return true
         }
     }

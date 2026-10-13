@@ -63,10 +63,6 @@ struct SidebarView: View {
                         SortSidebarRow()
                         SidebarRow(sel: .people, title: "People", icon: .symbol("person.2", Theme.text2))
                         SidebarRow(sel: .docs, title: "Docs", icon: .symbol("doc.on.doc", Theme.text2))
-                        // Automated senders and mailing lists, one conversation each.
-                        SidebarRow(sel: .feeds, title: Subscriptions.title, icon: .symbol("dot.radiowaves.up.forward", Theme.text2),
-                                   count: model.countCells.cell(.feeds))
-                            .help(Subscriptions.tooltip)
                     }
                     VStack(alignment: .leading, spacing: 1) {
                         // Projects are the user's Gmail labels, nested with "/".

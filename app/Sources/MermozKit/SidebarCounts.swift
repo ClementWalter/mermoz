@@ -14,7 +14,6 @@ public enum CountKey: Hashable, Sendable {
     case priority(String)
     case kind(String)
     case reviewBadge
-    case feeds
 }
 
 /// The number on one badge; nil when nothing is counted there.

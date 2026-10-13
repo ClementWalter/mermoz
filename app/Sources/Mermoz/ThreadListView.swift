@@ -16,7 +16,7 @@ struct ThreadListView: View {
             if model.threads.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "checkmark.circle").font(.system(size: 24, weight: .light))
-                    Text(model.selection == .feeds ? Subscriptions.empty : "Nothing here").font(.system(size: 13))
+                    Text("Nothing here").font(.system(size: 13))
                 }
                 .foregroundStyle(Theme.text3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -242,9 +242,6 @@ struct ListHeader: View {
             Text(model.accounts.first { $0.id == id }?.email ?? "Account").font(.system(size: 15, weight: .semibold)).lineLimit(1)
         case .people:
             Text("People").font(.system(size: 15, weight: .semibold))
-        case .feeds:
-            Image(systemName: "dot.radiowaves.up.forward").font(.system(size: 12)).foregroundStyle(Theme.text2)
-            Text(Subscriptions.title).font(.system(size: 15, weight: .semibold)).help(Subscriptions.tooltip)
         case .docs:
             Text("Docs").font(.system(size: 15, weight: .semibold))
         case .sort:
