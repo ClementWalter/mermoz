@@ -134,8 +134,9 @@ app, the CLI and the MCP server are clients of this protocol.
 | method               | params                                                                                   | result                                   |
 | -------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `hello`              | `{}`                                                                                     | `{"version": "0.1.0"}`                   |
-| `accounts.list`      | `{}`                                                                                     | `[Account]`                              |
+| `accounts.list`      | `{}`                                                                                     | `[Account]`, each with `needs_reconnect` (signed in through another OAuth client: still syncs, sign in again) |
 | `accounts.add_gmail` | `{}`                                                                                     | `{"auth_url": "https://…"}`; completes in background, emits `accounts_changed` |
+| `accounts.reconnect` | `{"account_id"}`                                                                       | `{"auth_url"}`; signs the account in again with the app's client, keeping local mail; emits `accounts_changed` |
 | `accounts.remove`    | `{"id"}`                                                                                 | `{}`                                     |
 | `statuses.list`      | `{}`                                                                                     | `[Status]`                               |
 | `labels.list`        | `{}`                                                                                     | `[{"account_id","id","name","count"}]` user labels ("mailboxes"), nested with `/` |

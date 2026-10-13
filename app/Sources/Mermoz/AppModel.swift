@@ -1247,6 +1247,16 @@ final class AppModel {
         }
     }
 
+    func reconnectAccount(_ id: String) {
+        guard let client else { return }
+        Task {
+            do {
+                let start = try await client.reconnectAccount(id)
+                if let url = URL(string: start.authUrl) { NSWorkspace.shared.open(url) }
+            } catch { report(error) }
+        }
+    }
+
     func removeAccount(_ id: String) {
         guard let client else { return }
         Task {

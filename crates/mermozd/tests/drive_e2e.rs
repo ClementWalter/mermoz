@@ -46,6 +46,8 @@ struct World {
     drive: SharedDrive,
     daemon: Child,
     port: u16,
+    dport: u16,
+    trusted: bool,
 }
 
 impl Drop for World {
@@ -122,6 +124,23 @@ impl World {
             .output()
             .unwrap();
         String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn wait_for_socket(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while UnixStream::connect(self.home.path().join("mermozd.sock")).is_err() {
+            assert!(Instant::now() < deadline, "daemon did not start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Quits and relaunches mermozd on the same home, as after a Mac restart.
+    fn restart(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+        let _ = std::fs::remove_file(self.home.path().join("mermozd.sock"));
+        self.daemon = spawn_daemon(self.home.path(), self.port, self.dport, self.trusted);
+        self.wait_for_socket();
     }
 
     fn gmail_grant(&self) -> String {
@@ -260,13 +279,32 @@ fn start_world(trusted: bool) -> World {
         json!({ "client_id": "cid", "client_secret": "secret", "auth_url": format!("http://127.0.0.1:{port}/auth"), "token_url": format!("http://127.0.0.1:{port}/token") }).to_string(),
     )
     .unwrap();
+    let daemon = spawn_daemon(home.path(), port, dport, trusted);
+    let w = World {
+        home,
+        mailbox,
+        drive,
+        daemon,
+        port,
+        dport,
+        trusted,
+    };
+    w.wait_for_socket();
+    sign_in(&w);
+    w.wait_until("initial import", |w| {
+        w.ok("threads.list", json!({}))["total"] == 3
+    });
+    w
+}
+
+fn spawn_daemon(home: &std::path::Path, port: u16, dport: u16, trusted: bool) -> Child {
     let trusted_exe = if trusted {
         std::env::current_exe().unwrap()
     } else {
         "/nonexistent/Mermoz".into()
     };
-    let daemon = Command::new(env!("CARGO_BIN_EXE_mermozd"))
-        .env("MERMOZ_HOME", home.path())
+    Command::new(env!("CARGO_BIN_EXE_mermozd"))
+        .env("MERMOZ_HOME", home)
         .env("MERMOZ_TOKEN_STORE", "file")
         .env(
             "MERMOZ_GMAIL_BASE",
@@ -292,24 +330,7 @@ fn start_world(trusted: bool) -> World {
             Stdio::null()
         })
         .spawn()
-        .unwrap();
-    let w = World {
-        home,
-        mailbox,
-        drive,
-        daemon,
-        port,
-    };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while UnixStream::connect(w.home.path().join("mermozd.sock")).is_err() {
-        assert!(Instant::now() < deadline, "daemon did not start");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    sign_in(&w);
-    w.wait_until("initial import", |w| {
-        w.ok("threads.list", json!({}))["total"] == 3
-    });
-    w
+        .unwrap()
 }
 
 /// Signed in to Gmail, Drive not connected yet.
@@ -921,4 +942,176 @@ fn cli_saves_an_attachment(connected: World) {
             .cli(&["drive", "save", att.as_str().unwrap()])
             .starts_with("saved in Mermoz/Clients/Acme: https://drive.example/")
     );
+}
+
+// ---- an account signed in through another OAuth client ---------------------
+
+/// Fictional client of another Google Cloud project, borrowed during development.
+const OTHER_CLIENT: &str = "other-project-cid";
+
+fn grant_client(raw: &str) -> String {
+    serde_json::from_str::<Value>(raw).unwrap()["client_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn refreshed_with(w: &World, client_id: &str) -> bool {
+    w.mailbox
+        .lock()
+        .unwrap()
+        .token_requests
+        .iter()
+        .any(|(grant, id)| grant == "refresh_token" && id == client_id)
+}
+
+fn needs_reconnect(w: &World) -> Value {
+    w.ok("accounts.list", json!({}))[0]["needs_reconnect"].clone()
+}
+
+/// The Gmail token was issued by another client than the app's ("cid"), then
+/// Mermoz restarted.
+#[fixture]
+fn legacy(mail: World) -> World {
+    let mut w = mail;
+    let _ = w.daemon.kill();
+    let _ = w.daemon.wait();
+    std::fs::write(
+        w.home.path().join("tokens/ai.mermoz.oauth/me@example.com"),
+        json!({
+            "refresh_token": "other-refresh",
+            "client_id": OTHER_CLIENT,
+            "client_secret": "other-secret",
+            "token_url": format!("http://127.0.0.1:{}/token", w.port),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    w.mailbox.lock().unwrap().token_requests.clear();
+    w.restart();
+    w.wait_until("the old token to refresh", |w| {
+        refreshed_with(w, OTHER_CLIENT)
+    });
+    w
+}
+
+#[rstest]
+fn fresh_sign_in_does_not_need_reconnect(mail: World) {
+    assert_eq!(needs_reconnect(&mail), false);
+}
+
+#[rstest]
+fn legacy_token_is_reported_as_needing_reconnect(legacy: World) {
+    assert_eq!(needs_reconnect(&legacy), true);
+}
+
+#[rstest]
+fn legacy_token_never_refreshes_with_the_app_client(legacy: World) {
+    assert!(!refreshed_with(&legacy, "cid"));
+}
+
+#[rstest]
+fn legacy_token_keeps_mail_syncing(legacy: World) {
+    legacy.mailbox.lock().unwrap().add_message(
+        "m9",
+        "t9",
+        &["INBOX", "UNREAD"],
+        &raw("Ann <ann@example.org>", "Still syncing", "Hi", "m9"),
+        NOW + 1000,
+    );
+    legacy.wait_until("new mail", |w| {
+        w.ok("threads.list", json!({}))["total"] == 4
+    });
+}
+
+#[rstest]
+fn cli_asks_to_sign_in_again(legacy: World) {
+    assert!(legacy.cli(&["accounts"]).contains("sign in again"));
+}
+
+#[rstest]
+fn drive_consent_uses_the_app_client_with_a_legacy_token(legacy: World) {
+    let url = connect_drive(&legacy, &[READ_ALL, FILE_ONLY]);
+    assert_eq!(param(&url, "client_id"), "cid");
+}
+
+#[rstest]
+fn drive_grant_records_the_app_client(legacy: World) {
+    connect_drive(&legacy, &[READ_ALL, FILE_ONLY]);
+    let raw = std::fs::read_to_string(
+        legacy
+            .home
+            .path()
+            .join("tokens/ai.mermoz.drive/me@example.com"),
+    )
+    .unwrap();
+    assert_eq!(grant_client(&raw), "cid");
+}
+
+#[rstest]
+fn drive_token_refreshes_with_its_own_client(legacy: World) {
+    let mut w = legacy;
+    connect_drive(&w, &[READ_ALL, FILE_ONLY]);
+    w.restart();
+    w.mailbox.lock().unwrap().token_requests.clear();
+    w.ok("drive.search", json!({ "account_id": w.account() }));
+    assert!(refreshed_with(&w, "cid"));
+}
+
+#[rstest]
+fn file_pick_uses_the_app_client_with_a_legacy_token(legacy: World) {
+    let v = legacy.ok("drive.pick", json!({ "account_id": legacy.account() }));
+    assert_eq!(param(v["auth_url"].as_str().unwrap(), "client_id"), "cid");
+}
+
+/// Starts "Sign in again" and answers Google's consent screen.
+fn reconnect(w: &World) -> String {
+    let url = w.ok("accounts.reconnect", json!({ "account_id": w.account() }))["auth_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    browser_returns(&url, "code=reconnect-code");
+    w.wait_until("the account to be signed in again", |w| {
+        needs_reconnect(w) == false
+    });
+    url
+}
+
+#[rstest]
+fn reconnect_consent_uses_the_app_client(legacy: World) {
+    let url = reconnect(&legacy);
+    assert_eq!(param(&url, "client_id"), "cid");
+}
+
+#[rstest]
+fn reconnect_preselects_the_account(legacy: World) {
+    let url = reconnect(&legacy);
+    assert_eq!(param(&url, "login_hint"), "me@example.com");
+}
+
+#[rstest]
+fn reconnect_replaces_the_token(legacy: World) {
+    reconnect(&legacy);
+    assert_eq!(grant_client(&legacy.gmail_grant()), "cid");
+}
+
+#[rstest]
+fn reconnect_keeps_local_mail(legacy: World) {
+    reconnect(&legacy);
+    assert_eq!(legacy.ok("threads.list", json!({}))["total"], 3);
+}
+
+#[rstest]
+fn mail_keeps_syncing_after_reconnect(legacy: World) {
+    reconnect(&legacy);
+    legacy.mailbox.lock().unwrap().add_message(
+        "m9",
+        "t9",
+        &["INBOX", "UNREAD"],
+        &raw("Ann <ann@example.org>", "After reconnect", "Hi", "m9"),
+        NOW + 1000,
+    );
+    legacy.wait_until("new mail", |w| {
+        w.ok("threads.list", json!({}))["total"] == 4
+    });
 }

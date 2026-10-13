@@ -81,6 +81,9 @@ public final class DaemonClient: Sendable {
 
     public func accounts() async throws -> [Account] { try await call("accounts.list") }
     public func addGmail() async throws -> AuthStart { try await call("accounts.add_gmail") }
+    public func reconnectAccount(_ id: String) async throws -> AuthStart {
+        try await call("accounts.reconnect", Params().with("account_id", id))
+    }
     public func removeAccount(_ id: String) async throws { try await callVoid("accounts.remove", Params().with("id", id)) }
     public func statuses() async throws -> [Status] { try await call("statuses.list") }
     public func projects() async throws -> [Project] { try await call("projects.list") }

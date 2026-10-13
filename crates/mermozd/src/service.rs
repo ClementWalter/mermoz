@@ -19,6 +19,9 @@ pub struct Worker {
     pub digest_kick: Arc<Notify>,
     /// Last provider problem (bad key, quota), shown in settings.
     pub agent_error: Arc<Mutex<Option<String>>>,
+    /// The token came from another OAuth client than the app's (see
+    /// [`tokens::GoogleGrant::needs_reconnect`]); it keeps refreshing with that client.
+    pub needs_reconnect: bool,
 }
 
 /// Project descriptions and when they were built.
@@ -134,6 +137,11 @@ impl Service {
 
     pub fn start_account(self: &Arc<Self>, account_id: &str, email: &str) -> Result<()> {
         let grant = tokens::load_grant(email)?;
+        let needs_reconnect =
+            ClientConfig::load().is_ok_and(|app| grant.needs_reconnect(&app.client_id));
+        if needs_reconnect {
+            warn!(account = %email, "signed in with another OAuth client; asking to reconnect");
+        }
         let cfg = match grant.client() {
             Some(c) => c,
             None => {
@@ -159,6 +167,7 @@ impl Service {
             importing: Arc::new(Mutex::new(false)),
             digest_kick: Arc::new(Notify::new()),
             agent_error: Arc::new(Mutex::new(None)),
+            needs_reconnect,
         });
         self.workers
             .lock()
@@ -215,8 +224,34 @@ impl Service {
 
     /// Begins Google sign-in; the account appears once the browser flow completes.
     pub async fn add_gmail(self: &Arc<Self>) -> Result<String> {
+        self.sign_in_gmail(None).await
+    }
+
+    /// Signs an existing account in again with the app's OAuth client, replacing its
+    /// token. Mail, labels and settings stay as they are.
+    pub async fn reconnect_gmail(self: &Arc<Self>, account_id: &str) -> Result<String> {
+        let acc = self.store.account(account_id)?;
+        self.sign_in_gmail(Some(acc.email)).await
+    }
+
+    /// True when the account's running token was issued by another OAuth client.
+    pub fn needs_reconnect(&self, account_id: &str) -> bool {
+        self.workers
+            .lock()
+            .unwrap()
+            .get(account_id)
+            .is_some_and(|w| w.needs_reconnect)
+    }
+
+    /// Every consent uses the app's own client, so Google names the app's project;
+    /// `expect` is the account being signed in again.
+    async fn sign_in_gmail(self: &Arc<Self>, expect: Option<String>) -> Result<String> {
         let cfg = ClientConfig::load()?;
-        let pending = oauth::start(cfg.clone()).await?;
+        let req = oauth::AuthRequest {
+            login_hint: expect.clone(),
+            ..oauth::AuthRequest::gmail()
+        };
+        let pending = oauth::start_request(cfg.clone(), req).await?;
         let url = pending.auth_url.clone();
         let svc = self.clone();
         tokio::spawn(async move {
@@ -224,12 +259,24 @@ impl Service {
                 let refresh = pending.finish(Duration::from_secs(600)).await?;
                 let ts = Arc::new(TokenSource::new(cfg.clone(), refresh.clone()));
                 let profile = Gmail::new(default_base(), ts).profile().await?;
-                tokens::save_grant(&profile.email_address, &refresh, &cfg)?;
-                let acc = svc.store.add_account(&profile.email_address, "gmail")?;
-                svc.store
-                    .set_sync(&acc.id, "initial", None, profile.messages_total, None)?;
+                let email = profile.email_address;
+                if let Some(want) = &expect
+                    && !want.eq_ignore_ascii_case(&email)
+                {
+                    return Err(Error::other(format!(
+                        "You chose {email} in Google. Sign in with {want}."
+                    )));
+                }
+                let known = svc.store.account(&email).ok();
+                tokens::save_grant(&email, &refresh, &cfg)?;
+                let acc = svc.store.add_account(&email, "gmail")?;
+                // A known, healthy account keeps its sync position and local data.
+                if known.as_ref().is_none_or(|a| a.sync.state == "error") {
+                    svc.store
+                        .set_sync(&acc.id, "initial", None, profile.messages_total, None)?;
+                }
                 svc.start_account(&acc.id, &acc.email)?;
-                info!(account = %acc.email, "account added");
+                info!(account = %acc.email, again = known.is_some(), "account signed in");
                 Ok(())
             }
             .await;
@@ -239,6 +286,15 @@ impl Service {
             let _ = svc.events.send(Event::AccountsChanged);
         });
         Ok(url)
+    }
+
+    /// A worker's loops stop once another worker replaces it (account signed in again).
+    fn is_current(&self, w: &Arc<Worker>) -> bool {
+        self.workers
+            .lock()
+            .unwrap()
+            .get(&w.sync.account_id)
+            .is_some_and(|cur| Arc::ptr_eq(cur, w))
     }
 }
 
@@ -448,7 +504,7 @@ async fn digest_loop(svc: Arc<Service>, w: Arc<Worker>) {
     let id = w.sync.account_id.clone();
     let client = Arc::new(mermoz_core::agent::Client::new());
     loop {
-        if !svc.workers.lock().unwrap().contains_key(&id) {
+        if !svc.is_current(&w) {
             return;
         }
         let mut idle = Duration::from_secs(15);
@@ -523,12 +579,11 @@ async fn digest_loop(svc: Arc<Service>, w: Arc<Worker>) {
 
 /// Per-account loop: keep the import running, pull changes, push local edits.
 async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
-    let id = w.sync.account_id.clone();
     if let Err(e) = w.sync.refresh_labels().await {
         warn!(account = %w.sync.email, "labels: {e}");
     }
     loop {
-        if !svc.workers.lock().unwrap().contains_key(&id) {
+        if !svc.is_current(&w) {
             return;
         }
         ensure_import(&svc, &w);

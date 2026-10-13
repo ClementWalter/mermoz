@@ -99,14 +99,6 @@ fn no_access(e: &Error) -> bool {
     )
 }
 
-/// The OAuth client that signed the account in: Drive must use the same Google project.
-fn client_for(email: &str) -> Result<ClientConfig> {
-    match tokens::load_grant(email).ok().and_then(|g| g.client()) {
-        Some(c) => Ok(c),
-        None => ClientConfig::load(),
-    }
-}
-
 impl Hub {
     fn cache(&self, svc: &Service) -> Result<Arc<DriveCache>> {
         let mut c = self.cache.lock().unwrap();
@@ -369,7 +361,9 @@ pub async fn documents_for_chat(svc: &Arc<Service>, thread_id: &str) -> Vec<Link
 /// Opens the browser consent for Drive; the grant is stored once the user approves.
 async fn connect(svc: &Arc<Service>, account_id: &str) -> Result<String> {
     let acc = svc.store.account(account_id)?;
-    let cfg = client_for(&acc.email)?;
+    // Always the app's own client, never the one stored with the Gmail token: Google
+    // names that client's project on the consent screen.
+    let cfg = ClientConfig::load()?;
     let pending = oauth::start_request(
         cfg.clone(),
         AuthRequest {
@@ -476,8 +470,13 @@ async fn store_grant(
 /// connection the pick also connects Drive with that permission alone.
 async fn pick(svc: &Arc<Service>, account_id: &str, file_ids: Vec<String>) -> Result<Value> {
     let acc = svc.store.account(account_id)?;
-    let cfg = client_for(&acc.email)?;
-    let existing = svc.drive.conn(svc, &acc.id)?;
+    let cfg = ClientConfig::load()?;
+    // Picked files are opened to the picking client only, so a Drive connection from
+    // another client can't read them: the pick then stores a fresh grant instead.
+    let existing = svc
+        .drive
+        .conn(svc, &acc.id)?
+        .filter(|c| c.grant.client_id == cfg.client_id);
     let mut extra = vec![
         ("trigger_onepick".to_string(), "true".to_string()),
         ("allow_multiple".to_string(), "true".to_string()),

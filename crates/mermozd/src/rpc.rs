@@ -197,8 +197,19 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
     let st = &svc.store;
     match method {
         "hello" => Ok(json!({ "version": env!("CARGO_PKG_VERSION") })),
-        "accounts.list" => to_value(st.accounts()?),
+        "accounts.list" => {
+            let mut v = to_value(st.accounts()?)?;
+            for a in v.as_array_mut().into_iter().flatten() {
+                let id = a["id"].as_str().unwrap_or_default().to_string();
+                a["needs_reconnect"] = json!(svc.needs_reconnect(&id));
+            }
+            Ok(v)
+        }
         "accounts.add_gmail" => Ok(json!({ "auth_url": svc.add_gmail().await? })),
+        "accounts.reconnect" => {
+            let id = s(p, "account_id")?;
+            Ok(json!({ "auth_url": svc.reconnect_gmail(&id).await? }))
+        }
         "accounts.remove" => {
             let acc = st.account(&s(p, "id")?)?;
             svc.stop_account(&acc.id);

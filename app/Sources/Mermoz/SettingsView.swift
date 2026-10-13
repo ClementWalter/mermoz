@@ -118,14 +118,17 @@ struct AccountsPane: View {
     private var mail: some View {
         SettingsCard(title: "Mail accounts") {
             ForEach(model.accounts) { a in
-                HStack(spacing: 10) {
-                    Circle().fill(Theme.accountColor(a.id, among: model.accounts)).frame(width: 9, height: 9)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(a.email).font(.system(size: 13, weight: .semibold))
-                        Text(syncText(a)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        Circle().fill(Theme.accountColor(a.id, among: model.accounts)).frame(width: 9, height: 9)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(a.email).font(.system(size: 13, weight: .semibold))
+                            Text(syncText(a)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                        }
+                        Spacer()
+                        Button("Remove", role: .destructive) { model.removeAccount(a.id) }.buttonStyle(.glass).controlSize(.small)
                     }
-                    Spacer()
-                    Button("Remove", role: .destructive) { model.removeAccount(a.id) }.buttonStyle(.glass).controlSize(.small)
+                    if a.needsReconnect == true { reconnectPrompt(a) }
                 }
                 .padding(10)
                 .background(Color(hex: "#F6FAFE"), in: RoundedRectangle(cornerRadius: 10))
@@ -135,6 +138,22 @@ struct AccountsPane: View {
             Text("Mermoz opens your browser so you can sign in with Google.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
         }
+    }
+
+    /// Mail keeps syncing meanwhile; signing in again keeps everything already on this Mac.
+    private func reconnectPrompt(_ a: Account) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Reconnect your Google account").font(.system(size: 12.5, weight: .semibold))
+                Text("Mermoz needs you to sign in to Google again to finish setting up. Your mail stays right here.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Reconnect") { model.reconnectAccount(a.id) }.buttonStyle(.glassProminent).controlSize(.small)
+        }
+        .padding(10)
+        .background(Color(hex: "#FFF6E5"), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func syncText(_ a: Account) -> String {

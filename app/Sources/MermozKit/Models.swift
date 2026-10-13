@@ -20,8 +20,12 @@ public struct Account: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var email: String
     public var provider: String
     public var sync: SyncInfo
+    /// Signed in through an older Google setup: mail still syncs, but the user should sign in again.
+    public var needsReconnect: Bool?
 
-    public static func == (a: Account, b: Account) -> Bool { a.id == b.id && a.sync == b.sync && a.email == b.email }
+    public static func == (a: Account, b: Account) -> Bool {
+        a.id == b.id && a.sync == b.sync && a.email == b.email && a.needsReconnect == b.needsReconnect
+    }
     public func hash(into h: inout Hasher) { h.combine(id) }
 }
 

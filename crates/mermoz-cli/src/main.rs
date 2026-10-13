@@ -51,6 +51,12 @@ enum Cmd {
     Accounts,
     /// Connect a Gmail account (opens the browser).
     AddAccount,
+    /// Sign an account in to Google again, keeping its mail (opens the browser).
+    /// Needed when `mermoz accounts` says "sign in again".
+    Reconnect {
+        /// Account id or email.
+        account: String,
+    },
     /// List threads, newest first.
     List {
         /// Status key(s), comma separated (unread, todo, waiting, archive, ...).
@@ -738,15 +744,36 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             }
             for a in v.as_array().into_iter().flatten() {
                 let s = &a["sync"];
+                let id = a["id"].as_str().unwrap_or("");
+                // Still syncs, but the next Google consent needs the app's own client.
+                let hint = if a["needs_reconnect"] == true {
+                    format!("  sign in again: mermoz reconnect {id}")
+                } else {
+                    String::new()
+                };
                 out.line(format!(
-                    "{}  {}  {} ({}/{})",
-                    a["id"].as_str().unwrap_or(""),
+                    "{}  {}  {} ({}/{}){hint}",
+                    id,
                     a["email"].as_str().unwrap_or(""),
                     s["state"].as_str().unwrap_or(""),
                     s["synced"],
                     s["total"]
                 ));
             }
+        }
+        Cmd::Reconnect { account } => {
+            let v = c.call("accounts.reconnect", json!({ "account_id": account }))?;
+            let url = v["auth_url"].as_str().unwrap_or("");
+            let _ = std::process::Command::new("open").arg(url).status();
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            out.line(format!(
+                "Opened the browser to sign in again. If it didn't open:\n{url}"
+            ));
         }
         Cmd::AddAccount => {
             let v = c.call("accounts.add_gmail", json!({}))?;

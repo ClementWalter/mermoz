@@ -62,6 +62,8 @@ pub struct Mailbox {
     pub pause_turns: usize,
     /// Space-separated scopes the stub token endpoint says were granted.
     pub granted_scope: Option<String>,
+    /// Every call to the token endpoint, as (grant_type, client_id).
+    pub token_requests: Vec<(String, String)>,
     next_label: u64,
 }
 
@@ -145,7 +147,15 @@ fn b64url(s: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes())
 }
 
-async fn token(State(s): State<Shared>) -> Json<Value> {
+async fn token(
+    State(s): State<Shared>,
+    axum::Form(form): axum::Form<HashMap<String, String>>,
+) -> Json<Value> {
+    let field = |k: &str| form.get(k).cloned().unwrap_or_default();
+    s.lock()
+        .unwrap()
+        .token_requests
+        .push((field("grant_type"), field("client_id")));
     let mut v = json!({ "access_token": "stub-access", "expires_in": 3600, "refresh_token": "stub-refresh", "token_type": "Bearer" });
     // Like Google: the scopes this consent granted, which a test sets per flow.
     if let Some(scope) = s.lock().unwrap().granted_scope.clone() {

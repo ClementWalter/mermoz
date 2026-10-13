@@ -35,6 +35,15 @@ impl GoogleGrant {
         }
         Some(c)
     }
+
+    /// Issued by another OAuth client than the app's: it still refreshes with its own
+    /// client, but Google shows that client's project on every new consent, so the
+    /// user signs in again to move the account onto the app's client.
+    pub fn needs_reconnect(&self, app_client_id: &str) -> bool {
+        self.client_id
+            .as_deref()
+            .is_some_and(|id| id != app_client_id)
+    }
 }
 
 pub fn save_grant(account: &str, refresh_token: &str, cfg: &ClientConfig) -> Result<()> {
@@ -210,5 +219,25 @@ mod tests {
         let g =
             GoogleGrant::parse(r#"{"refresh_token":"r","client_id":"cid","client_secret":"s"}"#);
         assert_eq!(g.client().unwrap().client_id, "cid");
+    }
+
+    fn grant(client_id: Option<&str>) -> GoogleGrant {
+        GoogleGrant {
+            refresh_token: "r".into(),
+            client_id: client_id.map(String::from),
+            client_secret: Some("s".into()),
+            token_url: None,
+        }
+    }
+
+    #[rstest]
+    #[case::other_client(Some("other-cid"), true)]
+    #[case::app_client(Some("app-cid"), false)]
+    #[case::no_client_recorded(None, false)]
+    fn needs_reconnect_only_for_another_client(
+        #[case] client_id: Option<&str>,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(grant(client_id).needs_reconnect("app-cid"), expected);
     }
 }
