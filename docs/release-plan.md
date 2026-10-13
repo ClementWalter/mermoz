@@ -6,7 +6,9 @@ Each phase lists what blocks it, who does what, and how we know it's done.
 ## Where we are (12 Oct 2026)
 
 - **App:** v0.1.0 (beta) on GitHub Releases as `Mermoz.dmg`, built by
-  `scripts/release.py --publish`. Ad-hoc signed, not notarized.
+  `scripts/release.py --publish`. Ad-hoc signed, not notarized. Developer ID signing,
+  notarization and the CI release are ready in code and wait for the certificate
+  ([Developer ID signing](#developer-id-signing)).
 - **Site:** https://mermoz.xyz (GitHub Pages, HTTPS) with the film, a private-beta
   banner and a sign-up form. Sign-ups land in the Google Form "Mermoz private beta"
   (account clement0walter@gmail.com) → Responses.
@@ -36,8 +38,9 @@ Goal: 30–100 real users, real mailboxes, a steady weekly release.
 > During the beta Google asks you to sign in again once a week. Reply to this email
 > with anything that feels slow, confusing or broken.
 
-**Release cadence:** bump `VERSION` in `scripts/build_app.py`, run
-`scripts/release.py --publish`. The site's button always serves the newest DMG.
+**Release cadence:** bump `VERSION` in `scripts/build_app.py`, then push the tag
+`v<VERSION>` (CI) or run `scripts/release.py --publish`. The site's button always
+serves the newest DMG.
 
 **What we watch:**
 - Import of large mailboxes and the time to a first usable inbox.
@@ -51,19 +54,146 @@ onboarding works without help.
 
 Goal: double-click to open, no warning; automatic updates.
 
-1. **Apple Developer Program** (Clément, $99/year) → Developer ID Application
-   certificate.
-2. **Sign with Hardened Runtime**: app, `mermozd`, `mermoz` and the bundled `ant`;
-   then the DMG. (Claude: switch `build_app.py` from ad-hoc to Developer ID.)
-3. **Notarize** with `notarytool` (App Store Connect API key) and **staple** the
-   ticket to the DMG.
+1. **Apple Developer Program** (Clément, $99/year): paid ✓. Developer ID Application
+   certificate: see [Developer ID signing](#developer-id-signing) below.
+2. **Sign with Hardened Runtime**: done in code. `scripts/build_app.py --sign
+   developer-id` signs `mermozd`, `mermoz`, then the app, inside-out, with Hardened
+   Runtime and a secure timestamp; `ant` keeps Anthropic's own Developer ID signature.
+3. **Notarize and staple**: done in code. `scripts/release.py` notarizes the app and
+   the DMG with `notarytool`, staples both and checks them as Gatekeeper does.
 4. **Auto-update** with Sparkle: an appcast feed on mermoz.xyz, EdDSA-signed
    updates, "Check for updates" in the app.
-5. **CI release**: a GitHub Actions macOS workflow on tag `v*` building, signing,
-   notarizing and publishing, with secrets for the certificate, the notary key and
-   the Google client.
+5. **CI release**: done in code. `.github/workflows/release.yml` runs on a `v*` tag,
+   signs, notarizes and publishes from GitHub secrets (listed below).
 
 **Done when:** a fresh Mac downloads, opens and updates Mermoz with no warning.
+
+## Developer ID signing
+
+### How it works
+
+- `scripts/build_app.py` signs ad-hoc by default (local builds, no Apple account).
+  `--sign developer-id` uses the "Developer ID Application" identity from
+  `MERMOZ_SIGN_IDENTITY` (name or SHA-1), or the only one in the keychain. It signs
+  `Contents/Resources/mermozd` (identifier `ai.mermoz.mermozd`), `mermoz`
+  (`ai.mermoz.cli`), any other nested binary or framework, then the app, never with
+  `--deep`; then runs `codesign --verify --strict --deep`. `--dry-run` logs every
+  command without running it.
+- `ant` (Anthropic's CLI, MIT, behind "Sign in with Anthropic") already carries
+  Anthropic's Developer ID signature with Hardened Runtime and a timestamp; it is kept
+  as is, which notarization accepts. It must ship, or Anthropic sign-in disappears.
+- `app/Mermoz.entitlements` is empty on purpose: the app is not sandboxed, and nothing
+  it does (network, the daemon's socket, WKWebView, spawning `mermozd`/`ant`, the
+  login Keychain) needs a Hardened Runtime exception. The file says why, key by key.
+- `scripts/release.py` (default `--sign developer-id`): build → zip and notarize the
+  app → staple it → DMG → sign the DMG → notarize it → staple it → verify with
+  `codesign --verify --strict --deep`, `spctl -a -vvv` and `stapler validate`. A
+  rejected submission prints Apple's notarization log. `--dry-run` lists every command.
+  Notary credentials: `MERMOZ_NOTARY_KEY_ID` + `MERMOZ_NOTARY_ISSUER` +
+  `MERMOZ_NOTARY_KEY_PATH` (API key), else the keychain profile `mermoz-notary`.
+
+### Secrets move into the Keychain
+
+Ad-hoc builds (every beta so far) keep Google sign-ins, Drive grants, provider API
+keys and ChatGPT sessions in owner-only files under
+`~/Library/Application Support/Mermoz/tokens`, because an ad-hoc identity changes on
+every build and the Keychain would ask for the password each time. Developer ID builds
+are compiled with `MERMOZ_USE_KEYCHAIN` and use the login Keychain: an item's access
+list trusts the daemon's designated requirement (identifier `ai.mermoz.mermozd` + Team
+ID), which stays the same across updates and certificate renewals, so there is no
+prompt.
+
+Carry-over for testers: on the first read after the update, the signed daemon finds
+the secret in the file store, writes it to the Keychain and deletes the file. Nobody
+signs in again. If the Keychain refuses (locked), the file stays and keeps working.
+Mail, settings and everything else in `~/Library/Application Support/Mermoz` do not
+depend on the signature.
+
+No keychain access group is used: those need the data protection keychain and a
+provisioning profile. Never change the daemon's identifier or the Team ID, or every
+saved secret will ask for the password once.
+
+Local development once the signed app is installed: an ad-hoc build reading a secret
+the signed daemon saved triggers a Keychain password prompt, since its identity
+differs. Build locally with `--sign developer-id` too, or use a separate
+`MERMOZ_HOME`.
+
+### What Clément does, once
+
+1. **Developer ID Application certificate** (needs the Account Holder role, which the
+   person who paid has).
+   1. Xcode › Settings… › Accounts. If the developer account isn't listed: + › Apple
+      Account › sign in.
+   2. Select the account, then the team on the right › **Manage Certificates…**
+   3. Bottom-left **+** › **Developer ID Application**. Xcode creates the key and the
+      certificate in the login keychain.
+   4. Check in Terminal: `security find-identity -v -p codesigning` lists
+      `"Developer ID Application: <Name> (<TEAMID>)"`.
+
+   Without Xcode: Keychain Access › Certificate Assistant › Request a Certificate From
+   a Certificate Authority (your email, "Saved to disk"); then developer.apple.com ›
+   Account › Certificates, IDs & Profiles › Certificates › + › Developer ID Application
+   › G2 Sub-CA › upload the request › Download › double-click the `.cer`.
+2. **Team ID**: developer.apple.com › Account › Membership details › Team ID (10
+   characters). It is also the part in parentheses of the certificate name. The
+   scripts read it from the certificate; it is not stored in the repo.
+3. **Notarization credentials**, either or both:
+   - **API key** (required for CI): App Store Connect › Users and Access ›
+     Integrations › App Store Connect API › Team Keys (the first time: Request Access,
+     then accept) › **+** › name `mermoz-notary`, Access **Developer** › Generate.
+     Download `AuthKey_<KEYID>.p8` (only possible once) and note the **Key ID** and
+     the **Issuer ID** shown above the table.
+   - **Keychain profile** (local releases), made once:
+     `xcrun notarytool store-credentials mermoz-notary --key ~/Downloads/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER_ID>`.
+     Alternative without an API key: `xcrun notarytool store-credentials mermoz-notary
+     --apple-id <apple-account-email> --team-id <TEAMID>`, with an app-specific
+     password from account.apple.com › Sign-In and Security › App-Specific Passwords.
+4. **Export the certificate for CI**: Keychain Access › login › My Certificates ›
+   "Developer ID Application: …" (unfold it: the private key must be under it) ›
+   right-click › Export… › format Personal Information Exchange (.p12) › save as
+   `DeveloperID.p12` › set a strong password.
+5. **GitHub secrets** (repo Settings › Secrets and variables › Actions, or `gh`):
+
+   | Secret | Value |
+   | --- | --- |
+   | `MACOS_CERTIFICATE_P12_BASE64` | `base64 -i DeveloperID.p12` |
+   | `MACOS_CERTIFICATE_PASSWORD` | the .p12 export password |
+   | `MERMOZ_NOTARY_KEY_ID` | API Key ID |
+   | `MERMOZ_NOTARY_ISSUER` | API Issuer ID |
+   | `MERMOZ_NOTARY_KEY_P8` | contents of `AuthKey_<KEYID>.p8` |
+   | `GOOGLE_OAUTH_CLIENT_JSON` | contents of `~/.config/mermoz/google_oauth_client.json` |
+
+   ```
+   base64 -i DeveloperID.p12 | gh secret set MACOS_CERTIFICATE_P12_BASE64 -R ClementWalter/mermoz
+   gh secret set MACOS_CERTIFICATE_PASSWORD -R ClementWalter/mermoz
+   gh secret set MERMOZ_NOTARY_KEY_ID -R ClementWalter/mermoz --body <KEYID>
+   gh secret set MERMOZ_NOTARY_ISSUER -R ClementWalter/mermoz --body <ISSUER_ID>
+   gh secret set MERMOZ_NOTARY_KEY_P8 -R ClementWalter/mermoz < ~/Downloads/AuthKey_<KEYID>.p8
+   gh secret set GOOGLE_OAUTH_CLIENT_JSON -R ClementWalter/mermoz < ~/.config/mermoz/google_oauth_client.json
+   ```
+
+   Then delete `DeveloperID.p12`, and keep the `.p8` in a password manager. Neither
+   file ever goes in the repo (it is public).
+
+### First signed release
+
+1. Bump `VERSION` in `scripts/build_app.py` (v0.1.0 is already published), commit.
+2. Rehearse: `uv run scripts/release.py --dry-run` lists every command, with the
+   identity it found.
+3. Release, either way:
+   - **Locally**: `uv run scripts/release.py --publish`. Notarization takes a few
+     minutes per submission (two: the app, then the DMG).
+   - **From CI**: `git tag v<VERSION> && git push origin v<VERSION>`. A trial without
+     publishing: Actions › release › Run workflow (publish unchecked), then download
+     the DMG artifact.
+4. Check on a Mac that never ran Mermoz: download from mermoz.xyz, open the DMG,
+   double-click Mermoz: no warning. `spctl -a -vvv -t install Mermoz.dmg` says
+   `source=Notarized Developer ID`.
+5. Remove the right-click sentence from the invitation template above.
+
+Tests: `uv run --with pytest --with click pytest scripts/tests` (signing order,
+identity choice, notary flow). `MERMOZ_SIGNING_E2E=1` adds a real `codesign` run with
+a throwaway self-signed identity in a temporary keychain (CI runs it).
 
 ## Phase 3 — Google verification (start now, the longest pole: weeks)
 

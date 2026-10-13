@@ -1,0 +1,114 @@
+# Signed, notarized release: builds Mermoz.app with the Developer ID certificate,
+# notarizes and staples the app and the DMG, and publishes the GitHub release.
+# Secrets (docs/release-plan.md, "Developer ID signing"):
+#   MACOS_CERTIFICATE_P12_BASE64, MACOS_CERTIFICATE_PASSWORD,
+#   MERMOZ_NOTARY_KEY_ID, MERMOZ_NOTARY_ISSUER, MERMOZ_NOTARY_KEY_P8,
+#   GOOGLE_OAUTH_CLIENT_JSON.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the GitHub release (otherwise the DMG is only a workflow artifact)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v=$(grep '^VERSION = ' scripts/build_app.py | cut -d'"' -f2)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME but scripts/build_app.py has VERSION = $v"
+            exit 1
+          fi
+
+      # Anthropic's ant CLI ships inside the app ("Sign in with Anthropic").
+      - name: Install ant
+        run: brew install --cask anthropics/tap/ant
+
+      - name: Signing keychain from secrets
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::MACOS_CERTIFICATE_P12_BASE64 and MACOS_CERTIFICATE_PASSWORD must be set"
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/mermoz-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          umask 077
+          printf '%s' "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Apple's Developer ID intermediates, so the identity validates on a fresh runner.
+          for ca in DeveloperIDG2CA DeveloperIDCA; do
+            curl -fsSL "https://www.apple.com/certificateauthority/$ca.cer" -o "$RUNNER_TEMP/$ca.cer"
+            security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN" || true
+          done
+          # codesign uses the key without a password dialog.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # codesign only finds identities in keychains on the search list.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Notary key and Google client from secrets
+        env:
+          NOTARY_KEY_P8: ${{ secrets.MERMOZ_NOTARY_KEY_P8 }}
+          GOOGLE_CLIENT: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}
+        run: |
+          if [ -z "$NOTARY_KEY_P8" ] || [ -z "$GOOGLE_CLIENT" ]; then
+            echo "::error::MERMOZ_NOTARY_KEY_P8 and GOOGLE_OAUTH_CLIENT_JSON must be set"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$GOOGLE_CLIENT" > "$RUNNER_TEMP/google_oauth_client.json"
+          echo "MERMOZ_NOTARY_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          echo "GOOGLE_CLIENT_FILE=$RUNNER_TEMP/google_oauth_client.json" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, staple
+        env:
+          MERMOZ_NOTARY_KEY_ID: ${{ secrets.MERMOZ_NOTARY_KEY_ID }}
+          MERMOZ_NOTARY_ISSUER: ${{ secrets.MERMOZ_NOTARY_ISSUER }}
+          PUBLISH: ${{ startsWith(github.ref, 'refs/tags/') || inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--google-client "$GOOGLE_CLIENT_FILE" --keychain "$KEYCHAIN")
+          if [ "$PUBLISH" = "true" ]; then args+=(--publish); fi
+          uv run scripts/release.py "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mermoz.dmg
+          path: build/Mermoz.dmg
+          if-no-files-found: error
+
+      - name: Remove keychain and keys
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/google_oauth_client.json"

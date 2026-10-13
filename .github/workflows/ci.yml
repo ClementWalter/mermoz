@@ -26,3 +26,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: swift test -c release
         working-directory: app
+
+  scripts:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # Includes a real codesign run with a throwaway identity in a temporary keychain.
+      - run: uv run --with pytest --with click pytest scripts/tests -q
+        env:
+          MERMOZ_SIGNING_E2E: "1"

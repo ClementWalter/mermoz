@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for Mermoz.app, mermozd and mermoz under the Hardened Runtime
+  (Developer ID builds, scripts/build_app.py sign developer-id).
+
+  Deliberately empty: the app is not sandboxed and needs no runtime exception.
+  - Network (Gmail, Drive, AI providers) and the daemon's Unix socket: no entitlement
+    outside the App Sandbox (com.apple.security.network.client is sandbox-only).
+  - Secrets: the daemon uses the login Keychain through SecItem without the data
+    protection keychain; each item's access list trusts the daemon's designated
+    requirement (identifier ai.mermoz.mermozd + Team ID). keychain-access-groups would
+    need a provisioning profile and is not used.
+  - WKWebView, spawning mermozd and ant, opening links: no exception needed.
+  - No JIT, unsigned memory, DYLD variables, third-party libraries, Apple Events,
+    camera, microphone, contacts or calendars.
+  Add a key here only with the feature that needs it.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

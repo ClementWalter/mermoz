@@ -3,3 +3,5 @@
 /app/.build
 .DS_Store
 *.profraw
+__pycache__/
+.pytest_cache/
