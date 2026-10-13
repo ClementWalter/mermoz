@@ -252,7 +252,7 @@ pub struct FeedUnit {
     pub from_backlog: bool,
     /// The last sender looks like a machine (no-reply address), known without Jev.
     pub automated_sender: bool,
-    /// The user taught Mermoz to archive this sender's mail (the Sort queue's learned
+    /// The user taught Mermoz to archive this sender's mail (the learned
     /// rule): only such mail is grouped into a batch.
     pub learned_noise: bool,
     /// Came back from Later, with what the user had picked ("Friday evening").

@@ -60,7 +60,6 @@ struct SidebarView: View {
                         }
                     }
                     section("Browse") {
-                        SortSidebarRow()
                         SidebarRow(sel: .people, title: "People", icon: .symbol("person.2", Theme.text2))
                         SidebarRow(sel: .docs, title: "Docs", icon: .symbol("doc.on.doc", Theme.text2))
                     }
@@ -311,34 +310,6 @@ struct SidebarRow: View, Equatable {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-/// Browse › Sort, shown once the AI sorts or mail waits; observes only the Sort figures.
-/// No count: the unsorted total counts every thread never sorted, not cards ready to answer.
-struct SortSidebarRow: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let info = model.sortInfo
-        let on = model.selection == .sort
-        // One email at a time with the AI's suggestion, across every open column.
-        if info.configured || info.toSort > 0 {
-            Button { model.openSort() } label: {
-                HStack(spacing: 9) {
-                    SidebarIconSlot { Image(systemName: "sparkles").font(.system(size: 11)).foregroundStyle(Theme.accent) }
-                    Text("Sort")
-                    Spacer(minLength: 4)
-                }
-                .font(.system(size: 13, weight: on ? .semibold : .regular))
-                .foregroundStyle(Theme.text)
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(on ? Theme.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
     }
 }
 

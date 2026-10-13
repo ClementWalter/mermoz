@@ -487,6 +487,7 @@ struct DeveloperPane: View {
         Text("For people who drive Mermoz from their own scripts and agents. Nothing here is needed for everyday use.")
             .font(.system(size: 12)).foregroundStyle(Theme.text3)
         InstantSortingCard()
+        LearnedCard()
         OwnGoogleClientCard()
         SettingsCard(title: "Command line tool", subtitle: "Same mailbox, same speed, from your shell. Every command supports --json.") {
             Text("$ mermoz search \"from:marc audit\" --json\n$ mermoz thread M-1287\n$ mermoz draft reply M-1287 --file reply.txt\n$ mermoz send <draft>   # waits in Review")
@@ -535,7 +536,7 @@ struct InstantSortingCard: View {
 
     var body: some View {
         SettingsCard(title: "Instant sorting",
-                     subtitle: "Suggests a status and a project for each new email in under a second, and works through older mail in your open columns in the background. Each email is sent to the provider you pick to be sorted; nothing moves until you accept.") {
+                     subtitle: "Suggests a status and a project for each new email in under a second, and for the Feed's cards as they come up. Each email is sent to the provider you pick to be sorted; nothing moves until you accept.") {
             HStack(spacing: 8) {
                 Text("Instant sorting provider").font(.system(size: 12.5))
                 Spacer()
@@ -585,6 +586,50 @@ struct InstantSortingCard: View {
     /// Daily limits offered for background sorting, plus the current one if custom.
     static func caps(including cap: Int) -> [Int] {
         Array(Set([0, 2_000, 5_000, 20_000, 50_000, cap])).sorted()
+    }
+}
+
+/// "TypeSafe credits ran out. Use SubQ instead?" with a button: the switch happens only
+/// when the user presses it.
+struct ProviderOfferBanner: View {
+    @Environment(AppModel.self) private var model
+    let offer: ProviderOffer
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(offer.message, systemImage: "pause.circle")
+                .font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+            Spacer(minLength: 4)
+            Button("Use \(offer.name)") { Task { await model.setRouterProvider(offer.provider) } }
+                .buttonStyle(.glassProminent).controlSize(.small)
+        }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.accentSoft.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// What Mermoz learned from accepted and dismissed suggestions, each with Forget.
+struct LearnedCard: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        SettingsCard(title: "What Mermoz learned",
+                     subtitle: "From the suggestions you accepted or dismissed on Feed cards. After three yes for a sender, their mail is suggested there without asking the AI.") {
+            if model.learned.isEmpty {
+                Text("Nothing yet").font(.system(size: 12.5)).foregroundStyle(Theme.text3)
+            }
+            ForEach(model.learned) { item in
+                HStack(spacing: 8) {
+                    Label(item.sentence(statusName: model.statusName), systemImage: item.kind == "rule" ? "checkmark" : "nosign")
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.text2).lineLimit(2)
+                    Spacer(minLength: 8)
+                    Button("Forget") { Task { await model.forget(item) } }
+                        .buttonStyle(.glass).controlSize(.small)
+                        .help("Mermoz asks about this sender's mail afresh")
+                }
+            }
+        }
+        .task { await model.loadLearned() }
     }
 }
 

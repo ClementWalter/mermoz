@@ -770,7 +770,7 @@ impl Service {
             .map(|h| h.reason.clone())
     }
 
-    /// Why the Sort queue cannot ask the AI for new cards right now (see
+    /// Why suggestions cannot ask the AI for new threads right now (see
     /// [`jev::sort_hold`]); "no_key" is left to the caller's key check.
     pub fn sort_hold(&self) -> Option<String> {
         jev::sort_hold(
@@ -922,153 +922,146 @@ fn input_tokens(outcomes: &[Outcome]) -> i64 {
         .sum()
 }
 
-/// Cards the Sort queue prepares per request: the one on screen and a few ahead.
-pub const SORT_AHEAD: usize = 3;
+/// Threads one suggestion request covers: the card on screen and the next few.
+pub const SUGGEST_MAX: usize = 6;
 
-/// AI calls one Sort request may make, so threads with nothing to change cannot
-/// turn one card into a long wait or a bulk pass.
-const SORT_CALLS_PER_REQUEST: usize = 12;
+/// Requests in flight while preparing suggestions.
+const SUGGEST_PARALLEL: usize = 4;
 
-/// Requests in flight while preparing cards.
-const SORT_PARALLEL: usize = 4;
-
-/// One card of the Sort queue: the thread with its suggestion, and why, in plain words.
+/// A thread's confident suggestion, and why, in plain words.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SortCard {
-    pub thread: mermoz_core::model::ThreadSummary,
+pub struct ThreadSuggestion {
+    pub id: String,
+    pub suggestion: mermoz_core::model::Suggestion,
     pub why: Option<String>,
 }
 
-/// What a Sort request returns: the cards ready now, why the AI is on hold if it is,
-/// and the other provider to offer when it ran out of credits.
+/// What a suggestion request returns: the suggestions ready now, why the AI is on hold
+/// if it is, and the other provider to offer when it ran out of credits.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SortBatch {
-    pub cards: Vec<SortCard>,
+pub struct SuggestBatch {
+    pub suggestions: Vec<ThreadSuggestion>,
     pub paused: Option<String>,
     pub provider_name: &'static str,
     pub offer: Option<serde_json::Value>,
 }
 
 impl Service {
-    /// The next cards of the Sort queue (or of `statuses` among the open columns),
-    /// leaving out `exclude` (cards the user holds or skipped). Suggestions are asked
-    /// of the AI only for these few threads, just before they are shown.
-    pub async fn sort_next(
-        self: &Arc<Self>,
-        statuses: &[String],
-        exclude: &[String],
-        want: usize,
-    ) -> Result<SortBatch> {
-        let mut seen: Vec<String> = exclude.to_vec();
-        let mut cards = vec![];
-        let mut calls_left = SORT_CALLS_PER_REQUEST;
-        let mut backoff = None;
-        while cards.len() < want {
-            let cands = self
-                .store
-                .sort_candidates(statuses, &seen, (want * 2 + 4) as i64)?;
-            if cands.is_empty() {
-                break;
-            }
-            let mut to_route = vec![];
-            for c in cands {
-                seen.push(c.id.clone());
-                if c.ready {
-                    // A No given since this card was prepared applies to it too.
-                    if !self.store.close_if_refused(&c.id)? {
-                        cards.push(self.sort_card(&c.id)?);
-                    }
-                } else if let Some(sg) = self.learned_suggestion(&c.id)? {
-                    if self
-                        .store
-                        .save_column_suggestion(&c.id, &sg, "learned", c.last_date)?
-                    {
-                        cards.push(self.sort_card(&c.id)?);
-                    }
-                } else {
-                    to_route.push((c.id, c.last_date));
-                }
-                if cards.len() >= want {
-                    break;
-                }
-            }
-            if cards.len() >= want || to_route.is_empty() {
-                continue;
-            }
-            let Some((p, key)) = self.active_key() else {
-                break;
-            };
-            // A hold is reported with the cards, never a silent empty queue.
-            if self.sort_hold().is_some() || calls_left == 0 {
-                break;
-            }
-            let room = jev::calls_left(
-                self.store.background_calls_today()?,
-                self.store.background_daily_cap()?,
-            );
-            to_route.truncate(
-                calls_left
-                    .min(room.max(0) as usize)
-                    .min(want - cards.len() + 2),
-            );
-            if to_route.is_empty() {
-                break;
-            }
-            calls_left -= to_route.len();
-            let kit = self.route_kit(p, &key)?;
-            let outcomes = route_many(self, &kit, &to_route, SORT_PARALLEL).await;
-            let tokens = input_tokens(&outcomes);
-            let ok = outcomes.iter().filter(|(_, _, r)| r.is_ok()).count() as i64;
-            let calls_today = self.store.add_background_calls(ok)?;
-            self.store.add_provider_calls(p, ok)?;
-            info!(
-                provider = p.id(),
-                calls = ok,
-                input_tokens = tokens,
-                calls_today,
-                "sort queue routed"
-            );
-            let mut stop = false;
-            for (tid, last_date, res) in outcomes {
-                match res {
-                    Ok(r) => {
-                        if self.store.save_column_suggestion(
-                            &tid,
-                            &r.suggestion,
-                            p.model(),
-                            last_date,
-                        )? {
-                            cards.push(self.sort_card(&tid)?);
-                        }
-                    }
-                    // No verdict is recorded: the thread stays in the queue for later.
-                    Err(e) if pause_reason(&e).is_some() => {
-                        backoff = Some(self.pause_for(p, &e, backoff));
-                        self.set_error(p, Some(e.to_string()));
-                        stop = true;
-                    }
-                    Err(e) => {
-                        warn!(thread = %tid, "sort queue skipped thread: {e}");
-                        self.store.save_column_suggestion(
-                            &tid,
-                            &Default::default(),
-                            p.model(),
-                            last_date,
-                        )?;
-                    }
-                }
-            }
-            if stop {
-                break;
+    /// Confident suggestions for `ids` (at most [`SUGGEST_MAX`], the cards on screen
+    /// and just after): stored ones, a learned sender rule, else one AI call per thread
+    /// just before it is shown. Threads with nothing confident are left out.
+    pub async fn suggest(self: &Arc<Self>, ids: &[String]) -> Result<SuggestBatch> {
+        let ids = &ids[..ids.len().min(SUGGEST_MAX)];
+        let mut to_route = vec![];
+        for c in self.store.suggest_candidates(ids)? {
+            if c.ready {
+                // A No given since this suggestion was made applies to it too.
+                self.store.close_if_refused(&c.id)?;
+            } else if let Some(sg) = self.learned_suggestion(&c.id)? {
+                self.store
+                    .save_column_suggestion(&c.id, &sg, "learned", c.last_date)?;
+            } else {
+                to_route.push((c.id, c.last_date));
             }
         }
-        cards.truncate(want);
-        Ok(SortBatch {
-            cards,
+        if !to_route.is_empty() {
+            self.route_for_suggestions(to_route).await?;
+        }
+        let mut suggestions = vec![];
+        for id in ids {
+            if let Some(s) = self.shown_suggestion(id)? {
+                suggestions.push(s);
+            }
+        }
+        Ok(SuggestBatch {
+            suggestions,
             paused: self.sort_hold().filter(|h| h != "no_key"),
             provider_name: self.provider().name(),
             offer: self.offer(),
         })
+    }
+
+    /// Asks the AI about these threads, within today's allowance and unless on hold.
+    async fn route_for_suggestions(
+        self: &Arc<Self>,
+        mut to_route: Vec<(String, i64)>,
+    ) -> Result<()> {
+        let Some((p, key)) = self.active_key() else {
+            return Ok(());
+        };
+        if self.sort_hold().is_some() {
+            return Ok(());
+        }
+        let room = jev::calls_left(
+            self.store.background_calls_today()?,
+            self.store.background_daily_cap()?,
+        );
+        to_route.truncate(room.max(0) as usize);
+        if to_route.is_empty() {
+            return Ok(());
+        }
+        let kit = self.route_kit(p, &key)?;
+        let outcomes = route_many(self, &kit, &to_route, SUGGEST_PARALLEL).await;
+        let tokens = input_tokens(&outcomes);
+        let ok = outcomes.iter().filter(|(_, _, r)| r.is_ok()).count() as i64;
+        let calls_today = self.store.add_background_calls(ok)?;
+        self.store.add_provider_calls(p, ok)?;
+        info!(
+            provider = p.id(),
+            calls = ok,
+            input_tokens = tokens,
+            calls_today,
+            "suggestions routed"
+        );
+        let mut backoff = None;
+        for (tid, last_date, res) in outcomes {
+            match res {
+                Ok(r) => {
+                    self.store
+                        .save_column_suggestion(&tid, &r.suggestion, p.model(), last_date)?;
+                }
+                // No verdict is recorded: the thread is asked again later.
+                Err(e) if pause_reason(&e).is_some() => {
+                    backoff = Some(self.pause_for(p, &e, backoff));
+                    self.set_error(p, Some(e.to_string()));
+                }
+                Err(e) => {
+                    warn!(thread = %tid, "suggestion skipped thread: {e}");
+                    self.store.save_column_suggestion(
+                        &tid,
+                        &Default::default(),
+                        p.model(),
+                        last_date,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The pending suggestion of a thread as a card shows it: only what is confident
+    /// and would change something. An Unread thread's stored suggestion is narrowed to
+    /// that too, so accepting applies exactly what was shown.
+    fn shown_suggestion(&self, thread_id: &str) -> Result<Option<ThreadSuggestion>> {
+        let t = self.store.thread(thread_id)?;
+        let Some(sg) = &t.suggestion else {
+            return Ok(None);
+        };
+        let Some(mut shown) = jev::column_suggestion(sg, &t.status, &t.projects) else {
+            return Ok(None);
+        };
+        shown.priority = sg.priority;
+        if t.status == "unread" && (shown.status != sg.status || shown.projects != sg.projects) {
+            let model = self.store.suggestion_model(thread_id)?.unwrap_or_default();
+            self.store
+                .save_suggestion(thread_id, &shown, &model, t.last_date)?;
+        }
+        let why = self.why(&t, &shown)?;
+        Ok(Some(ThreadSuggestion {
+            id: t.id,
+            suggestion: shown,
+            why,
+        }))
     }
 
     /// A trusted sender's destination (see [`mermoz_core::store::TRUST_AFTER`]) as a
@@ -1095,18 +1088,21 @@ impl Service {
         Ok(Some(jev::guard_stale(sg, days)))
     }
 
-    /// The card for a thread whose suggestion is stored, with the evidence behind it.
-    fn sort_card(&self, thread_id: &str) -> Result<SortCard> {
-        let thread = self.store.thread(thread_id)?;
-        let model = self.store.suggestion_model(thread_id)?;
-        let why = match (&thread.suggestion, model.as_deref()) {
-            (Some(sg), Some("learned")) => Some(format!(
+    /// The evidence behind a thread's suggestion, in plain words.
+    fn why(
+        &self,
+        thread: &mermoz_core::model::ThreadSummary,
+        sg: &mermoz_core::model::Suggestion,
+    ) -> Result<Option<String>> {
+        let model = self.store.suggestion_model(&thread.id)?;
+        Ok(match model.as_deref() {
+            Some("learned") => Some(format!(
                 "Learned: mail from {} goes to {}",
                 thread.last_from,
                 target_words(sg)
             )),
-            (Some(sg), _) if !sg.projects.is_empty() => {
-                let input = self.store.route_input(thread_id)?;
+            _ if !sg.projects.is_empty() => {
+                let input = self.store.route_input(&thread.id)?;
                 let p = &sg.projects[0];
                 input
                     .sender_history
@@ -1121,8 +1117,7 @@ impl Service {
                     })
             }
             _ => None,
-        };
-        Ok(SortCard { thread, why })
+        })
     }
 }
 

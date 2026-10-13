@@ -1539,19 +1539,35 @@ fn remote_images_load_when_asked(synced: World) {
     );
 }
 
-// ---- the Sort queue ---------------------------------------------------------
+// ---- suggestions on the Feed's cards -----------------------------------------
 
-/// The next Sort cards of the To do column.
-fn sort_todo(w: &World) -> Value {
-    w.ok("sort.next", json!({ "statuses": ["todo"] }))
+/// Asks for the suggestions of the To do threads, as the Feed does for its cards.
+fn suggest_todo(w: &World) -> Value {
+    let ids: Vec<Value> = w.ok("threads.list", json!({ "status": ["todo"] }))["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].clone())
+        .collect();
+    w.ok("threads.suggest", json!({ "ids": ids }))
 }
 
-/// Turns the router on and asks the Sort queue for To do's cards until the read
+/// The threads `threads.suggest` returned a suggestion for.
+fn suggested(v: &Value) -> Vec<Value> {
+    v["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].clone())
+        .collect()
+}
+
+/// Turns the router on and asks for To do's suggestions until the read
 /// "Budget sheet" has its suggestion: the stub files everything in Receipts, to archive.
 fn sorted_todo(w: &World) {
     enable_router(w);
-    w.wait_until("sort queue", |w| {
-        sort_todo(w);
+    w.wait_until("suggestions", |w| {
+        suggest_todo(w);
         !w.thread_by_subject("Budget sheet")["suggestion"].is_null()
     });
 }
@@ -1561,28 +1577,44 @@ fn todo_column(w: &World) -> Value {
 }
 
 #[rstest]
-fn nothing_is_suggested_on_read_threads_before_the_queue_asks(synced: World) {
+#[case::queue("sort.next")]
+#[case::counts("sort.state")]
+fn the_sort_queue_is_gone(synced: World, #[case] method: &str) {
+    assert!(synced.call(method, json!({})).is_err());
+}
+
+#[rstest]
+fn nothing_is_suggested_on_read_threads_before_the_feed_asks(synced: World) {
     enable_router(&synced);
     std::thread::sleep(Duration::from_millis(1500));
     assert!(synced.thread_by_subject("Budget sheet")["suggestion"].is_null());
 }
 
 #[rstest]
-fn sort_queue_shows_the_card_it_asked_for(synced: World) {
+fn the_card_asked_about_gets_its_suggestion(synced: World) {
     enable_router(&synced);
     assert_eq!(
-        sort_todo(&synced)["cards"][0]["thread"]["subject"],
-        "Budget sheet"
+        suggested(&suggest_todo(&synced)),
+        vec![synced.thread_by_subject("Budget sheet")["id"].clone()]
     );
 }
 
 #[rstest]
-fn sort_queue_counts_what_is_left(synced: World) {
+fn a_suggestion_says_where_it_goes(synced: World) {
     enable_router(&synced);
     assert_eq!(
-        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
-        1
+        suggest_todo(&synced)["suggestions"][0]["suggestion"]["status"],
+        "archive"
     );
+}
+
+#[rstest]
+fn threads_not_asked_about_get_no_suggestion(synced: World) {
+    more_from_jonas(&synced, 1);
+    enable_router(&synced);
+    let id = synced.thread_by_subject("Budget sheet")["id"].clone();
+    synced.ok("threads.suggest", json!({ "ids": [id] }));
+    assert!(synced.thread_by_subject("Sheet 0")["suggestion"].is_null());
 }
 
 #[rstest]
@@ -1674,8 +1706,8 @@ fn sorted_stale_thread(w: &World) -> Value {
             .is_some_and(|a| !a.is_empty())
     });
     enable_router(w);
-    w.wait_until("sort queue", |w| {
-        sort_todo(w);
+    w.wait_until("suggestions", |w| {
+        suggest_todo(w);
         !w.thread_by_subject("Offsite plans")["suggestion"].is_null()
     });
     w.thread_by_subject("Offsite plans")["suggestion"].clone()
@@ -1695,10 +1727,10 @@ fn stale_thread_still_gets_its_project(synced: World) {
 }
 
 #[rstest]
-fn sort_queue_stops_at_the_daily_cap(synced: World) {
+fn suggestions_stop_at_the_daily_cap(synced: World) {
     synced.ok("router.set", json!({ "daily_cap": 0 }));
     enable_router(&synced);
-    assert_eq!(sort_todo(&synced)["cards"], json!([]));
+    assert_eq!(suggest_todo(&synced)["suggestions"], json!([]));
 }
 
 #[rstest]
@@ -1734,13 +1766,10 @@ fn stopping_a_resort_clears_unreviewed_suggestions(synced: World) {
 }
 
 #[rstest]
-fn cleared_thread_stays_in_the_sort_queue(synced: World) {
+fn cleared_thread_is_suggested_again(synced: World) {
     sorted_todo(&synced);
     synced.cli(&["suggestions", "--clear"]);
-    assert_eq!(
-        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
-        1
-    );
+    assert_eq!(suggested(&suggest_todo(&synced)).len(), 1);
 }
 
 #[rstest]
@@ -1765,45 +1794,38 @@ fn out_of_credits(w: &World) {
 #[rstest]
 fn out_of_credits_pauses_sorting(synced: World) {
     out_of_credits(&synced);
-    assert_eq!(sort_todo(&synced)["paused"], "credits");
+    assert_eq!(suggest_todo(&synced)["paused"], "credits");
 }
 
 #[rstest]
-fn out_of_credits_leaves_the_thread_in_the_queue(synced: World) {
+fn out_of_credits_asks_again_once_topped_up(synced: World) {
     out_of_credits(&synced);
-    sort_todo(&synced);
-    // Topped up: the thread was never judged, so it is still waiting.
+    suggest_todo(&synced);
+    // Topped up: the thread was never judged, so it is asked about again.
     synced.mailbox.lock().unwrap().jev_out_of_credits = false;
     synced.ok("router.set", json!({ "api_key": "jev-topped-up" }));
-    assert_eq!(
-        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
-        1
-    );
+    assert_eq!(suggested(&suggest_todo(&synced)).len(), 1);
 }
 
 #[rstest]
-fn out_of_credits_counts_no_work(synced: World) {
+fn out_of_credits_suggests_nothing(synced: World) {
     out_of_credits(&synced);
-    sort_todo(&synced);
-    assert_eq!(
-        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
-        0
-    );
+    assert_eq!(suggest_todo(&synced)["suggestions"], json!([]));
 }
 
 #[rstest]
 fn out_of_credits_stops_asking(synced: World) {
     out_of_credits(&synced);
-    sort_todo(&synced);
+    suggest_todo(&synced);
     let before = synced.mailbox.lock().unwrap().jev_auth.len();
-    sort_todo(&synced);
+    suggest_todo(&synced);
     assert_eq!(synced.mailbox.lock().unwrap().jev_auth.len(), before);
 }
 
 #[rstest]
 fn out_of_credits_is_said_in_plain_words(synced: World) {
     out_of_credits(&synced);
-    sort_todo(&synced);
+    suggest_todo(&synced);
     assert_eq!(
         synced.ok("router.get", json!({}))["error"],
         "Sorting paused: your TypeSafe credits ran out"
@@ -1813,10 +1835,10 @@ fn out_of_credits_is_said_in_plain_words(synced: World) {
 #[rstest]
 fn a_new_key_resumes_sorting(synced: World) {
     out_of_credits(&synced);
-    sort_todo(&synced);
+    suggest_todo(&synced);
     synced.mailbox.lock().unwrap().jev_out_of_credits = false;
     synced.ok("router.set", json!({ "api_key": "jev-topped-up" }));
-    assert!(sort_todo(&synced)["paused"].is_null());
+    assert!(suggest_todo(&synced)["paused"].is_null());
 }
 
 // ---- instant sorting providers ---------------------------------------------
@@ -1900,7 +1922,7 @@ fn picking_subq_sends_nothing_to_typesafe(synced: World) {
         "router.set",
         json!({ "api_key": "jev-test", "key_provider": "typesafe" }),
     );
-    sort_todo(&synced);
+    suggest_todo(&synced);
     assert!(synced.mailbox.lock().unwrap().jev_auth.is_empty());
 }
 
@@ -2079,7 +2101,7 @@ fn typesafe_spent_subq_ready(w: &World) {
         "router.set",
         json!({ "api_key": "subq-test", "key_provider": "subq" }),
     );
-    sort_todo(w);
+    suggest_todo(w);
 }
 
 #[rstest]
@@ -2092,12 +2114,9 @@ fn out_of_credits_offers_the_other_provider(synced: World) {
 }
 
 #[rstest]
-fn the_sort_queue_carries_the_offer(synced: World) {
+fn suggestions_carry_the_offer(synced: World) {
     typesafe_spent_subq_ready(&synced);
-    assert_eq!(
-        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["offer"]["provider"],
-        "subq"
-    );
+    assert_eq!(suggest_todo(&synced)["offer"]["provider"], "subq");
 }
 
 #[rstest]
@@ -2109,7 +2128,7 @@ fn out_of_credits_never_switches_by_itself(synced: World) {
 #[rstest]
 fn no_offer_without_a_key_for_the_other(synced: World) {
     out_of_credits(&synced);
-    sort_todo(&synced);
+    suggest_todo(&synced);
     assert!(synced.ok("router.get", json!({}))["offer"].is_null());
 }
 
@@ -2117,7 +2136,7 @@ fn no_offer_without_a_key_for_the_other(synced: World) {
 fn the_hold_stays_with_the_spent_provider(synced: World) {
     typesafe_spent_subq_ready(&synced);
     synced.ok("router.set", json!({ "provider": "subq" }));
-    assert!(sort_todo(&synced)["paused"].is_null());
+    assert!(suggest_todo(&synced)["paused"].is_null());
 }
 
 #[rstest]
@@ -2125,7 +2144,7 @@ fn the_other_provider_sorts_after_the_switch(synced: World) {
     typesafe_spent_subq_ready(&synced);
     synced.ok("router.set", json!({ "provider": "subq" }));
     synced.wait_until("sort queue", |w| {
-        sort_todo(w);
+        suggest_todo(w);
         !w.thread_by_subject("Budget sheet")["suggestion"].is_null()
     });
     assert_eq!(
@@ -2139,14 +2158,14 @@ fn switching_back_finds_the_provider_still_on_hold(synced: World) {
     typesafe_spent_subq_ready(&synced);
     synced.ok("router.set", json!({ "provider": "subq" }));
     synced.ok("router.set", json!({ "provider": "typesafe" }));
-    assert_eq!(sort_todo(&synced)["paused"], "credits");
+    assert_eq!(suggest_todo(&synced)["paused"], "credits");
 }
 
 #[rstest]
 fn subq_out_of_credits_is_said_with_its_name(synced: World) {
     subq_router(&synced);
     synced.mailbox.lock().unwrap().subq_out_of_credits = true;
-    sort_todo(&synced);
+    suggest_todo(&synced);
     assert_eq!(
         synced.ok("router.get", json!({}))["error"],
         "Sorting paused: your SubQ credits ran out"
@@ -2177,7 +2196,7 @@ fn new_mail_shows_while_the_provider_is_slow(synced: World) {
     assert!(synced.thread_by_subject("Slow day")["suggestion"].is_null());
 }
 
-// ---- answering cards, and what the queue learns ---------------------------
+// ---- answering suggestions, and what they learn ----------------------------
 
 /// `n` more read To do threads from Jonas, the "Budget sheet" sender.
 fn more_from_jonas(w: &World, n: usize) {
@@ -2246,7 +2265,7 @@ fn no_means_the_same_sender_is_not_offered_it_again(synced: World) {
     more_from_jonas(&synced, 1);
     sorted_todo(&synced);
     answer(&synced, "Budget sheet", "no");
-    sort_todo(&synced);
+    suggest_todo(&synced);
     assert!(synced.thread_by_subject("Sheet 0")["suggestion"].is_null());
 }
 
@@ -2257,7 +2276,7 @@ fn third_yes_teaches_a_rule(synced: World) {
     let mut last = Value::Null;
     for subject in ["Budget sheet", "Sheet 0", "Sheet 1"] {
         synced.wait_until("card", |w| {
-            sort_todo(w);
+            suggest_todo(w);
             !w.thread_by_subject(subject)["suggestion"].is_null()
         });
         last = answer(&synced, subject, "yes");
@@ -2273,8 +2292,75 @@ fn learned_rule_is_listed(synced: World) {
     sorted_todo(&synced);
     answer(&synced, "Budget sheet", "no");
     assert_eq!(
-        synced.ok("sort.state", json!({}))["learned"][0]["kind"],
+        synced.ok("learned.list", json!({}))["learned"][0]["kind"],
         "avoid"
+    );
+}
+
+#[rstest]
+fn forgotten_refusal_is_offered_again(synced: World) {
+    more_from_jonas(&synced, 1);
+    sorted_todo(&synced);
+    answer(&synced, "Budget sheet", "no");
+    let item = synced.ok("learned.list", json!({}))["learned"][0].clone();
+    synced.ok("learned.forget", json!({ "item": item }));
+    let id = synced.thread_by_subject("Sheet 0")["id"].clone();
+    assert_eq!(
+        suggested(&synced.ok("threads.suggest", json!({ "ids": [id] }))),
+        vec![id]
+    );
+}
+
+/// `n` read automated mails from one no-reply sender, "Parcel 0" to "Parcel n-1".
+fn parcels(w: &World, n: usize) {
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        for i in 0..n {
+            let id = format!("p{i}");
+            m.add_message(
+                &id,
+                &format!("tp{i}"),
+                &["INBOX"],
+                &raw(
+                    "Parcel Hub <noreply@parcels.example>",
+                    &format!("Parcel {i}"),
+                    "On its way",
+                    &id,
+                ),
+                NOW - 7000 - i as i64,
+            );
+        }
+    }
+    w.wait_until("sync", |w| {
+        w.ok("threads.list", json!({}))["total"] == 3 + n as i64
+    });
+}
+
+#[rstest]
+fn three_accepted_archives_put_the_sender_in_the_batch_card(synced: World) {
+    parcels(&synced, 4);
+    // No Receipts folder: the stub suggests Archive alone.
+    synced.ok("router.set", json!({ "api_key": "jev-test" }));
+    for i in 0..3 {
+        let id = synced.thread_by_subject(&format!("Parcel {i}"))["id"].clone();
+        synced.wait_until("suggestion", |w| {
+            !suggested(&w.ok("threads.suggest", json!({ "ids": [id] }))).is_empty()
+        });
+        synced.ok("sort.answer", json!({ "id": id, "answer": "yes" }));
+    }
+    let batch = synced.ok("feed.list", json!({}))["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| s["cards"].as_array().unwrap().clone())
+        .find(|c| c["id"] == "batch:cleanup")
+        .unwrap();
+    assert!(
+        batch["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Parcel 3")
     );
 }
 
@@ -4229,20 +4315,20 @@ fn a_town_letter_bubble_starts_with_words(synced: World) {
     );
 }
 
-// ---- the Sort queue with each provider, and when it is held ---------------
+// ---- suggestions with each provider, and when they are held ---------------
 
 #[rstest]
 #[case::typesafe("typesafe")]
 #[case::subq("subq")]
-fn sort_queue_shows_a_card_with_each_provider(synced: World, #[case] provider: &str) {
+fn suggestions_come_with_each_provider(synced: World, #[case] provider: &str) {
     if provider == "subq" {
         subq_router(&synced);
     } else {
         enable_router(&synced);
     }
     assert_eq!(
-        sort_todo(&synced)["cards"][0]["thread"]["subject"],
-        "Budget sheet"
+        suggested(&suggest_todo(&synced)),
+        vec![synced.thread_by_subject("Budget sheet")["id"].clone()]
     );
 }
 
@@ -4250,17 +4336,14 @@ fn sort_queue_shows_a_card_with_each_provider(synced: World, #[case] provider: &
 fn turned_off_sorting_is_said(synced: World) {
     synced.ok("router.set", json!({ "daily_cap": 0 }));
     enable_router(&synced);
-    assert_eq!(sort_todo(&synced)["paused"], "off");
+    assert_eq!(suggest_todo(&synced)["paused"], "off");
 }
 
 #[rstest]
-fn turned_off_sorting_counts_no_work(synced: World) {
+fn turned_off_sorting_suggests_nothing(synced: World) {
     synced.ok("router.set", json!({ "daily_cap": 0 }));
     enable_router(&synced);
-    assert_eq!(
-        synced.ok("sort.state", json!({ "statuses": ["todo"] }))["to_sort"],
-        0
-    );
+    assert_eq!(suggest_todo(&synced)["suggestions"], json!([]));
 }
 
 #[rstest]
@@ -4268,6 +4351,6 @@ fn used_up_limit_is_said(synced: World) {
     synced.ok("router.set", json!({ "daily_cap": 1 }));
     more_from_jonas(&synced, 3);
     enable_router(&synced);
-    sort_todo(&synced);
-    assert_eq!(sort_todo(&synced)["paused"], "limit");
+    suggest_todo(&synced);
+    assert_eq!(suggest_todo(&synced)["paused"], "limit");
 }

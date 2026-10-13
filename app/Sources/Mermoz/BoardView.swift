@@ -71,7 +71,6 @@ struct BoardView: View {
         case let .account(id): model.accounts.first { $0.id == id }?.email ?? "Account"
         case .people: "People"
         case .docs: "Docs"
-        case .sort: "Sort"
         case let .label(acc, id): model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label"
         }
     }
@@ -98,7 +97,6 @@ struct BoardColumn: View {
                 AcceptAllButton(threads: group.all)
             }
             .padding(.horizontal, 4).padding(.top, 2)
-            if group.field == .status { SortStartButton(status: group.key).padding(.horizontal, 4) }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if group.subgroups.isEmpty {

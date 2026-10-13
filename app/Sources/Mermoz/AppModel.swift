@@ -18,8 +18,6 @@ enum SidebarSelection: Hashable {
     case people
     /// Files shared in every conversation.
     case docs
-    /// One email at a time with the AI's suggestion: yes, no, change or skip.
-    case sort
 }
 
 /// Tabs of the reading pane, about the open conversation.
@@ -73,8 +71,6 @@ enum PaletteMode: Equatable {
     case priority
     /// Pick projects for the selected thread (toggle, or create one).
     case project
-    /// Where the Sort card really goes: a status or a project.
-    case sortChange
 }
 
 @MainActor
@@ -120,14 +116,8 @@ final class AppModel {
     var readingModes: ReadingModes = AppModel.loadReadingModes() {
         didSet { if let d = try? JSONEncoder().encode(readingModes) { UserDefaults.standard.set(d, forKey: "reading.modes") } }
     }
-    /// The Sort queue (AppModel+Sort.swift): the cards in hand, prepared a few ahead.
-    var sortQueue = SortQueue()
-    /// What waits to be sorted per column, why the AI is on hold, what it learned.
-    var sortInfo = SortInfo()
-    /// Columns the queue is limited to; empty: every open column.
-    var sortColumns: [String] = []
-    /// A request for the next cards is in flight.
-    var sortLoading = false
+    /// What suggestions learned from the user's answers (Settings › Developer).
+    var learned: [LearnedItem] = []
     /// Keys of AI actions in flight ("clean:<message>", "optimize:<message>").
     var aiBusy: Set<String> = []
     var threads: [ThreadSummary] = []
@@ -183,9 +173,11 @@ final class AppModel {
         var before: [ThreadSummary]
         /// Threads whose suggestions were turned down; undo makes them pending again.
         var rejected: [String] = []
-        /// An answer in the Sort queue: undo takes it back and shows its card again.
-        var sortUndo: SortUndoToken?
-        var sortCard: SortCard?
+        /// An answer to a card's suggestion: undo takes it back and shows the chip again.
+        var answerUndo: SuggestionUndo?
+        var answered: ThreadSuggestion?
+        /// The answered thread's latest mail, which the chip was made for.
+        var answeredDate: Int64 = 0
         /// A Later: undone by bringing these threads back into the feed.
         var unsnooze: [String] = []
     }
@@ -230,8 +222,11 @@ final class AppModel {
     var feedStrips: [String: String] = [:]
     /// Threads whose card words were already asked for.
     var feedAsked: Set<String> = []
-    /// Cards on screen; only those get AI words.
+    /// Cards on screen; only those get AI words and suggestions.
     var feedVisible: Set<String> = []
+    /// The suggestion chips on Feed cards (AppModel+Feed.swift).
+    let feedSuggester = FeedSuggester()
+    var feedSuggestTask: Task<Void, Never>?
     /// Batch mails the user unticked, left out of "Archive all".
     var feedKept: Set<String> = []
     /// The Later picker, while open (AppModel+Later.swift).
@@ -262,7 +257,7 @@ final class AppModel {
         case let .status(k): kind = .status(k)
         case .project, .label: kind = .mailbox
         case .account: kind = .open
-        case .people, .docs, .sort: return nil
+        case .people, .docs: return nil
         }
         return ViewStatuses.visible(kind, all: statuses.map(\.key), open: openStatuses.map(\.key), board: layout == .board)
     }
@@ -385,10 +380,6 @@ final class AppModel {
             await loadFiles()
             return
         }
-        if selection == .sort {
-            await loadSortQueue()
-            return
-        }
         if showsFeed {
             await loadFeed()
             return
@@ -413,7 +404,7 @@ final class AppModel {
         case let .project(id): project = id
         case let .account(id): accountId = id
         case let .label(acc, id): accountId = acc; labelId = id
-        case .people, .docs, .sort: return
+        case .people, .docs: return
         }
         let kind: [String]? = nil
         do {
@@ -457,8 +448,6 @@ final class AppModel {
             if threads != fetched { threads = fetched }
             if totalThreads != total { totalThreads = total }
         } catch { report(error) }
-        // The "✦ n to sort" buttons follow the columns on screen.
-        await refreshSortInfo()
     }
 
     // MARK: paging
@@ -886,7 +875,7 @@ final class AppModel {
         } else if !multiSelection.isEmpty {
             multiSelection = []
             anchorId = selectedThreadId
-        } else if selectedThreadId != nil, selection != .sort {
+        } else if selectedThreadId != nil {
             open(nil)
         } else if isReview, selectedDraftId != nil {
             selectedDraftId = nil
@@ -1024,16 +1013,13 @@ final class AppModel {
         guard let entry = undoStack.popLast(), let client else { toast = "Nothing to undo"; return }
         Task {
             do {
-                if let token = entry.sortUndo, let card = entry.sortCard {
-                    try await client.sortUndo(token)
-                    sortQueue.putBack(card)
-                    showCurrentCard()
+                if let token = entry.answerUndo, let s = entry.answered {
+                    try await feedSuggester.undo(token, s, lastDate: entry.answeredDate, client: client)
                     toast = "Undid \(entry.label)"
-                if showsFeed {
-                    await loadFeed()
-                    feedRestore(entry.before.map(\.id) + entry.unsnooze)
-                }
-                    await refreshSortInfo()
+                    if showsFeed {
+                        await loadFeed()
+                        feedRestore([s.id])
+                    }
                     return
                 }
                 if !entry.rejected.isEmpty { try await client.reopenSuggestions(entry.rejected) }
@@ -1410,9 +1396,6 @@ final class AppModel {
         router.provider = provider
         do {
             router = try await client.setRouterProvider(provider)
-            await refreshSortInfo()
-            sortQueue.reset()
-            if selection == .sort { await loadSortQueue() }
         } catch {
             report(error)
             await loadRouter()
@@ -1526,7 +1509,7 @@ final class AppModel {
         case .draftsChanged:
             Task { refreshCounts(); if isReview { await loadList() } }
         case .suggestionsChanged:
-            Task { await refreshSortInfo() }
+            break
         case .feedChanged:
             if showsFeed { scheduleFeedRefresh() }
         case let .chatDelta(threadId, text):

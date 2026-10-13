@@ -189,25 +189,31 @@ public final class DaemonClient: Sendable {
 
     public func router() async throws -> RouterState { try await call("router.get") }
 
-    /// Sorts every column again in the background; nothing moves until accepted.
-    /// What waits in the Sort queue (of `statuses`, else every open column) and what it learned.
-    public func sortState(statuses: [String] = []) async throws -> SortInfo {
-        try await call("sort.state", Params().with("statuses", statuses))
+    /// Confident suggestions for these cards' threads; the daemon asks the AI for these
+    /// few only, just in time.
+    public func suggest(_ ids: [String]) async throws -> SuggestBatch {
+        try await call("threads.suggest", Params().with("ids", ids))
     }
 
-    /// The next cards; the daemon asks the AI for these few threads only.
-    public func sortNext(statuses: [String], exclude: [String], count: Int = SortQueue.lookahead) async throws -> SortBatch {
-        try await call("sort.next", Params().with("statuses", statuses).with("exclude", exclude).with("count", count))
-    }
-
-    /// Answers a card: "yes", "no", or "change" with the destination the user chose.
-    public func sortAnswer(_ id: String, answer: String, status: String? = nil, projects: [String] = []) async throws -> SortAnswerResult {
-        try await call("sort.answer", Params().with("id", id).with("answer", answer).with("status", status).with("projects", projects))
+    /// Answers a suggestion: "yes" accepts it, "no" turns it down for that sender.
+    public func answerSuggestion(_ id: String, answer: String) async throws -> AnswerResult {
+        try await call("sort.answer", Params().with("id", id).with("answer", answer))
     }
 
     /// Takes an answer back.
-    public func sortUndo(_ token: SortUndoToken) async throws {
+    public func undoAnswer(_ token: SuggestionUndo) async throws {
         try await callVoid("sort.undo", Params().with("undo", token))
+    }
+
+    /// What the answers taught, newest first.
+    public func learned() async throws -> [LearnedItem] {
+        struct L: Decodable { var learned: [LearnedItem] }
+        return try await call("learned.list", as: L.self).learned
+    }
+
+    /// Forgets one learned rule or refusal.
+    public func forgetLearned(_ item: LearnedItem) async throws {
+        try await callVoid("learned.forget", Params().with("item", item))
     }
 
     /// Clears every suggestion on read threads nobody reviewed; returns how many.

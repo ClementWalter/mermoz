@@ -6,11 +6,11 @@ struct ShortcutsOverlay: View {
 
     private let groups: [(String, [(String, String)])] = [
         ("Navigate", [("j / ↓", "Next thread"), ("k / ↑", "Previous thread"), ("⇧↑ / ⇧↓", "Select several"), ("⇧ / ⌘ click", "Select a range / one more"), ("Esc", "Close message or panel"), ("⌘← / ⌘→", "Back / forward"), ("⌘K or /", "Search or run a command")]),
-        ("Sort", [("y", "Accept the AI's suggestion"), ("x", "Dismiss the AI's suggestion"), ("y / n / c / s", "In Sort: yes, no, change, skip"), ("e", "Done"), ("a", "Archive"), ("⌫ / ⌘⌫ / #", "Delete"), ("u", "Mark unread"), ("⌘Z", "Undo"),
+        ("Organize", [("y", "Accept the AI's suggestion"), ("x", "Dismiss the AI's suggestion"), ("e", "Done"), ("a", "Archive"), ("⌫ / ⌘⌫ / #", "Delete"), ("u", "Mark unread"), ("⌘Z", "Undo"),
                   ("s", "Set status"), ("p", "Set priority"), ("m", "Move to project"), ("⇧M", "Join selected into one conversation")]),
         ("Write", [("r", "Reply"), ("c", "New message"), ("t", "Chat about this"), ("⌘↩", "Send / approve"), ("Esc", "Discard draft")]),
         ("Help", [("? or ⌘/", "Show this help")]),
-        ("Feed", [("↩", "Do what the card says"), ("1 2 3", "Pick an option"), ("l", "Later…"),
+        ("Feed", [("↩", "Do what the card says"), ("1 2 3", "Pick an option"), ("y / n", "Accept / dismiss the ✦ suggestion"), ("l", "Later…"),
                   ("⇧L", "Later: type when"), ("d / ⌫", "Delete"), ("o", "Open the mail"), ("t", "Ask about this")]),
     ]
 

@@ -8,6 +8,11 @@ final class StubDaemon: @unchecked Sendable {
     let path: String
     private let listenFd: Int32
     private let reply: @Sendable (Int, String) -> String
+    private let lock = NSLock()
+    private var seen: [String] = []
+
+    /// Every request line received, in order.
+    var requests: [String] { lock.lock(); defer { lock.unlock() }; return seen }
 
     init(reply: @escaping @Sendable (Int, String) -> String) throws {
         self.reply = reply
@@ -25,7 +30,7 @@ final class StubDaemon: @unchecked Sendable {
         }
         listen(listenFd, 4)
         let fd = listenFd
-        Thread { [reply] in
+        Thread { [reply, weak self] in
             let c = accept(fd, nil, nil)
             var buf = LineBuffer()
             var chunk = [UInt8](repeating: 0, count: 4096)
@@ -33,6 +38,7 @@ final class StubDaemon: @unchecked Sendable {
                 let n = chunk.withUnsafeMutableBytes { read(c, $0.baseAddress!, $0.count) }
                 if n <= 0 { break }
                 for line in buf.append(Data(chunk[0..<n])) {
+                    self?.record(String(decoding: line, as: UTF8.self))
                     let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] ?? [:]
                     let out = reply(obj["id"] as? Int ?? 0, obj["method"] as? String ?? "") + "\n"
                     _ = out.withCString { write(c, $0, strlen($0)) }
@@ -40,6 +46,12 @@ final class StubDaemon: @unchecked Sendable {
             }
             close(c)
         }.start()
+    }
+
+    private func record(_ line: String) {
+        lock.lock()
+        seen.append(line)
+        lock.unlock()
     }
 
     deinit {

@@ -208,7 +208,7 @@ public enum FeedActions {
 
 /// What a key does on the focused card while the Feed is on screen.
 public enum FeedKeyAction: Equatable, Sendable {
-    case next, previous, primary, option(Int), later, laterPickDay, open, done, archive, delete, ask, reply, accept
+    case next, previous, primary, option(Int), later, laterPickDay, open, done, archive, delete, ask, reply, accept, dismiss
 }
 
 public enum FeedKeyMap {
@@ -217,7 +217,7 @@ public enum FeedKeyMap {
     public static let upArrow = "\u{f700}"
 
     /// Characters the Feed takes besides the app-wide shortcuts: ↩, ⌫, ⌦ and the arrows.
-    public static let characters = "lo123\rd\u{7f}\u{f728}" + downArrow + upArrow
+    public static let characters = "lo123\rdn\u{7f}\u{f728}" + downArrow + upArrow
 
     /// The action for a typed character (already lowercased; `shift` tells l from ⇧L).
     public static func action(_ c: String, shift: Bool = false) -> FeedKeyAction? {
@@ -236,7 +236,9 @@ public enum FeedKeyMap {
         case "d", "\u{7f}", "\u{f728}", "#": .delete
         case "t": .ask
         case "r": .reply
+        // The card's ✦ suggestion: y accepts it, n dismisses it.
         case "y": .accept
+        case "n": .dismiss
         default: nil
         }
     }

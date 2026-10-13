@@ -338,7 +338,7 @@ impl Store {
             .collect())
     }
 
-    /// Threads whose sender the user taught to archive: the Sort queue's learned rule
+    /// Threads whose sender the user taught to archive: the learned rule
     /// for that sender (three consistent yes, never a no) is "Archive". No AI guess counts.
     pub fn learned_noise(
         &self,
@@ -367,7 +367,7 @@ impl Store {
     }
 
     /// The user archived these automated mails from the Feed: each counts as a yes to
-    /// "Archive" for its sender, the same answer the Sort queue records.
+    /// "Archive" for its sender, the same answer `sort.answer` records.
     pub fn learn_archive(&self, thread_ids: &[String]) -> Result<()> {
         let target = super::SuggestionGroup {
             status: Some("archive".into()),

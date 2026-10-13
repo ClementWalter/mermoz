@@ -29,7 +29,7 @@ struct FeedView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    FeedCards(feed: model.feed, strips: model.feedStrips)
+                    FeedCards(feed: model.feed, strips: model.feedStrips, chips: model.feedSuggester.state.shown)
                         .equatable()
                         .frame(maxWidth: 680)
                         .padding(.horizontal, 18).padding(.vertical, 16)
@@ -59,8 +59,12 @@ struct FeedCards: View, Equatable {
     @Environment(AppModel.self) private var model
     let feed: Feed?
     let strips: [String: String]
+    /// Suggestion chips by thread id.
+    let chips: [String: ThreadSuggestion]
 
-    nonisolated static func == (a: FeedCards, b: FeedCards) -> Bool { a.feed == b.feed && a.strips == b.strips }
+    nonisolated static func == (a: FeedCards, b: FeedCards) -> Bool {
+        a.feed == b.feed && a.strips == b.strips && a.chips == b.chips
+    }
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 10) {
@@ -70,7 +74,8 @@ struct FeedCards: View, Equatable {
                     FeedSectionHeader(section: s)
                     ForEach(s.cards) { c in
                         // Equatable: only the cards that changed render again on j/k.
-                        FeedCardView(card: c, focus: model.feedFocusCells.flag(c.id), strip: strips[c.id])
+                        FeedCardView(card: c, focus: model.feedFocusCells.flag(c.id), strip: strips[c.id],
+                                     chip: c.isBatch ? nil : chips[c.thread.id])
                             .equatable()
                             .id(c.id)
                             .onAppear { model.cardAppeared(c.id) }
@@ -161,9 +166,11 @@ struct FeedCardView: View, Equatable {
     let focus: SelectionFlag
     /// "Done · Undo" shown in place of the card for a moment after it was handled.
     let strip: String?
+    /// The AI's confident suggestion for the card's thread.
+    let chip: ThreadSuggestion?
 
     nonisolated static func == (a: FeedCardView, b: FeedCardView) -> Bool {
-        a.focus === b.focus && a.strip == b.strip && a.card == b.card
+        a.focus === b.focus && a.strip == b.strip && a.chip == b.chip && a.card == b.card
     }
 
     private var focused: Bool { focus.on }
@@ -189,6 +196,7 @@ struct FeedCardView: View, Equatable {
                     .font(.system(size: 13)).foregroundStyle(Theme.text2)
             }
             CardBody(card: card)
+            if let chip { CardSuggestionChip(card: card, suggestion: chip, focused: focused) }
             CardActions(card: card, focused: focused)
         }
         .foregroundStyle(Theme.text)
@@ -564,6 +572,47 @@ struct CardActions: View {
     }
 }
 
+/// The AI's suggestion as one chip: a click (or y) files the thread there, × (or n)
+/// dismisses it.
+struct CardSuggestionChip: View {
+    @Environment(AppModel.self) private var model
+    let card: FeedCard
+    let suggestion: ThreadSuggestion
+    let focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button { model.acceptChip(card) } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkle").font(.system(size: 10, weight: .semibold))
+                    Text(SuggestionText.chip(suggestion.suggestion, statusName: model.statusName))
+                        .font(.system(size: 12, weight: .medium))
+                    KeyHint("y").opacity(focused ? 1 : 0)
+                }
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 9).frame(height: 24)
+                .background(Theme.accentSoft.opacity(0.7), in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.35)))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help(suggestion.why ?? "Suggested by the AI")
+            .accessibilityLabel("Accept suggestion: \(SuggestionText.chip(suggestion.suggestion, statusName: model.statusName))")
+            Button { model.dismissChip(card) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    KeyHint("n").opacity(focused ? 1 : 0)
+                }
+                .foregroundStyle(Theme.text3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Not this (n)")
+            .accessibilityLabel("Dismiss suggestion")
+        }
+    }
+}
+
 /// "Why this card?" in plain words.
 struct WhyPopover: View {
     let card: FeedCard
@@ -628,13 +677,9 @@ enum FeedKeys {
         case .delete: model.delete(card)
         case .ask: model.askAbout(card)
         case .reply: model.draftReply(to: card, body: card.texts?.draft ?? "")
-        case .accept:
-            guard let sg = card.thread.suggestion else { return false }
-            model.acceptSuggestions([card.thread.id])
-            // Accepted into a closed status, the card leaves; focus and pane move on with it.
-            if let st = sg.status, ["done", "archive", "deleted"].contains(st) {
-                model.leave(card, label: "Done as suggested")
-            }
+        // Without a chip y and n do nothing: no hidden guess is ever applied.
+        case .accept: model.acceptChip(card)
+        case .dismiss: model.dismissChip(card)
         case .next, .previous: return false
         }
         return true

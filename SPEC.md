@@ -146,10 +146,10 @@ project's column.
   project among the user's labels, priority and "automated", with probabilities.
   It is a System One model with the user's own key (Settings › Developer): TypeSafe
   Jev (`jev-latest`) or SubQ Snap (`subq-snap-preview`), which serve the same API.
-  The user picks the provider and keeps one key per provider; Unread routing, the
-  Sort queue, conversation pairing and Feed judgments all use the picked one.
+  The user picks the provider and keeps one key per provider; Unread routing, card
+  suggestions, conversation pairing and Feed judgments all use the picked one.
   SubQ is on par at the same thresholds, about twice as slow (~500 ms a call): the
-  Sort queue hides it by preparing cards ahead, and Unread routing runs apart from
+  Feed hides it by asking for the next cards ahead, and Unread routing runs apart from
   everything on screen. OpenAI's Decisions API stays a candidate once access is
   confirmed.
 - Jev sees the thread plus two hints built locally: where earlier threads from
@@ -176,28 +176,31 @@ pushes so labels set elsewhere survive), the read transition, Jev routing with
 suggestions shown on rows and cards, `y` / "Accept n" to accept, an Undo bar after
 reading applied a suggestion, and the key in Settings › Developer.
 
-### Sort: one email at a time (decided 2026-10-12, replaces background column sorting)
+### Suggestions on Feed cards (decided 2026-10-13, replaces the Sort queue)
 
 Sorting whole columns in the background flooded every column with hundreds of
-suggestions, many of them wrong, and no screen could review them. The default is
-now a dedicated flow: Sort shows **one email** with the AI's suggestion
-("→ Archive · Voyage") and the user answers **Yes** (y), **No** (n),
-**Change…** (c, another status or project) or **Skip** (s); ⌘Z takes an answer
-back. It opens from the sidebar (every open column) or from "✦ n to sort · Start"
-on a column.
+suggestions, many of them wrong, and no screen could review them. A dedicated
+Sort queue (one email at a time, Yes/No/Change/Skip) followed, but it duplicated
+the Feed and was hard to use. The suggestion now lives **on the Feed card**: when
+the AI is confident where a thread goes, the card shows one chip ("✦ Archive",
+"✦ → Voyage", "✦ Done"). **y** or a click on the chip accepts it, and focus and the
+reading pane move to the next card; **n** dismisses it and the card stays. ⌘Z takes
+either back. No confident suggestion, no chip.
 
-- **Just in time.** Suggestions are asked of the AI for the card on screen and a
-  few ahead (at most 12 calls per request), newest threads of the open columns
-  first. Nothing sorts whole columns any more; new Unread mail is still routed on
-  arrival.
+- **Just in time.** Suggestions are asked of the AI for the cards on screen and the
+  next few (at most 6 per request), never in bulk. Nothing sorts whole columns any
+  more; new Unread mail is still routed on arrival.
 - **Yes** files the thread and is remembered for its sender; after three
   consistent Yes the sender's destination is suggested without asking the AI
   ("Learned: mail from X goes to Voyage").
 - **No** leaves the thread where it is and that destination is never suggested to
   that sender again, including cards already prepared.
-- **Change** is a No for the suggestion and a Yes for the chosen destination.
-- Earlier answers for the sender go to Jev with every new card. The panel lists
-  what was learned in plain words.
+- **Change** (CLI and protocol) is a No for the suggestion and a Yes for the chosen
+  destination.
+- Earlier answers for the sender go to Jev with every new card. Settings ›
+  Developer › "What Mermoz learned" lists the rules in plain words, each with
+  Forget.
+- A sender ruled to Archive joins the Feed's "Automatic mail" batch card.
 - **Out of credits** (HTTP 402) pauses sorting on that provider ("Sorting paused:
   your TypeSafe credits ran out"); nothing is recorded on threads and nothing is
   retried for 15 minutes or until a new key. When the other provider has a key,
@@ -451,7 +454,7 @@ actions with their keys.
 Drafts always open in the composer; nothing is ever sent from a card.
 
 **Batches are learned, never guessed.** Automatic-mail and newsletter batches only hold
-mail from senders the user taught Mermoz to archive: the Sort queue's sender rule
+mail from senders the user taught Mermoz to archive: the learned sender rule
 (three consistent yes, never a no) says Archive. Other automated mail, even when
 Jev is sure it is a receipt, is a card of its own in Can wait, decided one at a
 time; archiving it from its card is a yes for that sender, recorded with the Sort

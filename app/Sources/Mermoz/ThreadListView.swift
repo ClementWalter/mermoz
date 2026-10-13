@@ -10,9 +10,6 @@ struct ThreadListView: View {
         VStack(spacing: 0) {
             ListHeader()
             Divider().overlay(Theme.line)
-            if case let .status(k) = model.selection, model.sortInfo.count(k) > 0 {
-                HStack { SortStartButton(status: k); Spacer() }.padding(.horizontal, 16).padding(.vertical, 8)
-            }
             if model.threads.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "checkmark.circle").font(.system(size: 24, weight: .light))
@@ -121,7 +118,7 @@ struct ThreadListRows: View, Equatable {
 /// Single-key shortcuts, handled for the whole main window (see `install`) so they
 /// work wherever the focus is: list, board or a message being read.
 enum ThreadKeys {
-    static let characters = "jkeay#usmMprct?/xn"
+    static let characters = "jkeay#usmMprct?/x"
 
     /// Routes key presses to the shortcuts unless the user is typing in a field, a
     /// draft is open, or another window (Settings) is in front.
@@ -144,16 +141,6 @@ enum ThreadKeys {
 
     @MainActor
     static func handle(_ c: String, shift: Bool = false, model: AppModel) -> Bool {
-        // The Sort queue answers with y / n / c / s; the other keys work as everywhere.
-        if model.selection == .sort {
-            switch c {
-            case "y": model.sortYes(); return true
-            case "n": model.sortNo(); return true
-            case "c": model.paletteMode = .sortChange; return true
-            case "s": model.sortSkip(); return true
-            default: break
-            }
-        }
         switch c {
         case "j": model.moveSelection(1)
         case "k": model.moveSelection(-1)
@@ -163,8 +150,6 @@ enum ThreadKeys {
         case "#": model.moveSelected(to: "deleted")
         case "y": model.acceptSelected()
         case "x": model.rejectSelected()
-        // Only the Sort queue answers No; elsewhere the key types as usual.
-        case "n": return false
         case "u": model.markUnreadSelected()
         case "s": if model.selectedThreadId != nil { model.paletteMode = .status }
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
@@ -244,8 +229,6 @@ struct ListHeader: View {
             Text("People").font(.system(size: 15, weight: .semibold))
         case .docs:
             Text("Docs").font(.system(size: 15, weight: .semibold))
-        case .sort:
-            Text("Sort").font(.system(size: 15, weight: .semibold))
         case let .label(acc, id):
             Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(Theme.text2)
             Text(model.labels.first { $0.accountId == acc && $0.id == id }?.name ?? "Label")
@@ -293,7 +276,6 @@ struct GroupHeaderView: View {
             GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
             Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
             Spacer()
-            if group.field == .status { SortStartButton(status: group.key) }
             AcceptAllButton(threads: group.all)
         }
         .foregroundStyle(Theme.text.opacity(0.85))

@@ -1,6 +1,6 @@
 /// The Feed layout: loading cards for the board scope, moving focus, running a card's
-/// actions (drafts open in the composer, never sent), Later, and the cards' AI words,
-/// asked only for the cards on screen.
+/// actions (drafts open in the composer, never sent), Later, and the cards' AI words and
+/// suggestion chips, asked only for the cards on screen and the next few.
 import AppKit
 import Foundation
 import MermozKit
@@ -12,11 +12,11 @@ private let log = Logger(subsystem: "ai.mermoz.app", category: "feed")
 extension AppModel {
     // MARK: loading
 
-    /// The Feed layout is for mail views; People, Docs, the newsletters browser and Sort keep theirs.
+    /// The Feed layout is for mail views; People, Docs and the newsletters browser keep theirs.
     var showsFeed: Bool {
         guard layout == .feed, !isReview else { return false }
         switch selection {
-        case .people, .docs, .sort: return false
+        case .people, .docs: return false
         default: return true
         }
     }
@@ -52,7 +52,9 @@ extension AppModel {
             let ids = next.cards.map(\.id)
             if feedFocus == nil || !ids.contains(feedFocus!) { feedFocus = ids.first }
             totalThreads = f.open
+            feedSuggester.sync(with: next)
             requestVisibleTexts()
+            requestSuggestions()
         } catch { report(error) }
     }
 
@@ -82,6 +84,7 @@ extension AppModel {
         }
         feedVisible.insert(id)
         requestVisibleTexts()
+        requestSuggestions()
     }
 
     func cardDisappeared(_ id: String) { feedVisible.remove(id) }
@@ -102,6 +105,78 @@ extension AppModel {
         }
     }
 
+    // MARK: suggestion chips
+
+    /// Asks for the suggestions of the cards on screen and the few after the focus, a
+    /// moment after scrolling or j/k stops.
+    func requestSuggestions() {
+        feedSuggestTask?.cancel()
+        feedSuggestTask = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let client, let feed else { return }
+            do {
+                try await feedSuggester.refresh(client: client, feed: feed, visible: feedVisible, focus: feedFocus)
+            } catch { log.error("suggestions: \(error.localizedDescription)") }
+        }
+    }
+
+    /// y or a click on the chip: files the thread where suggested; focus and the reading
+    /// pane move on to the next card at once.
+    func acceptChip(_ card: FeedCard) {
+        guard let client, let feed else { return }
+        var nav = FeedNavigator(focus: feedFocus, pane: selectedThreadId)
+        guard let s = feedSuggester.accept(card, nav: &nav, in: feed) else { return }
+        let label = "✦ " + SuggestionText.chip(s.suggestion, statusName: statusName)
+        // A closing status takes the card away; otherwise it stays, without its chip.
+        if let st = s.suggestion.status, ["done", "archive", "deleted", "backlog"].contains(st) {
+            leave(card, label: label, nav: nav)
+        } else {
+            apply(nav)
+        }
+        answer("yes", s, of: card, label: label, client: client)
+    }
+
+    /// n: the chip goes and is not offered again for this sender; the card stays.
+    func dismissChip(_ card: FeedCard) {
+        guard let client, let s = feedSuggester.dismiss(card) else { return }
+        answer("no", s, of: card, label: "Dismiss suggestion", client: client)
+    }
+
+    private func answer(_ verdict: String, _ s: ThreadSuggestion, of card: FeedCard, label: String, client: DaemonClient) {
+        Task {
+            do {
+                let r = try await feedSuggester.send(verdict, s, of: card, client: client)
+                undoStack.append(UndoEntry(label: label, before: [], answerUndo: r.undo, answered: s,
+                                           answeredDate: card.thread.lastDate))
+                if undoStack.count > 100 { undoStack.removeFirst() }
+                if let learned = r.learned { toast = learned }
+                refreshCounts()
+            } catch {
+                report(error)
+                await loadFeed()
+            }
+        }
+    }
+
+    func statusName(_ key: String) -> String { statuses.first { $0.key == key }?.name ?? key }
+
+    /// What the answers taught, for Settings › Developer.
+    func loadLearned() async {
+        guard let client else { return }
+        do {
+            let l = try await client.learned()
+            if l != learned { learned = l }
+        } catch { report(error) }
+    }
+
+    /// Forgets one rule or refusal: that sender's mail is asked about afresh.
+    func forget(_ item: LearnedItem) async {
+        guard let client else { return }
+        learned.removeAll { $0.id == item.id }
+        do { try await client.forgetLearned(item) } catch { report(error) }
+        await loadLearned()
+    }
+
     // MARK: focus
 
     /// j/k and the arrows: the next card, and its mail in the reading pane in the same
@@ -111,6 +186,7 @@ extension AppModel {
         var nav = FeedNavigator(focus: feedFocus, pane: selectedThreadId)
         nav.move(by: delta, in: feed)
         apply(nav)
+        requestSuggestions()
     }
 
     /// Puts focus and pane where the navigator says, together.
@@ -263,12 +339,13 @@ extension AppModel {
         } catch { report(error) }
     }
 
-    /// Swaps the card for a "Done · Undo" strip, then folds it away and moves focus on.
-    func leave(_ card: FeedCard, label: String) {
+    /// Swaps the card for a "Done · Undo" strip, then folds it away and moves focus on
+    /// (to `nav` when the caller already moved it).
+    func leave(_ card: FeedCard, label: String, nav moved: FeedNavigator? = nil) {
         // The next card and its mail, in the same turn as the action.
         if let feed {
             var nav = FeedNavigator(focus: feedFocus, pane: selectedThreadId)
-            nav.leave(card.id, in: feed)
+            if let moved { nav = moved } else { nav.leave(card.id, in: feed) }
             if nav != FeedNavigator(focus: feedFocus, pane: selectedThreadId) { apply(nav) }
         }
         withAnimation(.easeInOut(duration: 0.25)) { feedStrips[card.id] = label }

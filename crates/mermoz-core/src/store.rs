@@ -145,7 +145,7 @@ CREATE INDEX IF NOT EXISTS draft_attachments_draft ON draft_attachments(draft_id
 /// thread is opened, so a forwarded copy stops reading as an impersonation.
 const RECHECK_SENDER_FAILS: &str = "UPDATE messages SET auth = NULL WHERE auth = 'fail';";
 
-/// The user's yes/no answers to suggestions, per sender: what the Sort queue learns from.
+/// The user's yes/no answers to suggestions, per sender: what suggestions learn from.
 const SORT_FEEDBACK: &str = r#"
 CREATE TABLE IF NOT EXISTS sort_feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, sender TEXT NOT NULL,
@@ -161,7 +161,7 @@ const MACHINE_VERDICTS: &str =
     "DELETE FROM suggestions WHERE (decision IS NULL OR decision IN ('unchanged', 'moved'))
   AND thread_id IN (SELECT id FROM threads WHERE status != 'unread')";
 
-/// Clears the whole-column passes once: the Sort queue asks again, one card at a time.
+/// Clears the whole-column passes once: suggestions are asked again, a few cards at a time.
 const CLEAR_FLOOD: &str =
     "DELETE FROM suggestions WHERE (decision IS NULL OR decision IN ('unchanged', 'moved'))
   AND thread_id IN (SELECT id FROM threads WHERE status != 'unread');
@@ -391,30 +391,15 @@ pub struct IncomingMessage {
     pub parsed: ParsedMessage,
 }
 
-/// Rows of `threads t LEFT JOIN suggestions s` the Sort queue still has to show:
+/// Rows of `threads t LEFT JOIN suggestions s` that may still show a suggestion:
 /// never judged, new mail since, or a suggestion still pending.
 const SORT_DUE: &str = "(s.thread_id IS NULL OR s.for_date < t.last_date OR s.decision IS NULL)";
 
-/// `?,?` for the open columns the queue covers (all of them when `statuses` is empty).
-fn sort_columns(statuses: &[String]) -> (String, Vec<rusqlite::types::Value>) {
-    let cols: Vec<String> = if statuses.is_empty() {
-        RESUMABLE.iter().map(|s| s.to_string()).collect()
-    } else {
-        statuses
-            .iter()
-            .filter(|s| RESUMABLE.contains(&s.as_str()))
-            .cloned()
-            .collect()
-    };
-    // An empty IN list is a syntax error; a status no thread has matches nothing.
-    let cols = if cols.is_empty() {
-        vec!["-".to_string()]
-    } else {
-        cols
-    };
+/// `?,?` for the open columns that get suggestions on read threads.
+fn open_columns() -> (String, Vec<rusqlite::types::Value>) {
     (
-        vec!["?"; cols.len()].join(","),
-        cols.into_iter().map(Into::into).collect(),
+        vec!["?"; RESUMABLE.len()].join(","),
+        RESUMABLE.iter().map(|s| s.to_string().into()).collect(),
     )
 }
 
@@ -539,7 +524,7 @@ pub struct ColumnSuggestions {
     pub groups: Vec<SuggestionGroup>,
 }
 
-/// A thread waiting in the Sort queue; `ready` when its suggestion is already computed.
+/// A thread that may get a suggestion; `ready` when it is already computed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SortCandidate {
     pub id: String,
@@ -567,8 +552,8 @@ pub struct SortUndo {
     pub since: i64,
 }
 
-/// Something the Sort queue learned from the user's answers.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// Something suggestions learned from the user's answers.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Learned {
     pub sender: String,
     pub name: String,
@@ -3382,29 +3367,22 @@ impl Store {
         Ok(n)
     }
 
-    /// The Sort queue: read threads in open columns (or `statuses` among them) with no
+    /// Which of `ids` may get a suggestion now: read threads in open columns with no
     /// decided verdict since their last message, newest first. Pending suggestions made
-    /// for the thread as it is now are `ready`; the rest need the AI. `exclude`: cards the
-    /// user already holds or skipped.
-    pub fn sort_candidates(
-        &self,
-        statuses: &[String],
-        exclude: &[String],
-        limit: i64,
-    ) -> Result<Vec<SortCandidate>> {
-        let (cols, mut args) = sort_columns(statuses);
-        let skip = if exclude.is_empty() {
-            String::new()
-        } else {
-            args.extend(exclude.iter().map(|e| e.clone().into()));
-            format!(" AND t.id NOT IN ({})", vec!["?"; exclude.len()].join(","))
-        };
+    /// for the thread as it is now are `ready`; the rest need the AI.
+    pub fn suggest_candidates(&self, ids: &[String]) -> Result<Vec<SortCandidate>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let (cols, mut args) = open_columns();
+        args.extend(ids.iter().map(|e| e.clone().into()));
+        let marks = vec!["?"; ids.len()].join(",");
         let r = self.bg.lock().unwrap();
         let mut st = r.prepare(&format!(
             "SELECT t.id, t.last_date, s.thread_id IS NOT NULL AND s.decision IS NULL AND s.for_date >= t.last_date
                     AND s.for_status IS t.status
              FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
-             WHERE t.status IN ({cols}) AND {SORT_DUE}{skip} ORDER BY t.last_date DESC LIMIT {limit}"
+             WHERE t.status IN ({cols}) AND {SORT_DUE} AND t.id IN ({marks}) ORDER BY t.last_date DESC"
         ))?;
         Ok(st
             .query_map(params_from_iter(args.iter()), |r| {
@@ -3413,27 +3391,6 @@ impl Store {
                     last_date: r.get(1)?,
                     ready: r.get(2)?,
                 })
-            })?
-            .collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Threads waiting in the Sort queue, per open column; with `ready_only`, only those
-    /// whose card is already prepared (while the AI cannot be asked for more).
-    pub fn sort_counts(&self, statuses: &[String], ready_only: bool) -> Result<Vec<(String, i64)>> {
-        let (cols, args) = sort_columns(statuses);
-        let ready = if ready_only {
-            " AND s.decision IS NULL AND s.for_date >= t.last_date AND s.for_status IS t.status"
-        } else {
-            ""
-        };
-        let r = self.r.lock().unwrap();
-        let mut st = r.prepare(&format!(
-            "SELECT t.status, COUNT(*) FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
-             WHERE t.status IN ({cols}) AND {SORT_DUE}{ready} GROUP BY t.status"
-        ))?;
-        Ok(st
-            .query_map(params_from_iter(args.iter()), |r| {
-                Ok((r.get(0)?, r.get(1)?))
             })?
             .collect::<rusqlite::Result<_>>()?)
     }
@@ -3534,6 +3491,22 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// Forgets a learned item: a rule's yes answers, or an avoided move's no answers,
+    /// for that sender and destination. Returns how many answers were dropped.
+    pub fn forget_learned(&self, item: &Learned) -> Result<usize> {
+        let verdict = if item.kind == "avoid" { "no" } else { "yes" };
+        let w = self.w.lock().unwrap();
+        Ok(w.execute(
+            "DELETE FROM sort_feedback WHERE sender = ?1 AND status IS ?2 AND projects_json = ?3 AND verdict = ?4",
+            params![
+                item.sender,
+                item.status,
+                serde_json::to_string(&item.projects)?,
+                verdict
+            ],
+        )?)
     }
 
     /// Records a yes/no answer to a card and applies it; returns how to undo it.
@@ -3669,7 +3642,7 @@ impl Store {
         )?)
     }
 
-    /// Stores a Sort queue prediction for an already-read thread, reduced to what would
+    /// Stores a prediction for an already-read thread, reduced to what would
     /// change (see [`crate::jev::column_suggestion`]) against the thread as it is now.
     /// "No change", a destination the user refused for this sender before, or a thread
     /// that left the open columns meanwhile, is recorded as decided so it is not asked
@@ -6814,11 +6787,18 @@ mod tests {
             .unwrap()
     }
 
-    /// The Sort queue's threads, optionally limited to some columns.
-    fn to_classify(env: &Env, columns: &[&str]) -> Vec<String> {
-        let columns: Vec<String> = columns.iter().map(|s| s.to_string()).collect();
+    /// Every thread that may get a suggestion now.
+    fn to_classify(env: &Env) -> Vec<String> {
+        let all: Vec<String> = {
+            let r = env.store.r.lock().unwrap();
+            let mut st = r.prepare("SELECT id FROM threads").unwrap();
+            st.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
         env.store
-            .sort_candidates(&columns, &[], 10)
+            .suggest_candidates(&all)
             .unwrap()
             .into_iter()
             .map(|c| c.id)
@@ -6875,7 +6855,7 @@ mod tests {
     fn dropped_stale_suggestion_is_not_asked_again(env: Env) {
         suggested(&env, TEN_YEARS_MS, &jev_says("waiting", None));
         env.store.drop_stale_suggestions(now_ms()).unwrap();
-        assert!(to_classify(&env, &[]).is_empty());
+        assert!(to_classify(&env).is_empty());
     }
 
     #[rstest]
@@ -6933,7 +6913,7 @@ mod tests {
     #[rstest]
     fn unclassified_backlog_thread_is_classified(env: Env) {
         let tid = open_thread(&env, "1", "backlog", 0);
-        assert_eq!(to_classify(&env, &[]), vec![tid]);
+        assert_eq!(to_classify(&env), vec![tid]);
     }
 
     #[rstest]
@@ -6942,14 +6922,19 @@ mod tests {
     #[case::done_is_terminal("done")]
     fn closed_and_unread_columns_are_not_classified(env: Env, #[case] status: &str) {
         open_thread(&env, "1", status, 0);
-        assert!(to_classify(&env, &[]).is_empty());
+        assert!(to_classify(&env).is_empty());
     }
 
     #[rstest]
     fn classified_thread_is_a_ready_card(env: Env) {
         let tid = open_thread(&env, "1", "backlog", 0);
         classify(&env, &tid, &jev_archive());
-        assert!(env.store.sort_candidates(&[], &[], 10).unwrap()[0].ready);
+        assert!(
+            env.store
+                .suggest_candidates(std::slice::from_ref(&tid))
+                .unwrap()[0]
+                .ready
+        );
     }
 
     #[rstest]
@@ -6961,7 +6946,7 @@ mod tests {
             ..Default::default()
         };
         classify(&env, &tid, &same);
-        assert!(to_classify(&env, &[]).is_empty());
+        assert!(to_classify(&env).is_empty());
     }
 
     #[rstest]
@@ -6971,7 +6956,7 @@ mod tests {
         env.store
             .save_column_suggestion(&tid, &jev_archive(), "jev", last - 1)
             .unwrap();
-        assert_eq!(to_classify(&env, &[]), vec![tid]);
+        assert_eq!(to_classify(&env), vec![tid]);
     }
 
     #[rstest]
@@ -6987,7 +6972,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(to_classify(&env, &[]).is_empty());
+        assert!(to_classify(&env).is_empty());
     }
 
     /// The thread moves without the user deciding (e.g. a label set on another device).
@@ -7008,7 +6993,7 @@ mod tests {
         let tid = open_thread(&env, "1", "backlog", 0);
         classify(&env, &tid, &jev_archive());
         move_silently(&env, &tid, "waiting");
-        assert_eq!(to_classify(&env, &[]), vec![tid]);
+        assert_eq!(to_classify(&env), vec![tid]);
     }
 
     #[rstest]
@@ -7023,20 +7008,7 @@ mod tests {
     fn newest_thread_is_classified_first(env: Env) {
         open_thread(&env, "1", "backlog", 5_000);
         let newer = open_thread(&env, "2", "waiting", 0);
-        assert_eq!(to_classify(&env, &[])[0], newer);
-    }
-
-    #[rstest]
-    fn column_on_screen_is_classified_first(env: Env) {
-        let older = open_thread(&env, "1", "backlog", 5_000);
-        open_thread(&env, "2", "waiting", 0);
-        assert_eq!(to_classify(&env, &["backlog"])[0], older);
-    }
-
-    #[rstest]
-    fn focused_column_is_not_listed_twice(env: Env) {
-        open_thread(&env, "1", "backlog", 0);
-        assert_eq!(to_classify(&env, &["backlog"]).len(), 1);
+        assert_eq!(to_classify(&env)[0], newer);
     }
 
     #[rstest]
@@ -7208,7 +7180,7 @@ mod tests {
         env.store
             .restore_threads(&before.iter().map(ThreadState::from).collect::<Vec<_>>())
             .unwrap();
-        assert!(!to_classify(&env, &[]).contains(&a));
+        assert!(!to_classify(&env).contains(&a));
     }
 
     #[rstest]
@@ -7491,7 +7463,7 @@ mod tests {
         env.store
             .reject_suggestions(std::slice::from_ref(&a))
             .unwrap();
-        assert!(!to_classify(&env, &[]).contains(&a));
+        assert!(!to_classify(&env).contains(&a));
     }
 
     #[rstest]
@@ -7781,7 +7753,7 @@ mod tests {
         assert!(attach_path(&draft_env, &draft_env.file).is_err());
     }
 
-    // ---- the Sort queue and what it learns ----------------------------------
+    // ---- suggestions and what they learn -------------------------------------
 
     /// A read Backlog thread from `sender`, `n` its unique suffix.
     fn from_sender(env: &Env, n: &str, sender: &str) -> String {
@@ -7841,43 +7813,38 @@ mod tests {
     fn queue_takes_open_columns_newest_first(env: Env) {
         let old = open_thread(&env, "1", "backlog", 50_000);
         let new = open_thread(&env, "2", "todo", 0);
-        assert_eq!(to_classify(&env, &[]), vec![new, old]);
+        assert_eq!(to_classify(&env), vec![new, old]);
     }
 
     #[rstest]
-    fn queue_leaves_out_cards_the_user_holds(env: Env) {
+    fn only_the_asked_threads_are_candidates(env: Env) {
         let a = open_thread(&env, "1", "backlog", 0);
         open_thread(&env, "2", "backlog", 1000);
         let ids: Vec<String> = env
             .store
-            .sort_candidates(&[], std::slice::from_ref(&a), 10)
+            .suggest_candidates(std::slice::from_ref(&a))
             .unwrap()
             .into_iter()
             .map(|c| c.id)
             .collect();
-        assert!(!ids.contains(&a));
+        assert_eq!(ids, vec![a]);
     }
 
     #[rstest]
     fn unclassified_card_needs_the_ai(env: Env) {
-        open_thread(&env, "1", "backlog", 0);
-        assert!(!env.store.sort_candidates(&[], &[], 10).unwrap()[0].ready);
-    }
-
-    #[rstest]
-    fn queue_counts_per_column(env: Env) {
-        open_thread(&env, "1", "backlog", 0);
-        open_thread(&env, "2", "backlog", 0);
-        open_thread(&env, "3", "todo", 0);
-        let mut counts = env.store.sort_counts(&[], false).unwrap();
-        counts.sort();
-        assert_eq!(counts, vec![("backlog".into(), 2), ("todo".into(), 1)]);
+        let tid = open_thread(&env, "1", "backlog", 0);
+        assert!(
+            !env.store
+                .suggest_candidates(std::slice::from_ref(&tid))
+                .unwrap()[0]
+                .ready
+        );
     }
 
     #[rstest]
     fn answered_card_leaves_the_queue(env: Env) {
         let tid = answered(&env, "1", "ana@travel.example", SortAnswer::Yes);
-        assert!(!to_classify(&env, &[]).contains(&tid));
+        assert!(!to_classify(&env).contains(&tid));
     }
 
     #[rstest]
@@ -8002,12 +7969,35 @@ mod tests {
     }
 
     #[rstest]
+    fn forgotten_refusal_is_no_longer_listed(env: Env) {
+        answered(&env, "1", "ana@travel.example", SortAnswer::No);
+        let item = env.store.learned(10).unwrap().remove(0);
+        env.store.forget_learned(&item).unwrap();
+        assert!(env.store.learned(10).unwrap().is_empty());
+    }
+
+    #[rstest]
+    fn forgotten_rule_no_longer_applies(env: Env) {
+        for n in ["1", "2", "3"] {
+            answered(&env, n, "ana@travel.example", SortAnswer::Yes);
+        }
+        let item = env.store.learned(10).unwrap().remove(0);
+        env.store.forget_learned(&item).unwrap();
+        assert_eq!(env.store.sender_rule("ana@travel.example").unwrap(), None);
+    }
+
+    #[rstest]
     fn undo_puts_the_card_back(env: Env) {
         let tid = from_sender(&env, "1", "ana@travel.example");
         classify(&env, &tid, &to_voyage());
         let undo = env.store.answer_sort(&tid, &SortAnswer::Yes).unwrap();
         env.store.undo_sort(&undo).unwrap();
-        assert!(env.store.sort_candidates(&[], &[], 10).unwrap()[0].ready);
+        assert!(
+            env.store
+                .suggest_candidates(std::slice::from_ref(&tid))
+                .unwrap()[0]
+                .ready
+        );
     }
 
     #[rstest]
@@ -8093,16 +8083,5 @@ mod tests {
         classify(&env, &next, &to_voyage());
         answered(&env, "1", "ana@travel.example", SortAnswer::No);
         assert!(!env.store.close_if_refused(&next).unwrap());
-    }
-
-    #[rstest]
-    fn held_queue_counts_only_prepared_cards(env: Env) {
-        let ready = open_thread(&env, "1", "backlog", 0);
-        open_thread(&env, "2", "backlog", 1000);
-        classify(&env, &ready, &jev_archive());
-        assert_eq!(
-            env.store.sort_counts(&[], true).unwrap(),
-            vec![("backlog".to_string(), 1)]
-        );
     }
 }

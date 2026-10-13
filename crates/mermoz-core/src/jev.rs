@@ -416,7 +416,7 @@ pub fn column_suggestion(
     })
 }
 
-/// Why the Sort queue cannot ask the AI for new cards, if it cannot: no key, the
+/// Why suggestions cannot ask the AI about new threads, if they cannot: no key, the
 /// provider on hold ("credits", "unavailable"), sorting turned off (a daily limit of
 /// 0: "off"), or today's limit used up ("limit").
 pub fn sort_hold(
