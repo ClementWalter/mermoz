@@ -6,6 +6,7 @@
 //! the mail); the account's AI only writes words (title, why now, drafts), lazily.
 
 pub mod dates;
+pub mod later;
 pub mod money;
 pub mod texts;
 
@@ -254,6 +255,8 @@ pub struct FeedUnit {
     /// The user taught Mermoz to archive this sender's mail (the Sort queue's learned
     /// rule): only such mail is grouped into a batch.
     pub learned_noise: bool,
+    /// Came back from Later, with what the user had picked ("Friday evening").
+    pub back_from_later: Option<String>,
 }
 
 impl FeedUnit {
@@ -316,6 +319,10 @@ pub fn section(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Section {
     let j = u.judgment.as_ref();
     if matches!(kind, Kind::Cleanup | Kind::Reading) {
         return Section::Later;
+    }
+    // The user asked to see it now: it comes first.
+    if u.back_from_later.is_some() {
+        return Section::Now;
     }
     // Mail nobody touched for months, with no date ahead, is not today's work.
     if is_stale(u, kind, today) {
@@ -420,6 +427,9 @@ pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
     let t = u.primary();
     let j = u.judgment.as_ref();
     let mut out = vec![];
+    if let Some(when) = &u.back_from_later {
+        out.push(format!("You set this for {when}."));
+    }
     if u.from_backlog {
         out.push("It was in your Backlog, and its date is close.".to_string());
     }

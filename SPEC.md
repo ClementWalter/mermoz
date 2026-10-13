@@ -458,14 +458,23 @@ header counts what is left.
 
 **Keys.** Same as the rest of the app: j/k move, e Done, a Archive, y accept, r
 reply, ⌘Z undo, t ask about this (the "Chat about this" panel). New in the feed:
-↩ runs the card's primary action, 1–3 pick an option, l Later (until tomorrow
-morning), ⇧L Later until a chosen day, d or ⌫ Delete (to the Trash, undoable; a
-visible button on automatic mail and newsletters). Like a row in the List, clicking a card or
+↩ runs the card's primary action, 1–3 pick an option, d or ⌫ Delete (to the Trash,
+undoable; a visible button on automatic mail and newsletters). Like a row in the List, clicking a card or
 moving to it with j/k shows its mail in the reading pane (the pane follows once the
 keys pause); the card's own action stays on its button and on ↩. A handled
 card slides out, leaves a short "Done · Undo" strip that folds away, and focus
 moves to the next card. "Why this card?" explains a card in plain words, never
 with percentages.
+
+**Later.** `l` (or the Later button) opens a small picker on the card, in the List and
+the Board too (and ⌘K "Later…"): this evening (before 17:00), tomorrow morning, this
+weekend (Saturday 09:00), Friday evening (Monday to Thursday), next week (Monday
+08:00), each one key, or a date and time. ⇧L goes straight to a field that reads plain
+French or English ("vendredi soir", "friday 7pm", "dans 3 jours", "lundi matin",
+"15 nov"), locally, showing when that is while typing; a time already past rolls to
+its next occurrence. The mail leaves its column ("Later · Fri 18:00 · Undo") and comes
+back Unread at that time (or with new mail), first in the feed: "You set this for
+Friday evening."
 
 **Who decides what.**
 - Code decides the set, the section and the order: deadline, then urgency ×

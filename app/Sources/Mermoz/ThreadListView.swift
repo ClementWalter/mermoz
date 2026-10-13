@@ -130,18 +130,19 @@ enum ThreadKeys {
             let f = event.modifierFlags
             guard let window = event.window, window.title != "Mermoz Settings",
                   !(window.firstResponder?.isTyping ?? false),
-                  model.compose == nil, model.paletteMode == nil,
+                  model.compose == nil, model.paletteMode == nil, model.later == nil,
                   let c = ShortcutKey.normalize(event.characters ?? "", command: f.contains(.command),
                                                 control: f.contains(.control), option: f.contains(.option),
                                                 known: characters + FeedKeys.characters),
-                  FeedKeys.handle(c, shift: f.contains(.shift), model: model) || handle(c, model: model)
+                  FeedKeys.handle(c, shift: f.contains(.shift), model: model)
+                    || handle(c, shift: f.contains(.shift), model: model)
             else { return event }
             return nil
         }
     }
 
     @MainActor
-    static func handle(_ c: String, model: AppModel) -> Bool {
+    static func handle(_ c: String, shift: Bool = false, model: AppModel) -> Bool {
         // The Sort queue answers with y / n / c / s; the other keys work as everywhere.
         if model.selection == .sort {
             switch c {
@@ -171,6 +172,8 @@ enum ThreadKeys {
         case "r": model.startReply()
         case "c": model.startNew()
         case "t": if model.selectedThreadId != nil { model.toggleChat() }
+        // Later: l on the quick choices, ⇧L straight to typing when.
+        case "l": if model.selectedThreadId != nil { model.openLaterForSelection(typing: shift) }
         // Matched by typed character, so it works on AZERTY (Shift+,) as on QWERTY.
         case "?": model.showShortcuts.toggle()
         case "/": model.paletteMode = .search

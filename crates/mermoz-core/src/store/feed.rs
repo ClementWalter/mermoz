@@ -7,6 +7,13 @@ use crate::feed::{self, FeedUnit, Judgment, Kind, Texts};
 use crate::model::{ThreadSummary, now_ms};
 use rusqlite::{OptionalExtension, params, params_from_iter};
 
+/// Later remembers what the user picked ("Friday evening") and whether the mail came back.
+pub const LATER_MIGRATION: &str = "ALTER TABLE feed_snoozes ADD COLUMN label TEXT;
+ALTER TABLE feed_snoozes ADD COLUMN woke INTEGER NOT NULL DEFAULT 0;";
+
+/// A mail that came back from Later stays in Now this long, with its hint.
+const BACK_FOR_MS: i64 = 2 * 86_400_000;
+
 /// Statuses whose threads are always in the feed.
 pub const FEED_STATUSES: &[&str] = &["unread", "todo", "in_progress", "waiting"];
 
@@ -25,10 +32,11 @@ const UNIT_COLS: &str = "j.judged, j.kind, j.needs_reply, j.urgency, j.due, j.du
     j.sender_weight, j.typical_reply_days, x.json, \
     CASE WHEN t.status = 'waiting' THEN (SELECT MAX(m.date) FROM messages m WHERE m.thread_id = t.id AND m.is_from_me = 1) END, \
     CASE WHEN j.judged IS NOT 1 OR j.kind IN ('cleanup', 'reading') OR j.automated >= 0.7 \
-      THEN (SELECT m.from_email FROM messages m WHERE m.thread_id = t.id ORDER BY m.date DESC LIMIT 1) END";
+      THEN (SELECT m.from_email FROM messages m WHERE m.thread_id = t.id ORDER BY m.date DESC LIMIT 1) END, \
+    z.until, z.label, z.woke";
 
 /// How many columns `UNIT_COLS` has.
-const UNIT_COL_COUNT: usize = 13;
+const UNIT_COL_COUNT: usize = 16;
 
 /// A unit as read from the store: thread, judgment, card words, the user's last
 /// message date and the last sender's address.
@@ -38,6 +46,7 @@ type UnitRow = (
     Option<Texts>,
     Option<i64>,
     String,
+    Option<String>,
 );
 
 /// A thread to judge: id, the date of its latest message, and whether it is Backlog.
@@ -273,7 +282,17 @@ impl Store {
                 .and_then(|s| serde_json::from_str(&s).ok());
             let my_last: Option<i64> = row.get(b + 11)?;
             let last_sender: Option<String> = row.get(b + 12)?;
-            Ok((t, j, texts, my_last, last_sender.unwrap_or_default()))
+            let until: Option<i64> = row.get(b + 13)?;
+            let label: Option<String> = row.get(b + 14)?;
+            let woke: Option<i64> = row.get(b + 15)?;
+            // Back from Later: woken recently, and nothing happened since.
+            let back = match (until, woke) {
+                (Some(u), Some(1)) if now - u < BACK_FOR_MS => {
+                    Some(label.unwrap_or_else(|| "this time".into()))
+                }
+                _ => None,
+            };
+            Ok((t, j, texts, my_last, last_sender.unwrap_or_default(), back))
         };
         let mut rows: Vec<UnitRow> = vec![];
         {
@@ -301,7 +320,7 @@ impl Store {
         let noise = self.learned_noise(&automated)?;
         Ok(rows
             .drain(..)
-            .map(|(t, judgment, texts, my_last, sender)| {
+            .map(|(t, judgment, texts, my_last, sender, back)| {
                 let waiting_days = (t.status == "waiting")
                     .then(|| (now - my_last.unwrap_or(t.last_date)).max(0) / DAY_MS);
                 FeedUnit {
@@ -309,6 +328,7 @@ impl Store {
                     from_backlog: t.status == "backlog",
                     automated_sender: is_automated(&sender),
                     learned_noise: noise.contains(&t.id),
+                    back_from_later: back,
                     threads: vec![t],
                     judgment,
                     texts,
@@ -446,18 +466,48 @@ impl Store {
     }
 
     /// Hides threads from the feed until `until`, or until new mail arrives in them.
-    pub fn snooze(&self, ids: &[String], until: i64) -> Result<usize> {
+    /// `label` is how the user put it ("Friday evening"), for the hint when it comes back.
+    pub fn snooze(&self, ids: &[String], until: i64, label: Option<&str>) -> Result<usize> {
         let w = self.w.lock().unwrap();
         let mut n = 0;
         for id in ids {
             n += w.execute(
-                "INSERT INTO feed_snoozes (thread_id, until, for_date)
-                 SELECT id, ?2, last_date FROM threads WHERE id = ?1
-                 ON CONFLICT(thread_id) DO UPDATE SET until = excluded.until, for_date = excluded.for_date",
-                params![id, until],
+                "INSERT INTO feed_snoozes (thread_id, until, for_date, label, woke)
+                 SELECT id, ?2, last_date, ?3, 0 FROM threads WHERE id = ?1
+                 ON CONFLICT(thread_id) DO UPDATE SET until = excluded.until, for_date = excluded.for_date,
+                   label = excluded.label, woke = 0",
+                params![id, until, label],
             )?;
         }
         Ok(n)
+    }
+
+    /// Put-off mail whose time has come and that has not come back yet.
+    pub fn due_snoozes(&self, now: i64) -> Result<Vec<String>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT z.thread_id FROM feed_snoozes z JOIN threads t ON t.id = z.thread_id
+             WHERE z.woke = 0 AND z.until <= ?1",
+        )?;
+        Ok(st
+            .query_map([now], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Brings put-off mail back: Unread again (it resumes its status once read), and
+    /// shown in the feed's Now with what the user had picked. Closed mail stays closed.
+    pub fn wake_snoozed(&self, thread_id: &str) -> Result<bool> {
+        let status = self.thread_status(thread_id)?;
+        let open = !matches!(status.as_str(), "done" | "archive" | "deleted");
+        if open {
+            self.mark_read(thread_id, false)?;
+        }
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "UPDATE feed_snoozes SET woke = 1 WHERE thread_id = ?1",
+            [thread_id],
+        )?;
+        Ok(open)
     }
 
     pub fn unsnooze(&self, ids: &[String]) -> Result<usize> {

@@ -191,6 +191,10 @@ struct CommandPalette: View {
                 command("c-archive", "Archive", "archivebox", detail: "A", keywords: ["file", "away"]) { model.moveSelected(to: "archive") },
                 command("c-delete", "Delete", "trash", detail: "⌫", keywords: ["trash", "bin", "remove"]) { model.moveSelected(to: "deleted") },
                 command("c-unread", "Mark unread", "envelope.badge", detail: "U", keywords: ["new"]) { model.markUnreadSelected() },
+                command("c-later", "Later…", "clock.arrow.circlepath", detail: "L",
+                        keywords: ["snooze", "remind", "postpone", "defer", "plus tard", "tomorrow", "friday", "weekend"]) {
+                    DispatchQueue.main.async { model.openLaterForSelection(typing: false) }
+                },
             ]
             if model.threads.first(where: { $0.id == sel })?.suggestion != nil {
                 out.insert(command("c-reject", "Dismiss AI suggestion", "xmark", detail: "X", keywords: ["reject", "no"]) { model.rejectSelected() }, at: 0)

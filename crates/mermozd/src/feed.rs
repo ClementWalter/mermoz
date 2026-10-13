@@ -3,7 +3,7 @@
 //! only when the app shows that card.
 
 use crate::service::{Service, pause_reason, transient};
-use mermoz_core::feed::{self, dates, money, texts};
+use mermoz_core::feed::{self, dates, later, money, texts};
 use mermoz_core::model::now_ms;
 use mermoz_core::store::ColumnScope;
 use mermoz_core::sync::Event;
@@ -45,6 +45,61 @@ enum Round {
 
 pub fn start(svc: &Arc<Service>) {
     tokio::spawn(judge_loop(svc.clone()));
+    tokio::spawn(later_loop(svc.clone()));
+}
+
+/// The Later picker's quick choices for now, with when each comes back.
+pub fn later_options() -> Value {
+    let now = later::now();
+    json!(
+        later::options(now)
+            .into_iter()
+            .map(
+                |o| json!({ "key": o.key, "label": o.label, "until": later::millis(o.at),
+                             "when": later::describe(o.at, now) })
+            )
+            .collect::<Vec<_>>()
+    )
+}
+
+/// What the user typed in the Later picker, resolved (null when it names no time).
+pub fn later_parse(text: &str) -> Value {
+    let now = later::now();
+    match later::parse(text, now) {
+        Some(at) => json!({ "until": later::millis(at), "when": later::describe(at, now) }),
+        None => Value::Null,
+    }
+}
+
+/// Brings put-off mail back when its time comes: Unread again, first in the feed.
+async fn later_loop(svc: Arc<Service>) {
+    loop {
+        match svc.store.due_snoozes(now_ms()) {
+            Ok(due) if !due.is_empty() => {
+                let mut back = vec![];
+                for id in due {
+                    match svc.store.wake_snoozed(&id) {
+                        Ok(_) => back.push(id),
+                        Err(e) => warn!(thread = %id, "later: {e}"),
+                    }
+                }
+                for id in &back {
+                    if let Ok((acc, _)) = svc.store.provider_thread_id(id) {
+                        svc.kick(&acc);
+                    }
+                }
+                info!(back = back.len(), "mail back from Later");
+                let _ = svc.events.send(Event::ThreadsChanged(back));
+                let _ = svc.events.send(Event::FeedChanged);
+            }
+            Ok(_) => {}
+            Err(e) => warn!("later: {e}"),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(crate::service::poll_interval()) => {}
+            _ = svc.later_kick.notified() => {}
+        }
+    }
 }
 
 /// Judges every open thread once per new message, while a TypeSafe key is set.

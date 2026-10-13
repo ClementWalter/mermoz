@@ -45,6 +45,7 @@ fn unit(id: &str, status: &str, j: Option<Judgment>) -> FeedUnit {
         from_backlog: false,
         automated_sender: false,
         learned_noise: false,
+        back_from_later: None,
     }
 }
 
@@ -663,4 +664,24 @@ fn spans_read_naturally(#[case] days: i64, #[case] want: &str) {
 fn most_recent_first_when_nothing_else_differs() {
     let f = feed(vec![idle("older", "todo", 5), idle("newer", "todo", 1)]);
     assert_eq!(ids(&f), vec!["newer", "older"]);
+}
+
+// ---- back from Later ----------------------------------------------------------------------
+
+#[rstest]
+fn mail_back_from_later_is_now() {
+    let u = FeedUnit {
+        back_from_later: Some("Friday evening".into()),
+        ..idle("t", "unread", 400)
+    };
+    assert_eq!(section(&u, Kind::Other, today()), Section::Now);
+}
+
+#[rstest]
+fn mail_back_from_later_says_what_was_picked() {
+    let u = FeedUnit {
+        back_from_later: Some("Friday evening".into()),
+        ..unit("t", "unread", None)
+    };
+    assert_eq!(reasons_of(&u)[0], "You set this for Friday evening.");
 }

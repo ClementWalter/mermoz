@@ -28,6 +28,10 @@ struct RootView: View {
             if model.showShortcuts {
                 ShortcutsOverlay().transition(.opacity)
             }
+            // On a Feed card the picker is a popover; elsewhere a small panel.
+            if let r = model.later, r.cardId == nil {
+                LaterPanel(request: r).transition(.opacity)
+            }
         }
         .overlay(alignment: .bottom) { ToastView() }
         .sheet(item: Binding(get: { model.drive.connectPrompt }, set: { model.drive.connectPrompt = $0 })) {

@@ -3561,3 +3561,100 @@ fn the_whole_newsletter_keeps_its_original_text(synced: World) {
     let m = &newsletter(&synced)["messages"][0];
     assert!(m["body_text"].as_str().unwrap().contains("list-manage"));
 }
+
+// ---- Later -------------------------------------------------------------------------------
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+/// Puts the decision card off until `in_ms` from now, as "Friday evening".
+fn put_off(w: &World, in_ms: i64) -> Value {
+    let id = w.card("Carrelage")["thread"]["id"].clone();
+    w.ok(
+        "feed.snooze",
+        json!({ "ids": [id], "until": now_ms() + in_ms, "label": "Friday evening" }),
+    );
+    id
+}
+
+fn todo_ids(w: &World) -> Vec<Value> {
+    w.ok(
+        "threads.list",
+        json!({ "status": ["unread", "todo"], "limit": 200 }),
+    )["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].clone())
+        .collect()
+}
+
+#[rstest]
+fn a_put_off_thread_leaves_its_column(demo: World) {
+    let id = put_off(&demo, 3_600_000);
+    assert!(!todo_ids(&demo).contains(&id));
+}
+
+#[rstest]
+fn a_put_off_thread_comes_back_at_its_time(demo: World) {
+    let id = put_off(&demo, 1_500);
+    demo.wait_until("the thread back", |w| todo_ids(w).contains(&id));
+    assert_eq!(
+        demo.ok("threads.get", json!({ "id": id }))["thread"]["status"],
+        "unread"
+    );
+}
+
+#[rstest]
+fn a_returning_thread_is_first_in_the_feed(demo: World) {
+    put_off(&demo, 1_000);
+    demo.wait_until("the card back", |w| {
+        w.cards()
+            .iter()
+            .any(|c| c["reasons"][0] == "You set this for Friday evening.")
+    });
+    assert_eq!(demo.card("Carrelage")["section"], "now");
+}
+
+#[rstest]
+fn later_reads_what_the_user_types(demo: World) {
+    assert!(
+        demo.ok("later.parse", json!({ "text": "vendredi soir" }))["until"]
+            .as_i64()
+            .is_some()
+    );
+}
+
+#[rstest]
+fn later_offers_tomorrow_morning(demo: World) {
+    let options = demo.ok("later.options", json!({}));
+    assert!(
+        options
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["label"] == "Tomorrow morning")
+    );
+}
+
+#[rstest]
+fn later_says_nothing_for_unclear_text(demo: World) {
+    assert!(
+        demo.ok("later.parse", json!({ "text": "bientôt peut-être" }))
+            .is_null()
+    );
+}
+
+#[rstest]
+fn cli_later_reads_plain_words(demo: World) {
+    let number = demo.card("Carrelage")["thread"]["number"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = demo.cli(&["later", &number, "vendredi", "soir"]);
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("later: back "));
+}

@@ -196,7 +196,9 @@ app, the CLI and the MCP server are clients of this protocol.
 | `chat.clear`         | `{"thread_id"}`                                                                          | `{"deleted": n}`                         |
 | `feed.list`          | `{"project"?, "account_id"?}` — the Feed: open threads as cards, in sections            | `Feed`                                   |
 | `feed.texts`         | `{"ids": [thread id]}` — asks the account's allowed AI to write these cards' words in the background (cards on screen only); emits `feed_changed` per card | `{"queued": n}` |
-| `feed.snooze`        | `{"ids": [id], "until": ms}` — Later: hides the threads from the feed until `until` or new mail | `{"snoozed": n}`                  |
+| `feed.snooze`        | `{"ids": [id], "until": ms, "label"?}` — Later: the threads leave the feed and their status columns until `until` (or new mail), then come back Unread and first in the feed with "You set this for <label>" | `{"snoozed": n}` |
+| `later.options`      | `{}` — the Later picker's quick choices for now: this evening (before 17:00), tomorrow morning, this weekend (weekdays), Friday evening (Mon–Thu), next week | `[{"key": "f", "label": "Friday evening", "until": ms, "when": "Fri 18:00"}]` |
+| `later.parse`        | `{"text"}` — plain French or English ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"), read locally | `{"until": ms, "when": "Fri 18:00"}` or `null` |
 | `feed.learn_archive` | `{"ids": [id]}` — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as in the Sort queue (three make a rule; ruled senders' mail is batched) | `{"learned": n}` |
 | `feed.unsnooze`      | `{"ids": [id]}`                                                                          | `{"unsnoozed": n}`                       |
 | `feedback.submit`    | `{"text", "command"?, "agent"?}`                                                         | `{"id"}`                                 |

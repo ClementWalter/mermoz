@@ -206,8 +206,8 @@ final class AppModel {
     var feedVisible: Set<String> = []
     /// Batch mails the user unticked, left out of "Archive all".
     var feedKept: Set<String> = []
-    /// The card whose "Later until…" day picker is open (⇧L).
-    var feedLaterCard: String?
+    /// The Later picker, while open (AppModel+Later.swift).
+    var later: LaterRequest?
     var feedRefreshTask: Task<Void, Never>?
     var feedTextsTask: Task<Void, Never>?
     /// Loads the open conversation; a newer selection cancels it.
@@ -842,8 +842,8 @@ final class AppModel {
     func escape() {
         if showShortcuts {
             showShortcuts = false
-        } else if feedLaterCard != nil {
-            feedLaterCard = nil
+        } else if later != nil {
+            later = nil
         } else if paletteMode != nil {
             paletteMode = nil
         } else if !expandedMessages.isEmpty {

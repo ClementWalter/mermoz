@@ -1053,10 +1053,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .get("until")
                 .and_then(|v| v.as_i64())
                 .ok_or_else(|| RpcError::invalid("missing 'until' (Unix milliseconds)"))?;
-            let n = st.snooze(&ids, until)?;
+            let n = st.snooze(&ids, until, opt_s(p, "label").as_deref())?;
             let _ = svc.events.send(Event::FeedChanged);
+            let _ = svc.events.send(Event::ThreadsChanged(ids));
+            svc.later_kick.notify_one();
             Ok(json!({ "snoozed": n }))
         }
+        "later.options" => Ok(crate::feed::later_options()),
+        "later.parse" => Ok(crate::feed::later_parse(&s(p, "text")?)),
         "feed.learn_archive" => {
             let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
             let ids: Vec<String> = ids

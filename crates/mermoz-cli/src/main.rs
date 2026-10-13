@@ -237,12 +237,10 @@ enum Cmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Hide a thread from the Feed until a day (YYYY-MM-DD, default tomorrow morning) or
-    /// until new mail arrives in it. "none" brings it back now.
-    Later {
-        thread: String,
-        until: Option<String>,
-    },
+    /// Put a thread off until a time said in plain words ("vendredi soir", "friday 7pm",
+    /// "dans 3 jours", "15 nov"; default tomorrow morning). It leaves its column and comes
+    /// back Unread then, or when new mail arrives. "none" brings it back now.
+    Later { thread: String, when: Vec<String> },
     /// Trigger an immediate sync.
     Sync,
     /// Run an MCP server on stdio.
@@ -402,24 +400,6 @@ fn fmt_date(ms: i64) -> String {
         .single()
         .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_default()
-}
-
-/// When a thread hidden with `later` comes back: 8:00 local time on that day (tomorrow
-/// by default). `None` means "now" ("none").
-fn later_until(day: Option<&str>, today: chrono::NaiveDate) -> Result<Option<i64>, RpcError> {
-    let day = match day {
-        Some(d) if d.eq_ignore_ascii_case("none") => return Ok(None),
-        Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| RpcError {
-            code: -32602,
-            message: format!("'{d}' is not a day: use YYYY-MM-DD, or none"),
-            data: None,
-        })?,
-        None => today + chrono::Duration::days(1),
-    };
-    Ok(day
-        .and_hms_opt(8, 0, 0)
-        .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
-        .map(|t| t.timestamp_millis()))
 }
 
 fn prio_name(p: i64) -> &'static str {
@@ -1257,22 +1237,44 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 ));
             }
         }
-        Cmd::Later { thread, until } => {
-            let v = match later_until(until.as_deref(), chrono::Local::now().date_naive())? {
-                Some(ms) => c.call("feed.snooze", json!({ "ids": [thread], "until": ms }))?,
-                None => c.call("feed.unsnooze", json!({ "ids": [thread] }))?,
-            };
-            if out.json {
-                return {
+        Cmd::Later { thread, when } => {
+            let text = when.join(" ");
+            if text.eq_ignore_ascii_case("none") {
+                let v = c.call("feed.unsnooze", json!({ "ids": [thread] }))?;
+                if out.json {
                     out.json(&v);
-                    Ok(())
-                };
+                } else {
+                    out.line("back now");
+                }
+                return Ok(());
             }
-            out.line(match until {
-                Some(u) if u.eq_ignore_ascii_case("none") => "back in the feed".to_string(),
-                Some(u) => format!("hidden until {u}"),
-                None => "hidden until tomorrow".to_string(),
-            });
+            // Empty means the picker's "Tomorrow morning".
+            let at = if text.trim().is_empty() {
+                c.call("later.options", json!({}))?
+                    .as_array()
+                    .and_then(|o| o.iter().find(|o| o["key"] == "t").cloned())
+                    .unwrap_or(Value::Null)
+            } else {
+                c.call("later.parse", json!({ "text": text }))?
+            };
+            let (Some(until), Some(label)) = (at["until"].as_i64(), at["when"].as_str()) else {
+                return Err(RpcError {
+                    code: -32602,
+                    message: format!(
+                        "'{text}' doesn't say when: try \"vendredi soir\", \"friday 7pm\", \"dans 3 jours\" or \"15 nov\""
+                    ),
+                    data: None,
+                });
+            };
+            let v = c.call(
+                "feed.snooze",
+                json!({ "ids": [thread], "until": until, "label": label }),
+            )?;
+            if out.json {
+                out.json(&v);
+            } else {
+                out.line(format!("later: back {label}"));
+            }
         }
         Cmd::Due { thread, date } => {
             let d = if date.eq_ignore_ascii_case("none") {
@@ -1705,30 +1707,6 @@ mod tests {
     #[case::long("abcdefgh", 5, "abcd…")]
     fn truncation(#[case] input: &str, #[case] n: usize, #[case] want: &str) {
         assert_eq!(truncate(input, n), want);
-    }
-
-    #[rstest]
-    fn later_none_means_now() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
-        assert_eq!(later_until(Some("none"), today).unwrap(), None);
-    }
-
-    #[rstest]
-    fn later_defaults_to_tomorrow_morning() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
-        let ms = later_until(None, today).unwrap().unwrap();
-        let back = chrono::DateTime::from_timestamp_millis(ms)
-            .unwrap()
-            .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
-            .to_string();
-        assert_eq!(back, "2026-10-13 08:00");
-    }
-
-    #[rstest]
-    fn later_refuses_a_bad_day() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
-        assert!(later_until(Some("friday"), today).is_err());
     }
 
     #[rstest]

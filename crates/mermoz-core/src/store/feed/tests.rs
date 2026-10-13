@@ -221,7 +221,7 @@ fn backlog_with_a_far_date_stays_out(env: Env) {
 #[rstest]
 fn snoozed_thread_is_hidden(env: Env) {
     let t = env.mail("m1", "t1", MARIE, 0, "hi");
-    env.store.snooze(&[t], now_ms() + DAY_MS).unwrap();
+    env.store.snooze(&[t], now_ms() + DAY_MS, None).unwrap();
     assert!(env.unit_ids().is_empty());
 }
 
@@ -229,7 +229,7 @@ fn snoozed_thread_is_hidden(env: Env) {
 fn snooze_ends_at_its_time(env: Env) {
     let t = env.mail("m1", "t1", MARIE, 0, "hi");
     env.store
-        .snooze(std::slice::from_ref(&t), now_ms() - 1)
+        .snooze(std::slice::from_ref(&t), now_ms() - 1, None)
         .unwrap();
     assert_eq!(env.unit_ids(), vec![t]);
 }
@@ -238,7 +238,7 @@ fn snooze_ends_at_its_time(env: Env) {
 fn new_mail_ends_a_snooze(env: Env) {
     let t = env.mail("m1", "t1", MARIE, 1, "hi");
     env.store
-        .snooze(std::slice::from_ref(&t), now_ms() + DAY_MS)
+        .snooze(std::slice::from_ref(&t), now_ms() + DAY_MS, None)
         .unwrap();
     env.mail("m2", "t1", MARIE, 0, "again");
     assert_eq!(env.unit_ids(), vec![t]);
@@ -248,7 +248,7 @@ fn new_mail_ends_a_snooze(env: Env) {
 fn unsnooze_brings_it_back(env: Env) {
     let t = env.mail("m1", "t1", MARIE, 0, "hi");
     env.store
-        .snooze(std::slice::from_ref(&t), now_ms() + DAY_MS)
+        .snooze(std::slice::from_ref(&t), now_ms() + DAY_MS, None)
         .unwrap();
     env.store.unsnooze(std::slice::from_ref(&t)).unwrap();
     assert_eq!(env.unit_ids(), vec![t]);
@@ -425,4 +425,75 @@ fn waiting_thread_shows_as_waiting_for_the_ai(env: Env) {
     let t = env.mail("m1", "t1", MARIE, 0, "hi");
     env.set_status(&t, "waiting");
     assert_eq!(env.store.feed_kind(&t).unwrap(), Kind::Waiting);
+}
+
+// ---- Later ---------------------------------------------------------------------------------
+
+#[rstest]
+fn put_off_mail_leaves_its_column(env: Env) {
+    let t = env.mail("m1", "t1", MARIE, 0, "hi");
+    env.set_status(&t, "todo");
+    env.store
+        .snooze(
+            std::slice::from_ref(&t),
+            now_ms() + DAY_MS,
+            Some("Friday evening"),
+        )
+        .unwrap();
+    let (rows, _) = env
+        .store
+        .threads(&crate::store::ThreadFilter {
+            status: Some(vec!["todo".into()]),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(rows.is_empty());
+}
+
+#[rstest]
+fn put_off_mail_is_due_at_its_time(env: Env) {
+    let t = env.mail("m1", "t1", MARIE, 0, "hi");
+    env.store
+        .snooze(std::slice::from_ref(&t), now_ms() - 1, None)
+        .unwrap();
+    assert_eq!(env.store.due_snoozes(now_ms()).unwrap(), vec![t]);
+}
+
+#[rstest]
+fn mail_back_from_later_is_unread(env: Env) {
+    let t = env.mail("m1", "t1", MARIE, 0, "hi");
+    env.set_status(&t, "todo");
+    env.store
+        .snooze(std::slice::from_ref(&t), now_ms() - 1, None)
+        .unwrap();
+    env.store.wake_snoozed(&t).unwrap();
+    assert_eq!(env.store.thread(&t).unwrap().status, "unread");
+}
+
+#[rstest]
+fn mail_back_from_later_carries_what_was_picked(env: Env) {
+    let t = env.mail("m1", "t1", MARIE, 0, "hi");
+    env.store
+        .snooze(
+            std::slice::from_ref(&t),
+            now_ms() - 1,
+            Some("Friday evening"),
+        )
+        .unwrap();
+    env.store.wake_snoozed(&t).unwrap();
+    assert_eq!(
+        env.unit(&t).back_from_later.as_deref(),
+        Some("Friday evening")
+    );
+}
+
+#[rstest]
+fn archived_mail_stays_archived_when_its_time_comes(env: Env) {
+    let t = env.mail("m1", "t1", MARIE, 0, "hi");
+    env.store
+        .snooze(std::slice::from_ref(&t), now_ms() - 1, None)
+        .unwrap();
+    env.set_status(&t, "archive");
+    env.store.wake_snoozed(&t).unwrap();
+    assert_eq!(env.store.thread(&t).unwrap().status, "archive");
 }

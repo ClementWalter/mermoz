@@ -109,6 +109,7 @@ const MIGRATIONS: &[&str] = &[
     INLINE_PARTS,
     counts::MIGRATION,
     bodies::MIGRATION,
+    feed::LATER_MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
@@ -1985,6 +1986,13 @@ impl Store {
         if let Some(k) = &f.kinds {
             clauses.push(format!("t.conv_kind IN ({})", vec!["?"; k.len()].join(",")));
             args.extend(k.iter().map(|x| x.clone().into()));
+        }
+        // Mail put off with Later leaves its column until it comes back (or new mail arrives).
+        if f.status.is_some() {
+            clauses.push(
+                "NOT EXISTS (SELECT 1 FROM feed_snoozes z WHERE z.thread_id = t.id AND z.woke = 0 AND z.for_date >= t.last_date)"
+                    .into(),
+            );
         }
         let wh = if clauses.is_empty() {
             String::new()

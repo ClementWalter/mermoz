@@ -141,7 +141,7 @@ extension AppModel {
             setStatus(of: card, ids: ids.filter { !feedKept.contains($0) }, to: "archive")
             teach(card)
         case .done: setStatus(of: card, ids: card.threadIds, to: "done")
-        case .later: later(card, until: FeedLater.tomorrowMorning(after: Date()))
+        case .later: openLater(for: card, typing: false)
         }
     }
 
@@ -213,22 +213,6 @@ extension AppModel {
         }
     }
 
-    /// Later (l, or ⇧L with a day): out of the feed until then or until new mail.
-    func later(_ card: FeedCard, until: Date) {
-        guard let client else { return }
-        let ids = card.threadIds
-        undoStack.append(UndoEntry(label: "Later", before: [], unsnooze: ids))
-        let words = Calendar.current.isDateInTomorrow(until)
-            ? "tomorrow" : until.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
-        leave(card, label: "Later · back \(words)")
-        Task {
-            do { try await client.snooze(ids, until: until) } catch {
-                report(error)
-                await loadFeed()
-            }
-        }
-    }
-
     /// Writes the event as a calendar file and hands it to Calendar, which asks where to add it.
     func addToCalendar(_ card: FeedCard) {
         guard let due = card.due,
@@ -245,7 +229,7 @@ extension AppModel {
     }
 
     /// Swaps the card for a "Done · Undo" strip, then folds it away and moves focus on.
-    private func leave(_ card: FeedCard, label: String) {
+    func leave(_ card: FeedCard, label: String) {
         let ids = feed?.cards.map(\.id) ?? []
         if feedFocus == card.id { feedFocus = FeedFocus.after(removing: card.id, from: ids) }
         withAnimation(.easeInOut(duration: 0.25)) { feedStrips[card.id] = label }

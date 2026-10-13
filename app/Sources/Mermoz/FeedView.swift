@@ -64,9 +64,6 @@ struct FeedView: View {
             }
             .listPanel()
         }
-        .sheet(isPresented: Binding(get: { model.feedLaterCard != nil }, set: { if !$0 { model.feedLaterCard = nil } })) {
-            if let card = model.feed?.card(model.feedLaterCard) { LaterPicker(card: card) }
-        }
     }
 
     private var title: String {
@@ -501,7 +498,12 @@ struct CardActions: View {
             // Promotions and newsletters are often just binned: Delete is in plain sight there.
             if card.kind == .cleanup || card.kind == .reading { secondary("Delete", key: "d") { model.delete(card) } }
             Spacer(minLength: 4)
-            quiet("Later", key: "l") { model.run(.later, on: card) }
+            quiet("Later", key: "l") { model.openLater(for: card, typing: false) }
+                .popover(isPresented: Binding(get: { model.later?.cardId == card.id },
+                                              set: { if !$0, model.later?.cardId == card.id { model.later = nil } }),
+                         arrowEdge: .bottom) {
+                    if let r = model.later { LaterPicker(request: r) }
+                }
             if card.kind != .cleanup, card.kind != .reading { quiet("Delete", key: "d") { model.delete(card) } }
             if !card.isBatch { quiet("Ask", key: "t") { model.askAbout(card) } }
             Button("Why?") { why.toggle() }
@@ -567,41 +569,13 @@ struct DoneStripView: View {
     }
 }
 
-/// ⇧L: hide the card until a chosen day.
-struct LaterPicker: View {
-    @Environment(AppModel.self) private var model
-    let card: FeedCard
-    @State private var day = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Bring it back on…").font(.system(size: 15, weight: .semibold))
-            Text(card.title).font(.system(size: 12.5)).foregroundStyle(Theme.text2).lineLimit(2)
-            DatePicker("", selection: $day, in: Date()..., displayedComponents: .date)
-                .datePickerStyle(.graphical).labelsHidden()
-            Text("It comes back that morning, or sooner if new mail arrives.").font(.system(size: 11.5)).foregroundStyle(Theme.text3)
-            HStack {
-                Spacer()
-                Button("Cancel") { model.feedLaterCard = nil }.keyboardShortcut(.cancelAction)
-                Button("Later") {
-                    model.feedLaterCard = nil
-                    model.later(card, until: FeedLater.morning(of: day))
-                }
-                .keyboardShortcut(.defaultAction).buttonStyle(.glassProminent).tint(Theme.accent)
-            }
-        }
-        .padding(20)
-        .frame(width: 320)
-    }
-}
-
 /// Feed keys, tried before the app-wide ones while the Feed is on screen (see FeedKeyMap).
 enum FeedKeys {
     static let characters = FeedKeyMap.characters
 
     @MainActor
     static func handle(_ c: String, shift: Bool, model: AppModel) -> Bool {
-        guard model.showsFeed, model.feedLaterCard == nil, let action = FeedKeyMap.action(c, shift: shift) else { return false }
+        guard model.showsFeed, model.later == nil, let action = FeedKeyMap.action(c, shift: shift) else { return false }
         switch action {
         case .next: model.feedMove(1); return true
         case .previous: model.feedMove(-1); return true
@@ -611,8 +585,8 @@ enum FeedKeys {
         switch action {
         case .primary: model.runPrimary(card)
         case let .option(n): model.runOption(n, on: card)
-        case .later: model.run(.later, on: card)
-        case .laterPickDay: model.feedLaterCard = card.id
+        case .later: model.openLater(for: card, typing: false)
+        case .laterPickDay: model.openLater(for: card, typing: true)
         case .open: model.openCard(card)
         case .done: model.done(card)
         case .archive: model.archive(card)

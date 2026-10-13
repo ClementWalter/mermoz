@@ -53,6 +53,8 @@ pub struct Service {
     pub drive: crate::drive::Hub,
     /// Wakes the feed's background judging (new mail, key set).
     pub feed_kick: Arc<Notify>,
+    /// Wakes the Later loop (a thread was just put off).
+    pub later_kick: Arc<Notify>,
     /// Threads whose card words are being written, so a re-render doesn't ask twice.
     pub feed_inflight: Mutex<std::collections::HashSet<String>>,
 }
@@ -83,6 +85,7 @@ impl Service {
             grouping_kick: Arc::new(Notify::new()),
             drive: Default::default(),
             feed_kick: Arc::new(Notify::new()),
+            later_kick: Arc::new(Notify::new()),
             feed_inflight: Mutex::new(Default::default()),
         })
     }

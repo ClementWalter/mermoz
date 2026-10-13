@@ -337,9 +337,17 @@ public final class DaemonClient: Sendable {
         try await callVoid("feed.texts", Params().with("ids", ids))
     }
 
-    /// Later: hides threads from the feed until `until` (or new mail).
-    public func snooze(_ ids: [String], until: Date) async throws {
-        try await callVoid("feed.snooze", Params().with("ids", ids).with("until", FeedLater.millis(until)))
+    /// Later: puts threads off until `untilMs` (or new mail); `label` comes back with them.
+    public func snooze(_ ids: [String], untilMs: Int64, label: String?) async throws {
+        try await callVoid("feed.snooze", Params().with("ids", ids).with("until", untilMs).with("label", label))
+    }
+
+    /// The Later picker's quick choices for now.
+    public func laterOptions() async throws -> [LaterChoice] { try await call("later.options") }
+
+    /// What typed words mean as a time, or nil.
+    public func laterParse(_ text: String) async throws -> LaterTime? {
+        try await call("later.parse", Params().with("text", text))
     }
 
     public func unsnooze(_ ids: [String]) async throws { try await callVoid("feed.unsnooze", Params().with("ids", ids)) }
