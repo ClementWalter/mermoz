@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this pipeline; bump it when its output changes, so cached readings are
 /// recomputed in the background.
-pub const VERSION: i64 = 1;
+pub const VERSION: i64 = 2;
 
 /// What the pipeline reads from a message.
 #[derive(Debug, Clone, Copy, Default)]
@@ -604,6 +604,8 @@ pub fn read(m: &Mail) -> Reading {
         _ if source_html => true,
         Some(_) if !has_visible(&plain) => true,
         Some(_) if !structured && newsletter::degraded(&plain) => true,
+        // A plain part that opens on the HTML's style sheet is a dump of it.
+        Some(_) if newsletter::opens_on_css(&plain) => true,
         // The HTML marks a quote the plain part lost (a text flattened from the HTML
         // runs the quote into the reply): the HTML says where the reply ends.
         // Only when the plain part names a quoted email: a blockquote alone may be an
@@ -623,6 +625,8 @@ pub fn read(m: &Mail) -> Reading {
         None if use_html => html_reading(html.unwrap_or(m.text)),
         None => (plain.clone(), false),
     };
+    // A style sheet is never text, whichever part it came in.
+    let body = newsletter::without_css(&body);
     let bulk = m.listed || newsletter::is_bulk(&body, html);
     // In a newsletter, ">" marks buttons and pull quotes, never quoted history; a list
     // post (`listed`) is a person's reply and keeps its quotes.

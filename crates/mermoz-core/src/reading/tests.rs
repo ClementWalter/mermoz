@@ -556,6 +556,80 @@ fn a_bounce_keeps_its_report_without_the_returned_mail() {
     );
 }
 
+// ---- Style sheets never reach a bubble ----
+
+const FONT_FACE: &str = "@font-face { font-family: 'Sans'; font-style: normal; font-weight: 100; src: url('https://static.shop.example/fonts/Sans-100.eot'); src: url('https://static.shop.example/fonts/Sans-100.eot?#iefix') format('embedded-opentype'); }\n@font-face { font-family: 'Sans'; font-weight: 400; src: url('https://static.shop.example/fonts/Sans-400.woff'); }\n";
+
+#[rstest]
+fn a_plain_part_opening_on_css_reads_from_the_html() {
+    let text = format!("{FONT_FACE}Votre commande\nN° de commande : AB12CD");
+    let m = Mail {
+        text: &text,
+        html: Some("<p>Votre commande AB12CD a été acceptée.</p>"),
+        ..Default::default()
+    };
+    assert_eq!(read(&m).text, "Votre commande AB12CD a été acceptée.");
+}
+
+#[rstest]
+#[case::font_face_without_html(&format!("{FONT_FACE}Votre commande a été acceptée."), "Votre commande a été acceptée.")]
+#[case::preheader_then_media(
+    "Hommage au fondateur @media only screen and (min-width: 620px) { .u-row { width: 600px !important; } }\nLe programme de juin.",
+    "Hommage au fondateur\nLe programme de juin."
+)]
+#[case::unterminated_media(
+    "Merci pour votre achat.\n\n@media print{\n#_t {\nbackground-image:\nurl('https://track.example/p')\n}\n",
+    "Merci pour votre achat."
+)]
+#[case::last_declaration_on_the_brace(
+    "Bien reçu.\n\n@media print{\n#_t {\nbackground-image:\nurl('https://track.example/p')\n}\n}\n\ndiv.OutlookMessageHeader {\nbackground-image: url('https://track.example/f')\n}\n",
+    "Bien reçu."
+)]
+#[case::selector_list(
+    "a:link, span.MsoHyperlink\n{mso-style-priority:99;\ncolor:blue;}\nBonjour,\nVoici le devis.",
+    "Bonjour,\nVoici le devis."
+)]
+#[case::outlook_vml(
+    "Je suis d'accord.\nv\\:* {behavior:url(#default#VML);}\no\\:* {behavior:url(#default#VML);}",
+    "Je suis d'accord."
+)]
+#[case::import_without_semicolon(
+    "Paiement reçu    @import url(https://fonts.example/css2?family=Sans&display=swap)    @media only screen and (max-width: 620px) { h1 { font-size: 28px !important; } }",
+    "Paiement reçu"
+)]
+#[case::inline_style_attribute(
+    "Merci d'avoir choisi le service\" style=\"color: #fff; font-weight: 600 !important;\"",
+    "Merci d'avoir choisi le service"
+)]
+#[case::conditional_comment_marks(
+    "<!--[if mso]>\nBonjour,\n<![endif]-->\nLe colis est parti.",
+    "Bonjour,\nLe colis est parti."
+)]
+#[case::braces_in_prose_kept("Use {x, y} as the pair.", "Use {x, y} as the pair.")]
+#[case::arrow_kept("Paris --> Lyon, puis retour.", "Paris --> Lyon, puis retour.")]
+#[case::code_in_prose_kept(
+    "Ajoute if (x) { return; } dans la boucle.",
+    "Ajoute if (x) { return; } dans la boucle."
+)]
+fn css_is_removed_from_plain_text(#[case] text: &str, #[case] want: &str) {
+    assert_eq!(read(&mail("x", text)).text, want);
+}
+
+#[rstest]
+#[case::style_in_body(r#"<html><body><style>p { color: red; }</style><p>Votre colis arrive demain.</p></body></html>"#)]
+#[case::uppercase_style_with_attributes(r#"<HTML><BODY><STYLE type="text/css" media="screen">P { COLOR: red; }</STYLE><P>Votre colis arrive demain.</P></BODY></HTML>"#)]
+#[case::outlook_conditional(r#"<html><body><!--[if mso]><style>td { font-family: Arial; }</style><xml><o:OfficeDocumentSettings><o:AllowPNG/></o:OfficeDocumentSettings></xml><![endif]--><p>Votre colis arrive demain.</p></body></html>"#)]
+#[case::malformed_head(r#"<html><head><title>Commande</title><style>@font-face { font-family: 'Sans'; }</style><body><p>Votre colis arrive demain.</p></body></html>"#)]
+#[case::script(r#"<html><body><script>var t = { a: 1 };</script><p>Votre colis arrive demain.</p></body></html>"#)]
+fn html_style_sheets_never_read_as_text(#[case] html: &str) {
+    let m = Mail {
+        text: "",
+        html: Some(html),
+        ..Default::default()
+    };
+    assert_eq!(read(&m).text, "Votre colis arrive demain.");
+}
+
 // ---- Unfilled mailing merge tags ----
 
 #[rstest]

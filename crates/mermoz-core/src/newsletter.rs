@@ -63,6 +63,9 @@ const VIEW_ONLINE: &[&str] = &[
     "si cet e-mail ne s'affiche pas",
     "si cet email ne s'affiche pas",
     "si vous ne visualisez pas",
+    "si vous ne parvenez pas à lire",
+    "ne s'affiche pas correctement",
+    "ne s’affiche pas correctement",
     "viewed without html",
     "view this email with html",
     "requires html",
@@ -251,6 +254,180 @@ pub fn clean(text: &str) -> String {
     folded.join("\n").trim().to_string()
 }
 
+/// A CSS selector or at-rule head: "@font-face", "@media only screen and (…)",
+/// "a:link, span.MsoHyperlink", ".ExternalClass td" (comments allowed).
+fn is_css_selector(s: &str) -> bool {
+    let t = s.trim();
+    t.len() <= 400
+        && t.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || c.is_whitespace()
+                || "@_.#:,-*>[]=\"'()%~+|^$!/\\".contains(c)
+        })
+}
+
+/// A rule body: declarations ("font-family: 'Roboto'; font-weight: 100;") or nested rules.
+fn is_css_body(s: &str) -> bool {
+    static DECL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // The last declaration of a rule may end on its closing brace, not a ";".
+        regex::Regex::new(
+            r"(?i)(?:^|[;{\s])-?[a-z][a-z-]{1,40}\s*:\s*[^;{}]{1,600}(?:;|\s*\}|\s*$)",
+        )
+        .expect("valid regex")
+    });
+    // A rule shows its declarations at once; a long span is not searched whole.
+    let mut end = s.len().min(2000);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    DECL.is_match(&s[..end])
+}
+
+/// A line of prose rather than a selector: it ends a sentence, or runs on in words
+/// without any selector punctuation.
+fn is_prose(line: &str) -> bool {
+    let t = line.trim();
+    t.ends_with(['.', '!', '?'])
+        || t.split_whitespace().count() > 4 && !t.contains(['.', '#', ':', '[', '>', '*', ',', '@'])
+}
+
+/// Where the rule whose `{` is at `open` starts, looking back no further than `from`:
+/// the selector lines above it, and on its own line the part after any preheader
+/// sentence ("… Gen AI @media …", "… produits.   body"). None when no selector heads it.
+fn rule_head(text: &str, from: usize, open: usize) -> Option<usize> {
+    let head = &text[from..open];
+    let line_start = head.rfind('\n').map_or(0, |k| k + 1);
+    let line = &head[line_start..];
+    // On the brace's line: an at-rule starts at its "@"; otherwise after a run of
+    // spaces or a sentence's end, or the whole line when it is not prose.
+    let at = line.rfind('@').filter(|&k| is_css_selector(&line[k..]));
+    // A sentence ends on ". ", never on the dot of "div.Header".
+    let sentence_end = [". ", "! ", "? "]
+        .iter()
+        .filter_map(|p| line.rfind(p))
+        .max()
+        .map(|k| k + 2);
+    let cut = at.or_else(|| {
+        [Some(0), line.rfind("  ").map(|k| k + 2), sentence_end]
+            .into_iter()
+            .flatten()
+            .find(|&k| {
+                let part = &line[k..];
+                is_css_selector(part)
+                    && (k > 0 && !part.trim().is_empty() || k == 0 && !is_prose(line))
+            })
+    })?;
+    let mut start = from + line_start + cut;
+    if cut > 0 || line_start == 0 {
+        return Some(start);
+    }
+    // Selector lines above ("a:link, span.MsoHyperlink" over its "{").
+    let mut end = line_start - 1;
+    loop {
+        let ls = head[..end].rfind('\n').map_or(0, |k| k + 1);
+        let l = &head[ls..end];
+        if l.trim().is_empty() || !is_css_selector(l) || is_prose(l) {
+            break;
+        }
+        start = from + ls;
+        if ls == 0 {
+            break;
+        }
+        end = ls - 1;
+    }
+    Some(start)
+}
+
+/// `text` without its style sheet: CSS rules (`@font-face { … }`, `@media … { … }`,
+/// `.a, td { color: red; }`), `@import`/`@charset` lines, CSS comments and Outlook
+/// conditional-comment marks. A brace in a sentence ("Use {x, y}") stays: only a rule
+/// whose head is a selector and whose body holds declarations goes.
+pub fn without_css(text: &str) -> String {
+    if !text.contains('{')
+        && !text.contains("@import")
+        && !text.contains("<!--")
+        && !text.contains("style=\"")
+    {
+        return text.to_string();
+    }
+    static MARKS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // A "-->" goes only alone on its line: in a sentence it is an arrow.
+        regex::Regex::new(concat!(
+            // A mark alone on its line takes the line with it.
+            r"(?is)<!--\[if[^\]]*\]>\n?|<!\[endif\]-->\n?|<!--|(?m:^[ \t]*-->[ \t]*$)|/\*.{0,400}?\*/",
+            r#"|@import\s+url\([^)]{0,600}\)\s*;?|@(?:import|charset)\s+["'][^"'\n]{0,600}["']\s*;?"#,
+            // An inline style attribute leaked from broken HTML.
+            r#"|"?\s*style="[^"]{0,1000}:[^"]{0,1000}""#
+        ))
+            .expect("valid regex")
+    });
+    let text = MARKS.replace_all(text, "");
+    let mut out = String::with_capacity(text.len());
+    let (mut last, mut i) = (0, 0);
+    while let Some(off) = text[i..].find('{') {
+        let open = i + off;
+        // The rule's head runs from the end of the previous rule, declaration or
+        // paragraph.
+        let head_start = text[last..open]
+            .rfind(['}', ';'])
+            .map(|k| last + k + 1)
+            .into_iter()
+            .chain(text[last..open].rfind("\n\n").map(|k| last + k + 2))
+            .max()
+            .unwrap_or(last);
+        let mut depth = 0usize;
+        let mut close = None;
+        for (k, c) in text[open..].char_indices().take(40_000) {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else {
+            // A style sheet cut off at the end of the part: from its at-rule on, it goes.
+            let head = text[head_start..open].trim();
+            if head.starts_with('@') && is_css_selector(head) && is_css_body(&text[open + 1..]) {
+                out.push_str(&text[last..head_start]);
+                last = text.len();
+            }
+            break;
+        };
+        if let Some(rule_start) = rule_head(text.as_ref(), head_start, open)
+            && is_css_body(&text[open + 1..close])
+        {
+            out.push_str(&text[last..rule_start]);
+            last = close + 1;
+            i = close + 1;
+        } else {
+            // A brace in prose: the rules may start inside or after it.
+            i = open + 1;
+        }
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// Whether a plain part opens on a style sheet (a dump of the HTML's `<style>`).
+pub fn opens_on_css(text: &str) -> bool {
+    let head: String = text.trim_start().chars().take(400).collect();
+    let low = head.to_ascii_lowercase();
+    ["@font-face", "@media", "@import", "@charset", "@page"]
+        .iter()
+        .any(|a| low.starts_with(a))
+        || head.find('{').is_some_and(|k| {
+            is_css_selector(&head[..k])
+                && !head[..k].trim().is_empty()
+                && is_css_body(&head[k + 1..])
+        })
+}
+
 /// Whether a "plain" part is really HTML source (some senders put the page itself in
 /// text/plain): it opens on a doctype or `<html>`, or tags make up much of it.
 pub fn looks_like_html(text: &str) -> bool {
@@ -313,6 +490,22 @@ pub fn html_text(html: &str) -> String {
         Some(end) => &html[end + "</head>".len()..],
         None => html,
     };
+    // Style sheets, scripts, titles, Office XML and comments (Outlook's conditional
+    // ones hold style sheets too) are never text, wherever they sit and however cased.
+    static HIDDEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"(?is)<!--.*?-->",
+            r"|<style\b[^>]*>.*?</style\s*>",
+            r"|<script\b[^>]*>.*?</script\s*>",
+            r"|<head\b[^>]*>.*?</head\s*>",
+            r"|<title\b[^>]*>.*?</title\s*>",
+            r"|<xml\b[^>]*>.*?</xml\s*>",
+            r"|<o:[a-z]+\b[^>]*>.*?</o:[a-z]+\s*>"
+        ))
+        .expect("valid regex")
+    });
+    let hidden = HIDDEN.replace_all(html, " ");
+    let html = hidden.as_ref();
     // Block ends become line breaks before the tags are dropped.
     let mut marked = String::with_capacity(html.len());
     let lower = html.to_ascii_lowercase();
