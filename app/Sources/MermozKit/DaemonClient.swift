@@ -121,9 +121,10 @@ public final class DaemonClient: Sendable {
         return try await call("threads.list", p)
     }
 
-    /// A thread with every message of its conversation (or only its own with `conversation: false`).
-    public func thread(_ id: String, conversation: Bool = true) async throws -> ThreadDetail {
-        try await call("threads.get", Params().with("id", id).with("conversation", conversation))
+    /// A thread with every message of its conversation (or only its own with `conversation: false`);
+    /// with `latest`, only the conversation's last that many (`earlier` counts the rest).
+    public func thread(_ id: String, conversation: Bool = true, latest: Int? = nil) async throws -> ThreadDetail {
+        try await call("threads.get", Params().with("id", id).with("conversation", conversation).with("latest", latest))
     }
 
     /// Takes a thread out of its conversation for good.

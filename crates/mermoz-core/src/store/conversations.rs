@@ -742,12 +742,19 @@ impl Store {
 
     /// Every message of a thread's conversation, oldest first.
     pub fn conversation_messages(&self, tid: &str) -> Result<Vec<Message>> {
+        self.conversation_window(tid, None)
+    }
+
+    /// Every message of the conversation, oldest first; with `latest`, only the last
+    /// that many carry their reading text (see [`super::messages_where`]).
+    pub fn conversation_window(&self, tid: &str, latest: Option<usize>) -> Result<Vec<Message>> {
         let r = self.r.lock().unwrap();
         let cid = conversation_of(&r, tid)?;
         super::messages_where(
             &r,
             "m.thread_id IN (SELECT id FROM threads WHERE conversation_id = ?1)",
             &cid,
+            latest,
         )
     }
 
@@ -823,7 +830,13 @@ impl Store {
                     date: m.date,
                 });
             }
-            for url in conv::links(&m.body_new) {
+            // Messages outside a window have no reading text: their links come from the body.
+            let text = if m.body_new.is_empty() {
+                &m.body_text
+            } else {
+                &m.body_new
+            };
+            for url in conv::links(text) {
                 if seen_links.insert(url.clone()) {
                     links.push(SharedLink {
                         url,

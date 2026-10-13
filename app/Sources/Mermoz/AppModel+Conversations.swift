@@ -14,7 +14,7 @@ extension AppModel {
     /// Fetches the open conversation again (after an AI rewrite, a split, new mail).
     func reloadDetail() async {
         guard let id = selectedThreadId, let client else { return }
-        if let d = try? await client.thread(id), selectedThreadId == id, d != detail { detail = d }
+        if let d = try? await client.thread(id, latest: detailWindow), selectedThreadId == id, d != detail { detail = d }
     }
 
     /// The Gmail thread a reply goes to: the one holding the latest message.

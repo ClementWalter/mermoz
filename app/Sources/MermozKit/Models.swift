@@ -228,6 +228,8 @@ public struct ThreadDetail: Codable, Sendable, Equatable {
     public var messages: [Message]
     /// Present when the whole conversation was asked for.
     public var conversation: Conversation?
+    /// Earlier messages of the conversation left out (asked for its latest ones only).
+    public var earlier: Int? = nil
 }
 
 extension ThreadDetail {

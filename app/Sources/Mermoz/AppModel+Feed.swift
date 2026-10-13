@@ -157,7 +157,7 @@ extension AppModel {
         feedFocus = card.id
         Task {
             do {
-                let d = try await client.thread(card.thread.id)
+                let d = try await client.thread(card.thread.id, latest: detailWindow)
                 selectedThreadId = d.thread.id
                 detail = d
                 startReply()

@@ -4036,3 +4036,61 @@ fn cli_later_reads_plain_words(demo: World) {
     let out = demo.cli(&["later", &number, "vendredi", "soir"]);
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("later: back "));
 }
+
+/// The demo conversation with the most messages, whole: (thread id, its messages).
+fn longest_conversation(w: &World) -> (String, Vec<Value>) {
+    let list = w.ok(
+        "threads.list",
+        json!({ "limit": 200, "conversations": true }),
+    );
+    list["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            let id = t["id"].as_str().unwrap().to_string();
+            let d = w.ok("threads.get", json!({ "id": id, "conversation": true }));
+            (id, d["messages"].as_array().unwrap().clone())
+        })
+        .max_by_key(|(_, m)| m.len())
+        .unwrap()
+}
+
+fn window(w: &World, id: &str) -> Value {
+    w.ok(
+        "threads.get",
+        json!({ "id": id, "conversation": true, "latest": 1 }),
+    )
+}
+
+#[rstest]
+fn a_window_sends_only_the_latest_messages(demo: World) {
+    let (id, _) = longest_conversation(&demo);
+    assert_eq!(window(&demo, &id)["messages"].as_array().unwrap().len(), 1);
+}
+
+#[rstest]
+fn a_window_counts_what_it_left_out(demo: World) {
+    let (id, all) = longest_conversation(&demo);
+    assert_eq!(window(&demo, &id)["earlier"], json!(all.len() - 1));
+}
+
+#[rstest]
+fn a_window_keeps_the_newest_message(demo: World) {
+    let (id, all) = longest_conversation(&demo);
+    assert_eq!(window(&demo, &id)["messages"][0], all[all.len() - 1]);
+}
+
+#[rstest]
+fn a_window_keeps_every_file_and_link(demo: World) {
+    let (id, _) = longest_conversation(&demo);
+    let full = demo.ok("threads.get", json!({ "id": id, "conversation": true }));
+    let w = window(&demo, &id);
+    assert_eq!(
+        (&w["conversation"]["files"], &w["conversation"]["links"]),
+        (
+            &full["conversation"]["files"],
+            &full["conversation"]["links"]
+        )
+    );
+}

@@ -1023,8 +1023,15 @@ fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
     Ok(())
 }
 
-/// The messages matching `filter` (one `?1` parameter), oldest first, in one pass.
-fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Message>> {
+/// The messages matching `filter` (one `?1` parameter), oldest first, in one pass. With
+/// `latest`, only the last that many get their reading text (`body_new`); the earlier
+/// ones keep it empty, read for the conversation's people, files and links only.
+fn messages_where(
+    conn: &Connection,
+    filter: &str,
+    arg: &str,
+    latest: Option<usize>,
+) -> Result<Vec<Message>> {
     let mut st = conn.prepare_cached(&format!(
         "SELECT m.id, m.thread_id, from_name, from_email, to_json, cc_json, date, subject, body_text,
            {}, is_from_me,
@@ -1069,7 +1076,15 @@ fn messages_where(conn: &Connection, filter: &str, arg: &str) -> Result<Vec<Mess
         "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
     )?;
     // The reading text is pure CPU per message: a long conversation spreads it on cores.
-    let readings = par_map(&msgs, |(listed, m)| reading(m, *listed));
+    let read_from = latest.map_or(0, |n| msgs.len().saturating_sub(n));
+    let indexed: Vec<(usize, &(bool, Message))> = msgs.iter().enumerate().collect();
+    let readings = par_map(&indexed, |(i, (listed, m))| {
+        if *i < read_from {
+            Some((String::new(), false))
+        } else {
+            reading(m, *listed)
+        }
+    });
     let html: Vec<Option<String>> = msgs
         .iter()
         .zip(&readings)
@@ -2187,7 +2202,7 @@ impl Store {
 
     pub fn messages(&self, thread_id: &str) -> Result<Vec<Message>> {
         let r = self.r.lock().unwrap();
-        messages_where(&r, "m.thread_id = ?1", thread_id)
+        messages_where(&r, "m.thread_id = ?1", thread_id, None)
     }
 
     /// A message's own parts its HTML can show inline (`cid:` links), read from disk.

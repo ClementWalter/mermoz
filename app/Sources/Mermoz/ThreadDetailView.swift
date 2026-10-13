@@ -51,7 +51,8 @@ struct ChatStream: View {
 
     var body: some View {
         let all = Timeline.items(detail.messages, threads: conversation.threads)
-        let (items, hidden) = model.chatShowsAll ? (all, 0) : Timeline.recent(all, keep: Self.opening)
+        let (items, kept) = model.chatShowsAll ? (all, 0) : Timeline.recent(all, keep: Self.opening)
+        let hidden = kept + (model.chatShowsAll ? 0 : detail.earlier ?? 0)
         let runs = ChatRuns.startsRun(items)
         ScrollViewReader { proxy in
             ScrollView {

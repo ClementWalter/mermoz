@@ -275,16 +275,20 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             if !flag(p, "conversation") {
                 return Ok(json!({ "thread": st.thread(&id)?, "messages": st.messages(&id)? }));
             }
-            let messages = st.conversation_messages(&id)?;
+            // `latest`: the app opens on the newest messages and asks for the rest
+            // only when the reader scrolls back (a 992-thread conversation was 14 MB).
+            let latest = p.get("latest").and_then(|v| v.as_u64()).map(|n| n as usize);
+            let mut messages = st.conversation_window(&id, latest)?;
             for t in st.conversation_thread_ids(&id)? {
                 if t != id {
                     svc.verify_thread_senders(&t);
                 }
             }
             let conversation = st.conversation(&id, &messages)?;
-            Ok(
-                json!({ "thread": st.thread(&id)?, "messages": messages, "conversation": conversation }),
-            )
+            let earlier = latest.map_or(0, |n| messages.len().saturating_sub(n));
+            messages.drain(..earlier);
+            Ok(json!({ "thread": st.thread(&id)?, "messages": messages,
+                "conversation": conversation, "earlier": earlier }))
         }
         "conversations.split" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;

@@ -151,8 +151,15 @@ final class AppModel {
     var expandedMessages: Set<String> = []
     /// Long bubbles whose "Show more" was pressed.
     var shownInFull: Set<String> = []
-    /// The open chat shows its earlier messages too, not only the latest ones.
-    var chatShowsAll = false
+    /// The open chat shows its earlier messages too, not only the latest ones; they are
+    /// fetched then, so a long conversation opens on its latest messages only.
+    var chatShowsAll = false {
+        didSet {
+            if chatShowsAll, !oldValue, (detail?.earlier ?? 0) > 0 { Task { await reloadDetail() } }
+        }
+    }
+    /// How many messages the pane fetches: the chat's opening screen, or all once shown.
+    var detailWindow: Int? { chatShowsAll ? nil : ChatStream.opening }
     /// The message ↑/↓ moved to, which Enter opens.
     var focusedMessageId: String?
     /// Files shared anywhere (sidebar › Docs) and the filter typed above them.
@@ -722,7 +729,7 @@ final class AppModel {
                 guard !Task.isCancelled else { return }
             }
             do {
-                let d = try await client.thread(id)
+                let d = try await client.thread(id, latest: detailWindow)
                 guard selectedThreadId == id else { return }
                 // Bubble text is built and measured off the main thread before it shows.
                 let full = shownInFull
@@ -1459,7 +1466,7 @@ final class AppModel {
             let shown = Set([selectedThreadId].compactMap { $0 } + (detail?.conversation?.threads.map(\.id) ?? []))
             if let sel = selectedThreadId, !shown.isDisjoint(with: ids), compose == nil {
                 Task {
-                    if let d = try? await client?.thread(sel), selectedThreadId == sel, d != detail { detail = d }
+                    if let d = try? await client?.thread(sel, latest: detailWindow), selectedThreadId == sel, d != detail { detail = d }
                 }
             }
         case .accountsChanged:
