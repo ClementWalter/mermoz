@@ -24,6 +24,7 @@ pub mod newsletter;
 pub mod oauth;
 pub mod paths;
 pub mod quote;
+pub mod reading;
 pub mod sanitize;
 pub mod store;
 pub mod sync;

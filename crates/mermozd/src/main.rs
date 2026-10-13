@@ -191,6 +191,31 @@ async fn index_addresses(store: Arc<Store>) {
             "addresses indexed for the recipient check"
         );
     }
+    read_bodies(store).await;
+}
+
+/// Works out the bubble text of mail stored before it was kept at ingest (or by an
+/// older reading pipeline), 200 messages per short write; until then a thread reads
+/// it on the fly.
+async fn read_bodies(store: Arc<Store>) {
+    let (t0, mut after, mut batches) = (std::time::Instant::now(), 0i64, 0u64);
+    loop {
+        let st = store.clone();
+        match tokio::task::spawn_blocking(move || st.read_bodies_batch(after, 200)).await {
+            Ok(Ok(Some(last))) => (after, batches) = (last, batches + 1),
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => return warn!("reading message bodies: {e}"),
+            Err(e) => return warn!("reading message bodies: {e}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    if batches > 0 {
+        info!(
+            batches,
+            ms = t0.elapsed().as_millis() as u64,
+            "message bodies read for the chat view"
+        );
+    }
 }
 
 /// Copies the WAL into the database once a second after writes, so no commit pays for

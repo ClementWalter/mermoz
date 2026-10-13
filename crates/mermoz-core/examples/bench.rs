@@ -144,6 +144,44 @@ fn main() {
     let ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
 
     let mut checks = vec![];
+    // The reading pipeline alone (what ingest pays per message, off the write lock), on
+    // mail as clients write it: half replies (CRLF, an attribution, the quoted history,
+    // a signature), a third with HTML.
+    let samples: Vec<IncomingMessage> = (0..2000)
+        .map(|k| {
+            let mut m = message(&mut rng, &people, &format!("r{k}"), "r", 0);
+            if k % 2 == 0 {
+                m.parsed.body_text = format!(
+                    "{}\r\n\r\nNora Lind\r\n+33 6 12 34 56 78\r\n\r\nLe lun. 12 janv. 2026 à 11:54, Sam <sam@x.example> a écrit\u{a0}:\r\n> {}\r\n> \r\n> {}\r\n",
+                    sentence(&mut rng, 60),
+                    sentence(&mut rng, 40),
+                    sentence(&mut rng, 40)
+                );
+            }
+            m
+        })
+        .collect();
+    let mut k = 0;
+    let mut read_one = time(samples.len(), || {
+        let p = &samples[k].parsed;
+        k += 1;
+        mermoz_core::reading::read(&mermoz_core::reading::Mail {
+            subject: &p.subject,
+            text: &p.body_text,
+            html: p.body_html.as_deref(),
+            listed: false,
+        });
+    });
+    let mean = read_one.iter().sum::<Duration>() / read_one.len() as u32;
+    eprintln_info(&format!(
+        "reading: {:.0} µs per message on average",
+        mean.as_secs_f64() * 1e6
+    ));
+    checks.push(Check {
+        name: "read one message",
+        p95: pct(&mut read_one, 0.95),
+        budget: Duration::from_millis(2),
+    });
     let mut list = time(50, || {
         store
             .threads(&ThreadFilter {

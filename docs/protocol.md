@@ -78,9 +78,23 @@ app, the CLI and the MCP server are clients of this protocol.
 // Message (thread_id: its Gmail thread, inside a conversation of several)
 {"id": "msg_…", "thread_id": "thr_…", "from": {"name": "Marc Petit", "email": "marc@…"},
  "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
- "subject": "…", "body_text": "… full text …", "body_new": "… without quoted history, signature or boilerplate …",
- "has_quoted": true, "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
+ "subject": "…", "body_text": "… full text …", "body_new": "… what the bubble shows …",
+ "has_quoted": true, "has_signature": true, "forwarded": false, "forwarded_from": "Bank" | null, "quoted_only": false,
+ "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
  "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000}]}
+
+// Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
+// body_new    only what the sender newly wrote: greeting, body, sign-off name. LF line
+//             ends, no blank first/last line, never empty when the message has text.
+//             Quoted history, reply headers, signatures, disclaimers, tracking links,
+//             bulk-mail boilerplate and Markdown/HTML artefacts are removed. Clients
+//             display it as is.
+// has_quoted  quoted history was folded away
+// has_signature  a signature, mobile footer or disclaimer was folded away
+// forwarded   the message forwards an email: body_new is the note, a blank line, then
+//             the forwarded text (its header block removed); forwarded_from names its
+//             author
+// quoted_only the message adds no words of its own; body_new is the text it quotes
 
 // Status
 {"key": "todo", "name": "Todo", "order": 2, "color": "#5A7386"}

@@ -119,9 +119,24 @@ pub struct Message {
     pub date: i64,
     pub subject: String,
     pub body_text: String,
-    /// `body_text` without the quoted history of earlier messages.
+    /// What the bubble shows: only what the sender newly wrote (greeting, body, sign-off
+    /// name), LF line ends, never empty when the message has text. See
+    /// [`crate::reading`].
     pub body_new: String,
+    /// Quoted history of earlier messages was folded out of `body_new`.
     pub has_quoted: bool,
+    /// A signature, mobile footer or disclaimer was folded out of `body_new`.
+    #[serde(default)]
+    pub has_signature: bool,
+    /// The message forwards an email: `body_new` is the note, then the forwarded text.
+    #[serde(default)]
+    pub forwarded: bool,
+    /// Who wrote the forwarded email.
+    #[serde(default)]
+    pub forwarded_from: Option<String>,
+    /// The message adds no words of its own: `body_new` is the text it quotes.
+    #[serde(default)]
+    pub quoted_only: bool,
     /// Reading version written by the built-in agent, when it has processed this message.
     pub body_clean: Option<String>,
     pub has_html: bool,

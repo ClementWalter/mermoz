@@ -205,9 +205,18 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var date: Int64
     public var subject: String
     public var bodyText: String
-    /// Body without quoted history; optional so older daemons still decode.
+    /// What the bubble shows, already clean (only the sender's new words, LF line ends,
+    /// never empty when the message has text); optional so older daemons still decode.
     public var bodyNew: String?
     public var hasQuoted: Bool?
+    /// A signature, mobile footer or disclaimer was folded out of `bodyNew`.
+    public var hasSignature: Bool? = nil
+    /// The message forwards an email: `bodyNew` is the note, then the forwarded text.
+    public var forwarded: Bool? = nil
+    /// Who wrote the forwarded email.
+    public var forwardedFrom: String? = nil
+    /// The message adds no words of its own: `bodyNew` is the text it quotes.
+    public var quotedOnly: Bool? = nil
     /// Reading version written by the built-in agent.
     public var bodyClean: String?
     public var hasHtml: Bool

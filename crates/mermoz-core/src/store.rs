@@ -17,6 +17,7 @@ mod counts;
 pub use conversations::{GroupingPlan, PairCandidate};
 
 mod feed;
+mod readings;
 pub use feed::FEED_STATUSES;
 
 /// Writer settings. Each ingested message runs in a savepoint whose sub-journal stays in
@@ -123,6 +124,7 @@ const MIGRATIONS: &[&str] = &[
     bodies::MIGRATION,
     feed::LATER_MIGRATION,
     addresses::MIGRATION,
+    readings::MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
@@ -1061,9 +1063,10 @@ fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
     Ok(())
 }
 
-/// The messages matching `filter` (one `?1` parameter), oldest first, in one pass. With
-/// `latest`, only the last that many get their reading text (`body_new`); the earlier
-/// ones keep it empty, read for the conversation's people, files and links only.
+/// The messages matching `filter` (one `?1` parameter), oldest first, in one pass, with
+/// their stored reading (`body_new` and its flags). A message not read yet is read now;
+/// with `latest`, only the last that many are, the earlier ones keeping `body_new`
+/// empty (read for the conversation's people, files and links only).
 fn messages_where(
     conn: &Connection,
     filter: &str,
@@ -1074,18 +1077,33 @@ fn messages_where(
         "SELECT m.id, m.thread_id, from_name, from_email, to_json, cc_json, date, subject, body_text,
            {}, is_from_me,
            (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json,
-           m.list_id IS NOT NULL
-         FROM messages m WHERE {filter} ORDER BY date, m.rowid",
-        bodies::HAS_HTML_OF_M
+           m.list_id IS NOT NULL, r.text, r.flags, r.forwarded_from
+         FROM messages m {}{}
+         WHERE {filter} ORDER BY date, m.rowid",
+        bodies::HAS_HTML_OF_M,
+        readings::JOIN_READING_OF_M,
+        crate::reading::VERSION,
     ))?;
+    // (listed, stored reading, message)
     let mut msgs = st
         .query_map([arg], |r| {
             let to: String = r.get(4)?;
             let cc: String = r.get(5)?;
             let email: String = r.get(3)?;
             let listed = r.get::<_, i64>(14)? != 0;
+            let stored = r
+                .get::<_, Option<String>>(15)?
+                .map(|text| -> rusqlite::Result<_> {
+                    Ok(crate::reading::Reading::from_parts(
+                        text,
+                        r.get(16)?,
+                        r.get(17)?,
+                    ))
+                })
+                .transpose()?;
             Ok((
                 listed,
+                stored,
                 Message {
                     id: r.get(0)?,
                     thread_id: r.get(1)?,
@@ -1096,6 +1114,10 @@ fn messages_where(
                     subject: r.get(7)?,
                     body_new: String::new(),
                     has_quoted: false,
+                    has_signature: false,
+                    forwarded: false,
+                    forwarded_from: None,
+                    quoted_only: false,
                     body_clean: r.get(11)?,
                     body_text: r.get(8)?,
                     has_html: r.get::<_, i64>(9)? != 0,
@@ -1110,66 +1132,49 @@ fn messages_where(
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut st = conn.prepare_cached(
-        "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
-    )?;
-    // The reading text is pure CPU per message: a long conversation spreads it on cores.
     let read_from = latest.map_or(0, |n| msgs.len().saturating_sub(n));
-    let indexed: Vec<(usize, &(bool, Message))> = msgs.iter().enumerate().collect();
-    let readings = par_map(&indexed, |(i, (listed, m))| {
-        if *i < read_from {
-            Some((String::new(), false))
-        } else {
-            reading(m, *listed)
-        }
-    });
-    let html: Vec<Option<String>> = msgs
+    // Mail stored before its reading was cached (or by an older pipeline) is read now;
+    // its HTML is fetched only for those.
+    let todo: Vec<usize> = (read_from..msgs.len())
+        .filter(|&i| msgs[i].1.is_none())
+        .collect();
+    let html: Vec<Option<String>> = todo
         .iter()
-        .zip(&readings)
-        .map(|((_, m), r)| -> Result<Option<String>> {
-            if r.is_some() {
+        .map(|&i| -> Result<Option<String>> {
+            if !msgs[i].2.has_html {
                 return Ok(None);
             }
             Ok(conn
                 .query_row(
                     &format!("SELECT {} FROM messages m WHERE id = ?1", bodies::HTML_OF_M),
-                    [&m.id],
+                    [&msgs[i].2.id],
                     |r| r.get(0),
                 )
                 .optional()?
                 .flatten())
         })
         .collect::<Result<_>>()?;
-    let todo: Vec<usize> = (0..msgs.len()).filter(|&i| readings[i].is_none()).collect();
-    // A newsletter's plain part is often a dump of links: its HTML is read instead.
-    let from_html = par_map(&todo, |&i| {
-        crate::newsletter::readable(&msgs[i].1.body_text, html[i].as_deref())
+    // Pure CPU per message: a long conversation spreads it on cores.
+    let jobs: Vec<(usize, &Option<String>)> = todo.iter().copied().zip(&html).collect();
+    let fresh = par_map(&jobs, |(i, h)| {
+        let (listed, _, m) = &msgs[*i];
+        readings::read(&m.subject, &m.body_text, h.as_deref(), *listed)
     });
-    let mut from_html = todo.into_iter().zip(from_html);
-    for (i, ((_, m), r)) in msgs.iter_mut().zip(readings).enumerate() {
-        (m.body_new, m.has_quoted) = match r {
-            Some(r) => r,
-            None => {
-                let (_, text) = from_html.find(|(j, _)| *j == i).expect("read from html");
-                (text, true)
-            }
-        };
-        // Some senders' plain parts are Markdown: a bubble shows its words, never its syntax.
-        if m.body_new.contains("](") || m.body_new.contains("---") || m.body_new.contains("**") {
-            m.body_new = crate::newsletter::plain_markdown(&m.body_new);
-        }
-        // Tags left in a plain part ("…<BR>") are never shown as text.
-        if m.body_new.contains('<') {
-            m.body_new = crate::newsletter::without_tags(&m.body_new);
-        }
-        // Invisible characters and picture placeholders never fill a bubble; a message
-        // read (not skipped for speed) that comes out blank is read from its HTML, else
-        // its preview.
-        if i >= read_from {
-            m.body_new = crate::newsletter::tidy(&m.body_new);
-            if m.body_new.is_empty() {
-                m.body_new = fallback_text(conn, m)?;
-            }
+    for (&i, r) in todo.iter().zip(fresh) {
+        msgs[i].1 = Some(r);
+    }
+    let mut st = conn.prepare_cached(
+        "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
+    )?;
+    // A stored reading costs nothing to show, even before `latest`.
+    for (_, stored, m) in msgs.iter_mut() {
+        if let Some(r) = stored.take() {
+            m.body_new = r.text;
+            m.has_quoted = r.has_quoted;
+            m.has_signature = r.has_signature;
+            m.forwarded = r.forwarded;
+            m.forwarded_from = r.forwarded_from;
+            m.quoted_only = r.quoted_only;
         }
         m.attachments = st
             .query_map([&m.id], |r| {
@@ -1183,63 +1188,18 @@ fn messages_where(
             })?
             .collect::<rusqlite::Result<_>>()?;
     }
-    Ok(msgs.into_iter().map(|(_, m)| m).collect())
+    Ok(msgs.into_iter().map(|(_, _, m)| m).collect())
 }
 
-/// Text for a message whose reading came out empty: its HTML read as text, else its
-/// one-line preview (empty only for a truly empty message).
-fn fallback_text(conn: &Connection, m: &Message) -> Result<String> {
-    if m.has_html {
-        let html: Option<String> = conn
-            .query_row(
-                &format!("SELECT {} FROM messages m WHERE id = ?1", bodies::HTML_OF_M),
-                [&m.id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .flatten();
-        if let Some(h) = html {
-            let t = crate::newsletter::tidy(&crate::newsletter::clean(
-                &crate::newsletter::html_text(&h),
-            ));
-            if !t.is_empty() {
-                return Ok(t);
-            }
-        }
-    }
-    Ok(crate::newsletter::tidy(&crate::quote::snippet(
-        &m.body_text,
-    )))
-}
-
-/// What a reader is shown of a message: (its new content, whether anything was hidden),
-/// or None when its HTML must be read instead (a newsletter's degraded plain part).
-fn reading(m: &Message, listed: bool) -> Option<(String, bool)> {
-    use crate::{newsletter, quote};
-    // A plain part that is HTML source: its HTML part is read, else the source as HTML.
-    if newsletter::looks_like_html(&m.body_text) {
-        if m.has_html {
-            return None;
-        }
-        let text = newsletter::clean(&newsletter::html_text(&m.body_text));
-        return Some((text, true));
-    }
-    // A forward's header looks like quoted history but is the content.
-    if quote::is_forward(&m.subject) {
-        return Some((quote::forward_view(&m.body_text), false));
-    }
-    let degraded = newsletter::degraded(&m.body_text);
-    if degraded && m.has_html {
-        return None;
-    }
-    Some(if degraded {
-        (newsletter::clean(&m.body_text), true)
-    } else if listed {
-        // Mailing-list posts carry footers and tracking links even in a clean plain part.
-        (newsletter::clean(&quote::readable(&m.body_text).0), true)
-    } else {
-        quote::readable(&m.body_text)
-    })
+/// What an incoming message's bubble shows.
+fn reading_of(m: &IncomingMessage) -> crate::reading::Reading {
+    let p = &m.parsed;
+    readings::read(
+        &p.subject,
+        &p.body_text,
+        p.body_html.as_deref(),
+        p.list_id.is_some(),
+    )
 }
 
 /// `f` over `items`, in order; on several threads once there are enough to pay for them.
@@ -1676,10 +1636,11 @@ impl Store {
         msg: &IncomingMessage,
         mode: SyncMode,
     ) -> Result<String> {
+        let reading = reading_of(msg);
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
         let mut fts = vec![];
-        let thread_id = Self::ingest_tx(&tx, &self.blobs, account_id, me, msg, mode, &mut fts)?;
+        let thread_id = self.ingest_tx(&tx, account_id, me, (msg, &reading), mode, &mut fts)?;
         Self::index_fts(&tx, &fts)?;
         tx.commit()?;
         Ok(thread_id)
@@ -1693,18 +1654,20 @@ impl Store {
         msgs: &[IncomingMessage],
         mode: SyncMode,
     ) -> Result<Vec<String>> {
+        // Parsed before the write lock is taken: clicks never wait on the parsing.
+        let readings = par_map(msgs, reading_of);
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
         let mut ids = vec![];
         // Full-text rows are written once every savepoint is released: FTS5 flushes its
         // pending index on each savepoint, which wrote one tiny segment per message.
         let mut fts = vec![];
-        for m in msgs {
+        for (m, reading) in msgs.iter().zip(&readings) {
             // One malformed message must not stall the mailbox: isolate each in a savepoint,
             // record failures for a later retry, and keep importing.
             tx.execute_batch("SAVEPOINT msg")?;
             let indexed = fts.len();
-            match Self::ingest_tx(&tx, &self.blobs, account_id, me, m, mode, &mut fts) {
+            match self.ingest_tx(&tx, account_id, me, (m, reading), mode, &mut fts) {
                 Ok(id) => {
                     tx.execute_batch("RELEASE msg")?;
                     ids.push(id);
@@ -1740,13 +1703,14 @@ impl Store {
         Ok(())
     }
 
-    /// Stores one message; its full-text row is queued in `fts` for [`Self::index_fts`].
+    /// Stores one message with its reading (worked out before the write lock); its
+    /// full-text row is queued in `fts` for [`Self::index_fts`].
     fn ingest_tx<'m>(
+        &self,
         tx: &Connection,
-        blobs: &Path,
         account_id: &str,
         me: &str,
-        msg: &'m IncomingMessage,
+        (msg, reading): (&'m IncomingMessage, &crate::reading::Reading),
         mode: SyncMode,
         fts: &mut Vec<FtsRow<'m>>,
     ) -> Result<String> {
@@ -1858,11 +1822,13 @@ impl Store {
                 p.list_id,
             ],
         )?;
-        let fts_rowid = fts_rowid(date, tx.last_insert_rowid());
+        let msg_rowid = tx.last_insert_rowid();
+        let fts_rowid = fts_rowid(date, msg_rowid);
         if let Some(html) = &p.body_html {
             tx.prepare_cached("INSERT INTO message_html (message_id, html) VALUES (?1, ?2)")?
                 .execute(params![mid, html])?;
         }
+        readings::save(tx, msg_rowid, &mid, reading)?;
         tx.execute(
             "UPDATE messages SET fts_rowid = ?2 WHERE id = ?1",
             params![mid, fts_rowid],
@@ -1881,7 +1847,7 @@ impl Store {
         addresses::note(tx, std::iter::once(&from).chain(&p.to).chain(&p.cc))?;
         for a in &p.attachments {
             let aid = new_id("att");
-            let dir = blobs.join(&aid);
+            let dir = self.blobs.join(&aid);
             std::fs::create_dir_all(&dir)?;
             let path = dir.join(safe_filename(&a.filename));
             std::fs::write(&path, &a.data)?;

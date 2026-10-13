@@ -175,12 +175,9 @@ private func emailWithSignature() -> Message {
     #expect(BubbleParts.clampsCompact((1...9).map { "line \($0)" }.joined(separator: "\n")))
 }
 
-@Test func quotedHistoryFoldsInTheWholeEmail() {
-    #expect(MessageBody.withoutQuotes("See you.\n\nOn Sun, Oct 4, Nora wrote:\n> Lunch?") == "See you.")
-}
-
-@Test func frenchQuoteOpenersFoldToo() {
-    #expect(MessageBody.withoutQuotes("D'accord.\nLe 4 oct. 2026, Nora a écrit :\n> Déjeuner ?") == "D'accord.")
+@Test func foldedQuotedHistoryShowsTheCoresReading() {
+    let m = message(text: "See you.\n\nOn Sun, Oct 4, Nora wrote:\n> Lunch?", new: "See you.")
+    #expect(MessageBody.shown(m, mode: .original, htmlReady: false, showQuoted: false) == .text("See you."))
 }
 
 // ---- runs ---------------------------------------------------------------------------
@@ -212,67 +209,19 @@ private func said(_ id: String, by email: String, at minutes: Int64, mine: Bool 
     #expect(ChatRuns.startsRun(items) == ["a", "b"])
 }
 
-@Test func aBubbleNeverOpensOnABareLink() {
-    let m = message(text: "https://us.list-manage.com/AIW_vCP29mP?e=1\n\nLe marché rouvre samedi", new: "")
-    #expect(BubbleParts.compact(m).text == "Le marché rouvre samedi")
+// ---- the bubble shows the core's reading, never cleaned again ----------------------
+
+/// Text the core already cleaned: Swift shows it as it comes.
+@Test(arguments: ["Le marché rouvre samedi", "Match ce samedi à 10h\n\nRépondre avant jeudi.",
+                  "Chers Habitants,\n\nLe nouveau marché ouvre samedi."])
+func theBubbleShowsTheCoresTextAsIs(new: String) {
+    #expect(BubbleParts.compact(message(text: "raw source", new: new)).text == new)
 }
 
-@Test func linksInsideSentencesStayInTheBubble() {
-    #expect(BubbleParts.withoutLinkLines("Book on https://notary.example/rdv today") == "Book on https://notary.example/rdv today")
+@Test func anOlderDaemonsRawTextShowsWithoutItsTrailingLineBreak() {
+    #expect(BubbleParts.compact(message(text: "Le marché ouvre samedi.\r\n", new: nil)).text == "Le marché ouvre samedi.")
 }
 
-// ---- Markdown never shows as syntax -------------------------------------------------
-
-private let sportsMail = "![Email header](https://static.club.example/emails/email-header.jpg)\n\n---\n\n[ ![](https://media2.club.example/team/42/logo/abc.png) ](https://club.example/team/42)\n\n## Match ce samedi à 10h\n\nBonjour, **le match** est confirmé. [Répondre](https://club.example/r/1) avant jeudi."
-
-@Test(arguments: ["![", "](", "---", "**", "## "])
-func compactTextHasNoMarkdownSyntax(mark: String) {
-    #expect(!BubbleParts.compact(message(text: sportsMail, new: sportsMail)).text.contains(mark))
-}
-
-@Test func compactTextOpensOnTheHeadline() {
-    #expect(BubbleParts.compact(message(text: sportsMail, new: sportsMail)).text.hasPrefix("Match ce samedi à 10h"))
-}
-
-@Test func markdownLinksReadAsTheirWords() {
-    #expect(BubbleParts.plainMarkdown("[Répondre](https://club.example/r/1) avant jeudi.") == "Répondre avant jeudi.")
-}
-
-@Test func bracketsWithoutALinkStay() {
-    #expect(BubbleParts.plainMarkdown("Prix [indicatif] : 10 €") == "Prix [indicatif] : 10 €")
-}
-
-// ---- a bubble is never empty --------------------------------------------------------
-
-/// A town newsletter sent through Mailjet, with invisible and non-breaking blank lines.
-private let townLetter = "<<Camille Durand - Maire de Villeneuve>> [https://x1abc.mjt.lu/img/x1abc/b/portrait.png]\n\u{00A0}\n\u{200B}\u{200C}\n\u{2007}\u{FEFF}\nChers Habitants,\n\u{00A0}\nLe nouveau marché ouvre samedi.\n \n<<logo>> [https://x1abc.mjt.lu/img/x1abc/b/logo.png]\n\u{00A0}\n"
-
-@Test func compactTextsFirstLineIsNonBlank() {
-    let first = BubbleParts.compact(message(text: townLetter, new: townLetter)).text.components(separatedBy: "\n")[0]
-    #expect(!first.trimmingCharacters(in: .whitespaces).isEmpty)
-}
-
-@Test func aHeadlinePlaceholderReadsAsItsWords() {
-    #expect(BubbleParts.compact(message(text: townLetter, new: townLetter)).text.hasPrefix("Camille Durand - Maire de Villeneuve\n"))
-}
-
-@Test func placeholderAddressesAreGone() {
-    #expect(!BubbleParts.compact(message(text: townLetter, new: townLetter)).text.contains("mjt.lu"))
-}
-
-@Test func invisibleLinesFoldIntoOneBlank() {
-    #expect(BubbleParts.tidy("Chers Habitants,\n\u{00A0}\n\u{200B}\n\u{2007}\nLe marché.") == "Chers Habitants,\n\nLe marché.")
-}
-
-@Test func anInvisibleNewPartFallsBackToTheWholeText() {
-    #expect(BubbleParts.compact(message(text: "Le marché ouvre samedi.", new: "\u{00A0}\n\u{200B}")).text == "Le marché ouvre samedi.")
-}
-
-@Test func anEntirelyInvisibleMessageSaysItIsEmpty() {
-    #expect(BubbleContent.compact(message(text: "\u{00A0}\n\u{200B}", new: "\u{FEFF}"), showAll: false).text == "(empty message)")
-}
-
-@Test(arguments: ["\u{00A0}\u{00A0}", "\u{200B}\u{200C}\u{FEFF}", "\u{2007}\u{202F}", "<<logo>> [https://x.mjt.lu/img/a.png]"])
-func invisibleTextTidiesToNothing(text: String) {
-    #expect(BubbleParts.tidy(text) == "")
+@Test func aMessageWithoutWordsSaysItIsEmpty() {
+    #expect(BubbleContent.compact(message(text: "\u{00A0}\n", new: ""), showAll: false).text == "(empty message)")
 }

@@ -1,37 +1,71 @@
-//! Separates what a message says from the history it quotes, so threads read
-//! as a conversation instead of a pile of nested replies. Forwards are left
-//! whole: there the "quoted" part is the content.
+//! Quoted history, forwards and signatures: the stages of [`crate::reading`] that
+//! separate what a person newly wrote from what their mail client appended. Input text
+//! is already normalised (LF line ends, plain spaces, no invisible characters).
 
-/// Attribution openers ("On …", "Le …") and closers ("wrote:", "a écrit :") per language.
-const ATTR_START: &[&str] = &["on ", "le ", "am ", "el ", "il ", "op ", "em ", "den "];
+/// Attribution openers ("On …", "Le …", "Il giorno …", "Quoting …") per language.
+const ATTR_START: &[&str] = &[
+    "on ",
+    "le ",
+    "am ",
+    "el ",
+    "il ",
+    "op ",
+    "em ",
+    "den ",
+    "w dniu ",
+    "quoting ",
+    "citando ",
+    "zitat von ",
+];
+/// Attribution closers ("wrote:", "a écrit :") per language, spaces before ':' folded.
 const ATTR_END: &[&str] = &[
     "wrote:",
-    "a écrit :",
     "a écrit:",
-    "a ecrit :",
+    "a ecrit:",
+    "écrit:",
     "schrieb:",
     "escribió:",
     "ha scritto:",
     "schreef:",
     "escreveu:",
     "skrev:",
+    "napisał:",
+    "napisał(a):",
+    "kirjoitti:",
+    "geschreven:",
 ];
-const HEADER_FROM: &[&str] = &["from:", "de :", "de:", "von:"];
+/// Headers that open a quoted or forwarded email (Outlook, Apple Mail, Thunderbird).
+const HEADER_FROM: &[&str] = &["from:", "de:", "von:", "da:", "van:"];
 const HEADER_REST: &[&str] = &[
     "sent:",
     "date:",
-    "envoyé :",
     "envoyé:",
+    "envoyé le:",
     "to:",
-    "à :",
     "à:",
+    "a:",
+    "cc:",
     "subject:",
-    "objet :",
     "objet:",
     "gesendet:",
+    "datum:",
+    "data:",
+    "date d'envoi:",
+    "sujet:",
+    "pour:",
+    "copie à:",
     "an:",
     "betreff:",
+    "inviato:",
+    "oggetto:",
+    "para:",
+    "asunto:",
+    "enviado:",
+    "fecha:",
+    "reply-to:",
+    "répondre à:",
 ];
+/// Lines that introduce a forwarded email.
 const FORWARD: &[&str] = &[
     "forwarded message",
     "begin forwarded message",
@@ -39,75 +73,33 @@ const FORWARD: &[&str] = &[
     "début du message réexpédié",
     "message réexpédié",
     "weitergeleitete nachricht",
+    "messaggio inoltrato",
+    "mensaje reenviado",
+    "mensagem encaminhada",
+    "doorgestuurd bericht",
+    "inizio messaggio inoltrato",
 ];
-
-/// A line that only introduces a forwarded email, `>` quoting aside.
-fn is_forward_marker(line: &str) -> bool {
-    let t = line.trim().trim_start_matches(['>', ' ']);
-    let low = t.to_lowercase();
-    !t.is_empty() && t.chars().count() <= 80 && FORWARD.iter().any(|f| low.contains(f))
-}
-
-/// A header line of a forwarded email ("De: …", "Objet : …", "> Date: …").
-fn is_forward_header(line: &str) -> bool {
-    let t = line.trim_start().trim_start_matches(['>', ' ', '*']);
-    starts_ci(t, HEADER_FROM)
-        || starts_ci(t, HEADER_REST)
-        || starts_ci(t, &["cc:", "cc :", "reply-to:", "répondre à"])
-}
-
-/// A forward as it reads in a chat: the note above it (signature off), then the
-/// forwarded email's text, without its marker line, header block or `>` quoting.
-pub fn forward_view(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let Some(m) = lines.iter().position(|l| is_forward_marker(l)) else {
-        return text.trim().to_string();
-    };
-    let (note, _) = strip_signature(lines[..m].join("\n").trim());
-    let rest = &lines[m + 1..];
-    let content: Vec<&&str> = rest.iter().filter(|l| !l.trim().is_empty()).collect();
-    let quoted = content
-        .iter()
-        .filter(|l| l.trim_start().starts_with('>'))
-        .count();
-    let unq: Vec<&str> = if !content.is_empty() && quoted * 2 >= content.len() {
-        rest.iter()
-            .map(|l| {
-                let t = l.trim_start();
-                t.strip_prefix('>')
-                    .map_or(*l, |r| r.strip_prefix(' ').unwrap_or(r))
-            })
-            .collect()
-    } else {
-        rest.to_vec()
-    };
-    let start = unq
-        .iter()
-        .position(|l| !l.trim().is_empty())
-        .unwrap_or(unq.len());
-    let mut end = start;
-    while end < unq.len() && is_forward_header(unq[end]) {
-        end += 1;
-    }
-    let body = unq[end..].join("\n");
-    let body = body.trim();
-    match (note.is_empty(), body.is_empty()) {
-        (true, _) => body.to_string(),
-        (false, true) => note,
-        (false, false) => format!("{note}\n\n{body}"),
-    }
-}
+/// "-----Original Message-----" separators, without their dashes.
 const ORIGINAL: &[&str] = &[
-    "-----original message-----",
-    "----- original message -----",
-    "-------- message d'origine --------",
-    "-----message d'origine-----",
+    "original message",
+    "message d'origine",
+    "message d’origine",
+    "mail original",
+    "message original",
+    "ursprüngliche nachricht",
+    "messaggio originale",
+    "mensaje original",
+    "mensagem original",
+    "reply message",
+    "original message follows",
+    "message de réponse",
 ];
 
-/// Whether `line`, leading blanks aside, starts with one of the lowercase `prefixes`,
-/// ignoring case. Allocation-free: it runs on every line of every message opened.
+/// Whether `line`, leading blanks, `>` and `*` aside, starts with one of the lowercase
+/// `prefixes`, ignoring case and any spaces before a ':'. Allocation-free: it runs on
+/// every line of every message.
 fn starts_ci(line: &str, prefixes: &[&str]) -> bool {
-    let line = line.trim_start();
+    let line = line.trim_start_matches([' ', '\t', '*']);
     let Some(&b) = line.as_bytes().first() else {
         return false;
     };
@@ -117,87 +109,610 @@ fn starts_ci(line: &str, prefixes: &[&str]) -> bool {
         if b.is_ascii() && p.as_bytes()[0] != first {
             return false;
         }
-        let mut it = line.chars().flat_map(char::to_lowercase);
-        p.chars().all(|c| it.next() == Some(c))
+        let mut it = line
+            .chars()
+            .flat_map(char::to_lowercase)
+            .filter(|c| *c != '*')
+            .peekable();
+        p.chars().all(|c| {
+            // "De :", "Objet :": the space French puts before a colon.
+            if c == ':' {
+                while it.peek() == Some(&' ') {
+                    it.next();
+                }
+            }
+            it.next() == Some(c)
+        })
     })
 }
 
-fn is_attribution(line: &str, next: &str) -> bool {
-    if !starts_ci(line, ATTR_START) {
-        return false;
+/// Whether `s` ends with one of the lowercase `ends`, spaces before ':' folded.
+fn ends_ci(s: &str, ends: &[&str]) -> bool {
+    let t = s.trim_end().to_lowercase().replace(" :", ":");
+    ends.iter().any(|e| t.ends_with(e))
+}
+
+/// Whether the line is quoted with `>`.
+fn is_quoted(line: &str) -> bool {
+    line.trim_start().starts_with('>')
+}
+
+/// How many lines (1 to 3) an attribution starting at `i` spans, if it starts one:
+/// "On Sun, Oct 11, 2026 at 8:12 AM Marc <m@x.com>\nwrote:" wraps.
+fn attribution(lines: &[&str], i: usize) -> Option<usize> {
+    let l = lines[i].trim();
+    if l.is_empty() || l.len() > 400 {
+        return None;
     }
-    let l = line.trim().to_lowercase();
-    let joined = format!("{l} {}", next.trim().to_lowercase());
-    ATTR_END
-        .iter()
-        .any(|e| l.ends_with(e) || joined.ends_with(e))
+    let opener = starts_ci(l, ATTR_START);
+    // "Marc Petit <m@x.com> a écrit :" without an opener: an address or a time says it.
+    let addressed = l.contains('@') || l.contains(':') && l.chars().any(|c| c.is_ascii_digit());
+    // Old Gmail: "2011/9/20 Marc Petit <marc@x.example>" right above the quote.
+    // Its closing ">" may wrap onto the next line, where it reads as a quote mark.
+    let dated = l.len() >= 10
+        && l.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+        && l.as_bytes()[4] == b'/'
+        && l.contains('@')
+        && l.contains('<');
+    if dated {
+        let quote_follows = lines[i + 1..]
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .is_some_and(|l| is_quoted(l));
+        return quote_follows.then_some(1);
+    }
+    if !opener && !addressed {
+        // "Marc Petit a écrit :" alone, right above the quote.
+        let quote_follows = lines[i + 1..]
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .is_some_and(|l| is_quoted(l));
+        return (l.chars().count() <= 100 && quote_follows && ends_ci(l, ATTR_END)).then_some(1);
+    }
+    let mut joined = String::from(l);
+    for span in 1..=3 {
+        if ends_ci(&joined, ATTR_END)
+            || opener && starts_ci(l, &["quoting "]) && joined.ends_with(':')
+        {
+            return Some(span);
+        }
+        if !opener {
+            return None;
+        }
+        let next = lines.get(i + span)?.trim();
+        if next.is_empty() || next.len() > 200 {
+            return None;
+        }
+        joined.push(' ');
+        joined.push_str(next);
+    }
+    None
 }
 
 /// Outlook-style header block: a From line followed closely by Sent/To/Subject lines.
-fn is_header_block(lines: &[&str], i: usize) -> bool {
+/// Returns how many lines it spans, up to the blank line that ends it.
+fn header_block(lines: &[&str], i: usize) -> Option<usize> {
     if !starts_ci(lines[i], HEADER_FROM) {
-        return false;
+        return None;
     }
-    let following = lines
+    let rest = lines
         .iter()
         .skip(i + 1)
-        .take(5)
-        .filter(|x| starts_ci(x, HEADER_REST));
-    following.count() >= 2
+        .take(6)
+        .filter(|x| starts_ci(x, HEADER_REST))
+        .count();
+    if rest < 2 {
+        return None;
+    }
+    Some(header_len(&lines[i..]))
+}
+
+/// A wrapped line of recipients: `Ana <ana@x.example>, Max <`.
+fn is_address_list(line: &str) -> bool {
+    let t = line.trim();
+    t.contains('@')
+        && (t.starts_with('<') || t.contains(">,") || t.ends_with(',') || t.ends_with('<'))
+}
+
+fn is_header(line: &str) -> bool {
+    starts_ci(line, HEADER_FROM) || starts_ci(line, HEADER_REST)
+}
+
+/// The number of header lines at the start of `lines`, with their wrapped
+/// continuations (a long subject or address list breaks onto the next line) and the
+/// blank lines some clients put between them.
+fn header_len(lines: &[&str]) -> usize {
+    let mut n = 0;
+    while n < lines.len() {
+        if is_header(lines[n]) {
+            n += 1;
+            continue;
+        }
+        if n == 0 {
+            break;
+        }
+        // A continuation or a blank counts only when another header follows it.
+        let next = lines[n..].iter().skip(1).take(2).position(|l| is_header(l));
+        let wrapped = !lines[n].trim().is_empty() && lines[n].trim().chars().count() <= 120;
+        match next {
+            Some(0) if wrapped || lines[n].trim().is_empty() => n += 1,
+            Some(1) if lines[n].trim().is_empty() || wrapped && lines[n + 1].trim().is_empty() => {
+                n += 2
+            }
+            _ if lines[n].starts_with([' ', '\t']) && wrapped => n += 1,
+            // An address list goes on after a trailing comma or an opened "<", and its
+            // wrapped lines are addresses themselves.
+            _ if wrapped && lines[n - 1].trim_end().ends_with([',', '<', ';']) => n += 1,
+            _ if wrapped && is_address_list(lines[n]) => n += 1,
+            // The last header wrapped at the client's line width, right before the body.
+            None if wrapped
+                && is_header(lines[n - 1])
+                && lines[n - 1].chars().count() >= 60
+                && lines.get(n + 1).is_none_or(|l| l.trim().is_empty()) =>
+            {
+                n += 1
+            }
+            _ => break,
+        }
+    }
+    n
+}
+
+fn is_original_separator(line: &str) -> bool {
+    let t = line.trim().trim_start_matches('>').trim();
+    if !t.starts_with("--") && !t.starts_with("__") {
+        return false;
+    }
+    let core = t.trim_matches(['-', '_', ' ']).to_lowercase();
+    ORIGINAL.contains(&core.as_str())
+}
+
+/// A line that introduces a forwarded email ("---------- Forwarded message ---------").
+fn is_forward_marker(line: &str) -> bool {
+    let t = line.trim().trim_start_matches(['>', ' ']);
+    if t.is_empty() || t.chars().count() > 80 {
+        return false;
+    }
+    let low = t.to_lowercase();
+    FORWARD.iter().any(|f| low.contains(f))
 }
 
 fn is_rule(line: &str) -> bool {
     let t = line.trim();
-    t.len() >= 10 && t.chars().all(|c| c == '_' || c == '-')
+    t.chars().count() >= 10
+        && t.chars()
+            .all(|c| c == '_' || c == '-' || c == '—' || c == '━')
+}
+
+/// Whether the subject marks a forward ("TR:", "Fwd:", "WG:"…): the forwarded email,
+/// though it looks like a quoted reply, is then the content.
+pub fn is_forward(subject: &str) -> bool {
+    let mut s = subject.trim_start().to_lowercase();
+    // "[p10] Fwd: …": a mailing list's tag comes first.
+    while s.starts_with('[')
+        && let Some(end) = s.find(']')
+    {
+        s = s[end + 1..].trim_start().to_string();
+    }
+    let head = s.split(':').next().unwrap_or("").trim();
+    s.contains(':') && ["tr", "fwd", "fw", "wg", "rv", "enc", "i"].contains(&head)
+}
+
+/// A forwarded email inside a message.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Forward {
+    /// Who wrote the forwarded email, as its From header names them.
+    pub from: Option<String>,
+    /// Its text, header block removed.
+    pub body: String,
+}
+
+/// A message's text split into what it adds and what it carries along.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Split {
+    /// What the sender wrote: the text above the quoted history (or below it, for a
+    /// bottom-posted reply).
+    pub fresh: String,
+    /// The quoted history, one level of `>` removed (empty when there is none).
+    pub quoted: String,
+    /// The forwarded email, when the message forwards one.
+    pub forward: Option<Forward>,
+}
+
+/// One level of `>` quoting removed from each line.
+fn unquote(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .map(|l| {
+            let t = l.trim_start();
+            match t.strip_prefix('>') {
+                Some(r) => r.strip_prefix(' ').unwrap_or(r),
+                None => l,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn joined(lines: &[&str]) -> String {
+    lines.join("\n").trim().to_string()
+}
+
+/// The forwarded email in `lines` (after its marker): quoting removed, header parsed.
+fn parse_forward(lines: &[&str]) -> Forward {
+    let content: Vec<&&str> = lines.iter().filter(|l| !l.trim().is_empty()).collect();
+    let quoted = content.iter().filter(|l| is_quoted(l)).count();
+    let text = if !content.is_empty() && quoted * 2 >= content.len() {
+        unquote(lines)
+    } else {
+        lines.join("\n")
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
+    let n = header_len(&lines[start..]);
+    let from = lines[start..start + n]
+        .iter()
+        .find(|l| starts_ci(l, HEADER_FROM))
+        .and_then(|l| l.split_once(':'))
+        .map(|(_, v)| display_name(v))
+        .filter(|v| !v.is_empty());
+    Forward {
+        from,
+        body: joined(&lines[start + n..]),
+    }
+}
+
+/// "Bank <b@x.com>" → "Bank"; "<b@x.com>" → "b@x.com".
+fn display_name(v: &str) -> String {
+    let v = v.trim().trim_matches('*').trim();
+    let name = v
+        .split('<')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim();
+    if name.is_empty() {
+        v.trim_matches(['<', '>', ' '])
+            .split('>')
+            .next()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Lines after a quoted block that only sign it off: a few short lines, no sentence.
+fn signs_off(lines: &[&str]) -> bool {
+    let content: Vec<&&str> = lines.iter().filter(|l| !l.trim().is_empty()).collect();
+    let delimited = content.first().is_some_and(|l| l.trim() == "--") && content.len() <= 12;
+    // A sentence under the quote is an answer, not a sign-off.
+    let short = |l: &&&str| {
+        let t = l.trim();
+        t.chars().count() <= 80 && !t.ends_with(['.', '?', '!'])
+    };
+    delimited || content.len() <= 4 && content.iter().all(short)
+}
+
+/// Where the quoted history starts: (first line of the cut, first line of the quote).
+fn quote_cut(lines: &[&str], forward_subject: bool) -> Option<(usize, usize, bool)> {
+    let last = lines.iter().rposition(|l| is_quoted(l));
+    // quoted_to_end[k]: lines k..=last are all quoted, blank, or a long quoted line's
+    // wrap; worked out once, from the end, so long texts stay linear.
+    let mut quoted_to_end = vec![false; lines.len() + 1];
+    if let Some(last) = last {
+        quoted_to_end[last + 1] = true;
+        for k in (0..=last).rev() {
+            let l = lines[k];
+            let inside = l.trim().is_empty()
+                || is_quoted(l)
+                || k > 0 && is_quoted(lines[k - 1]) && lines[k - 1].chars().count() >= 60;
+            quoted_to_end[k] = inside && quoted_to_end[k + 1];
+        }
+    }
+    for i in 0..lines.len() {
+        if is_forward_marker(lines[i]) {
+            return Some((i, i + 1, true));
+        }
+        if let Some(n) = attribution(lines, i) {
+            return Some((i, i + n, false));
+        }
+        if let Some(n) = header_block(lines, i) {
+            return Some((i, i + n, forward_subject));
+        }
+        if is_original_separator(lines[i]) {
+            return Some((i, i + 1, forward_subject));
+        }
+        if is_quoted(lines[i]) {
+            // The rest is quoted, blank, or a short sign-off under the quote.
+            let last = last.unwrap_or(i);
+            if !quoted_to_end[i] {
+                continue;
+            }
+            // A quote that opens on an email's headers is that email: forwarded under a
+            // forward's subject, quoted history otherwise.
+            if quotes_headers(&lines[i..]) {
+                return Some((i, i, forward_subject));
+            }
+            // Quotes higher up with answers between them: an inline reply, read whole.
+            let answered_above = lines[..i].iter().any(|l| is_quoted(l));
+            if !answered_above && signs_off(&lines[last + 1..]) {
+                return Some((i, i, false));
+            }
+        }
+    }
+    None
+}
+
+/// Whether a `>` quote starts with a header block within its first lines.
+fn quotes_headers(lines: &[&str]) -> bool {
+    let unq: Vec<&str> = lines
+        .iter()
+        .take(12)
+        .map(|l| {
+            let t = l.trim_start();
+            t.strip_prefix('>').map_or(t, |r| r.trim_start())
+        })
+        .collect();
+    (0..unq.len().min(4)).any(|k| is_header(unq[k]) && header_len(&unq[k..]) >= 3)
+}
+
+/// Splits plain text into what the sender wrote, the quoted history and any forwarded
+/// email. `forward_subject` is whether the subject marks a forward.
+pub fn split(text: &str, forward_subject: bool) -> Split {
+    // Webmails that flatten HTML glue "-----Original Message-----" to the lines around it.
+    static GLUED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)([^\n\s-])?[ \t]*(-{4,} ?(?:original message|message d'origine|mail original|message original|reply message) ?-{4,})[ \t]*([^\n\s-])?",
+        )
+        .expect("valid regex")
+    });
+    let unglued;
+    let text = if text.contains("----") && GLUED.is_match(text) {
+        unglued = GLUED.replace_all(text, |c: &regex::Captures| {
+            let before = c
+                .get(1)
+                .map_or(String::new(), |m| format!("{}\n", m.as_str()));
+            let after = c
+                .get(3)
+                .map_or(String::new(), |m| format!("\n{}", m.as_str()));
+            format!("{before}{}{after}", &c[2])
+        });
+        unglued.as_ref()
+    } else {
+        text
+    };
+    // "Le 2 nov. 2026 à 08:27, Ana <a@x> a écrit :Coucou !": the quote glued to the
+    // attribution that opens a line.
+    static GLUED_ATTR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?mi)^((?:le|on|am|el|il giorno|op) [^\n]{5,200}?(?:a écrit|wrote|schrieb|escribió|ha scritto|schreef) ?:)([^\s])",
+        )
+        .expect("valid regex")
+    });
+    let reglued;
+    let text = if GLUED_ATTR.is_match(text) {
+        reglued = GLUED_ATTR.replace_all(text, "$1\n$2");
+        reglued.as_ref()
+    } else {
+        text
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let Some((mut cut, start, forward)) = quote_cut(&lines, forward_subject) else {
+        return Split {
+            fresh: text.trim().to_string(),
+            ..Default::default()
+        };
+    };
+    if forward {
+        // A header block is the forwarded email's own; a marker or separator line is not.
+        let from = if is_forward_marker(lines[cut]) || is_original_separator(lines[cut]) {
+            start
+        } else {
+            cut
+        };
+        return Split {
+            fresh: joined(&lines[..cut]),
+            quoted: String::new(),
+            forward: Some(parse_forward(&lines[from..])),
+        };
+    }
+    // A forward under an attribution is history like any quote.
+    let quote_lines = &lines[start.min(lines.len())..];
+    // Drop the separator rules and blank lines that sat just above the quote.
+    while cut > 0 && (lines[cut - 1].trim().is_empty() || is_rule(lines[cut - 1])) {
+        cut -= 1;
+    }
+    if cut == 0 {
+        return bottom_posted(&lines, start);
+    }
+    let quoted_end = quote_lines
+        .iter()
+        .rposition(|l| is_quoted(l))
+        .map_or(quote_lines.len(), |k| k + 1);
+    Split {
+        fresh: joined(&lines[..cut]),
+        quoted: unquote(&quote_lines[..quoted_end]).trim().to_string(),
+        forward: None,
+    }
+}
+
+/// A message that opens on its quote: the reply sits under it (bottom posting) or
+/// between its lines (inline reply), or it adds nothing.
+fn bottom_posted(lines: &[&str], start: usize) -> Split {
+    let rest = &lines[start.min(lines.len())..];
+    let marked = rest.iter().any(|l| is_quoted(l));
+    let last_quoted = rest.iter().rposition(|l| is_quoted(l));
+    let unquoted: Vec<usize> = (0..rest.len())
+        .filter(|&k| !rest[k].trim().is_empty() && !is_quoted(rest[k]))
+        .collect();
+    match (marked, last_quoted, unquoted.first()) {
+        // Every line is quoted: nothing of its own.
+        (true, _, None) => Split {
+            fresh: String::new(),
+            quoted: unquote(rest).trim().to_string(),
+            forward: None,
+        },
+        // The reply under the whole quote.
+        (true, Some(lq), Some(&first)) if first > lq => Split {
+            fresh: joined(&rest[lq + 1..]),
+            quoted: unquote(&rest[..=lq]).trim().to_string(),
+            forward: None,
+        },
+        // Answers between quoted lines: read together, the attribution aside.
+        (true, _, Some(_)) => Split {
+            fresh: joined(rest),
+            quoted: String::new(),
+            forward: None,
+        },
+        // An attribution with unmarked text under it (clients that drop the `>`):
+        // all of it is the history.
+        (false, _, _) => Split {
+            fresh: String::new(),
+            quoted: joined(rest),
+            forward: None,
+        },
+    }
 }
 
 /// Mobile footers and boilerplate that add nothing to a conversation.
 const FOOTERS: &[&str] = &[
-    "sent from my iphone",
-    "sent from my ipad",
-    "envoyé de mon iphone",
-    "envoyé de mon ipad",
-    "get outlook for ios",
-    "get outlook for android",
+    "sent from my ",
     "sent from outlook",
-    "sent from my android",
+    "sent from mail for windows",
+    "sent from yahoo mail",
+    "sent from samsung",
     "sent with proton mail",
+    "sent via ",
+    "envoyé de mon ",
+    "envoyé depuis mon ",
+    "envoyé depuis l'application",
+    "envoyé depuis l’application",
+    "envoyé à partir de ",
+    "envoyé avec ",
+    "ce message a été envoyé depuis un terminal",
+    "envoyé depuis un ",
+    "get outlook for ",
+    "obtenir outlook pour ",
     "télécharger outlook",
+    "téléchargez outlook",
+    "von meinem iphone gesendet",
+    "von meinem ipad gesendet",
+    "inviato da ",
+    "enviado desde mi ",
 ];
 const DISCLAIMERS: &[&str] = &[
     "this email and any attachments",
     "this e-mail and any attachments",
     "this message is confidential",
+    "this email is confidential",
+    "this e-mail is confidential",
     "this message and any attachments",
+    "the information contained in this",
+    "confidentiality notice",
+    "disclaimer:",
     "ce message et toutes les pièces jointes",
+    "ce message et ses pièces jointes",
     "ce courriel et toutes les pièces jointes",
+    "ce message est confidentiel",
+    "ce courriel est confidentiel",
+    "les informations contenues dans ce",
     "le présent message",
+    "avertissement :",
+    "avertissement:",
+    "pensez à l'environnement",
+    "pensez à l’environnement",
+    "pensez à protéger notre planète",
+    "please consider the environment",
+    "think before you print",
+    "l'absence de virus dans ce courrier",
+    "l’absence de virus dans ce courrier",
+    "this email has been checked for viruses",
+    "this email has been scanned",
+];
+/// Closing words a sign-off name follows ("Merci,\nNora").
+const CLOSINGS: &[&str] = &[
+    "merci",
+    "cordialement",
+    "bien à vous",
+    "bien à toi",
+    "bien cordialement",
+    "bonne journée",
+    "bonne soirée",
+    "à bientôt",
+    "a bientôt",
+    "amicalement",
+    "bises",
+    "salutations",
+    "best",
+    "regards",
+    "kind regards",
+    "best regards",
+    "warm regards",
+    "cheers",
+    "thanks",
+    "thank you",
+    "sincerely",
+    "sincèrement",
+    "bien sincèrement",
+    "très cordialement",
+    "respectueusement",
+    "bonne fin de journée",
+    "belle journée",
+    "excellente journée",
+    "merci d'avance",
+    "à plus",
+    "a+",
+    "@+",
+    "a +",
+    "talk soon",
+    "see you",
 ];
 
-/// Removes the "-- " signature block, mobile footers and trailing legal disclaimers.
+/// A line that only closes a letter ("Merci,", "Best regards").
+fn is_closing(line: &str) -> bool {
+    let t = line
+        .trim()
+        .trim_end_matches([',', '.', '!'])
+        .trim()
+        .to_lowercase();
+    !t.is_empty() && t.chars().count() <= 40 && CLOSINGS.iter().any(|c| t.starts_with(c))
+}
+
+/// Removes the "-- " signature block, mobile footers, trailing legal disclaimers and
+/// contact blocks. Returns (what is left, whether anything was removed); what is left
+/// is empty when the text was only a signature.
 pub fn strip_signature(text: &str) -> (String, bool) {
     let lines: Vec<&str> = text.lines().collect();
     let mut cut = lines.len();
     for (i, l) in lines.iter().enumerate() {
-        let t = l.trim_end();
+        let t = l.trim();
         // RFC 3676 signature delimiter, or a footer/disclaimer starting a line.
-        if t == "--" || t == "-- " || starts_ci(t, FOOTERS) || starts_ci(t, DISCLAIMERS) {
+        let delimiter = t == "--" || t == "—" || t == "-- --";
+        let footer = t.chars().count() <= 120 && starts_ci(t, FOOTERS);
+        let disclaimer = i > 0 && starts_ci(t, DISCLAIMERS);
+        if delimiter || footer || disclaimer {
             cut = i;
             break;
         }
     }
+    if let Some(start) = contact_block(&lines[..cut]) {
+        cut = start;
+    }
     if cut == lines.len() {
-        cut = contact_block(&lines).unwrap_or(cut);
+        return (text.trim().to_string(), false);
     }
-    if cut == lines.len() || lines[..cut].iter().all(|l| l.trim().is_empty()) {
-        return (text.trim_end().to_string(), false);
-    }
-    (lines[..cut].join("\n").trim_end().to_string(), true)
+    (lines[..cut].join("\n").trim().to_string(), true)
 }
 
 /// A line of contact details: an address, a phone number or a web page on its own.
 fn is_contact_line(line: &str) -> bool {
-    let t = line.trim();
+    let t = line.trim().trim_matches(['|', ' ']);
+    // "[cid:image002.jpg@01D9…]" is a picture, not an address.
+    if t.starts_with("[cid:") {
+        return false;
+    }
     let low = t.to_lowercase();
     let words = t.split_whitespace().count();
     let email = t.contains('@') && t.contains('.') && words <= 4;
@@ -213,20 +728,34 @@ fn is_contact_line(line: &str) -> bool {
         && rest
             .chars()
             .all(|c| c.is_ascii_digit() || " +.-()/".contains(c));
-    email || web || phone
+    // "75205 Paris Cedex 13, France", "Mailing address:": a postal address.
+    let postal = t.len() <= 60
+        && (t
+            .split_whitespace()
+            .next()
+            .is_some_and(|w| w.len() == 5 && w.chars().all(|c| c.is_ascii_digit()))
+            || low.contains("cedex")
+            || low.starts_with("mailing address"));
+    email || web || phone || postal
 }
 
 /// A short line a signature carries: a name, a title, a company.
 fn is_name_line(line: &str) -> bool {
     let t = line.trim();
     let words = t.split_whitespace().count();
-    (1..=6).contains(&words)
-        && t.chars().count() <= 50
+    // A job title runs long: "Élève Ingénieur Civil à l'École des Mines - Mines Paris".
+    // Names, titles and addresses start with a capital or a digit; a sentence that
+    // happens to lack its full stop ("voici la version corrigée") does not.
+    let starts = t.chars().next().is_some_and(|c| !c.is_lowercase());
+    starts
+        && (1..=12).contains(&words)
+        && t.chars().count() <= 90
         && !t.ends_with([',', '.', '!', '?', ':', ';'])
 }
 
 /// Where a trailing block of contact details starts ("Name / email / +33 phone"): at
-/// least two lines, one of them an address, phone or web page, after some content.
+/// least two lines, one of them an address, phone or web page. A name right under a
+/// closing ("Merci,\nNora") is the sign-off and stays.
 fn contact_block(lines: &[&str]) -> Option<usize> {
     let mut start = lines.len();
     let (mut kept, mut strong) = (0, 0);
@@ -239,70 +768,76 @@ fn contact_block(lines: &[&str]) -> Option<usize> {
             continue;
         }
         let contact = is_contact_line(l);
-        if !contact && !is_name_line(l) {
+        if !contact && !is_name_line(l) || is_closing(l) {
             break;
         }
         strong += contact as usize;
         kept += 1;
         start = i;
-        if kept >= 6 {
+        if kept >= 7 {
             break;
         }
     }
-    let content_before = lines[..start].iter().any(|l| !l.trim().is_empty());
-    (kept >= 2 && strong >= 1 && content_before).then_some(start)
+    // A signature flattened onto one line ("Ana Perezana@x.example+33 6 11 22 33 44")
+    // carries an address and a phone or profile on its own.
+    let dense = |l: &str| {
+        let low = l.to_lowercase();
+        l.contains('@')
+            && (low.contains("linkedin.") || l.chars().filter(|c| c.is_ascii_digit()).count() >= 8)
+    };
+    if (kept < 2 || strong < 1) && !(kept == 1 && dense(lines[start])) {
+        return None;
+    }
+    let above = lines[..start].iter().rposition(|l| !l.trim().is_empty());
+    let named = is_name_line(lines[start]) && !is_contact_line(lines[start]);
+    match above {
+        // The sign-off name under a closing stays.
+        Some(k) if is_closing(lines[k]) && named => (start + 1 < lines.len()).then_some(start + 1),
+        Some(_) => Some(start),
+        // Nothing above: with several addresses or phones it is only a signature (the
+        // reader shows its first line when nothing else is left); with one, its first
+        // line is what was written ("Junior est au fond du seau", then "Fred", a phone).
+        None if strong >= 2 => Some(start),
+        None => (start + 1 < lines.len()).then_some(start + 1),
+    }
 }
 
 /// What a reader needs: new content without quoted history, signature or boilerplate.
 /// Returns (content, whether anything was hidden).
 pub fn readable(text: &str) -> (String, bool) {
-    let (fresh, quoted) = split_text(text);
-    let (clean, signed) = strip_signature(&fresh);
-    (clean, quoted || signed)
+    let r = crate::reading::read(&crate::reading::Mail {
+        text,
+        ..Default::default()
+    });
+    (r.text, r.has_quoted || r.has_signature)
 }
 
-/// Splits plain text into (new content, whether quoted history was removed).
-pub fn split_text(text: &str) -> (String, bool) {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut cut = None;
-    for i in 0..lines.len() {
-        let next = lines.get(i + 1).copied().unwrap_or("");
-        let quoted_tail = lines[i].trim_start().starts_with('>')
-            && lines[i..]
-                .iter()
-                .all(|l| l.trim().is_empty() || l.trim_start().starts_with('>'));
-        if is_attribution(lines[i], next)
-            || is_header_block(&lines, i)
-            || starts_ci(lines[i], ORIGINAL)
-            || quoted_tail
-        {
-            cut = Some(i);
-            break;
-        }
-    }
-    let Some(mut cut) = cut else {
-        return (text.trim_end().to_string(), false);
+/// The list preview of a message: its new text on one line.
+pub fn snippet(body: &str) -> String {
+    let r = crate::reading::read(&crate::reading::Mail {
+        text: body,
+        ..Default::default()
+    });
+    let looks_like_css = |l: &str| {
+        let t = l.trim();
+        t.starts_with('@')
+            && (t.contains("url(")
+                || t.contains('{')
+                || t.starts_with("@media")
+                || t.starts_with("@import"))
+            || t.ends_with('{')
+            || t == "}"
+            || (t.contains('{') && t.contains('}') && t.contains(':'))
     };
-    let fresh_lower: String = lines[..cut].join("\n").to_lowercase();
-    // A forward quoted by Apple Mail ("> Début du message réexpédié :") is content too.
-    let quoted_forward = lines[cut..].iter().take(4).any(|l| is_forward_marker(l));
-    if quoted_forward
-        || FORWARD.iter().any(|f| fresh_lower.contains(f))
-        || (cut == 0 && {
-            let lower = text.to_lowercase();
-            FORWARD.iter().any(|f| lower.contains(f))
-        })
-    {
-        return (forward_view(text), false);
-    }
-    // Drop the separator rules and blank lines that sat just above the quote.
-    while cut > 0 && (lines[cut - 1].trim().is_empty() || is_rule(lines[cut - 1])) {
-        cut -= 1;
-    }
-    if cut == 0 {
-        return (text.trim_end().to_string(), false);
-    }
-    (lines[..cut].join("\n").trim_end().to_string(), true)
+    r.text
+        .lines()
+        .filter(|l| !looks_like_css(l))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect()
 }
 
 /// Markers clients put around quoted history in HTML replies.
@@ -316,57 +851,21 @@ const HTML_MARKERS: &[&str] = &[
     "class=\"moz-cite-prefix\"",
     "class=\"yahoo_quoted\"",
     "<hr id=\"stopspelling\"",
+    "class=\"protonmail_quote\"",
+    "data-marker=\"__quoted_text__\"",
 ];
 
-/// The list preview of a message: its new text on one line, without the CSS and the
-/// invisible "preheader" padding some newsletters put first.
-pub fn snippet(body: &str) -> String {
-    const INVISIBLE: &[char] = &[
-        '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}', '\u{034F}', '\u{00AD}',
-        '\u{180E}',
-    ];
-    let (text, _) = readable(body);
-    // A newsletter dump opens on its "view in browser" link: preview its content instead.
-    let text = if crate::newsletter::degraded(&text) {
-        crate::newsletter::clean(&text)
-    } else if text.contains("](") || text.contains("---") || text.contains("**") {
-        // Markdown plain parts preview as words, never as syntax.
-        crate::newsletter::plain_markdown(&text)
-    } else {
-        text
-    };
-    let looks_like_css = |l: &str| {
-        let t = l.trim();
-        t.starts_with('@')
-            && (t.contains("url(")
-                || t.contains('{')
-                || t.starts_with("@media")
-                || t.starts_with("@import"))
-            || t.ends_with('{')
-            || t == "}"
-            || (t.contains('{') && t.contains('}') && t.contains(':'))
-    };
-    text.lines()
-        .filter(|l| !looks_like_css(l))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !INVISIBLE.contains(c))
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(200)
-        .collect()
+/// Whether a text names a quoted email somewhere: an attribution or a separator, as a
+/// plain part flattened from HTML still does.
+pub fn mentions_attribution(text: &str) -> bool {
+    let low = text.to_lowercase().replace(" :", ":");
+    ATTR_END.iter().any(|e| low.contains(e)) || ORIGINAL.iter().any(|o| low.contains(o))
 }
 
-/// Whether the subject marks a forward ("TR:", "Fwd:", "WG:"…): the forwarded email,
-/// though it looks like a quoted reply, is then the content.
-pub fn is_forward(subject: &str) -> bool {
-    let s = subject.trim_start().to_lowercase();
-    let head = s.split(':').next().unwrap_or("").trim();
-    s.contains(':') && ["tr", "fwd", "fw", "wg", "rv", "enc", "i"].contains(&head)
+/// Whether an HTML body marks quoted history.
+pub fn has_html_quote(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    HTML_MARKERS.iter().any(|m| lower.contains(m))
 }
 
 /// Cuts an HTML body at the first quote marker; the sanitizer repairs the open tags.
@@ -399,95 +898,13 @@ mod tests {
     #[case::upper("FROM: a", HEADER_FROM, true)]
     #[case::indented("   Von: a", HEADER_FROM, true)]
     #[case::accented_upper("À : b", HEADER_REST, true)]
+    #[case::french_space("Objet : b", HEADER_REST, true)]
+    #[case::bold("*From:* Nora", HEADER_FROM, true)]
     #[case::other("Hello", HEADER_FROM, false)]
     #[case::blank("   ", HEADER_FROM, false)]
     #[case::shorter_than_prefix("fro", HEADER_FROM, false)]
     fn case_insensitive_prefixes(#[case] line: &str, #[case] set: &[&str], #[case] want: bool) {
         assert_eq!(starts_ci(line, set), want);
-    }
-
-    const OUTLOOK_FR: &str = "Merci beaucoup !!\n\n________________________________\nFrom: Clément Walter <c@x.com>\nSent: Monday, 29 June 2026 11:07:21\nTo: Valérie <v@y.eu>\nSubject: Re: Projet\n\nBonjour Valérie\n";
-    const GMAIL_FR: &str = "Parfait, merci.\n\nLe dim. 11 oct. 2026 à 08:12, Marc Petit <marc@x.com> a écrit :\n> Hello\n> there\n";
-    const GMAIL_EN_WRAPPED: &str = "Sounds good.\n\nOn Sun, Oct 11, 2026 at 8:12 AM Marc Petit <marc@x.com>\nwrote:\n\n> Hello\n";
-    const ANGLE_TAIL: &str = "Yes.\n\n> earlier text\n> more\n";
-    const FORWARD_TXT: &str = "FYI\n\n---------- Forwarded message ---------\nFrom: Bank <b@x.com>\nDate: Sun, Oct 11\nSubject: Statement\nTo: me\n\nYour statement\n";
-    const INLINE_REPLY: &str = "> question one?\nanswer one\n> question two?\nanswer two\n";
-
-    #[rstest]
-    #[case::outlook_header_block(OUTLOOK_FR, "Merci beaucoup !!")]
-    #[case::gmail_french_attribution(GMAIL_FR, "Parfait, merci.")]
-    #[case::wrapped_english_attribution(GMAIL_EN_WRAPPED, "Sounds good.")]
-    #[case::trailing_angle_quotes(ANGLE_TAIL, "Yes.")]
-    fn keeps_only_new_text(#[case] input: &str, #[case] want: &str) {
-        assert_eq!(split_text(input).0, want);
-    }
-
-    #[rstest]
-    #[case::outlook(OUTLOOK_FR, true)]
-    #[case::forward_kept_whole(FORWARD_TXT, false)]
-    #[case::inline_reply_kept_whole(INLINE_REPLY, false)]
-    #[case::plain(&"Just a note.", false)]
-    fn reports_whether_quote_was_removed(#[case] input: &str, #[case] want: bool) {
-        assert_eq!(split_text(input).1, want);
-    }
-
-    /// An Apple Mail forward in French: a note, the sender's contact block, then the
-    /// forwarded email quoted with ">" under "Début du message réexpédié".
-    const APPLE_FR_FORWARD: &str = "On y va mardi ?\r\n\r\nLéo Martin\r\nleo.martin@mail.example\r\n+33 6 11 22 33 44\r\n\r\n> Début du message réexpédié :\r\n> \r\n> De: Nina Roy <nina@club.example>\r\n> Objet: Apéro du club\r\n> Date: 8 octobre 2026 à 11:34:44 UTC+2\r\n> À: Léo Martin <leo.martin@mail.example>\r\n> \r\n> Bonjour à tous,\r\n> \r\n> Apéro mardi 20 octobre à 19h.\r\n";
-
-    #[rstest]
-    fn an_apple_french_forward_reads_as_note_then_content() {
-        assert_eq!(
-            forward_view(APPLE_FR_FORWARD),
-            "On y va mardi ?\n\nBonjour à tous,\n\nApéro mardi 20 octobre à 19h."
-        );
-    }
-
-    #[rstest]
-    #[case::marker("réexpédié")]
-    #[case::header("Objet:")]
-    #[case::quote_mark("> ")]
-    fn an_apple_forward_shows_no_header(#[case] mark: &str) {
-        assert!(!split_text(APPLE_FR_FORWARD).0.contains(mark));
-    }
-
-    #[rstest]
-    #[case::rfc_delimiter("See you.\n-- \nMarc Petit\nCFO", "See you.")]
-    #[case::iphone_footer("Ok!\n\nSent from my iPhone", "Ok!")]
-    #[case::french_footer("D'accord\n\nEnvoyé de mon iPhone", "D'accord")]
-    #[case::disclaimer("Done.\n\nThis email and any attachments are confidential.", "Done.")]
-    #[case::plain_kept("Line one\n--\n", "Line one")]
-    fn signatures_are_hidden(#[case] input: &str, #[case] want: &str) {
-        assert_eq!(readable(input).0, want);
-    }
-
-    #[rstest]
-    fn message_that_is_only_a_signature_is_kept() {
-        assert_eq!(strip_signature("-- \nMarc").0, "-- \nMarc");
-    }
-
-    #[rstest]
-    fn gmail_html_quote_is_cut() {
-        let html = r#"<div dir="ltr">Thanks!</div><br><div class="gmail_quote"><div>On Sun Marc wrote:</div><blockquote>old</blockquote></div>"#;
-        assert_eq!(split_html(html).0, r#"<div dir="ltr">Thanks!</div><br>"#);
-    }
-
-    #[rstest]
-    fn outlook_html_quote_is_cut() {
-        let html =
-            r#"<p>Merci</p><div id="appendonsend"></div><hr><div id="divRplyFwdMsg">From: x</div>"#;
-        assert_eq!(split_html(html).0, "<p>Merci</p>");
-    }
-
-    #[rstest]
-    #[case::css_and_preheader(
-        "@import url('https://fonts.googleapis.com/css?family=Montserrat'); \u{200C} \u{200C} \u{200C}\nDemande de place en crèche\n\nBonjour",
-        "Demande de place en crèche Bonjour"
-    )]
-    #[case::style_block("body { color: red; }\nHello there", "Hello there")]
-    #[case::plain("Just a note.", "Just a note.")]
-    fn snippets_skip_css_and_invisible_padding(#[case] body: &str, #[case] want: &str) {
-        assert_eq!(snippet(body), want);
     }
 
     #[rstest]
@@ -501,6 +918,19 @@ mod tests {
     #[case::no_colon("Fwd", false)]
     fn forward_subjects(#[case] subject: &str, #[case] want: bool) {
         assert_eq!(is_forward(subject), want);
+    }
+
+    #[rstest]
+    fn gmail_html_quote_is_cut() {
+        let html = r#"<div dir="ltr">Thanks!</div><br><div class="gmail_quote"><div>On Sun Marc wrote:</div><blockquote>old</blockquote></div>"#;
+        assert_eq!(split_html(html).0, r#"<div dir="ltr">Thanks!</div><br>"#);
+    }
+
+    #[rstest]
+    fn outlook_html_quote_is_cut() {
+        let html =
+            r#"<p>Merci</p><div id="appendonsend"></div><hr><div id="divRplyFwdMsg">From: x</div>"#;
+        assert_eq!(split_html(html).0, "<p>Merci</p>");
     }
 
     #[rstest]
@@ -520,25 +950,52 @@ mod tests {
     }
 
     #[rstest]
+    #[case::wrapped_in_two("On Sun, Oct 11, 2026 at 8:12 AM Marc <m@x.example>\nwrote:", Some(2))]
+    #[case::one_line("Le dim. 11 oct. 2026 à 08:12, Marc <m@x.example> a écrit :", Some(1))]
+    #[case::without_opener("Marc Petit <m@x.example> a écrit :", Some(1))]
+    #[case::italian(
+        "Il giorno 14 apr 2026, alle ore 20:18, Lea <l@x.example> ha scritto:",
+        Some(1)
+    )]
+    #[case::horde("Quoting Marc Petit <m@x.example>:", Some(1))]
+    #[case::prose_wrote("She wrote: a poem.", None)]
+    #[case::prose_le("Le chat dort.", None)]
+    fn attributions(#[case] text: &str, #[case] want: Option<usize>) {
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(attribution(&lines, 0), want);
+    }
+
+    #[rstest]
+    #[case::rfc_delimiter("See you.\n-- \nMarc Petit\nCFO", "See you.")]
+    #[case::iphone_footer("Ok!\n\nSent from my iPhone", "Ok!")]
+    #[case::french_footer("D'accord\n\nEnvoyé de mon iPhone", "D'accord")]
+    #[case::orange_footer("Oui\n\nEnvoyé depuis l'application Mail Orange", "Oui")]
+    #[case::disclaimer("Done.\n\nThis email and any attachments are confidential.", "Done.")]
+    #[case::plain_kept("Line one\n--\n", "Line one")]
     #[case::name_email_phone(
         "Here is the plan.\n\nNora Lind\nnora@agency.example\n+33 6 12 34 56 78",
         "Here is the plan."
     )]
     #[case::labelled_phone(
         "See you then.\n\nNora Lind\nAgence Lind\nTél : +33 6 12 34 56 78",
-        "See you then."
+        "See you then.\n\nNora Lind"
     )]
-    #[case::sign_off_kept(
+    #[case::sign_off_name_kept(
         "Thanks for the quick answer.\n\nMerci,\nNora Lind\nnora@agency.example",
-        "Thanks for the quick answer.\n\nMerci,"
+        "Thanks for the quick answer.\n\nMerci,\nNora Lind"
     )]
     #[case::website(
         "Draft attached.\n\nSam Ito\nStudio Ito\nwww.studio.example",
         "Draft attached."
     )]
     #[case::dash_delimiter("Talk soon.\n--\nSam", "Talk soon.")]
-    fn trailing_contact_blocks_are_signatures(#[case] text: &str, #[case] want: &str) {
+    fn signatures_are_stripped(#[case] text: &str, #[case] want: &str) {
         assert_eq!(strip_signature(text).0, want);
+    }
+
+    #[rstest]
+    fn a_message_that_is_only_a_signature_leaves_nothing() {
+        assert_eq!(strip_signature("-- \nMarc").0, "");
     }
 
     #[rstest]

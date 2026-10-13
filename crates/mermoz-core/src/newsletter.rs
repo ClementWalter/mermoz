@@ -33,6 +33,10 @@ const TRACKERS: &[&str] = &[
     "exacttarget",
     "/track/click",
     "utm_",
+    "letsignit.com/collect",
+    "trackmail.",
+    "/ls/click?upn=",
+    "/unsub",
 ];
 
 /// Lines that only point to another way of reading the same mail.
@@ -58,7 +62,19 @@ const VIEW_ONLINE: &[&str] = &[
     "si ce message ne s'affiche pas",
     "si cet e-mail ne s'affiche pas",
     "si cet email ne s'affiche pas",
+    "si vous ne visualisez pas",
+    "viewed without html",
+    "view this email with html",
+    "requires html",
+    "si vous n'arrivez pas à lire",
+    "si vous n’arrivez pas à lire",
     "cliquez ici pour le visualiser",
+    "dans mon navigateur",
+    "dans votre navigateur",
+    "lire cet email en ligne",
+    "lire cet e-mail en ligne",
+    "voir cet e-mail en ligne",
+    "voir cet email en ligne",
 ];
 
 /// Lines that open the footer: everything from there on is boilerplate.
@@ -69,11 +85,13 @@ const FOOTER: &[&str] = &[
     "manage preferences",
     "you are receiving this",
     "you received this email",
+    "you received this message",
     "why did i get this",
     "se désabonner",
     "désabonnez",
     "désinscri",
     "désabonnement",
+    "désabonner",
     "gérer vos préférences",
     "gérer mes préférences",
     "vous recevez cet e-mail",
@@ -137,7 +155,7 @@ fn is_image_noise(line: &str) -> bool {
     (t.starts_with('[') && t.ends_with(']') && t.chars().count() <= 60)
         || low.starts_with("[image")
         || low == "(image)"
-        || t.chars().all(|c| "*-=_~#|·•".contains(c)) && !t.is_empty()
+        || t.chars().all(|c| "*-=_~#|·•>".contains(c)) && !t.is_empty()
 }
 
 /// Drops tracking links inside a sentence; other links stay, they are content.
@@ -183,8 +201,18 @@ pub fn clean(text: &str) -> String {
         if late && FOOTER.iter().any(|f| low.contains(f)) {
             break;
         }
-        if VIEW_ONLINE.iter().any(|v| low.contains(v)) && low.len() < 160 {
+        // "Voir l'évangile en ligne", "Read this issue online": a short banner line.
+        let banner = low.len() < 80
+            && ["voir ", "lire ", "view ", "read "]
+                .iter()
+                .any(|v| low.starts_with(v))
+            && (low.contains("en ligne") || low.contains("online"));
+        if banner || VIEW_ONLINE.iter().any(|v| low.contains(v)) && low.len() < 160 {
             after_link = true;
+            continue;
+        }
+        // "… cliquez\nici": the banner's last word wrapped onto its own line.
+        if after_link && ["ici", "here", "ici.", "here."].contains(&low.as_str()) {
             continue;
         }
         // The rest of a link that wrapped, down to its closing parenthesis.
@@ -201,9 +229,11 @@ pub fn clean(text: &str) -> String {
             continue;
         }
         let kept = without_tracking_links(line.trim_end());
+        // ">> Je m'inscris": arrows and quote bars are decoration in bulk mail.
         let kept = kept
             .trim_start_matches("** ")
             .trim_start_matches("# ")
+            .trim_start_matches(['>', ' '])
             .to_string();
         if kept.trim().is_empty() && !line.trim().is_empty() {
             continue;
@@ -304,6 +334,9 @@ pub fn html_text(html: &str) -> String {
         "</ul",
         "</ol",
         "</blockquote",
+        "<blockquote",
+        "<div",
+        "<hr",
     ];
     while i < html.len() {
         let rest = &lower[i..];
@@ -378,50 +411,144 @@ pub fn without_tags(text: &str) -> String {
     out
 }
 
-/// What a bulk mail shows in a chat bubble: its HTML read as text when the plain part
-/// is a degraded dump (or missing), else its plain part, both cleaned.
-pub fn readable(plain: &str, html: Option<&str>) -> String {
-    let from_plain = clean(plain);
-    match html {
-        Some(h)
-            if plain.trim().is_empty()
-                || degraded(plain)
-                || looks_like_html(plain)
-                || from_plain.is_empty() =>
-        {
-            let from_html = clean(&html_text(h));
-            if from_html.is_empty() {
-                from_plain
-            } else {
-                from_html
+/// Footer words only bulk mail carries.
+const BULK_FOOTER: &[&str] = &[
+    "unsubscribe",
+    "se désabonner",
+    "désabonnez",
+    "désinscri",
+    "desinscri",
+    "désabonnement",
+    "pour ne plus recevoir",
+    "update your preferences",
+    "manage your preferences",
+    "gérer vos préférences",
+    "you are receiving this",
+    "you received this email because",
+    "you received this message because",
+    "vous recevez cet e-mail",
+    "vous recevez cet email",
+    "vous recevez ce message",
+];
+
+/// Whether a mail is bulk (newsletter, promotion, notification): a tracking link, a
+/// "view in browser" banner, an unsubscribe footer in its text or its HTML.
+pub fn is_bulk(text: &str, html: Option<&str>) -> bool {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let banner = lines.iter().take(6).any(|l| {
+        let low = l.to_lowercase();
+        low.len() < 200 && VIEW_ONLINE.iter().any(|v| low.contains(v))
+    });
+    let footer = lines.iter().rev().take(15).any(|l| {
+        let low = l.to_lowercase();
+        BULK_FOOTER.iter().any(|f| low.contains(f))
+    });
+    let tracked = (text.contains("http") || text.contains("www."))
+        && text.split_whitespace().any(|w| is_url(w) && is_tracker(w));
+    banner
+        || footer
+        || tracked
+        || html.is_some_and(|h| {
+            // The footer sits at the end; the head of a long page is not searched.
+            let mut from = h.len().saturating_sub(h.len() / 3 + 4000);
+            while !h.is_char_boundary(from) {
+                from -= 1;
             }
-        }
-        _ => from_plain,
-    }
+            let tail = h[from..].to_lowercase();
+            [
+                "unsubscribe",
+                "désabonn",
+                "desabonn",
+                "désinscri",
+                "desinscri",
+                "list-manage.com",
+                "mjt.lu",
+            ]
+            .iter()
+            .any(|f| tail.contains(f))
+        })
 }
 
-/// Index of the `)` closing a `(` at `open`, if the parenthesis holds a link.
+/// "En savoir plus (https://…)": in bulk mail a link after its words is the button's
+/// target, read in the full email; the words stay.
+pub fn without_link_targets(text: &str) -> String {
+    static TARGET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"([^\s(])[ \t]*\([ \t]*(?:https?://|www\.)[^\s)]+[ \t]*\)")
+            .expect("valid regex")
+    });
+    // "Postuler à cette offre https://…&trk=…": a long bare address after the words.
+    static BARE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(\S)[ \t]*:?[ \t]+https?://\S{40,}").expect("valid regex")
+    });
+    if !text.contains("http") && !text.contains("(www.") {
+        return text.to_string();
+    }
+    let t = TARGET.replace_all(text, "$1");
+    BARE.replace_all(&t, "$1").into_owned()
+}
+
+/// Tracking links dropped from every line, and lines that were only one of them.
+pub fn without_tracking(text: &str) -> String {
+    let mut out: Vec<String> = vec![];
+    for line in text.split('\n') {
+        let t = line
+            .trim()
+            .trim_start_matches(['(', '[', '<'])
+            .trim_end_matches([')', ']', '>']);
+        if !t.contains(' ') && is_url(t) && is_tracker(t) {
+            continue;
+        }
+        if line.contains("http") && line.split(' ').any(|w| is_url(w) && is_tracker(w)) {
+            let kept = without_tracking_links(line);
+            if !kept.trim().is_empty() {
+                out.push(kept);
+            }
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    out.join("\n")
+}
+
+/// Index of the `)` closing a `(` at `open`, if the parenthesis holds a link target:
+/// an address (`https://`, `mailto:`, `tel:`, `#`, `www.`), maybe with a "title".
 fn link_end(chars: &[char], open: usize) -> Option<usize> {
     if chars.get(open) != Some(&'(') {
         return None;
     }
     let mut depth = 0;
+    let mut close = None;
     for (k, c) in chars.iter().enumerate().skip(open).take(2000) {
         match c {
             '(' => depth += 1,
             ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(k);
+                    close = Some(k);
+                    break;
                 }
-            }
-            ' ' if depth == 1 && k > open + 1 && !chars[open + 1..k].contains(&'"') => {
-                return None;
             }
             _ => {}
         }
     }
-    None
+    let close = close?;
+    let inner: String = chars[open + 1..close].iter().collect();
+    // A long address wraps onto the next line; a paragraph break ends any link.
+    if inner.contains("\n\n") {
+        return None;
+    }
+    let inner = inner.replace('\n', "");
+    let target = inner.trim().to_ascii_lowercase();
+    let first = target.split(' ').next().unwrap_or("");
+    let address = ["mailto:", "tel:", "#", "www.", "/"]
+        .iter()
+        .any(|p| target.starts_with(p))
+        || first.contains("://")
+        || first.contains('.') && first.contains('/');
+    // A sentence in parentheses is not a link: past the address, only a quoted title.
+    let rest = target.split_once(' ').map_or("", |(_, r)| r.trim());
+    let titled = rest.is_empty() || rest.starts_with('"') || target.starts_with("tel:");
+    (address && titled || target.is_empty()).then_some(close)
 }
 
 /// Index of the `]` closing a `[` at `open` (nested brackets allowed, a few lines long).
@@ -479,8 +606,9 @@ pub fn plain_markdown(text: &str) -> String {
         if t.len() >= 3 && t.chars().all(|c| "-*_= ".contains(c)) {
             continue;
         }
-        let l = if t.starts_with('#') || t.starts_with("> ") {
-            t.trim_start_matches(['#', '>']).trim_start().to_string()
+        // "## Title" is a heading; "#hashtag" is a word.
+        let l = if t.starts_with('#') && t.trim_start_matches('#').starts_with(' ') {
+            t.trim_start_matches('#').trim_start().to_string()
         } else {
             l.to_string()
         };
@@ -721,25 +849,53 @@ mod tests {
     #[rstest]
     fn html_reads_from_its_headline() {
         assert_eq!(
-            first_line(&readable("https://us.list-manage.com/view?u=1", Some(HTML))),
+            first_line(
+                &crate::reading::read(&crate::reading::Mail {
+                    text: "https://us.list-manage.com/view?u=1",
+                    html: Some(HTML),
+                    ..Default::default()
+                })
+                .text
+            ),
             "Le marché rouvre samedi"
         );
     }
 
     #[rstest]
     fn html_lists_read_as_bullets() {
-        assert!(readable("", Some(HTML)).contains("• Fromages\n• Pain"));
+        assert!(
+            crate::reading::read(&crate::reading::Mail {
+                text: "",
+                html: Some(HTML),
+                ..Default::default()
+            })
+            .text
+            .contains("• Fromages\n• Pain")
+        );
     }
 
     #[rstest]
     fn html_styles_are_not_text() {
-        assert!(!readable("", Some(HTML)).contains("color:red"));
+        assert!(
+            !crate::reading::read(&crate::reading::Mail {
+                text: "",
+                html: Some(HTML),
+                ..Default::default()
+            })
+            .text
+            .contains("color:red")
+        );
     }
 
     #[rstest]
     fn a_good_plain_part_is_kept() {
         assert_eq!(
-            readable("Votre relevé est disponible.", Some(HTML)),
+            crate::reading::read(&crate::reading::Mail {
+                text: "Votre relevé est disponible.",
+                html: Some(HTML),
+                ..Default::default()
+            })
+            .text,
             "Votre relevé est disponible."
         );
     }
@@ -780,7 +936,15 @@ mod tests {
 
     #[rstest]
     fn the_sports_mail_reads_cleanly_in_a_bubble() {
-        assert!(readable(SPORTS, None).starts_with("Match ce samedi à 10h"));
+        assert!(
+            crate::reading::read(&crate::reading::Mail {
+                text: SPORTS,
+                html: None,
+                ..Default::default()
+            })
+            .text
+            .starts_with("Match ce samedi à 10h")
+        );
     }
 
     #[rstest]
@@ -863,7 +1027,12 @@ mod tests {
     #[rstest]
     fn a_raw_html_plain_part_reads_from_the_html_part() {
         assert_eq!(
-            readable(RAW_PLAIN, Some("<p>Your registration is confirmed.</p>")),
+            crate::reading::read(&crate::reading::Mail {
+                text: RAW_PLAIN,
+                html: Some("<p>Your registration is confirmed.</p>"),
+                ..Default::default()
+            })
+            .text,
             "Your registration is confirmed."
         );
     }

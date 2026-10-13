@@ -21,20 +21,8 @@ public enum MessageBody {
     public static func shown(_ m: Message, mode: ReadingMode, htmlReady: Bool, showQuoted: Bool) -> BodyShown {
         if mode == .optimized, let clean = m.bodyClean { return .clean(clean) }
         if mode == .original, m.hasHtml, htmlReady { return .html }
-        // The whole email keeps its signature; quoted history stays behind its fold.
-        let text = showQuoted ? m.bodyText : withoutQuotes(m.bodyText)
-        return .text(text.isEmpty ? m.bodyText : text)
-    }
-
-    /// The text above the quoted history: the first "> " line or "On … wrote:" opener.
-    public static func withoutQuotes(_ text: String) -> String {
-        let lines = text.components(separatedBy: "\n")
-        let cut = lines.firstIndex { l in
-            let t = l.trimmingCharacters(in: .whitespaces).lowercased()
-            return t.hasPrefix(">") || ((t.hasPrefix("on ") || t.hasPrefix("le ")) && (t.hasSuffix("wrote:") || t.hasSuffix("écrit :") || t.hasSuffix("écrit:")))
-        }
-        guard let cut else { return text }
-        return lines[..<cut].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Folded, the core's reading (quoted history already out); unfolded, every word.
+        return .text(showQuoted ? m.bodyText : m.displayBody)
     }
 
     /// The text cut at a line or word boundary before `limit`, and whether it was cut.
@@ -96,8 +84,9 @@ public struct BubbleParts: Equatable, Sendable {
     /// Files sent along, counted on a compact bubble.
     public var fileCount: Int
 
-    /// The message's new text only: quoted history and signature already folded locally.
-    /// Worked out once per message and kept: the chat asks again on every redraw.
+    /// The message's new text, as the core read it (`bodyNew`: quoted history, signature
+    /// and boilerplate already out, LF line ends). Kept per message: the chat asks again on
+    /// every redraw.
     public static func compact(_ m: Message) -> BubbleParts {
         // Keyed by the texts themselves: an edited message never reuses its old parts.
         let key = "\(m.id)|\(m.bodyText.hashValue)|\(m.bodyNew?.hashValue ?? 0)|\(m.attachments.count)"
@@ -105,10 +94,10 @@ public struct BubbleParts: Equatable, Sendable {
     }
 
     static func build(_ m: Message) -> BubbleParts {
-        // Never a blank bubble: its new text, else its whole text (a truly empty message
-        // then reads "(empty message)").
-        let new = tidy(withoutLinkLines(plainMarkdown(m.displayBody)))
-        let text = new.isEmpty ? tidy(withoutLinkLines(plainMarkdown(m.bodyText))) : new
+        // Display only, no cleaning: the core never sends a blank first or last line, but
+        // an older daemon's raw text may end on a line break. An empty text then reads
+        // "(empty message)".
+        let text = m.displayBody.trimmingCharacters(in: .whitespacesAndNewlines)
         return BubbleParts(recipients: nil, text: text, controls: false, chips: [],
                            thumbnails: MessageBody.inlineImages(m), fileCount: MessageBody.chips(m).count)
     }
@@ -117,74 +106,6 @@ public struct BubbleParts: Equatable, Sendable {
     public static func expanded(_ m: Message) -> BubbleParts {
         BubbleParts(recipients: Recipients.line(to: m.to, cc: m.cc, bcc: m.bcc ?? []), text: m.bodyText,
                     controls: true, chips: MessageBody.chips(m), thumbnails: [], fileCount: 0)
-    }
-
-    /// A bubble never opens on a bare link ("view in browser", tracking): lines that are
-    /// only a URL are left to the whole email.
-    /// Words from Markdown-like text: pictures dropped, "[text](url)" read as "text",
-    /// rules, heading and emphasis marks removed. A bubble never shows the syntax.
-    public static func plainMarkdown(_ text: String) -> String {
-        var s = text
-        s = s.replacing(/!\[[^\]]*\]\([^)\s]*\)/, with: "")
-        s = s.replacing(/\[([^\]]*)\]\([^)\s]+\)/) { m in
-            String(m.output.1).trimmingCharacters(in: .whitespaces)
-        }
-        return s.components(separatedBy: "\n")
-            .filter { l in
-                let t = l.trimmingCharacters(in: .whitespaces)
-                return !(t.count >= 3 && t.allSatisfy { "-*_= ".contains($0) })
-            }
-            .map { l -> String in
-                var t = l
-                let trimmed = l.trimmingCharacters(in: .whitespaces)
-                if trimmed.hasPrefix("#") {
-                    t = String(trimmed.drop { $0 == "#" }).trimmingCharacters(in: .whitespaces)
-                }
-                return t.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
-            }
-            .joined(separator: "\n")
-            .replacing(/\n{3,}/, with: "\n\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Characters that take no room: a line made of them and spaces is blank.
-    private static let zeroWidth: Set<Character> = ["\u{200B}", "\u{200C}", "\u{200D}", "\u{200E}", "\u{200F}", "\u{2060}",
-                                                    "\u{FEFF}", "\u{034F}", "\u{00AD}", "\u{180E}", "\u{FFFC}"]
-    private static let genericAlt: Set<String> = ["logo", "image", "img", "header", "banner", "bandeau", "spacer", "icon",
-                                                  "photo", "picture", "pixel", "facebook", "twitter", "instagram", "linkedin"]
-
-    /// A bubble's text: invisible characters and picture placeholders (`<<alt>> [url]`)
-    /// gone, lines of only spaces (non-breaking ones too) blank, blank runs folded, and no
-    /// blank first or last line.
-    public static func tidy(_ text: String) -> String {
-        var out: [String] = []
-        for raw in text.components(separatedBy: "\n") {
-            var line = String(raw.filter { !zeroWidth.contains($0) })
-            line = line.replacing(/<<([^>]*)>>/) { m in
-                let alt = String(m.output.1).trimmingCharacters(in: .whitespaces)
-                let words = alt.lowercased().split(separator: " ")
-                return words.count >= 2 && !words.allSatisfy { genericAlt.contains(String($0)) } ? alt : ""
-            }
-            line = line.replacing(/\[https?:\/\/[^\s\]]*\]/, with: "")
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                if let last = out.last, !last.isEmpty { out.append("") }
-            } else {
-                out.append(String(line.reversed().drop { $0.isWhitespace }.reversed()))
-            }
-        }
-        while out.last == "" { out.removeLast() }
-        return out.joined(separator: "\n")
-    }
-
-    public static func withoutLinkLines(_ text: String) -> String {
-        text.components(separatedBy: "\n")
-            .filter { l in
-                let t = l.trimmingCharacters(in: .whitespaces)
-                return !((t.hasPrefix("http://") || t.hasPrefix("https://")) && !t.contains(" "))
-            }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Compact text longer than about eight lines starts clamped, behind "Show more".
