@@ -140,21 +140,9 @@ struct ConversationHeader: View {
             // Text cost a few milliseconds every time another conversation opened.
             SelectableTitle(text: detail.thread.subject.isEmpty ? "(no subject)" : detail.thread.subject)
             Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
-            HStack(spacing: 2) {
-                ForEach(ConversationTab.allCases, id: \.self) { tab in
-                    Button { model.conversationTab = tab } label: {
-                        HStack(spacing: 4) {
-                            Text(tab.rawValue)
-                            if let n = count(tab), n > 0 { Text("\(n)").foregroundStyle(Theme.text3) }
-                        }
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(model.conversationTab == tab ? Theme.accent : Theme.text2)
-                        .padding(.horizontal, 9).frame(height: 24)
-                        .background(model.conversationTab == tab ? Theme.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 7))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+            ConversationTabs(tabs: ConversationTab.allCases.map { TabStrip.Tab(title: $0.rawValue, count: count($0)) },
+                             selected: ConversationTab.allCases.firstIndex(of: model.conversationTab) ?? 0) { i in
+                model.conversationTab = ConversationTab.allCases[i]
             }
         }
         .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 8)
@@ -178,6 +166,26 @@ struct ConversationHeader: View {
         case .links: conversation.links.count
         case .photos: conversation.photos.count
         }
+    }
+}
+
+/// The conversation's tabs, drawn as one view (TabStrip).
+struct ConversationTabs: NSViewRepresentable {
+    let tabs: [TabStrip.Tab]
+    let selected: Int
+    let onSelect: (Int) -> Void
+
+    func makeNSView(context: Context) -> TabStrip { TabStrip() }
+
+    func updateNSView(_ v: TabStrip, context: Context) {
+        v.onSelect = onSelect
+        v.show(tabs, selected: selected, colors: TabStrip.Colors(
+            text: NSColor(Theme.text2), count: NSColor(Theme.text3), selected: NSColor(Theme.accent),
+            highlight: NSColor(Theme.accentSoft)))
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView v: TabStrip, context: Context) -> CGSize? {
+        v.intrinsicContentSize
     }
 }
 
