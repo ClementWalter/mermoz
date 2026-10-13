@@ -190,9 +190,19 @@ struct ListHeader: View {
     var body: some View {
         @Bindable var model = model
         HStack(spacing: 10) {
-            title
-            Text(model.isReview ? "\(model.reviewDrafts.count)" : model.totalThreads.formatted())
-                .font(.system(size: 12)).foregroundStyle(Theme.text3)
+            // A narrow list drops the count first, then ends the title with an ellipsis;
+            // one line always, never a column of letters.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    title
+                    Text(model.isReview ? "\(model.reviewDrafts.count)" : model.totalThreads.formatted())
+                        .font(.system(size: 12)).foregroundStyle(Theme.text3)
+                }
+                HStack(spacing: 10) { title }
+            }
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(1)
             if model.multiSelection.count > 1 {
                 Chip(small: true) { Text("\(model.multiSelection.count) selected") }
                     .help("Actions apply to all of them · Esc to clear")
