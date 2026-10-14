@@ -86,6 +86,7 @@ app, the CLI and the MCP server are clients of this protocol.
  "is_bounce": false, "is_auto_reply": false,
  "delivery_failure": {"recipient": "no-reply@…", "status": "5.1.1", "reason": "address doesn't exist",
                       "bounce_message_id": "msg_…"} | null,
+ "duplicate_of": "msg_…" | null, "copies": 1,
  "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000,
                   "inline": false, "decorative": false}]}
 
@@ -132,6 +133,10 @@ app, the CLI and the MCP server are clients of this protocol.
 // reaction    an Outlook/Teams reaction ("[heart] Nora reacted to your message") to
 //             target_message_id (found by In-Reply-To, else by the words it quotes);
 //             body_new is then its emoji
+// copies      how many times this email was received (a forwarding address, a double
+//             import); threads hide the other deliveries and show the kept one with
+//             copies >= 2. duplicate_of names the kept copy on a hidden one. Gmail keeps
+//             every copy: thread actions apply to all, none is deleted on its own.
 // attachments[].decorative  a signature logo, social icon, banner or tracking pixel:
 //             never shown as a photo nor counted in Photos (conversation files leave
 //             them out)

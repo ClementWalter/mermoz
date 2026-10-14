@@ -327,6 +327,64 @@ fn import_brings_every_thread(synced: World) {
     assert_eq!(synced.ok("threads.list", json!({}))["total"], 3);
 }
 
+/// The same email delivered twice (once through a forwarding address, with a Message-ID
+/// Google made up on receipt): the thread shows it once, as received twice.
+fn delivered_twice(w: &World) -> Value {
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        let text = "Joyeuses Pâques à toute la famille !";
+        m.add_message(
+            "dup1",
+            "tdup",
+            &["INBOX", "Label_17"],
+            &raw(
+                "Nina Roy <nina@mail.example>",
+                "Joyeuses Pâques",
+                text,
+                "CAF1.SMTPIN_ADDED@mx.google.com",
+            ),
+            NOW + 7000,
+        );
+        m.add_message(
+            "dup2",
+            "tdup",
+            &["INBOX", "Label_17"],
+            &raw(
+                "Nina Roy <nina@mail.example>",
+                "Joyeuses Pâques",
+                text,
+                "1333000.42",
+            ),
+            NOW + 7000,
+        );
+    }
+    w.wait_until("both copies", |w| {
+        w.ok("threads.list", json!({ "limit": 100 }))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Joyeuses Pâques")
+    });
+    let t = w.thread_by_subject("Joyeuses Pâques");
+    w.ok("threads.get", json!({ "id": t["id"] }))
+}
+
+#[rstest]
+fn a_mail_delivered_twice_shows_once(synced: World) {
+    assert_eq!(
+        delivered_twice(&synced)["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[rstest]
+fn a_mail_delivered_twice_says_it_came_twice(synced: World) {
+    assert_eq!(delivered_twice(&synced)["messages"][0]["copies"], 2);
+}
+
 #[rstest]
 fn transient_fetch_failure_loses_no_mail(world: World) {
     world.mailbox.lock().unwrap().fail_once.insert("m2".into());

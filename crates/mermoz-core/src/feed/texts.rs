@@ -190,6 +190,8 @@ mod tests {
             forwarded_from: None,
             quoted_only: false,
             reaction: None,
+            duplicate_of: None,
+            copies: 1,
             body_clean: None,
             has_html: false,
             is_from_me: mine,

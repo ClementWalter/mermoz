@@ -18,6 +18,7 @@ pub use conversations::{
     GroupingPlan, MergeUndo, MergedPair, MergedThread, PairCandidate, PairRecord,
 };
 
+mod duplicates;
 mod feed;
 mod images;
 mod plan;
@@ -137,6 +138,7 @@ const MIGRATIONS: &[&str] = &[
     push::MIGRATION,
     REPLY_TO,
     MACHINE_MAIL,
+    duplicates::MIGRATION,
 ];
 
 /// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null
@@ -1087,7 +1089,7 @@ fn messages_where(
            {}, is_from_me,
            (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json,
            m.list_id IS NOT NULL, r.text, r.flags, r.forwarded_from, r.reaction, r.reaction_quote,
-           m.message_id_header, m.references_json, m.reply_to_json, m.auto_kind, m.dsn_json
+           m.message_id_header, m.references_json, m.reply_to_json, m.auto_kind, m.dsn_json, m.duplicate_of
          FROM messages m {}{}
          WHERE {filter} ORDER BY date, m.rowid",
         bodies::HAS_HTML_OF_M,
@@ -1155,6 +1157,8 @@ fn messages_where(
                     forwarded_from: None,
                     quoted_only: false,
                     reaction: None,
+                    duplicate_of: r.get(25)?,
+                    copies: 1,
                     body_clean: r.get(11)?,
                     body_text: r.get(8)?,
                     has_html: r.get::<_, i64>(9)? != 0,
@@ -1254,7 +1258,30 @@ fn messages_where(
             })?
             .collect::<rusqlite::Result<_>>()?;
     }
-    let mut msgs: Vec<Message> = msgs.into_iter().map(|(_, _, m)| m).collect();
+    let msgs: Vec<Message> = msgs.into_iter().map(|(_, _, m)| m).collect();
+    // A second delivery of an email is hidden; the kept copy counts it. The headers and
+    // quotes read alongside stay in step with the messages.
+    let shown: std::collections::HashSet<String> = msgs
+        .iter()
+        .filter(|m| m.duplicate_of.is_none())
+        .map(|m| m.id.clone())
+        .collect();
+    let mut copies: std::collections::HashMap<String, u32> = Default::default();
+    let (mut kept, mut ids_kept, mut quotes_kept) = (vec![], vec![], vec![]);
+    for ((m, id), quote) in msgs.into_iter().zip(ids).zip(reaction_quotes) {
+        match &m.duplicate_of {
+            Some(of) if shown.contains(of) => *copies.entry(of.clone()).or_default() += 1,
+            _ => {
+                kept.push(m);
+                ids_kept.push(id);
+                quotes_kept.push(quote);
+            }
+        }
+    }
+    for m in kept.iter_mut() {
+        m.copies = 1 + copies.get(&m.id).copied().unwrap_or(0);
+    }
+    let (mut msgs, ids, reaction_quotes) = (kept, ids_kept, quotes_kept);
     images::mark_repeated(&mut msgs);
     reactions::find_targets(&mut msgs, &ids, &reaction_quotes);
     mark_delivery_failures(&mut msgs, &ids, &dsns);
@@ -1988,6 +2015,8 @@ impl Store {
                 params![aid, mid, a.filename, a.mime, a.data.len() as i64, path.to_string_lossy(), a.content_id, a.inline as i64, decorative as i64],
             )?;
         }
+        // A second delivery of an email already stored (its parts now saved) points at the copy kept.
+        duplicates::apply(tx, &duplicates::regroup(tx, &mid)?)?;
         Self::refresh_thread(tx, &thread_id)?;
         if new_thread {
             let (in_inbox, names) = Self::thread_remote_labels(tx, account_id, &thread_id)?;
@@ -2084,7 +2113,11 @@ impl Store {
                 last_from,
                 last.4,
                 rows.iter().any(|r| r.3) as i64,
-                rows.len() as i64,
+                // Second deliveries of an email are not counted.
+                tx.prepare_cached(
+                    "SELECT COUNT(*) FROM messages WHERE thread_id = ?1 AND duplicate_of IS NULL"
+                )?
+                .query_row([thread_id], |r| r.get::<_, i64>(0))?,
                 rows.iter().any(|r| r.7 > 0) as i64,
                 rows[0].4,
             ],

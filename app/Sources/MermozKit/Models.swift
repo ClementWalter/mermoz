@@ -237,6 +237,10 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var quotedOnly: Bool? = nil
     /// The message is only a reaction to another one (`bodyNew` is then its emoji).
     public var reaction: Reaction? = nil
+    /// Another delivery of the same email: the id of the copy kept (threads hide copies).
+    public var duplicateOf: String? = nil
+    /// How many times this email was received; 2 or more means "received twice".
+    public var copies: Int? = nil
     /// Reading version written by the built-in agent.
     public var bodyClean: String?
     public var hasHtml: Bool

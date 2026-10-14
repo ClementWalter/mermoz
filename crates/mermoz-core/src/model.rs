@@ -109,6 +109,10 @@ pub struct AttachmentInfo {
     pub decorative: bool,
 }
 
+fn one() -> u32 {
+    1
+}
+
 /// A reaction (Outlook/Teams "[heart] Nora reacted to your message") to another message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Reaction {
@@ -165,6 +169,13 @@ pub struct Message {
     /// The message is only a reaction to another one (`body_new` is then its emoji).
     #[serde(default)]
     pub reaction: Option<Reaction>,
+    /// Another delivery of the same email (a forwarding address, a double import): the
+    /// id of the copy kept. A thread hides such copies.
+    #[serde(default)]
+    pub duplicate_of: Option<String>,
+    /// How many times this email was received (1, or more when its copies are hidden).
+    #[serde(default = "one")]
+    pub copies: u32,
     /// Reading version written by the built-in agent, when it has processed this message.
     pub body_clean: Option<String>,
     pub has_html: bool,

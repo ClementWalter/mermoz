@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this pipeline; bump it when its output changes, so cached readings are
 /// recomputed in the background.
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 
 /// What the pipeline reads from a message.
 #[derive(Debug, Clone, Copy, Default)]

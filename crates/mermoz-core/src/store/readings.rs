@@ -59,13 +59,22 @@ pub(super) fn read(subject: &str, text: &str, html: Option<&str>, listed: bool) 
 /// (rowid, id, subject, body_text, html, listed, from_email) of a message to read.
 type Pending = (i64, String, String, String, Option<String>, bool, String);
 
+/// Each image's (attachment id, decorative) for one message.
+type Flags = Vec<(String, bool)>;
+
+/// One message's duplicate group: (message id, the copy it duplicates).
+type Copies = Vec<(String, Option<String>)>;
+
+/// The messages to read with, for each, its image flags and duplicate group.
+type Batch = (Vec<Pending>, Vec<Flags>, Vec<Copies>);
+
 impl Store {
     /// Reads up to `limit` messages after rowid `after` whose reading is missing or
     /// from an older pipeline, then stores them in one short write; the parsing runs
     /// outside the write lock. Returns the last rowid looked at, or None once all are
     /// current.
     pub fn read_bodies_batch(&self, after: i64, limit: i64) -> Result<Option<i64>> {
-        let (pending, images): (Vec<Pending>, Vec<Vec<(String, bool)>>) = {
+        let (pending, images, copies): Batch = {
             let bg = self.bg.lock().unwrap();
             // Once done for this version it stays done: new mail is read at ingest.
             let done: Option<String> = bg
@@ -107,7 +116,12 @@ impl Store {
                     super::images::classify_stored(&bg, from, id, html.as_deref(), &list)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            (pending, images)
+            // Second deliveries of an email, found on the same connection.
+            let copies = pending
+                .iter()
+                .map(|(_, id, ..)| super::duplicates::regroup(&bg, id))
+                .collect::<Result<Vec<_>>>()?;
+            (pending, images, copies)
         };
         let Some(last) = pending.last().map(|p| p.0) else {
             self.w.lock().unwrap().execute(
@@ -121,7 +135,10 @@ impl Store {
         });
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
-        for (((rowid, id, ..), r), flags) in pending.iter().zip(&readings).zip(&images) {
+        let mut threads = std::collections::BTreeSet::new();
+        for ((((rowid, id, ..), r), flags), group) in
+            pending.iter().zip(&readings).zip(&images).zip(&copies)
+        {
             // The message may have been deleted since it was read.
             let exists: bool = tx
                 .prepare_cached("SELECT 1 FROM messages WHERE rowid = ?1 AND id = ?2")?
@@ -132,7 +149,19 @@ impl Store {
                     tx.prepare_cached("UPDATE attachments SET decorative = ?2 WHERE id = ?1")?
                         .execute(params![aid, *decorative as i64])?;
                 }
+                if group.len() > 1 {
+                    super::duplicates::apply(&tx, group)?;
+                    threads.insert(tx.query_row(
+                        "SELECT thread_id FROM messages WHERE id = ?1",
+                        [id],
+                        |r| r.get::<_, String>(0),
+                    )?);
+                }
             }
+        }
+        // Their threads count the email once.
+        for t in &threads {
+            Store::refresh_thread(&tx, t)?;
         }
         tx.commit()?;
         Ok(Some(last))
