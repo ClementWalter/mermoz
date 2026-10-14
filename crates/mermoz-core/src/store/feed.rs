@@ -503,9 +503,15 @@ impl Store {
     /// the hint when it comes back. Returns how many threads were put off.
     pub fn snooze(&self, ids: &[String], until: i64, label: Option<&str>) -> Result<usize> {
         let ids = self.with_open_siblings(ids)?;
+        self.snooze_exactly(&ids, until, label)
+    }
+
+    /// [`Self::snooze`] on exactly these threads: their conversations' other threads
+    /// stay as they are.
+    pub fn snooze_exactly(&self, ids: &[String], until: i64, label: Option<&str>) -> Result<usize> {
         let w = self.w.lock().unwrap();
         let mut n = 0;
-        for id in &ids {
+        for id in ids {
             n += w.execute(
                 "INSERT INTO feed_snoozes (thread_id, until, for_date, label, woke)
                  SELECT id, ?2, last_date, ?3, 0 FROM threads WHERE id = ?1

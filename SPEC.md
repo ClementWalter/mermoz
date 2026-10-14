@@ -480,7 +480,9 @@ AI plans it.
   run. Every thread's state before the run is logged, so undo works after a restart.
   The run takes one snapshot when it starts (its threads, and the open threads of their
   conversations) and changes exactly those, so a thread that joins a conversation
-  mid-run is left alone and undo restores every thread it changed.
+  mid-run is left alone and undo restores every thread it changed. A Later run also
+  logs whether each of those threads was already put off, and until when; undo puts
+  each back exactly so.
 - **Gmail write-back.** Label, read and Trash changes that come to the same edit go out
   together, up to 1,000 messages per `messages.batchModify` call (25,000 threads in a
   few dozen calls, not 25,000). A delete adds Gmail's `TRASH` label and removes

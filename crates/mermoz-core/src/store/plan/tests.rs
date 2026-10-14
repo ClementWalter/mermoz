@@ -488,3 +488,51 @@ fn a_subject_prefix_filters(clubs: Mailbox) {
 fn subjects_group_by_how_they_begin(#[case] subject: &str, #[case] want: &str) {
     assert_eq!(subject_pattern(subject), want);
 }
+
+// ---- put-off state around a run
+
+/// When the thread is put off until, if it is.
+fn put_off_until(s: &Store, id: &str) -> Option<i64> {
+    let r = s.r.lock().unwrap();
+    r.query_row(
+        "SELECT until FROM feed_snoozes WHERE thread_id = ?1",
+        [id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// "Garden quote", the one thread from paul@roux.example.
+fn garden(m: &Mailbox) -> Vec<String> {
+    let f: Filter =
+        serde_json::from_value(serde_json::json!({ "from": ["paul@roux.example"] })).unwrap();
+    vec![m.store.plan_matches(&f, NOW).unwrap()[0].id.clone()]
+}
+
+#[rstest]
+fn undo_puts_a_thread_back_to_its_own_day(mailbox: Mailbox) {
+    let (s, ids) = (&mailbox.store, garden(&mailbox));
+    s.save_bulk_op(&op("op1"), &[]).unwrap();
+    s.snooze_exactly(&ids, 7, None).unwrap();
+    s.save_bulk_snoozes("op1", &ids).unwrap();
+    s.snooze_exactly(&ids, 9, None).unwrap();
+    s.restore_bulk_snoozes("op1").unwrap();
+    assert_eq!(put_off_until(s, &ids[0]), Some(7));
+}
+
+#[rstest]
+fn undo_brings_back_a_thread_that_was_not_put_off(mailbox: Mailbox) {
+    let (s, ids) = (&mailbox.store, garden(&mailbox));
+    s.save_bulk_op(&op("op1"), &[]).unwrap();
+    s.save_bulk_snoozes("op1", &ids).unwrap();
+    s.snooze_exactly(&ids, 9, None).unwrap();
+    s.restore_bulk_snoozes("op1").unwrap();
+    assert_eq!(put_off_until(s, &ids[0]), None);
+}
+
+#[rstest]
+fn a_run_that_logged_no_put_off_state_restores_none(mailbox: Mailbox) {
+    let s = &mailbox.store;
+    s.save_bulk_op(&op("op1"), &[]).unwrap();
+    assert_eq!(s.restore_bulk_snoozes("op1").unwrap(), None);
+}

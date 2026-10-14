@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS bulk_op_before (
   thread_id TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (op_id, thread_id));
 "#;
 
+/// Each thread's put-off state before a run; `until` is null when it was not put off.
+pub(super) const SNOOZE_MIGRATION: &str = "CREATE TABLE IF NOT EXISTS bulk_op_snoozes (
+  op_id TEXT NOT NULL REFERENCES bulk_ops(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL, until INTEGER, for_date INTEGER, label TEXT, woke INTEGER,
+  PRIMARY KEY (op_id, thread_id));";
+
 /// A thread a filter matched, as the preview shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlanMatch {
@@ -459,6 +465,55 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Keeps each thread's put-off state before the run (later calls keep the first).
+    pub fn save_bulk_snoozes(&self, id: &str, thread_ids: &[String]) -> Result<()> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        {
+            let mut ins = tx.prepare_cached(
+                "INSERT OR IGNORE INTO bulk_op_snoozes (op_id, thread_id, until, for_date, label, woke)
+                 SELECT ?1, t.id, z.until, z.for_date, z.label, z.woke
+                 FROM threads t LEFT JOIN feed_snoozes z ON z.thread_id = t.id WHERE t.id = ?2",
+            )?;
+            for t in thread_ids {
+                ins.execute(params![id, t])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Puts every logged thread back as put off (or not) as before the run; `None` when
+    /// the run logged no put-off state.
+    pub fn restore_bulk_snoozes(&self, id: &str) -> Result<Option<usize>> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        let logged: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM bulk_op_snoozes WHERE op_id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if logged == 0 {
+            return Ok(None);
+        }
+        let mut n = tx.execute(
+            "DELETE FROM feed_snoozes WHERE thread_id IN
+               (SELECT thread_id FROM bulk_op_snoozes WHERE op_id = ?1 AND until IS NULL)",
+            [id],
+        )?;
+        // `AND true` lets SQLite read the upsert after a SELECT.
+        n += tx.execute(
+            "INSERT INTO feed_snoozes (thread_id, until, for_date, label, woke)
+             SELECT b.thread_id, b.until, b.for_date, b.label, b.woke FROM bulk_op_snoozes b
+             JOIN threads t ON t.id = b.thread_id WHERE b.op_id = ?1 AND b.until IS NOT NULL AND true
+             ON CONFLICT(thread_id) DO UPDATE SET until = excluded.until, for_date = excluded.for_date,
+               label = excluded.label, woke = excluded.woke",
+            [id],
+        )?;
+        tx.commit()?;
+        Ok(Some(n))
     }
 
     /// The states a run's threads had before it, as `threads.restore` takes them.

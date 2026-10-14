@@ -411,7 +411,7 @@ fn apply(svc: &Service, action: &Action, ids: &[String]) -> Result<()> {
         Action::Later { until } => {
             let at = plan::later_ms(until)
                 .ok_or_else(|| Error::InvalidParams(format!("'{until}' is not a date")))?;
-            st.snooze(ids, at, Some(&plan::day_words(until)))?;
+            st.snooze_exactly(ids, at, Some(&plan::day_words(until)))?;
             let _ = svc.events.send(Event::FeedChanged);
             svc.later_kick.notify_one();
             Ok(())
@@ -482,11 +482,20 @@ pub async fn run(
             .into_iter()
             .filter(|t| !exclude.contains(t) && st.thread(t).is_ok())
             .collect();
-        let follows = !matches!(
-            step.action,
-            Action::MarkRead | Action::MarkUnread | Action::Later { .. }
-        );
-        steps.push(with_siblings(svc, &live, follows));
+        // Read state is per thread; status, projects and Later move the conversation.
+        let follows = !matches!(step.action, Action::MarkRead | Action::MarkUnread);
+        let threads = with_siblings(svc, &live, follows);
+        if matches!(step.action, Action::Later { .. }) {
+            let all: Vec<String> = threads
+                .iter()
+                .flat_map(|(t, sib)| std::iter::once(t).chain(sib).cloned())
+                .collect();
+            if let Err(e) = st.save_bulk_snoozes(id, &all) {
+                st.set_bulk_op_state(id, "failed", 0, Some(&e.to_string()))?;
+                return Err(e);
+            }
+        }
+        steps.push(threads);
     }
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut before: Vec<ThreadState> = vec![];
@@ -546,11 +555,19 @@ pub fn undo(svc: &Arc<Service>, id: &str) -> Result<Value> {
         _ => return Err(Error::InvalidParams("This hasn't run yet.".into())),
     }
     let p: Plan = serde_json::from_value(op.plan.clone()).unwrap_or(Plan { steps: vec![] });
-    for (i, step) in p.steps.iter().enumerate() {
-        if matches!(step.action, Action::Later { .. }) {
-            st.unsnooze(&st.bulk_op_targets(id, i)?)?;
-            let _ = svc.events.send(Event::FeedChanged);
+    if p.steps
+        .iter()
+        .any(|s| matches!(s.action, Action::Later { .. }))
+    {
+        // Runs logged before put-off states were kept: bring their targets back.
+        if st.restore_bulk_snoozes(id)?.is_none() {
+            for (i, step) in p.steps.iter().enumerate() {
+                if matches!(step.action, Action::Later { .. }) {
+                    st.unsnooze(&st.bulk_op_targets(id, i)?)?;
+                }
+            }
         }
+        let _ = svc.events.send(Event::FeedChanged);
     }
     let sorted = |mut v: Vec<String>| {
         v.sort();

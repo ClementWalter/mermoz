@@ -1439,6 +1439,7 @@ dependencies = [
  "mail-parser",
  "mermoz-core",
  "rstest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

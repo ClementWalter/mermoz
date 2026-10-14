@@ -774,6 +774,63 @@ fn undo_restores_every_thread_while_grouping_gathers_them(
     assert_eq!(changed, 0);
 }
 
+/// Every put-off thread as (thread, until, for_date, label, woke), read from the
+/// daemon's database: no RPC lists mail hidden until later.
+fn snoozes(w: &World) -> Vec<(String, i64, i64, Option<String>, i64)> {
+    let db = rusqlite::Connection::open_with_flags(
+        w.home.path().join("mermoz.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let mut st = db
+        .prepare(
+            "SELECT thread_id, until, for_date, label, woke FROM feed_snoozes ORDER BY thread_id",
+        )
+        .unwrap();
+    st.query_map([], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    })
+    .unwrap()
+    .collect::<Result<_, _>>()
+    .unwrap()
+}
+
+#[rstest]
+#[case::r01(1)]
+#[case::r02(2)]
+#[case::r03(3)]
+#[case::r04(4)]
+#[case::r05(5)]
+#[case::r06(6)]
+#[case::r07(7)]
+#[case::r08(8)]
+#[case::r09(9)]
+#[case::r10(10)]
+// The grouping worker gathers the newsletters into one feed stream while the run puts
+// them off; two of them were already put off by the user, to another day.
+fn undo_restores_every_put_off_thread_while_grouping_gathers_them(
+    crowd: World,
+    #[case] _round: u32,
+) {
+    let w = crowd;
+    let mine: Vec<Value> = ["Digest 3", "Digest 700"]
+        .iter()
+        .map(|s| w.thread(s)["id"].clone())
+        .collect();
+    w.ok(
+        "feed.snooze",
+        json!({ "ids": mine, "until": now() + 9 * DAY, "label": "next week" }),
+    );
+    let before = snoozes(&w);
+    let until = day_ahead(3);
+    w.ai_answers(vec![json!({ "understood": true, "steps": [{
+        "filter": { "from": ["bulk.example"] }, "action": { "kind": "later", "until": until } }] })]);
+    let id = ask(&w)["id"].clone();
+    w.ok("do.run", json!({ "id": id }));
+    w.ok("do.undo", json!({ "id": id }));
+    assert_eq!(snoozes(&w), before);
+}
+
 /// `messages.batchModify` calls that add or remove TRASH.
 fn trash_batches(w: &World, added: bool) -> usize {
     let m = w.mailbox.lock().unwrap();

@@ -139,6 +139,7 @@ const MIGRATIONS: &[&str] = &[
     REPLY_TO,
     MACHINE_MAIL,
     duplicates::MIGRATION,
+    plan::SNOOZE_MIGRATION,
 ];
 
 /// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null
