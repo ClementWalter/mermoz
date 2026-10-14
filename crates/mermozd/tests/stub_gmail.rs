@@ -87,6 +87,12 @@ pub struct Mailbox {
     pub do_asks: Vec<Value>,
     /// `threads.modify` calls, one thread each.
     pub thread_modify_calls: usize,
+    /// `threads.trash` calls, one thread each.
+    pub thread_trash_calls: usize,
+    /// `threads.untrash` calls, one thread each.
+    pub thread_untrash_calls: usize,
+    /// (addLabelIds, removeLabelIds) of every `messages.batchModify` call, in order.
+    pub batch_modify_deltas: Vec<(Vec<String>, Vec<String>)>,
     /// `messages.batchModify` calls, up to 1,000 messages each.
     pub batch_modify_calls: usize,
     /// Messages fetched with `format=minimal` (labels only).
@@ -364,6 +370,10 @@ async fn batch_modify(State(s): State<Shared>, Json(body): Json<Value>) -> axum:
         return axum::http::StatusCode::BAD_REQUEST;
     }
     m.batch_modify_calls += 1;
+    m.batch_modify_deltas.push((
+        strings(&body["addLabelIds"]),
+        strings(&body["removeLabelIds"]),
+    ));
     m.relabel(
         &ids,
         &strings(&body["addLabelIds"]),
@@ -553,9 +563,9 @@ async fn trash_thread(
     if !has_length(&headers) {
         return Err(axum::http::StatusCode::LENGTH_REQUIRED);
     }
-    s.lock()
-        .unwrap()
-        .relabel_thread(&tid, &["TRASH"], &["INBOX"]);
+    let mut m = s.lock().unwrap();
+    m.thread_trash_calls += 1;
+    m.relabel_thread(&tid, &["TRASH"], &["INBOX"]);
     Ok(Json(json!({ "id": tid })))
 }
 
@@ -567,7 +577,9 @@ async fn untrash_thread(
     if !has_length(&headers) {
         return Err(axum::http::StatusCode::LENGTH_REQUIRED);
     }
-    s.lock().unwrap().relabel_thread(&tid, &[], &["TRASH"]);
+    let mut m = s.lock().unwrap();
+    m.thread_untrash_calls += 1;
+    m.relabel_thread(&tid, &[], &["TRASH"]);
     Ok(Json(json!({ "id": tid })))
 }
 

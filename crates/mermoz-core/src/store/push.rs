@@ -16,7 +16,7 @@ impl Store {
     pub fn pending_ops_for(&self, account_id: &str, limit: i64) -> Result<Vec<Op>> {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(
-            "SELECT id, account_id, kind, key, payload, attempts, seq FROM ops
+            "SELECT id, account_id, kind, key, payload, attempts, seq, bulk FROM ops
              WHERE account_id = ?1 ORDER BY bulk, id LIMIT ?2",
         )?;
         Ok(st
@@ -30,6 +30,7 @@ impl Store {
                     payload: serde_json::from_str(&p).unwrap_or_default(),
                     attempts: r.get(5)?,
                     seq: r.get(6)?,
+                    bulk: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)

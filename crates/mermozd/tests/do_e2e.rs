@@ -688,6 +688,165 @@ fn the_users_edit_reaches_gmail_before_the_rest_of_a_big_run(crowd: World) {
     assert!(removed_at("m4") < last_bulk);
 }
 
+// ---- a big delete's write-back
+
+fn bulk_delete_plan() -> Value {
+    json!({ "understood": true, "question": null, "steps": [{
+        "filter": { "from": ["bulk.example"] },
+        "action": { "kind": "delete" } }] })
+}
+
+/// 1,500 newsletters as `add_crowd`, each from its own sender: no feed stream gathers
+/// them while the run goes.
+fn add_lone_crowd(m: &mut stub_gmail::Mailbox, t: i64) {
+    for i in 0..1500 {
+        m.add_message(
+            &format!("b{i}"),
+            &format!("tb{i}"),
+            &["INBOX"],
+            &raw(
+                &format!("Weekly {i} <digest{i}@bulk.example>"),
+                &format!("Digest {i}"),
+                &format!("b{i}"),
+            ),
+            t - (200 + i as i64 % 50) * DAY,
+        );
+    }
+}
+
+/// The 1,500 newsletters and a plan moving them all to the Trash.
+#[fixture]
+fn crowd_to_delete() -> World {
+    let w = start_mail(add_lone_crowd, 1500);
+    w.enable_ai();
+    w.ai_answers(vec![bulk_delete_plan()]);
+    w
+}
+
+/// Every one of the 1,500 newsletters is (or is not) in the Gmail Trash.
+fn crowd_trashed(w: &World, trashed: bool) -> bool {
+    let m = w.mailbox.lock().unwrap();
+    (0..1500).all(|i| m.thread_label_names(&format!("tb{i}")).contains("TRASH") == trashed)
+}
+
+/// Runs the delete plan and waits until Gmail shows every match in the Trash; returns
+/// the run's id for its undo.
+fn delete_to_gmail(w: &World) -> Value {
+    let id = ask(w)["id"].clone();
+    w.ok("do.run", json!({ "id": id, "confirm": 1500 }));
+    w.wait_until("every match in the gmail trash", |w| crowd_trashed(w, true));
+    id
+}
+
+/// Deletes, then undoes, and waits until Gmail shows every match out of the Trash.
+fn undo_to_gmail(w: &World) {
+    let id = delete_to_gmail(w);
+    w.ok("do.undo", json!({ "id": id }));
+    w.wait_until("every match out of the gmail trash", |w| {
+        crowd_trashed(w, false)
+    });
+}
+
+/// `messages.batchModify` calls that add or remove TRASH.
+fn trash_batches(w: &World, added: bool) -> usize {
+    let m = w.mailbox.lock().unwrap();
+    m.batch_modify_deltas
+        .iter()
+        .filter(|(add, remove)| {
+            let side = if added { add } else { remove };
+            side.iter().any(|l| l == "TRASH")
+        })
+        .count()
+}
+
+#[rstest]
+fn a_big_delete_reaches_the_trash_in_a_few_calls(crowd_to_delete: World) {
+    delete_to_gmail(&crowd_to_delete);
+    // 1,500 one-message threads, applied 200 at a time: a handful of calls.
+    assert!(trash_batches(&crowd_to_delete, true) <= 10);
+}
+
+#[rstest]
+fn a_big_delete_trashes_no_thread_on_its_own(crowd_to_delete: World) {
+    delete_to_gmail(&crowd_to_delete);
+    assert_eq!(
+        crowd_to_delete.mailbox.lock().unwrap().thread_trash_calls,
+        0
+    );
+}
+
+#[rstest]
+fn a_big_delete_leaves_the_gmail_inbox(crowd_to_delete: World) {
+    delete_to_gmail(&crowd_to_delete);
+    let m = crowd_to_delete.mailbox.lock().unwrap();
+    assert!((0..1500).all(|i| !m.thread_label_names(&format!("tb{i}")).contains("INBOX")));
+}
+
+#[rstest]
+fn undoing_a_big_delete_untrashes_in_a_few_calls(crowd_to_delete: World) {
+    undo_to_gmail(&crowd_to_delete);
+    assert!(trash_batches(&crowd_to_delete, false) <= 10);
+}
+
+#[rstest]
+fn undoing_a_big_delete_untrashes_no_thread_on_its_own(crowd_to_delete: World) {
+    undo_to_gmail(&crowd_to_delete);
+    assert_eq!(
+        crowd_to_delete.mailbox.lock().unwrap().thread_untrash_calls,
+        0
+    );
+}
+
+#[rstest]
+fn undoing_a_big_delete_brings_the_mail_back_to_the_gmail_inbox(crowd_to_delete: World) {
+    undo_to_gmail(&crowd_to_delete);
+    let m = crowd_to_delete.mailbox.lock().unwrap();
+    assert!((0..1500).all(|i| m.thread_label_names(&format!("tb{i}")).contains("INBOX")));
+}
+
+#[rstest]
+fn the_echo_of_a_big_delete_fetches_no_message(crowd_to_delete: World) {
+    delete_to_gmail(&crowd_to_delete);
+    // Two more rounds read the history the push left behind.
+    for _ in 0..2 {
+        crowd_to_delete.ok("sync.now", json!({}));
+        std::thread::sleep(Duration::from_millis(1200));
+    }
+    assert_eq!(crowd_to_delete.mailbox.lock().unwrap().minimal_gets, 0);
+}
+
+#[rstest]
+fn the_users_delete_reaches_the_trash_before_the_rest_of_a_big_delete(crowd_to_delete: World) {
+    crowd_to_delete
+        .mailbox
+        .lock()
+        .unwrap()
+        .batch_modify_delay_ms = 300;
+    let id = ask(&crowd_to_delete)["id"].clone();
+    crowd_to_delete.ok("do.run", json!({ "id": id, "confirm": 1500 }));
+    crowd_to_delete.set_status("Garden quote", "deleted");
+    crowd_to_delete.wait_until("every match in the gmail trash", |w| crowd_trashed(w, true));
+    crowd_to_delete.wait_until("the user's delete in the gmail trash", |w| {
+        w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t4")
+            .contains("TRASH")
+    });
+    let m = crowd_to_delete.mailbox.lock().unwrap();
+    // Where each message's move to the Trash sits in Gmail's history.
+    let trashed_at = |msg: &str| {
+        m.history.iter().position(|(_, r)| {
+            r["labelsAdded"].as_array().is_some_and(|a| {
+                a.iter()
+                    .any(|e| e["message"]["id"] == msg && e["labelIds"][0] == "TRASH")
+            })
+        })
+    };
+    let last_bulk = (0..1500).filter_map(|i| trashed_at(&format!("b{i}"))).max();
+    assert!(trashed_at("m4") < last_bulk);
+}
+
 // ---- delete
 
 #[rstest]

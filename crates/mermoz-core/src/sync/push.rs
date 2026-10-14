@@ -1,7 +1,10 @@
-//! The write-back queue pushed to Gmail: label and read changes that come to the same
-//! edit are sent together, up to 1,000 messages per `messages.batchModify` call, so a
-//! bulk run of 25,000 threads reaches Gmail in a few dozen calls. The queue is read a
-//! chunk at a time, the user's own edits first, so they never wait behind a bulk run.
+//! The write-back queue pushed to Gmail: label, read and trash changes that come to the
+//! same edit are sent together, up to 1,000 messages per `messages.batchModify` call, so
+//! a bulk run of 25,000 threads reaches Gmail in a few dozen calls. Trash is the `TRASH`
+//! system label (Gmail lists it as one a client may apply), so a delete and its undo
+//! batch like an archive; nothing here ever deletes a message for good. The queue is
+//! read a chunk at a time, the user's own edits first, so they never wait behind a bulk
+//! run.
 
 use super::AccountSync;
 use crate::error::{Error, Result};
@@ -23,7 +26,7 @@ enum Plan {
     Done,
     /// A label change shared with other ops, sent in batches.
     Batch(Delta),
-    /// Its own calls (trash, untrash, label renames and deletes).
+    /// Its own calls (label renames and deletes).
     Single,
 }
 
@@ -63,13 +66,13 @@ impl AccountSync {
 
     async fn push_chunk(&self, ops: &[Op]) -> Result<Outcome> {
         let mut out = Outcome::default();
-        let mut groups: BTreeMap<Delta, Vec<&Op>> = BTreeMap::new();
+        let mut batched: Vec<(bool, Delta, &Op)> = vec![];
         let mut done: Vec<&Op> = vec![];
         let mut singles: Vec<&Op> = vec![];
         for op in ops {
             match self.plan(op) {
                 Ok(Plan::Done) => done.push(op),
-                Ok(Plan::Batch(d)) => groups.entry(d).or_default().push(op),
+                Ok(Plan::Batch(d)) => batched.push((op.bulk, d, op)),
                 Ok(Plan::Single) => singles.push(op),
                 Err(Error::NotFound(_)) => done.push(op),
                 Err(e) => self.failed(op, &e, &mut out)?,
@@ -77,7 +80,7 @@ impl AccountSync {
         }
         self.store.ops_done(&done)?;
         out.pushed += done.len();
-        for ((add, remove), group) in groups {
+        for ((add, remove), group) in group(batched) {
             if out.offline {
                 break;
             }
@@ -138,32 +141,24 @@ impl AccountSync {
         }
     }
 
-    /// Managed labels (INBOX, Mermoz/*) to add and remove so Gmail shows the thread's
-    /// status; trashing and untrashing are calls of their own.
+    /// Managed labels (TRASH, INBOX, Mermoz/*) to add and remove so Gmail shows the
+    /// thread's status.
     fn labels_plan(&self, thread_id: &str) -> Result<Plan> {
         self.store.provider_thread_id(thread_id)?;
         let trashed = self.store.thread_trashed(&self.account_id, thread_id)?;
-        if self.store.thread_status(thread_id)? == "deleted" {
-            return Ok(if trashed { Plan::Done } else { Plan::Single });
-        }
-        if trashed {
-            return Ok(Plan::Single);
-        }
-        let desired = self.store.thread_desired_labels(thread_id)?;
-        let current = self
-            .store
-            .thread_current_labels(&self.account_id, thread_id)?;
-        let add: BTreeSet<String> = desired.difference(&current).cloned().collect();
-        let remove: BTreeSet<String> = current
-            .iter()
-            .filter(|n| *n == "INBOX" || n.starts_with(LABEL_PREFIX))
-            .filter(|n| !desired.contains(*n))
-            .cloned()
-            .collect();
-        Ok(if add.is_empty() && remove.is_empty() {
-            Plan::Done
+        let deleted = self.store.thread_status(thread_id)? == "deleted";
+        let (desired, current) = if deleted {
+            (BTreeSet::new(), BTreeSet::new())
         } else {
-            Plan::Batch((add, remove))
+            (
+                self.store.thread_desired_labels(thread_id)?,
+                self.store
+                    .thread_current_labels(&self.account_id, thread_id)?,
+            )
+        };
+        Ok(match label_delta(deleted, trashed, &desired, &current) {
+            Some(d) => Plan::Batch(d),
+            None => Plan::Done,
         })
     }
 
@@ -187,7 +182,7 @@ impl AccountSync {
         // A label that no longer exists is already off every message.
         let mut remove_ids = vec![];
         for n in remove {
-            if n == "INBOX" || n == "UNREAD" {
+            if SYSTEM_LABELS.contains(&n.as_str()) {
                 remove_ids.push(n.clone());
             } else if let Some(id) = self.store.label_id(&self.account_id, n)? {
                 remove_ids.push(id);
@@ -200,36 +195,25 @@ impl AccountSync {
         }
         let threads: Vec<String> = ops.iter().map(|o| o.key.clone()).collect();
         let messages = self.store.provider_message_ids(&threads)?;
-        // Whole threads per call, so each op is done or not as one.
-        let mut batch: Vec<&Op> = vec![];
-        let mut ids: Vec<String> = vec![];
-        let mut whole: Vec<&Op> = vec![];
-        for op in ops {
-            let m = &messages[&op.key];
-            if m.is_empty() || m.len() > BATCH_MODIFY_MAX {
-                whole.push(op);
-                continue;
+        let sizes: Vec<usize> = ops.iter().map(|o| messages[&o.key].len()).collect();
+        let (calls, alone) = pack(&sizes, BATCH_MODIFY_MAX);
+        for call in calls {
+            if out.offline {
+                return Ok(());
             }
-            if ids.len() + m.len() > BATCH_MODIFY_MAX {
-                self.send_batch(&batch, &ids, &add_ids, &remove_ids, out)
-                    .await?;
-                (batch, ids) = (vec![], vec![]);
-                if out.offline {
-                    return Ok(());
-                }
-            }
-            batch.push(op);
-            ids.extend(m.iter().cloned());
-        }
-        if !batch.is_empty() {
+            let batch: Vec<&Op> = call.iter().map(|&i| ops[i]).collect();
+            let ids: Vec<String> = batch
+                .iter()
+                .flat_map(|o| messages[&o.key].iter().cloned())
+                .collect();
             self.send_batch(&batch, &ids, &add_ids, &remove_ids, out)
                 .await?;
         }
-        for op in whole {
+        for i in alone {
             if out.offline {
                 break;
             }
-            self.send_thread(op, &add_ids, &remove_ids, out).await?;
+            self.send_thread(ops[i], &add_ids, &remove_ids, out).await?;
         }
         Ok(())
     }
@@ -279,7 +263,7 @@ impl AccountSync {
         out: &mut Outcome,
     ) -> Result<()> {
         let res = match self.store.provider_thread_id(&op.key) {
-            Ok((_, pt)) => self.gmail.modify_thread(&pt, add, remove).await,
+            Ok((_, pt)) => self.modify_thread(&pt, add, remove).await,
             Err(e) => Err(e),
         };
         match res {
@@ -297,13 +281,109 @@ impl AccountSync {
         Ok(())
     }
 
+    /// One thread's label change; moving in or out of Trash uses Gmail's own
+    /// `threads.trash` / `threads.untrash`, the rest `threads.modify`.
+    async fn modify_thread(&self, pt: &str, add: &[String], remove: &[String]) -> Result<()> {
+        let (mut add, mut remove) = (add.to_vec(), remove.to_vec());
+        if add.iter().any(|l| l == TRASH) {
+            self.gmail.trash_thread(pt).await?;
+            // threads.trash takes the thread out of the inbox as well.
+            add.retain(|l| l != TRASH);
+            remove.retain(|l| l != TRASH && l != "INBOX");
+        } else if remove.iter().any(|l| l == TRASH) {
+            self.gmail.untrash_thread(pt).await?;
+            remove.retain(|l| l != TRASH);
+        }
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        self.gmail.modify_thread(pt, &add, &remove).await
+    }
+
     /// An op with calls of its own.
     async fn push_one(&self, op: &Op) -> Result<()> {
         match op.kind.as_str() {
-            "labels" => self.push_labels(&op.key).await,
             "label_rename" => self.push_label_rename(&op.payload).await,
             "label_delete" => self.push_label_delete(&op.payload).await,
             other => Err(Error::other(format!("unknown op {other}"))),
         }
     }
 }
+
+const TRASH: &str = "TRASH";
+
+/// Gmail system labels sent by id, which is their name.
+pub(super) const SYSTEM_LABELS: &[&str] = &["INBOX", "UNREAD", TRASH];
+
+/// The change that makes Gmail show a thread as it is here: `deleted` here, `trashed`
+/// in Gmail, and its managed labels (INBOX, Mermoz/*) `desired` and `current`. A
+/// deleted thread goes to Trash and leaves the inbox, as Gmail's own trash does; any
+/// other thread leaves Trash. `None` when Gmail already matches.
+fn label_delta(
+    deleted: bool,
+    trashed: bool,
+    desired: &BTreeSet<String>,
+    current: &BTreeSet<String>,
+) -> Option<Delta> {
+    if deleted {
+        return (!trashed).then(|| {
+            (
+                BTreeSet::from([TRASH.to_string()]),
+                BTreeSet::from(["INBOX".to_string()]),
+            )
+        });
+    }
+    let add: BTreeSet<String> = desired.difference(current).cloned().collect();
+    let mut remove: BTreeSet<String> = current
+        .iter()
+        .filter(|n| *n == "INBOX" || n.starts_with(LABEL_PREFIX))
+        .filter(|n| !desired.contains(*n))
+        .cloned()
+        .collect();
+    if trashed {
+        remove.insert(TRASH.to_string());
+    }
+    (!add.is_empty() || !remove.is_empty()).then_some((add, remove))
+}
+
+/// Groups ops by (bulk, change), in the order of each group's first op. The user's
+/// edits come first in the queue, so their calls go out first and carry no bulk ops.
+fn group<T>(planned: Vec<(bool, Delta, T)>) -> Vec<(Delta, Vec<T>)> {
+    let mut groups: Vec<(Delta, Vec<T>)> = vec![];
+    let mut index: BTreeMap<(bool, Delta), usize> = BTreeMap::new();
+    for (bulk, d, op) in planned {
+        let i = *index.entry((bulk, d.clone())).or_insert_with(|| {
+            groups.push((d, vec![]));
+            groups.len() - 1
+        });
+        groups[i].1.push(op);
+    }
+    groups
+}
+
+/// Packs threads, by message count in queue order, into calls of at most `max`
+/// messages. Whole threads per call, so each op is done or not as one. Threads that fit
+/// no call (no stored message, or more than `max`) come back apart, by index.
+fn pack(sizes: &[usize], max: usize) -> (Vec<Vec<usize>>, Vec<usize>) {
+    let (mut calls, mut alone): (Vec<Vec<usize>>, Vec<usize>) = (vec![], vec![]);
+    let (mut call, mut n) = (vec![], 0);
+    for (i, &size) in sizes.iter().enumerate() {
+        if size == 0 || size > max {
+            alone.push(i);
+            continue;
+        }
+        if n + size > max {
+            calls.push(std::mem::take(&mut call));
+            n = 0;
+        }
+        call.push(i);
+        n += size;
+    }
+    if !call.is_empty() {
+        calls.push(call);
+    }
+    (calls, alone)
+}
+
+#[cfg(test)]
+mod tests;

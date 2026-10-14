@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::gmail::{Gmail, decode_raw};
 use crate::mime;
 use crate::model::Draft;
-use crate::store::{IncomingMessage, LABEL_PREFIX, Store, SyncMode, ThreadPatch};
+use crate::store::{IncomingMessage, Store, SyncMode, ThreadPatch};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -362,7 +362,7 @@ impl AccountSync {
     async fn label_ids(&self, names: &BTreeSet<String>) -> Result<Vec<String>> {
         let mut ids = vec![];
         for n in names {
-            if n == "INBOX" || n == "UNREAD" {
+            if push::SYSTEM_LABELS.contains(&n.as_str()) {
                 ids.push(n.clone());
                 continue;
             }
@@ -463,46 +463,6 @@ impl AccountSync {
             n += 1;
         }
         Ok(n)
-    }
-
-    /// A thread's labels with calls of its own: trash or untrash, then its label diff.
-    async fn push_labels(&self, thread_id: &str) -> Result<()> {
-        let (_, provider_thread) = self.store.provider_thread_id(thread_id)?;
-        let trashed = self.store.thread_trashed(&self.account_id, thread_id)?;
-        let trash = vec!["TRASH".to_string()];
-        if self.store.thread_status(thread_id)? == "deleted" {
-            if !trashed {
-                self.gmail.trash_thread(&provider_thread).await?;
-                self.store
-                    .apply_label_delta(thread_id, &trash, &["INBOX".to_string()])?;
-            }
-            return Ok(());
-        }
-        if trashed {
-            self.gmail.untrash_thread(&provider_thread).await?;
-            self.store.apply_label_delta(thread_id, &[], &trash)?;
-        }
-        let desired = self.store.thread_desired_labels(thread_id)?;
-        let current = self
-            .store
-            .thread_current_labels(&self.account_id, thread_id)?;
-        let add: BTreeSet<String> = desired.difference(&current).cloned().collect();
-        let remove: BTreeSet<String> = current
-            .iter()
-            .filter(|n| *n == "INBOX" || n.starts_with(LABEL_PREFIX))
-            .filter(|n| !desired.contains(*n))
-            .cloned()
-            .collect();
-        if add.is_empty() && remove.is_empty() {
-            return Ok(());
-        }
-        let add_ids = self.label_ids(&add).await?;
-        let remove_ids = self.label_ids(&remove).await?;
-        self.gmail
-            .modify_thread(&provider_thread, &add_ids, &remove_ids)
-            .await?;
-        self.store
-            .apply_label_delta(thread_id, &add_ids, &remove_ids)
     }
 
     async fn push_label_rename(&self, payload: &serde_json::Value) -> Result<()> {
@@ -693,6 +653,9 @@ mod tests {
     #[case::labelled_elsewhere(vec![(vec!["Label_1"], true)], &["INBOX"], false)]
     #[case::last_change_wins(vec![(vec!["INBOX"], false), (vec!["INBOX"], true)], &["INBOX"], true)]
     #[case::labels_not_sent(vec![(vec![], true)], &["INBOX"], false)]
+    #[case::our_trash_echoed(vec![(vec!["TRASH"], true), (vec!["INBOX"], false)], &["TRASH"], true)]
+    #[case::our_untrash_echoed(vec![(vec!["TRASH"], false), (vec!["INBOX"], true)], &["INBOX"], true)]
+    #[case::trashed_elsewhere(vec![(vec!["TRASH"], true)], &["INBOX"], false)]
     fn a_label_change_already_stored_is_an_echo(
         #[case] changes: Vec<(Vec<&str>, bool)>,
         #[case] stored: &[&str],

@@ -655,6 +655,8 @@ pub struct Op {
     pub attempts: i64,
     /// Bumped on every re-enqueue, so an in-flight push can tell it was superseded.
     pub seq: i64,
+    /// Queued by a bulk run: it waits behind the user's own edits.
+    pub bulk: bool,
 }
 
 /// Status a thread gets when first seen, from its Gmail state.
@@ -5169,7 +5171,7 @@ impl Store {
 
     pub fn pending_ops(&self, limit: i64) -> Result<Vec<Op>> {
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached("SELECT id, account_id, kind, key, payload, attempts, seq FROM ops ORDER BY id LIMIT ?1")?;
+        let mut st = r.prepare_cached("SELECT id, account_id, kind, key, payload, attempts, seq, bulk FROM ops ORDER BY id LIMIT ?1")?;
         Ok(st
             .query_map([limit], |r| {
                 let p: String = r.get(4)?;
@@ -5181,6 +5183,7 @@ impl Store {
                     payload: serde_json::from_str(&p).unwrap_or_default(),
                     attempts: r.get(5)?,
                     seq: r.get(6)?,
+                    bulk: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)

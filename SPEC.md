@@ -478,9 +478,11 @@ AI plans it.
 - **Run and undo.** Batches of 200 through the same store changes as the RPCs, so Gmail
   labels follow; progress shows in the palette, then a toast and one ⌘Z for the whole
   run. Every thread's state before the run is logged, so undo works after a restart.
-- **Gmail write-back.** Label and read changes that come to the same edit go out
+- **Gmail write-back.** Label, read and Trash changes that come to the same edit go out
   together, up to 1,000 messages per `messages.batchModify` call (25,000 threads in a
-  few dozen calls, not 25,000). A run's write-backs queue behind the user's own edits,
+  few dozen calls, not 25,000). A delete adds Gmail's `TRASH` label and removes
+  `INBOX`, as Gmail's own trash does (Gmail empties the Trash after 30 days); its undo
+  removes `TRASH`. Nothing deletes a message for good. A run's write-backs queue behind the user's own edits,
   so an archive made during a big push reaches Gmail with the next call. History
   entries that only echo our own pushes are recognised from their labels and fetch
   nothing; they neither route nor judge mail again.
