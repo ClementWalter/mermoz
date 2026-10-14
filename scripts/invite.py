@@ -55,7 +55,7 @@ Download Mermoz for Mac: {DOWNLOAD_URL}
 (requires macOS 26)
 
 1. Open the DMG and drag Mermoz into Applications.
-2. First launch: right-click Mermoz › Open. The beta isn't notarized by Apple yet, so macOS asks once.
+2. Open Mermoz from Applications. It's signed and checked by Apple, so it opens with a double-click.
 3. Sign in with this Google account. Google will say the app isn't verified yet: click Continue.
 4. During the beta, Google asks you to sign in again about once a week.
 

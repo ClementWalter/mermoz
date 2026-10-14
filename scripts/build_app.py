@@ -51,7 +51,7 @@ APP_PKG = REPO / "app"
 OUT = REPO / "build" / "Mermoz.app"
 ENTITLEMENTS = APP_PKG / "Mermoz.entitlements"
 RUST_BINS = ("mermozd", "mermoz")
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 
 def build_rust(run: signing.Runner, mode: str) -> None:
