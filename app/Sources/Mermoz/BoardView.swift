@@ -164,7 +164,7 @@ struct BoardCard: View {
                     .font(.system(size: 12.5, weight: thread.unread ? .semibold : .regular)).lineLimit(2)
             }
             HStack(spacing: 6) {
-                if model.accounts.count > 1 {
+                if model.visibleAccounts.count > 1 {
                     // Hollow ring = which account; kept distinct from the filled unread dot.
                     Circle().strokeBorder(Theme.accountColor(thread.accountId, among: model.accounts), lineWidth: 1.5)
                         .frame(width: 7, height: 7).help(model.accounts.first { $0.id == thread.accountId }?.email ?? "")

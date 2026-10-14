@@ -75,6 +75,7 @@ impl Store {
         } else {
             "t.status IN (SELECT key FROM statuses WHERE archived = 0)"
         };
+        let open = format!("{open}{}", self.visible());
         // One pass over open threads; the per-dimension totals are summed here.
         let mut status: BTreeMap<String, i64> = BTreeMap::new();
         let mut account: BTreeMap<String, i64> = BTreeMap::new();

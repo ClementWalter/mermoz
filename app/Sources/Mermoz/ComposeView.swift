@@ -36,10 +36,10 @@ struct ComposeView: View {
             Divider().overlay(Theme.line)
 
             VStack(spacing: 0) {
-                if context.threadId == nil && context.draftId == nil && model.accounts.count > 1 {
+                if context.threadId == nil && context.draftId == nil && model.visibleAccounts.count > 1 {
                     field("From") {
                         Picker("", selection: Binding(get: { context.accountId ?? "" }, set: { context.accountId = $0 })) {
-                            ForEach(model.accounts) { Text($0.email).tag($0.id) }
+                            ForEach(model.visibleAccounts) { Text($0.email).tag($0.id) }
                         }
                         .labelsHidden().fixedSize()
                     }
@@ -150,7 +150,7 @@ struct ComposeView: View {
     /// The account the message goes out from.
     private var accountId: String? {
         context.accountId ?? model.detail.flatMap { d in context.threadId == d.thread.id ? d.thread.accountId : nil }
-            ?? model.accounts.first?.id
+            ?? model.visibleAccounts.first?.id
     }
 
     private func askShareThenSend() {

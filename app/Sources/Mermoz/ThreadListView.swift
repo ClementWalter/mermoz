@@ -347,7 +347,7 @@ struct ThreadRow: View, Equatable {
                     .accessibilityLabel(thread.unread ? "Unread" : "")
                 Text(thread.number).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.text3)
                 Text(thread.lastFrom).font(.system(size: 13, weight: thread.unread ? .semibold : .regular)).lineLimit(1)
-                if model.accounts.count > 1 {
+                if model.visibleAccounts.count > 1 {
                     // Hollow ring = which account; kept distinct from the filled unread dot.
                     Circle().strokeBorder(Theme.accountColor(thread.accountId, among: model.accounts), lineWidth: 1.5)
                         .frame(width: 7, height: 7).help(model.accounts.first { $0.id == thread.accountId }?.email ?? "")

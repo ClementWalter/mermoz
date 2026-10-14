@@ -271,6 +271,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `accounts.sign_in_status` | `{}`                                                                               | `{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?}`; `kind`: `admin_policy`, `unverified`, `org_internal`, `app_blocked`, `declined` |
 | `accounts.reconnect` | `{"account_id"}`                                                                       | `{"auth_url"}`; signs the account in again with the app's client (or the account's own client), keeping local mail; emits `accounts_changed` |
 | `accounts.remove`    | `{"id"}`                                                                                 | `{}`                                     |
+| `accounts.set_hidden` | `{"id", "hidden": bool}`                                                             | `{}`; a hidden account keeps syncing but its mail leaves every list, count, search, feed and suggestion; emits `accounts_changed` and `threads_changed` |
 | `statuses.list`      | `{}`                                                                                     | `[Status]`                               |
 | `labels.list`        | `{}`                                                                                     | `[{"account_id","id","name","count"}]` user labels ("mailboxes"), nested with `/` |
 | `projects.list`      | `{}`                                                                                     | `[Project]`                              |

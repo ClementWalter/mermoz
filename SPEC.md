@@ -70,6 +70,12 @@ tracked as issues (Linear-style), not as a pile in an inbox.
 - **Generic IMAP:** only if it meets the speed bar (CONDSTORE/QRESYNC/IDLE
   required). Otherwise not supported.
 - Credentials and API keys in the macOS Keychain.
+- **Hidden accounts** (for screenshots and demos): an eye on each sidebar account
+  hides its mail from everything the window shows (Feed, lists, conversations,
+  counts, search, Ask Mermoz, suggestions) while it keeps syncing. The choice is a
+  flag on the account in the store, so it survives relaunch; the daemon's read
+  queries leave hidden accounts out (no extra condition while none is hidden). The
+  hidden row stays in the sidebar, dimmed, with its eye to show it again.
 
 ### Search
 

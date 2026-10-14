@@ -97,6 +97,9 @@ public final class DaemonClient: Sendable {
         try await call("accounts.reconnect", Params().with("account_id", id))
     }
     public func removeAccount(_ id: String) async throws { try await callVoid("accounts.remove", Params().with("id", id)) }
+    public func setAccountHidden(_ id: String, _ hidden: Bool) async throws {
+        try await callVoid("accounts.set_hidden", Params().with("id", id).with("hidden", hidden))
+    }
     public func statuses() async throws -> [Status] { try await call("statuses.list") }
     public func projects() async throws -> [Project] { try await call("projects.list") }
 

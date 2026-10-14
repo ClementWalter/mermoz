@@ -25,6 +25,7 @@ mod plan;
 mod push;
 mod reactions;
 mod readings;
+mod visibility;
 pub use feed::FEED_STATUSES;
 pub use plan::{BulkOp, PlanMatch};
 
@@ -140,6 +141,7 @@ const MIGRATIONS: &[&str] = &[
     MACHINE_MAIL,
     duplicates::MIGRATION,
     plan::SNOOZE_MIGRATION,
+    visibility::MIGRATION,
 ];
 
 /// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null
@@ -996,6 +998,8 @@ pub struct Store {
     ckpt: Mutex<(Connection, i64)>,
     blobs: PathBuf,
     counts_cache: Mutex<counts::CountsCache>,
+    /// Whether any account is hidden, so queries skip the visibility filter otherwise.
+    any_hidden: std::sync::atomic::AtomicBool,
 }
 
 const THREAD_COLS: &str = "t.id, t.number, t.account_id, t.subject, t.snippet, t.participants, t.last_from, t.last_date, \
@@ -1514,7 +1518,9 @@ impl Store {
             ckpt: Mutex::new((reader()?, -1)),
             blobs: blobs.to_path_buf(),
             counts_cache: Default::default(),
+            any_hidden: Default::default(),
         };
+        store.refresh_hidden()?;
         store.seed()?;
         tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: seeded");
         store.backfill_snippets()?;
@@ -1639,7 +1645,7 @@ impl Store {
 
     pub fn accounts(&self) -> Result<Vec<Account>> {
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare("SELECT id, email, provider, sync_state, synced, total, error FROM accounts ORDER BY created")?;
+        let mut st = r.prepare("SELECT id, email, provider, sync_state, synced, total, error, hidden FROM accounts ORDER BY created")?;
         let rows = st.query_map([], |r| {
             Ok(Account {
                 id: r.get(0)?,
@@ -1651,6 +1657,7 @@ impl Store {
                     total: r.get(5)?,
                     error: r.get(6)?,
                 },
+                hidden: r.get::<_, i64>(7)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1664,7 +1671,8 @@ impl Store {
             [&acc.id],
         )?;
         w.execute("DELETE FROM accounts WHERE id = ?1", [&acc.id])?;
-        Ok(())
+        drop(w);
+        self.refresh_hidden()
     }
 
     pub fn set_sync(
@@ -2371,6 +2379,7 @@ impl Store {
             clauses.push(format!("t.conv_kind IN ({})", vec!["?"; k.len()].join(",")));
             args.extend(k.iter().map(|x| x.clone().into()));
         }
+        clauses.extend(self.visible_clause());
         // Mail put off with Later leaves its column until it comes back (or new mail arrives).
         if f.status.is_some() {
             clauses.push(
@@ -3046,8 +3055,9 @@ impl Store {
             "WITH hits AS (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1
                            ORDER BY rowid DESC LIMIT ?3){ctes}
              SELECT {THREAD_COLS} FROM hits JOIN messages m ON m.fts_rowid = hits.rowid
-               JOIN threads t ON t.id = m.thread_id
-             GROUP BY t.id ORDER BY MIN({rank}), t.last_date DESC LIMIT ?2"
+               JOIN threads t ON t.id = m.thread_id{}
+             GROUP BY t.id ORDER BY MIN({rank}), t.last_date DESC LIMIT ?2",
+            self.visible()
         );
         let mut st = r.prepare_cached(&sql)?;
         let mut rows = st
@@ -3976,8 +3986,9 @@ impl Store {
         args.extend(scope_args);
         let mut st = r.prepare_cached(&format!(
             "SELECT s.status, s.projects_json, COUNT(*) FROM threads t JOIN suggestions s ON s.thread_id = t.id
-             WHERE t.status = ?1 AND {PENDING_SUGGESTION} AND (s.status IS NOT NULL OR s.projects_json != '[]'){scope_sql}
-             GROUP BY s.status, s.projects_json ORDER BY COUNT(*) DESC, s.status"
+             WHERE t.status = ?1 AND {PENDING_SUGGESTION} AND (s.status IS NOT NULL OR s.projects_json != '[]'){scope_sql}{}
+             GROUP BY s.status, s.projects_json ORDER BY COUNT(*) DESC, s.status",
+            self.visible()
         ))?;
         let groups: Vec<SuggestionGroup> = st
             .query_map(params_from_iter(args.iter()), |r| {
@@ -4019,7 +4030,8 @@ impl Store {
             };
             let mut st = r.prepare(&format!(
                 "SELECT t.id FROM threads t JOIN suggestions s ON s.thread_id = t.id
-                 WHERE t.status = ?1 AND {PENDING_SUGGESTION}{scope_sql}{target_sql}"
+                 WHERE t.status = ?1 AND {PENDING_SUGGESTION}{scope_sql}{target_sql}{}",
+                self.visible()
             ))?;
             st.query_map(params_from_iter(args.iter()), |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
@@ -4393,7 +4405,8 @@ impl Store {
     pub fn drafts(&self, state: Option<&str>) -> Result<Vec<Draft>> {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(&format!(
-            "SELECT {DRAFT_COLS} FROM drafts WHERE (?1 IS NULL OR state = ?1) AND state != 'sent' ORDER BY updated DESC"
+            "SELECT {DRAFT_COLS} FROM drafts t WHERE (?1 IS NULL OR state = ?1) AND state != 'sent'{} ORDER BY updated DESC",
+            self.visible()
         ))?;
         let mut out: Vec<Draft> = st
             .query_map([state], draft_row)?
@@ -4776,7 +4789,7 @@ impl Store {
         let mut by_email: std::collections::HashMap<String, (String, i64, i64, bool)> =
             Default::default();
         let mut st = r.prepare_cached(
-            "SELECT lower(from_email), MAX(from_name), COUNT(*), MAX(date) FROM messages WHERE is_from_me = 0 AND from_email != '' GROUP BY lower(from_email)",
+            &format!("SELECT lower(from_email), MAX(from_name), COUNT(*), MAX(date) FROM messages m WHERE is_from_me = 0 AND from_email != ''{} GROUP BY lower(from_email)", self.visible_m()),
         )?;
         for row in st.query_map([], |r| {
             Ok((
@@ -4789,10 +4802,11 @@ impl Store {
             let (e, n, c, d) = row?;
             by_email.insert(e, (n, c, d, false));
         }
-        let mut st = r.prepare_cached(
+        let mut st = r.prepare_cached(&format!(
             "SELECT lower(json_extract(j.value, '$.email')), MAX(json_extract(j.value, '$.name')), COUNT(*), MAX(m.date)
-             FROM messages m, json_each(m.to_json) j WHERE m.is_from_me = 1 GROUP BY 1",
-        )?;
+             FROM messages m, json_each(m.to_json) j WHERE m.is_from_me = 1{} GROUP BY 1",
+            self.visible_m()
+        ))?;
         for row in st.query_map([], |r| {
             Ok((
                 r.get::<_, Option<String>>(0)?,
@@ -4813,11 +4827,12 @@ impl Store {
         // Threads per address, both directions, to count conversations per person.
         let mut threads_of: std::collections::HashMap<String, std::collections::HashSet<String>> =
             Default::default();
-        let mut st = r.prepare_cached(
-            "SELECT lower(from_email), thread_id FROM messages WHERE is_from_me = 0 GROUP BY 1, 2
+        let mut st = r.prepare_cached(&format!(
+            "SELECT lower(from_email), thread_id FROM messages m WHERE is_from_me = 0{v} GROUP BY 1, 2
              UNION SELECT lower(json_extract(j.value, '$.email')), m.thread_id FROM messages m, json_each(m.to_json) j
-             WHERE m.is_from_me = 1 GROUP BY 1, 2",
-        )?;
+             WHERE m.is_from_me = 1{v} GROUP BY 1, 2",
+            v = self.visible_m()
+        ))?;
         for row in st.query_map([], |r| {
             Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
         })? {

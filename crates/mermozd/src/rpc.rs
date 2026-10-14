@@ -253,6 +253,18 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let _ = svc.events.send(Event::AccountsChanged);
             Ok(json!({}))
         }
+        "accounts.set_hidden" => {
+            // Hiding is for screenshots and demos: the mail keeps syncing, the app stops showing it.
+            let id = s(p, "id")?;
+            let hidden = p
+                .get("hidden")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| RpcError::invalid("missing 'hidden' (true or false)"))?;
+            st.set_account_hidden(&id, hidden)?;
+            let _ = svc.events.send(Event::AccountsChanged);
+            let _ = svc.events.send(Event::ThreadsChanged(vec![]));
+            Ok(json!({}))
+        }
         "statuses.list" => to_value(st.statuses()?),
         "labels.list" => to_value(st.user_labels()?),
         "projects.list" => to_value(st.projects()?),
@@ -513,7 +525,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .unwrap_or(20)
                 .clamp(1, 50) as u32;
             let mut hits = vec![];
-            for acc in st.accounts()? {
+            for acc in st.accounts()?.into_iter().filter(|a| !a.hidden) {
                 let Ok(w) = svc.worker(&acc.id) else { continue };
                 hits.extend(w.sync.search_gmail(&q, limit).await?);
             }

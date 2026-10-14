@@ -1490,6 +1490,23 @@ final class AppModel {
         }
     }
 
+    /// Accounts whose mail the window shows; hidden ones only appear in the sidebar and Settings.
+    var visibleAccounts: [Account] { accounts.filter { !$0.isHidden } }
+
+    /// Hides an account's mail from the window (it keeps syncing), or shows it again.
+    func setAccountHidden(_ id: String, _ hidden: Bool) {
+        guard let client else { return }
+        if hidden, selection == .account(id) { select(.status("unread")) }
+        if let i = accounts.firstIndex(where: { $0.id == id }) { accounts[i].hidden = hidden }
+        Task {
+            do {
+                try await client.setAccountHidden(id, hidden)
+                await refreshAll()
+                await loadFeed()
+            } catch { report(error) }
+        }
+    }
+
     func removeAccount(_ id: String) {
         guard let client else { return }
         Task {

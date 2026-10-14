@@ -138,8 +138,8 @@ struct SidebarView: View {
                     }
                     section("Accounts") {
                         ForEach(model.accounts) { a in
-                            SidebarRow(sel: .account(a.id), title: a.email, icon: .dot(Theme.accountColor(a.id, among: model.accounts)),
-                                       count: model.countCells.cell(.account(a.id)), middle: true)
+                            AccountSidebarRow(account: a, color: Theme.accountColor(a.id, among: model.accounts),
+                                              count: model.countCells.cell(.account(a.id)))
                         }
                     }
                 }
@@ -310,6 +310,52 @@ struct SidebarRow: View, Equatable {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// An account in the sidebar, with an eye to hide its mail from the window (for screenshots
+/// and demos). The eye shows on hover, and stays while the account is hidden; a hidden
+/// account's row is dimmed and opens nothing until shown again.
+struct AccountSidebarRow: View {
+    @Environment(AppModel.self) private var model
+    let account: Account
+    let color: Color
+    let count: CountCell
+    @State private var hovering = false
+
+    var body: some View {
+        let hidden = account.isHidden
+        HStack(spacing: 0) {
+            if hidden {
+                HStack(spacing: 9) {
+                    SidebarIconSlot { Circle().fill(color).frame(width: 8, height: 8) }
+                    Text(account.email).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                }
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.text)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .opacity(0.4)
+                .help("Hidden: its mail stays out of every list until you show it again")
+            } else {
+                SidebarRow(sel: .account(account.id), title: account.email, icon: .dot(color),
+                           count: hovering ? nil : count, middle: true)
+            }
+            if hidden || hovering {
+                Button { model.setAccountHidden(account.id, !hidden) } label: {
+                    Image(systemName: hidden ? "eye.slash" : "eye")
+                        .font(.system(size: 11))
+                        .foregroundStyle(hidden ? Theme.text2 : Theme.text3)
+                        .frame(width: 22, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(hidden ? "Show this account's mail" : "Hide this account's mail")
+                .accessibilityLabel(hidden ? "Show \(account.email)" : "Hide \(account.email)")
+            }
+        }
+        .onHover { hovering = $0 }
     }
 }
 

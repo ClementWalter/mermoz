@@ -17,6 +17,18 @@ private func account(_ extra: String) throws -> Account {
     #expect(try account("").needsReconnect == nil)
 }
 
+@Test func hiddenAccountDecodes() throws {
+    #expect(try account(#","hidden":true"#).isHidden == true)
+}
+
+@Test func accountWithoutHiddenIsShown() throws {
+    #expect(try account("").isHidden == false)
+}
+
+@Test func hidingChangesTheAccount() throws {
+    #expect(try account(#","hidden":true"#) != account(""))
+}
+
 private func signIn(_ s: String) throws -> GmailSignIn {
     try RPCCoding.decoder().decode(GmailSignIn.self, from: Data(s.utf8))
 }

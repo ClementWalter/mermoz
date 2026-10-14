@@ -16,6 +16,9 @@ pub struct Account {
     pub email: String,
     pub provider: String,
     pub sync: SyncInfo,
+    /// Left out of every list, count, search and suggestion; still synced.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

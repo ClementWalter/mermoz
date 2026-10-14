@@ -156,7 +156,7 @@ struct ConversationHeader: View {
         let n = conversation.threads.count
         if n > 1 { parts.append("\(n) email threads") }
         parts.append("\(detail.messages.count) message\(detail.messages.count == 1 ? "" : "s")")
-        if model.accounts.count > 1, let a = model.accounts.first(where: { $0.id == detail.thread.accountId }) { parts.append(a.email) }
+        if model.visibleAccounts.count > 1, let a = model.accounts.first(where: { $0.id == detail.thread.accountId }) { parts.append(a.email) }
         return parts.joined(separator: " · ")
     }
 

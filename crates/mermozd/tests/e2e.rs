@@ -3740,6 +3740,82 @@ fn a_read_bill_due_this_week_is_for_today(judged_demo: World) {
     assert_eq!(judged_demo.section_of("Facture cantine"), "today");
 }
 
+// ---- hidden accounts ----------------------------------------------------------------
+
+/// The demo mailbox with its personal account hidden, and that account's id.
+#[fixture]
+fn personal_hidden(demo: World) -> (World, String) {
+    let accounts = demo.ok("accounts.list", json!({}));
+    let personal = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["email"] == "you@personal.example")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    demo.ok(
+        "accounts.set_hidden",
+        json!({ "id": personal, "hidden": true }),
+    );
+    (demo, personal)
+}
+
+#[rstest]
+fn a_hidden_account_is_listed_as_hidden(personal_hidden: (World, String)) {
+    let (w, id) = personal_hidden;
+    let accounts = w.ok("accounts.list", json!({}));
+    let acc = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(acc["hidden"], true);
+}
+
+#[rstest]
+fn the_feed_shows_no_card_from_a_hidden_account(personal_hidden: (World, String)) {
+    let (w, id) = personal_hidden;
+    assert!(
+        !w.cards()
+            .iter()
+            .any(|c| c["thread"]["account_id"] == id.as_str())
+    );
+}
+
+#[rstest]
+fn lists_show_no_thread_from_a_hidden_account(personal_hidden: (World, String)) {
+    let (w, id) = personal_hidden;
+    let v = w.ok("threads.list", json!({ "limit": 500 }));
+    assert!(
+        !v["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["account_id"] == id.as_str())
+    );
+}
+
+#[rstest]
+fn counts_leave_a_hidden_account_out(personal_hidden: (World, String)) {
+    let (w, id) = personal_hidden;
+    assert!(w.ok("counts", json!({}))["account"].get(&id).is_none());
+}
+
+#[rstest]
+fn showing_a_hidden_account_brings_its_cards_back(personal_hidden: (World, String)) {
+    let (w, id) = personal_hidden;
+    w.ok("accounts.set_hidden", json!({ "id": id, "hidden": false }));
+    assert!(
+        w.cards()
+            .iter()
+            .any(|c| c["thread"]["account_id"] == id.as_str())
+    );
+}
+
 // ---- unread on top ------------------------------------------------------------------
 
 impl World {

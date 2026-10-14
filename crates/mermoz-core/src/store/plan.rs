@@ -153,6 +153,7 @@ impl Store {
             );
             a.push(fq.all.into());
         }
+        c.extend(self.visible_clause());
         let sql = format!(
             "SELECT t.id, t.number, t.status, t.subject, t.last_from, t.last_date FROM threads t
              WHERE {} ORDER BY t.last_date DESC",
@@ -177,10 +178,11 @@ impl Store {
     /// Every address that wrote to the user, with its names, list and thread count.
     fn senders(&self) -> Result<Vec<Sender>> {
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached(
+        let mut st = r.prepare_cached(&format!(
             "SELECT lower(from_email), group_concat(DISTINCT from_name), max(list_id), count(DISTINCT thread_id)
-             FROM messages WHERE is_from_me = 0 AND from_email != '' GROUP BY lower(from_email)",
-        )?;
+             FROM messages m WHERE is_from_me = 0 AND from_email != ''{} GROUP BY lower(from_email)",
+            self.visible_m()
+        ))?;
         Ok(st
             .query_map([], |r| {
                 Ok(Sender {
@@ -234,11 +236,12 @@ impl Store {
     /// How a sender's recent subjects begin, the shared beginnings (2+ threads) first.
     fn sender_subjects(&self, email: &str) -> Result<Vec<String>> {
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached(
+        let mut st = r.prepare_cached(&format!(
             "SELECT t.subject FROM threads t WHERE t.id IN
-               (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) = ?1)
+               (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) = ?1){}
              ORDER BY t.last_date DESC LIMIT 300",
-        )?;
+            self.visible()
+        ))?;
         let rows: Vec<String> = st
             .query_map([email], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
@@ -267,12 +270,13 @@ impl Store {
             return Ok(vec![]);
         };
         let r = self.r.lock().unwrap();
-        let mut st = r.prepare_cached(
+        let mut st = r.prepare_cached(&format!(
             "SELECT lower(m.from_email), max(m.from_name), count(DISTINCT m.thread_id) AS n
              FROM messages_fts f JOIN messages m ON m.fts_rowid = f.rowid
-             WHERE messages_fts MATCH ?1 AND m.is_from_me = 0 AND m.from_email != ''
+             WHERE messages_fts MATCH ?1 AND m.is_from_me = 0 AND m.from_email != ''{}
              GROUP BY lower(m.from_email) ORDER BY n DESC LIMIT ?2",
-        )?;
+            self.visible_m()
+        ))?;
         Ok(st
             .query_map(params![q, limit as i64], |r| {
                 Ok(CandidateSender {
@@ -307,11 +311,12 @@ impl Store {
         let mut subjects: Vec<CandidateSubject> = vec![];
         if let Some(q) = any_of(&words, "subject") {
             let r = self.r.lock().unwrap();
-            let mut st = r.prepare_cached(
+            let mut st = r.prepare_cached(&format!(
                 "SELECT DISTINCT t.id, t.subject FROM messages_fts f
                  JOIN messages m ON m.fts_rowid = f.rowid JOIN threads t ON t.id = m.thread_id
-                 WHERE messages_fts MATCH ?1 AND t.status != 'deleted' LIMIT 5000",
-            )?;
+                 WHERE messages_fts MATCH ?1 AND t.status != 'deleted'{} LIMIT 5000",
+                self.visible()
+            ))?;
             let rows: Vec<String> = st
                 .query_map([q], |r| r.get(1))?
                 .collect::<rusqlite::Result<_>>()?;

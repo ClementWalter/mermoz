@@ -166,7 +166,7 @@ struct ThreadTable: NSViewRepresentable, Equatable {
             let cell = tableView.makeView(withIdentifier: HostCell.id, owner: nil) as? HostCell ?? HostCell()
             cell.show(view(for: item), model: model)
             if case .loadMore = item { loadMore() }
-            if case let .thread(t, _) = item { verify(Self.shape(t, accounts: model.accounts.count), cell) }
+            if case let .thread(t, _) = item { verify(Self.shape(t, accounts: model.visibleAccounts.count), cell) }
             return cell
         }
 
@@ -185,7 +185,7 @@ struct ThreadTable: NSViewRepresentable, Equatable {
                 guard h > 0, h != self.heights[shape] else { return }
                 self.heights[shape] = h
                 let rows = IndexSet(self.items.indices.filter {
-                    if case let .thread(t, _) = self.items[$0] { Self.shape(t, accounts: self.model.accounts.count) == shape } else { false }
+                    if case let .thread(t, _) = self.items[$0] { Self.shape(t, accounts: self.model.visibleAccounts.count) == shape } else { false }
                 })
                 table.noteHeightOfRows(withIndexesChanged: rows)
             }
@@ -233,7 +233,7 @@ struct ThreadTable: NSViewRepresentable, Equatable {
             case .group: "group"
             case .subgroup: "subgroup"
             case .loadMore: "more"
-            case let .thread(t, _): Self.shape(t, accounts: model.accounts.count)
+            case let .thread(t, _): Self.shape(t, accounts: model.visibleAccounts.count)
             }
             if let h = heights[kind] { return h }
             let h: CGFloat = switch item {

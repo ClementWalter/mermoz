@@ -245,6 +245,7 @@ impl Store {
         now: i64,
     ) -> Result<Vec<FeedUnit>> {
         let (scope_sql, scope_args) = scope.clause();
+        let scope_sql = format!("{scope_sql}{}", self.visible());
         let marks = vec!["?"; FEED_STATUSES.len()].join(",");
         let horizon = (today + chrono::Duration::days(feed::BACKLOG_HORIZON_DAYS)).to_string();
         let base = format!(
