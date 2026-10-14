@@ -145,6 +145,16 @@ public struct DeliveryNote: Equatable, Sendable {
     }
 }
 
+/// An email delivered several times (a list and a direct copy, a resend): the chat shows
+/// it once with a small note.
+public enum Received {
+    /// "Received twice", "Received 3 times"; nil for an email received once.
+    public static func note(copies: Int?) -> String? {
+        guard let n = copies, n >= 2 else { return nil }
+        return n == 2 ? "Received twice" : "Received \(n) times"
+    }
+}
+
 /// A row the app draws in SwiftUI.
 public enum HostedRow: Sendable {
     case summary
@@ -219,6 +229,10 @@ public enum ChatRows {
                     if let p = previous, !first, p.message.from.email.lowercased() == m.from.email.lowercased(),
                        let changed = NearDuplicate.differences(previous: p.text, current: parts.text) {
                         note = NearDuplicate.note(changed)
+                    }
+                    // The same email delivered more than once shows once, saying so.
+                    if let received = Received.note(copies: m.copies) {
+                        note = note.map { "\(received) · \($0)" } ?? received
                     }
                     let key = SenderIdentity.key(m.from)
                     let photos = ChatPhotos.attached(m, pasted: parts.thumbnails)
