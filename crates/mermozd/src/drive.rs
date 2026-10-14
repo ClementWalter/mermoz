@@ -634,6 +634,125 @@ async fn save_attachment(
     to_value(saved)
 }
 
+/// Downloads kept this long, so a draft saved later can still copy them.
+const DOWNLOAD_TTL: Duration = Duration::from_secs(24 * 3600);
+
+/// A download the user can't have, with what went wrong in `data.reason`
+/// ("too_large", "no_file_form", "no_access" or "failed").
+fn download_error(reason: &str, message: String) -> RpcError {
+    RpcError {
+        code: -32602,
+        message,
+        data: Some(json!({ "reason": reason })),
+    }
+}
+
+/// Removes downloads older than [`DOWNLOAD_TTL`]: drafts have copied theirs by then.
+fn prune_downloads(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > DOWNLOAD_TTL);
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// A Drive file's bytes saved on this Mac, to attach as a regular file: stored files
+/// as they are, Google files exported (PDF unless `format` says otherwise).
+async fn download(
+    svc: &Arc<Service>,
+    account_id: &str,
+    file_id: &str,
+    format: Option<&str>,
+) -> std::result::Result<Value, RpcError> {
+    use mermoz_core::compose::{MAX_ATTACHMENT_BYTES, human_size};
+    let conn = svc.drive.require(svc, account_id)?;
+    let cache = svc.drive.cache(svc)?;
+    let (access, meta) = resolve(&cache, &conn, account_id, file_id).await;
+    let Some(meta) = meta else {
+        return Err(download_error(
+            if access == "error" {
+                "failed"
+            } else {
+                "no_access"
+            },
+            if access == "error" {
+                "Google Drive is unavailable right now. Try again, or keep it as a link.".into()
+            } else {
+                "Mermoz can't open this file in Google Drive. Keep it as a link.".into()
+            },
+        ));
+    };
+    let form = drive::as_file(&meta, format).map_err(|m| download_error("no_file_form", m))?;
+    let too_large = |size: Option<u64>| {
+        let how_big = size
+            .map(|s| format!("is {}, ", human_size(s)))
+            .unwrap_or_else(|| "is ".into());
+        download_error(
+            "too_large",
+            format!(
+                "“{}” {how_big}more than the {} Gmail can send in one email. Keep it as a link.",
+                form.filename,
+                human_size(MAX_ATTACHMENT_BYTES)
+            ),
+        )
+    };
+    let declared = meta.size.as_deref().and_then(|s| s.parse::<u64>().ok());
+    if declared.is_some_and(|s| s > MAX_ATTACHMENT_BYTES) {
+        return Err(too_large(declared));
+    }
+    let bytes = match conn
+        .drive
+        .download(&meta.id, form.export, MAX_ATTACHMENT_BYTES)
+        .await
+    {
+        Ok(b) => b,
+        Err(e) if revoked(&e) => {
+            svc.drive.forget(svc, account_id);
+            return Err(not_connected(account_id));
+        }
+        // Google refuses to export documents past its own size limit.
+        Err(Error::Upstream { body, .. }) if body.contains("exportSizeLimitExceeded") => {
+            return Err(too_large(None));
+        }
+        Err(e) => {
+            warn!(file = %file_id, "drive download: {e}");
+            return Err(download_error(
+                "failed",
+                format!(
+                    "Couldn't download “{}” from Google Drive. Try again, or keep it as a link.",
+                    form.filename
+                ),
+            ));
+        }
+    };
+    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(too_large(None));
+    }
+    let root = paths::blobs_dir().join("drive-downloads");
+    prune_downloads(&root);
+    let dir = root.join(new_id("dl"));
+    std::fs::create_dir_all(&dir).map_err(Error::from)?;
+    let path = dir.join(mermoz_core::store::safe_filename(&form.filename));
+    tokio::fs::write(&path, &bytes).await.map_err(Error::from)?;
+    info!(file = %file_id, bytes = bytes.len(), "drive file downloaded to attach");
+    Ok(json!({
+        "file_id": meta.id,
+        "path": path.to_string_lossy(),
+        "filename": form.filename,
+        "mime": form.mime,
+        "size": bytes.len(),
+    }))
+}
+
 async fn share(
     svc: &Arc<Service>,
     account_id: &str,
@@ -901,6 +1020,11 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             to_value(pick.ok_or_else(|| Error::NotFound(format!("pick {id}")))?)
         }
         "drive.save_attachment" => save_attachment(svc, &s(p, "attachment_id")?).await,
+        "drive.download" => {
+            let account_id = account_of(svc, p)?;
+            let format = opt_s(p, "format");
+            download(svc, &account_id, &s(p, "file_id")?, format.as_deref()).await
+        }
         "drive.saved" => {
             let id = st.resolve_thread_id(&s(p, "thread_id")?)?;
             let account_id = st.provider_thread_id(&id)?.0;

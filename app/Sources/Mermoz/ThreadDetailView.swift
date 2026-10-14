@@ -899,6 +899,8 @@ struct AttachmentChip: View {
     let filename: String
     let size: Int64
     var isLink = false
+    /// Replaces the size line ("Downloading…").
+    var detail: String?
     var onRemove: (() -> Void)?
 
     init(attachment: Attachment) {
@@ -906,10 +908,11 @@ struct AttachmentChip: View {
         size = attachment.size
     }
 
-    init(filename: String, size: Int64, isLink: Bool = false, onRemove: (() -> Void)? = nil) {
+    init(filename: String, size: Int64, isLink: Bool = false, detail: String? = nil, onRemove: (() -> Void)? = nil) {
         self.filename = filename
         self.size = size
         self.isLink = isLink
+        self.detail = detail
         self.onRemove = onRemove
     }
 
@@ -926,7 +929,7 @@ struct AttachmentChip: View {
             .frame(width: 26, height: 30).background(color, in: RoundedRectangle(cornerRadius: 5))
             VStack(alignment: .leading, spacing: 1) {
                 Text(filename).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-                Text(isLink ? "Link" : Format.size(size)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                Text(detail ?? (isLink ? "Link" : Format.size(size))).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
             }
             .frame(maxWidth: 200, alignment: .leading)
             if let onRemove {

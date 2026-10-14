@@ -274,6 +274,87 @@ pub fn export_mime(mime: &str) -> Option<&'static str> {
     }
 }
 
+/// What a Drive file becomes when it goes out as a file rather than a link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsFile {
+    /// The export type for Google files; `None`: the stored bytes as they are.
+    pub export: Option<&'static str>,
+    pub mime: String,
+    pub filename: String,
+}
+
+const PDF: (&str, &str) = ("pdf", "application/pdf");
+const DOCX: (&str, &str) = (
+    "docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+);
+const XLSX: (&str, &str) = (
+    "xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+);
+const PPTX: (&str, &str) = (
+    "pptx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+);
+
+/// The formats a Google file can be attached as, the default (PDF) first; empty for
+/// stored files and for Google files that have no file form (forms, folders).
+pub fn file_formats(mime: &str) -> &'static [(&'static str, &'static str)] {
+    match mime {
+        "application/vnd.google-apps.document" => &[PDF, DOCX],
+        "application/vnd.google-apps.spreadsheet" => &[PDF, XLSX],
+        "application/vnd.google-apps.presentation" => &[PDF, PPTX],
+        "application/vnd.google-apps.drawing" => &[PDF],
+        _ => &[],
+    }
+}
+
+/// How `meta` is attached as a file: stored files as they are, Google files exported
+/// to `format` ("pdf" when absent). The error is a plain sentence for the user.
+pub fn as_file(meta: &FileMeta, format: Option<&str>) -> std::result::Result<AsFile, String> {
+    if !meta.mime_type.starts_with("application/vnd.google-apps.") {
+        let mime = if meta.mime_type.is_empty() || meta.mime_type == "application/octet-stream" {
+            crate::compose::mime_for(&meta.name, &[])
+        } else {
+            meta.mime_type.clone()
+        };
+        return Ok(AsFile {
+            export: None,
+            mime,
+            filename: meta.name.clone(),
+        });
+    }
+    let formats = file_formats(&meta.mime_type);
+    let Some(&(ext, mime)) = (match format {
+        None => formats.first(),
+        Some(f) => formats.iter().find(|(e, _)| e.eq_ignore_ascii_case(f)),
+    }) else {
+        return Err(if formats.is_empty() {
+            format!(
+                "A {} can't be attached as a file. Keep it as a link.",
+                kind_label(&meta.mime_type)
+            )
+        } else {
+            format!(
+                "A {} can't be attached as .{}.",
+                kind_label(&meta.mime_type),
+                format.unwrap_or_default()
+            )
+        });
+    };
+    let suffix = format!(".{ext}");
+    let filename = if meta.name.to_lowercase().ends_with(&suffix) {
+        meta.name.clone()
+    } else {
+        format!("{}{suffix}", meta.name)
+    };
+    Ok(AsFile {
+        export: Some(mime),
+        mime: mime.to_string(),
+        filename,
+    })
+}
+
 /// Plain-text files are downloaded as they are.
 pub fn is_plain_text(mime: &str) -> bool {
     mime.starts_with("text/") || mime == "application/json"
@@ -477,6 +558,35 @@ impl Drive {
         let mut bytes = resp.bytes().await?.to_vec();
         bytes.truncate(MAX_EXPORT_BYTES);
         Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// The file's bytes (exported to `export` for Google files). Reading stops past
+    /// `max`, so a result longer than `max` means the file is too big.
+    pub async fn download(&self, id: &str, export: Option<&str>, max: u64) -> Result<Vec<u8>> {
+        let mut resp = match export {
+            Some(mime) => {
+                let url = format!("{}/files/{id}/export", self.base);
+                self.send(|h, t| h.get(&url).bearer_auth(t).query(&[("mimeType", mime)]))
+                    .await?
+            }
+            None => {
+                let url = format!("{}/files/{id}", self.base);
+                self.send(|h, t| {
+                    h.get(&url)
+                        .bearer_auth(t)
+                        .query(&[("alt", "media"), ("supportsAllDrives", "true")])
+                })
+                .await?
+            }
+        };
+        let mut out = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            out.extend_from_slice(&chunk);
+            if out.len() as u64 > max {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// A small preview image, when Drive has one and serves it to this token.
@@ -720,6 +830,68 @@ mod tests {
     #[case::pdf("application/pdf", None)]
     fn export_formats(#[case] mime: &str, #[case] want: Option<&str>) {
         assert_eq!(export_mime(mime), want);
+    }
+
+    fn meta(name: &str, mime: &str) -> FileMeta {
+        FileMeta {
+            id: "1x".into(),
+            name: name.into(),
+            mime_type: mime.into(),
+            ..Default::default()
+        }
+    }
+
+    type Form<'a> = std::result::Result<(Option<&'a str>, &'a str, &'a str), &'a str>;
+
+    #[rstest]
+    #[case::pdf("Avis.pdf", "application/pdf", None, Ok((None, "application/pdf", "Avis.pdf")))]
+    #[case::image("Scan.jpg", "image/jpeg", Some("pdf"), Ok((None, "image/jpeg", "Scan.jpg")))]
+    #[case::untyped("Relevé.pdf", "application/octet-stream", None, Ok((None, "application/pdf", "Relevé.pdf")))]
+    #[case::doc_default("Attestation", "application/vnd.google-apps.document", None,
+        Ok((Some("application/pdf"), "application/pdf", "Attestation.pdf")))]
+    #[case::doc_docx("Attestation", "application/vnd.google-apps.document", Some("docx"),
+        Ok((Some(DOCX.1), DOCX.1, "Attestation.docx")))]
+    #[case::sheet_xlsx("Budget", "application/vnd.google-apps.spreadsheet", Some("XLSX"),
+        Ok((Some(XLSX.1), XLSX.1, "Budget.xlsx")))]
+    #[case::slides_pdf("Deck", "application/vnd.google-apps.presentation", None,
+        Ok((Some("application/pdf"), "application/pdf", "Deck.pdf")))]
+    #[case::name_has_ext("Notes.pdf", "application/vnd.google-apps.document", Some("pdf"),
+        Ok((Some("application/pdf"), "application/pdf", "Notes.pdf")))]
+    #[case::sheet_as_docx(
+        "Budget",
+        "application/vnd.google-apps.spreadsheet",
+        Some("docx"),
+        Err("A Google Sheet can't be attached as .docx.")
+    )]
+    #[case::form(
+        "Survey",
+        "application/vnd.google-apps.form",
+        None,
+        Err("A Google Form can't be attached as a file. Keep it as a link.")
+    )]
+    fn as_file_forms(
+        #[case] name: &str,
+        #[case] mime: &str,
+        #[case] format: Option<&str>,
+        #[case] want: Form,
+    ) {
+        let got = as_file(&meta(name, mime), format);
+        let got = got
+            .as_ref()
+            .map(|f| (f.export, f.mime.as_str(), f.filename.as_str()))
+            .map_err(|e| e.as_str());
+        assert_eq!(got, want);
+    }
+
+    #[rstest]
+    #[case::doc("application/vnd.google-apps.document", vec!["pdf", "docx"])]
+    #[case::sheet("application/vnd.google-apps.spreadsheet", vec!["pdf", "xlsx"])]
+    #[case::pdf("application/pdf", vec![])]
+    fn file_format_choices(#[case] mime: &str, #[case] want: Vec<&str>) {
+        assert_eq!(
+            file_formats(mime).iter().map(|f| f.0).collect::<Vec<_>>(),
+            want
+        );
     }
 
     #[rstest]

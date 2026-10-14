@@ -207,6 +207,26 @@ extension AppModel {
         return true
     }
 
+    /// Turns a Drive item of the composer into a regular file: the daemon downloads it
+    /// (exports Google files to `format`, PDF by default) and the chip shows its size,
+    /// or says in plain words why it stays a link.
+    func attachDriveAsFile(_ id: UUID, format: String? = nil, accountId: String, in list: Binding<AttachmentList>) {
+        guard let client, let item = list.wrappedValue.items.first(where: { $0.id == id }),
+              let origin = item.drive, item.fetch != .downloading else { return }
+        list.wrappedValue.startDownload(id: id)
+        Task {
+            do {
+                let d = try await client.driveDownload(accountId: accountId, fileId: origin.fileId, format: format)
+                list.wrappedValue.downloaded(id: id, d)
+            } catch let e as RPCError {
+                list.wrappedValue.downloadFailed(id: id, e.message)
+            } catch {
+                log.error("drive download: \(error.localizedDescription)")
+                list.wrappedValue.downloadFailed(id: id, "Couldn't download “\(origin.name)” from Google Drive. Try again, or keep it as a link.")
+            }
+        }
+    }
+
     /// The Docs tab's Drive entries for the open conversation.
     func driveDocs(for d: ThreadDetail) -> [DocEntry] { drive.threadFiles[d.thread.id]?.docEntries ?? [] }
 }

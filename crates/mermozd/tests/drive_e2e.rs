@@ -916,6 +916,301 @@ fn agents_cannot_change_sharing() {
     assert_eq!(e["code"], -32011);
 }
 
+// ---- attaching a Drive file as a regular file ------------------------------
+
+/// A scanned notice stored in Drive as a PDF.
+const NOTICE: &str = "1NoticeScanPdfAbCdEfGhIjKlMnOpQ";
+/// A certificate written as a Google Doc.
+const CERTIFICATE: &str = "1CertificateDocAbCdEfGhIjKlMnOp";
+/// A video Drive says is 40 MB.
+const VIDEO: &str = "1SiteVisitVideoAbCdEfGhIjKlMnOp";
+/// A Google Doc whose PDF is bigger than Gmail allows.
+const HUGE_DOC: &str = "1HugeMinutesDocAbCdEfGhIjKlMnOp";
+/// A Google Form: no file form exists.
+const SURVEY: &str = "1SurveyFormAbCdEfGhIjKlMnOpQrSt";
+/// Ten-MB PDFs: three of them don't fit in one email.
+const SCANS: [&str; 3] = [
+    "1ScanOnePdfAbCdEfGhIjKlMnOpQrSt",
+    "1ScanTwoPdfAbCdEfGhIjKlMnOpQrSt",
+    "1ScanThreePdfAbCdEfGhIjKlMnOpQr",
+];
+const NOTICE_BYTES: &[u8] = b"%PDF-1.4 fictional notice of assessment";
+const CERTIFICATE_PDF: &[u8] = b"%PDF-1.7 fictional certificate";
+const DOCX_MIME: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+/// Drive connected, with the files of a fictional filing to a public office.
+#[fixture]
+fn filing(connected: World) -> World {
+    {
+        let mut d = connected.drive.lock().unwrap();
+        let file = |name: &str, mime: &str, content: Vec<u8>| StubFile {
+            name: name.into(),
+            mime: mime.into(),
+            modified: "2026-10-12T08:00:00Z".into(),
+            owner: "me@example.com".into(),
+            content,
+            ..Default::default()
+        };
+        d.add_file(
+            NOTICE,
+            file("Avis 2026.pdf", "application/pdf", NOTICE_BYTES.to_vec()),
+        );
+        d.add_file(
+            CERTIFICATE,
+            file("Attestation", DOC, CERTIFICATE_PDF.to_vec()),
+        );
+        d.add_file(
+            VIDEO,
+            StubFile {
+                declared_size: Some(40 * 1024 * 1024),
+                ..file("Visit.mov", "video/quicktime", b"fictional".to_vec())
+            },
+        );
+        d.add_file(HUGE_DOC, file("Minutes", DOC, vec![b'x'; 26 * 1024 * 1024]));
+        d.add_file(
+            SURVEY,
+            file("Survey", "application/vnd.google-apps.form", vec![]),
+        );
+        for (i, id) in SCANS.iter().enumerate() {
+            d.add_file(
+                id,
+                file(
+                    &format!("Scan {i}.pdf"),
+                    "application/pdf",
+                    vec![b'%'; 10 * 1024 * 1024],
+                ),
+            );
+        }
+    }
+    connected
+}
+
+fn download(w: &World, file_id: &str, format: Option<&str>) -> Result<Value, Value> {
+    let mut p = json!({ "account_id": w.account(), "file_id": file_id });
+    if let Some(f) = format {
+        p["format"] = json!(f);
+    }
+    w.call("drive.download", p)
+}
+
+fn downloaded_bytes(v: &Value) -> Vec<u8> {
+    std::fs::read(v["path"].as_str().unwrap()).unwrap()
+}
+
+/// A new draft to Marc carrying the downloaded files.
+fn draft_with(w: &World, downloads: &[Value]) -> Result<Value, Value> {
+    let attachments: Vec<Value> = downloads
+        .iter()
+        .map(|d| json!({ "path": d["path"], "filename": d["filename"] }))
+        .collect();
+    w.call(
+        "drafts.create",
+        json!({ "account_id": w.account(), "to": ["marc@acme.example"], "subject": "Dossier",
+                "body": "Please find the documents attached.", "attachments": attachments }),
+    )
+}
+
+fn last_sent(w: &World) -> mail_parser::Message<'static> {
+    let raw = w.mailbox.lock().unwrap().sent_raw.last().cloned().unwrap();
+    mail_parser::MessageParser::default()
+        .parse(&raw)
+        .unwrap()
+        .into_owned()
+}
+
+/// The notice and the certificate (as PDF) sent to Marc as files.
+fn send_both(w: &World) -> mail_parser::Message<'static> {
+    let notice = download(w, NOTICE, None).unwrap();
+    let certificate = download(w, CERTIFICATE, None).unwrap();
+    let d = draft_with(w, &[notice, certificate]).unwrap();
+    w.ok("drafts.send", json!({ "id": d["id"] }));
+    last_sent(w)
+}
+
+#[rstest]
+fn a_stored_pdf_downloads_with_its_bytes(filing: World) {
+    let v = download(&filing, NOTICE, None).unwrap();
+    assert_eq!(downloaded_bytes(&v), NOTICE_BYTES);
+}
+
+#[rstest]
+fn a_stored_pdf_is_fetched_as_media(filing: World) {
+    download(&filing, NOTICE, None).unwrap();
+    assert_eq!(filing.drive.lock().unwrap().downloads, vec![NOTICE]);
+}
+
+#[rstest]
+fn a_stored_pdf_keeps_its_name(filing: World) {
+    assert_eq!(
+        download(&filing, NOTICE, None).unwrap()["filename"],
+        "Avis 2026.pdf"
+    );
+}
+
+#[rstest]
+fn a_stored_pdf_reports_its_size(filing: World) {
+    assert_eq!(
+        download(&filing, NOTICE, None).unwrap()["size"],
+        NOTICE_BYTES.len()
+    );
+}
+
+#[rstest]
+fn a_google_doc_is_exported_to_pdf(filing: World) {
+    download(&filing, CERTIFICATE, None).unwrap();
+    assert_eq!(
+        filing.drive.lock().unwrap().exports,
+        vec![(CERTIFICATE.to_string(), "application/pdf".to_string())]
+    );
+}
+
+#[rstest]
+fn an_exported_doc_is_named_as_a_pdf(filing: World) {
+    assert_eq!(
+        download(&filing, CERTIFICATE, None).unwrap()["filename"],
+        "Attestation.pdf"
+    );
+}
+
+#[rstest]
+fn an_exported_doc_carries_the_export(filing: World) {
+    let v = download(&filing, CERTIFICATE, None).unwrap();
+    assert_eq!(downloaded_bytes(&v), CERTIFICATE_PDF);
+}
+
+#[rstest]
+fn a_google_doc_can_be_exported_to_word(filing: World) {
+    assert_eq!(
+        download(&filing, CERTIFICATE, Some("docx")).unwrap()["mime"],
+        DOCX_MIME
+    );
+}
+
+#[rstest]
+fn the_draft_holds_the_downloaded_bytes(filing: World) {
+    let v = download(&filing, NOTICE, None).unwrap();
+    let d = draft_with(&filing, &[v]).unwrap();
+    assert_eq!(
+        std::fs::read(d["attachments"][0]["path"].as_str().unwrap()).unwrap(),
+        NOTICE_BYTES
+    );
+}
+
+#[rstest]
+fn the_draft_holds_a_file_not_a_link(filing: World) {
+    let v = download(&filing, CERTIFICATE, None).unwrap();
+    let d = draft_with(&filing, &[v]).unwrap();
+    assert_eq!(d["attachments"][0]["kind"], "file");
+}
+
+#[rstest]
+fn the_draft_holds_the_pdf_type_of_an_export(filing: World) {
+    let v = download(&filing, CERTIFICATE, None).unwrap();
+    let d = draft_with(&filing, &[v]).unwrap();
+    assert_eq!(d["attachments"][0]["mime"], "application/pdf");
+}
+
+#[rstest]
+fn the_draft_holds_the_word_type_of_an_export(filing: World) {
+    let v = download(&filing, CERTIFICATE, Some("docx")).unwrap();
+    let d = draft_with(&filing, &[v]).unwrap();
+    assert_eq!(d["attachments"][0]["mime"], DOCX_MIME);
+}
+
+#[rstest]
+fn gmail_receives_the_stored_pdf_bytes(filing: World) {
+    let m = send_both(&filing);
+    assert_eq!(m.attachment(0).unwrap().contents(), NOTICE_BYTES);
+}
+
+#[rstest]
+fn gmail_receives_the_exported_pdf_bytes(filing: World) {
+    let m = send_both(&filing);
+    assert_eq!(m.attachment(1).unwrap().contents(), CERTIFICATE_PDF);
+}
+
+#[rstest]
+fn gmail_receives_the_export_as_a_pdf(filing: World) {
+    use mail_parser::MimeHeaders;
+    let m = send_both(&filing);
+    assert_eq!(
+        m.attachment(1).unwrap().content_type().unwrap().subtype(),
+        Some("pdf")
+    );
+}
+
+#[rstest]
+fn gmail_receives_a_multipart_message(filing: World) {
+    let m = send_both(&filing);
+    assert_eq!(m.attachment_count(), 2);
+}
+
+#[rstest]
+fn sending_files_shares_nothing(filing: World) {
+    send_both(&filing);
+    assert!(filing.drive.lock().unwrap().permissions.is_empty());
+}
+
+#[rstest]
+fn a_file_over_the_limit_is_refused(filing: World) {
+    assert_eq!(
+        download(&filing, VIDEO, None).unwrap_err()["data"]["reason"],
+        "too_large"
+    );
+}
+
+#[rstest]
+fn a_file_over_the_limit_is_not_downloaded(filing: World) {
+    let _ = download(&filing, VIDEO, None);
+    assert!(filing.drive.lock().unwrap().downloads.is_empty());
+}
+
+#[rstest]
+fn a_file_over_the_limit_is_explained(filing: World) {
+    assert_eq!(
+        download(&filing, VIDEO, None).unwrap_err()["message"],
+        "“Visit.mov” is 40.0 MB, more than the 25.0 MB Gmail can send in one email. Keep it as a link."
+    );
+}
+
+#[rstest]
+fn an_export_over_the_limit_is_refused(filing: World) {
+    assert_eq!(
+        download(&filing, HUGE_DOC, None).unwrap_err()["data"]["reason"],
+        "too_large"
+    );
+}
+
+#[rstest]
+fn a_form_cannot_become_a_file(filing: World) {
+    assert_eq!(
+        download(&filing, SURVEY, None).unwrap_err()["message"],
+        "A Google Form can't be attached as a file. Keep it as a link."
+    );
+}
+
+#[rstest]
+fn a_file_mermoz_cannot_open_is_explained(filing: World) {
+    assert_eq!(
+        download(&filing, "1MissingFileAbCdEfGhIjKlMnOpQr", None).unwrap_err()["data"]["reason"],
+        "no_access"
+    );
+}
+
+#[rstest]
+fn downloaded_files_count_toward_the_email_limit(filing: World) {
+    let scans: Vec<Value> = SCANS
+        .iter()
+        .map(|id| download(&filing, id, None).unwrap())
+        .collect();
+    assert!(
+        draft_with(&filing, &scans).unwrap_err()["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("These files add up to 30.0 MB")
+    );
+}
+
 // ---- agents (CLI) ----------------------------------------------------------
 
 #[rstest]

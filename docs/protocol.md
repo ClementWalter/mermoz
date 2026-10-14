@@ -380,6 +380,7 @@ saving attachments, sharing a picked file). Google lets the user untick either;
 | `drive.pick` | `{"account_id", "file_ids"?: [id]}` — app only; opens Google's file picker (`drive.file` only); without a Drive connection the pick connects Drive with `drive.file` alone | `{"pick_id", "auth_url"}` |
 | `drive.pick_result` | `{"pick_id"}` | `{"account_id", "state": "waiting\|done\|declined\|error", "files": [DriveFile], "error"}` |
 | `drive.save_attachment` | `{"attachment_id"}` — into `Mermoz/<first project, split on "/">` or `Mermoz/No project`, folders created when missing; saving again returns the first save | `SavedAttachment` |
+| `drive.download` | `{"account_id", "file_id", "format"?: "pdf"\|"docx"\|"xlsx"\|"pptx"}` — a file's bytes saved on this Mac, to attach as a regular file (pass `path` to `drafts.create`/`drafts.attach`): stored files as they are (`alt=media`), Google files exported, to PDF unless `format` names another type the file allows; kept a day. Errors carry `data.reason`: `too_large` (over the 25 MB Gmail sends; nothing is downloaded when Drive gives the size), `no_file_form` (forms, folders), `no_access`, `failed` | `{"file_id", "path", "filename", "mime", "size"}` |
 | `drive.saved` | `{"thread_id"}` | `[SavedAttachment]` |
 | `drive.share` | `{"account_id", "file_id", "emails": [email], "role": "reader"\|"commenter"}` — app only, after the user confirms; Drive sends no email of its own | `{"shared": [email], "failed": [{"email", "reason"}]}` |
 

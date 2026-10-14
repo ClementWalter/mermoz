@@ -234,33 +234,137 @@ struct DriveSettingsCard: View {
 // MARK: compose
 
 /// "Add from Google Drive": recent files and search, or Google's own file browser.
-/// The file goes in as a link; sharing it is asked when sending.
+/// Each file goes in as a link (sharing is asked when sending) or as a regular file,
+/// downloaded; files come first when every recipient is outside the user's Google world.
 struct DriveAttachButton: View {
     @Environment(AppModel.self) private var model
     @Binding var attachments: AttachmentList
     let accountId: String?
+    /// Everyone the message goes to, for the link-or-file default.
+    var recipients: [String] = []
     @State private var open = false
+    @State private var mode: DriveAttachMode = .link
 
     var body: some View {
         Button {
             guard let accountId else { return }
-            model.withDrive(accountId, purpose: "attach files from your Google Drive") { open = true }
+            model.withDrive(accountId, purpose: "attach files from your Google Drive") {
+                mode = DriveAttachMode.preferred(recipients: recipients, me: me, memory: DriveAttachMemory())
+                open = true
+            }
         } label: {
             Image(systemName: "externaldrive.badge.icloud").font(.system(size: 14, weight: .medium))
         }
         .buttonStyle(.plain).foregroundStyle(Theme.text2)
-        .help("Add a file from Google Drive (as a link)")
+        .help("Add a file from Google Drive")
         .accessibilityLabel("Add from Google Drive")
         .popover(isPresented: $open, arrowEdge: .top) {
             if let accountId {
-                DrivePicker(accountId: accountId) { files in
-                    for f in files {
-                        if let u = f.openURL { attachments.add(ComposeAttachment(name: f.name, size: 0, source: .link(u))) }
+                VStack(alignment: .leading, spacing: 0) {
+                    Picker("Attach", selection: Binding(get: { mode }, set: { choose($0) })) {
+                        Text("As a file").tag(DriveAttachMode.file)
+                        Text("As a link").tag(DriveAttachMode.link)
                     }
-                    open = false
+                    .pickerStyle(.segmented).labelsHidden()
+                    .padding([.horizontal, .top], 12)
+                    .help(mode == .file ? "The file itself goes with the email (Google Docs as PDF)."
+                        : "Recipients open it in Google Drive; you'll be asked whether to share it.")
+                    DrivePicker(accountId: accountId) { files in add(files, accountId: accountId) }
                 }
             }
         }
+    }
+
+    private var me: String? { model.accounts.first { $0.id == accountId }?.email }
+
+    /// The segmented choice is remembered for this kind of audience.
+    private func choose(_ m: DriveAttachMode) {
+        mode = m
+        DriveAttachMemory().remember(m, outside: DriveAttachMode.allOutside(recipients: recipients, me: me))
+    }
+
+    private func add(_ files: [DriveFile], accountId: String) {
+        for f in files {
+            guard let u = f.openURL else { continue }
+            let item = ComposeAttachment(drive: DriveOrigin(fileId: f.id, name: f.name, mime: f.mime, link: u))
+            if attachments.add(item), mode == .file {
+                model.attachDriveAsFile(item.id, accountId: accountId, in: $attachments)
+            }
+        }
+        open = false
+    }
+}
+
+/// A composer chip for a Drive file: link or file, with a menu to switch, the
+/// download in progress, and a plain-words error with "Keep as link" when it failed.
+struct DriveAttachmentChip: View {
+    @Environment(AppModel.self) private var model
+    let item: ComposeAttachment
+    @Binding var attachments: AttachmentList
+    let accountId: String?
+    var recipients: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 2) {
+                AttachmentChip(filename: item.name, size: item.size, isLink: item.isLink,
+                               detail: item.fetch == .downloading ? "Downloading…" : nil) {
+                    attachments.remove(id: item.id)
+                }
+                Menu {
+                    menuItems
+                } label: {
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                }
+                .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
+                .foregroundStyle(Theme.text3).fixedSize()
+                .disabled(item.fetch == .downloading)
+                .accessibilityLabel("Change how “\(item.name)” is sent")
+            }
+            .contextMenu { menuItems }
+            if case let .failed(why) = item.fetch {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(why).font(.system(size: 11.5)).foregroundStyle(Theme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Keep as link") { attachments.keepAsLink(id: item.id) }
+                        .buttonStyle(.link).font(.system(size: 11.5))
+                }
+                .frame(maxWidth: 280, alignment: .leading)
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    @ViewBuilder private var menuItems: some View {
+        if item.isLink {
+            let formats = DriveAttachMode.formats(mime: item.drive?.mime ?? "")
+            if formats.count > 1 {
+                ForEach(formats, id: \.self) { f in
+                    Button("Attach as \(DriveAttachMode.formatLabel(f))") { asFile(format: f) }
+                }
+            } else {
+                Button("Attach as a file") { asFile(format: nil) }
+            }
+        } else {
+            Button("Send as a link instead") {
+                attachments.keepAsLink(id: item.id)
+                remember(.link)
+            }
+        }
+        if let link = item.drive?.link {
+            Button("Open in Google Drive") { NSWorkspace.shared.open(link) }
+        }
+    }
+
+    private func asFile(format: String?) {
+        guard let accountId else { return }
+        remember(.file)
+        model.attachDriveAsFile(item.id, format: format, accountId: accountId, in: $attachments)
+    }
+
+    private func remember(_ m: DriveAttachMode) {
+        let me = model.accounts.first { $0.id == accountId }?.email
+        DriveAttachMemory().remember(m, outside: DriveAttachMode.allOutside(recipients: recipients, me: me))
     }
 }
 

@@ -85,13 +85,13 @@ struct ComposeView: View {
                 .buttonStyle(.glassProminent)
                 .tint(Theme.accent)
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(sending || context.to.isEmpty || context.attachments.isOverLimit)
+                .disabled(sending || context.to.isEmpty || context.attachments.blocksSend)
                 Button { picking = true } label: { Image(systemName: "paperclip").font(.system(size: 14, weight: .medium)) }
                     .buttonStyle(.plain).foregroundStyle(Theme.text2)
                     .keyboardShortcut("a", modifiers: [.command, .shift])
                     .help("Attach files (⇧⌘A). You can also drop or paste them here.")
                     .accessibilityLabel("Attach files")
-                DriveAttachButton(attachments: $context.attachments, accountId: accountId)
+                DriveAttachButton(attachments: $context.attachments, accountId: accountId, recipients: context.to + context.cc)
                 if context.threadId != nil {
                     Toggle("Then set Waiting", isOn: $thenWaiting).toggleStyle(.checkbox).font(.system(size: 12.5))
                 }
@@ -201,15 +201,21 @@ struct ComposeView: View {
         VStack(alignment: .leading, spacing: 8) {
             FlowRow(spacing: 8) {
                 ForEach(context.attachments.items) { a in
-                    let isLink: Bool = if case .link = a.source { true } else { false }
-                    AttachmentChip(filename: a.name, size: a.size, isLink: isLink) {
-                        context.attachments.remove(id: a.id)
+                    if a.drive != nil {
+                        DriveAttachmentChip(item: a, attachments: $context.attachments, accountId: accountId,
+                                            recipients: context.to + context.cc)
+                    } else {
+                        AttachmentChip(filename: a.name, size: a.size, isLink: a.isLink) {
+                            context.attachments.remove(id: a.id)
+                        }
                     }
                 }
             }
             if let tooBig = context.attachments.limitMessage {
                 Text(tooBig).font(.system(size: 12)).foregroundStyle(Theme.danger)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if context.attachments.isDownloading {
+                Text("Downloading from Google Drive…").font(.system(size: 12)).foregroundStyle(Theme.text3)
             } else {
                 let n = context.attachments.items.count
                 Text("\(n) \(n == 1 ? "attachment" : "attachments") · \(Format.size(context.attachments.totalSize))")

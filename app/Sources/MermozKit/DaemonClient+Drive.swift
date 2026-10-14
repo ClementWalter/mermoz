@@ -48,6 +48,14 @@ extension DaemonClient {
         try await driveCall("drive.pick_result", Params().with("pick_id", pickId))
     }
 
+    /// The file's bytes saved on this Mac, to attach as a regular file. `format`
+    /// ("pdf", "docx"…) picks a Google file's export; PDF without it.
+    public func driveDownload(accountId: String, fileId: String, format: String? = nil) async throws -> DriveDownload {
+        var p = Params().with("account_id", accountId).with("file_id", fileId)
+        if let format { p = p.with("format", format) }
+        return try await driveCall("drive.download", p)
+    }
+
     /// `role`: "reader" (view) or "commenter".
     public func driveShare(accountId: String, fileId: String, emails: [String], role: String) async throws -> DriveShareResult {
         try await driveCall("drive.share", Params().with("account_id", accountId).with("file_id", fileId)

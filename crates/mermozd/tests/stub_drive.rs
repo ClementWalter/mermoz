@@ -28,6 +28,8 @@ pub struct StubFile {
     pub parents: Vec<String>,
     pub content: Vec<u8>,
     pub thumbnail: bool,
+    /// The size Drive reports, when it differs from the content (huge files).
+    pub declared_size: Option<u64>,
 }
 
 #[derive(Default, Debug)]
@@ -43,6 +45,8 @@ pub struct DriveBox {
     pub permissions: Vec<(String, String, String)>,
     /// (file id, mime) of every export.
     pub exports: Vec<(String, String)>,
+    /// Ids of every `alt=media` download.
+    pub downloads: Vec<String>,
     /// Upload sessions: id -> (name, parents).
     sessions: HashMap<String, (String, Vec<String>)>,
     pub uploads: usize,
@@ -73,6 +77,11 @@ impl DriveBox {
             "iconLink": "https://drive.example/icon.png",
             "owners": [{ "displayName": f.owner.split('@').next().unwrap_or(""), "emailAddress": f.owner }],
         });
+        // Drive reports a size for stored files only, not for Google Docs.
+        if !f.mime.starts_with("application/vnd.google-apps.") {
+            let size = f.declared_size.unwrap_or(f.content.len() as u64);
+            v["size"] = json!(size.to_string());
+        }
         if f.thumbnail {
             v["thumbnailLink"] = json!(format!("http://127.0.0.1:{}/drive/thumb/{id}", self.port));
         }
@@ -119,13 +128,15 @@ async fn get_file(
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let m = s.lock().unwrap();
-    let Some(f) = m.files.get(&id).filter(|_| m.visible(&id)) else {
+    let mut m = s.lock().unwrap();
+    let Some(f) = m.files.get(&id).filter(|_| m.visible(&id)).cloned() else {
         return (StatusCode::NOT_FOUND, "File not found").into_response();
     };
     if q.get("alt").map(String::as_str) == Some("media") {
-        return f.content.clone().into_response();
+        m.downloads.push(id);
+        return f.content.into_response();
     }
+    let f = &f;
     Json(m.meta(&id, f)).into_response()
 }
 

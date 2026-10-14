@@ -283,3 +283,76 @@ public struct SharePlan: Equatable, Sendable {
         "They may not be able to open \(files.count == 1 ? "it" : "them") otherwise. Google Drive won't send them a separate email: your message carries the link."
     }
 }
+
+/// How a Drive file goes into an email: a link the recipients open in Drive, or the
+/// file itself, downloaded (Google files exported, PDF by default).
+public enum DriveAttachMode: String, Sendable, CaseIterable {
+    case link
+    case file
+
+    /// Whether every recipient is outside the user's Google world: no Gmail address
+    /// and none in the user's own Workspace domain (an administration, a supplier).
+    /// Such people often can't or won't open a Drive link. False without recipients.
+    public static func allOutside(recipients: [String], me: String?) -> Bool {
+        let consumer: Set<String> = ["gmail.com", "googlemail.com"]
+        let myDomain = me.flatMap(domain).flatMap { consumer.contains($0) ? nil : $0 }
+        let domains = recipients.compactMap(domain)
+        guard !domains.isEmpty, domains.count == recipients.count else { return false }
+        return domains.allSatisfy { !consumer.contains($0) && $0 != myDomain }
+    }
+
+    /// The mode offered first: files for people outside the user's Google world, links
+    /// otherwise, unless the user last chose differently for that kind of audience.
+    public static func preferred(recipients: [String], me: String?, memory: DriveAttachMemory) -> DriveAttachMode {
+        let outside = allOutside(recipients: recipients, me: me)
+        return memory.last(outside: outside) ?? (outside ? .file : .link)
+    }
+
+    /// The formats a Google file can be attached as, PDF first; empty for stored files
+    /// (sent as they are) and Google files with no file form.
+    public static func formats(mime: String) -> [String] {
+        switch mime {
+        case "application/vnd.google-apps.document": ["pdf", "docx"]
+        case "application/vnd.google-apps.spreadsheet": ["pdf", "xlsx"]
+        case "application/vnd.google-apps.presentation": ["pdf", "pptx"]
+        case "application/vnd.google-apps.drawing": ["pdf"]
+        default: []
+        }
+    }
+
+    /// The chip menu's name for a format.
+    public static func formatLabel(_ format: String) -> String {
+        switch format {
+        case "pdf": "PDF"
+        case "docx": "Word (.docx)"
+        case "xlsx": "Excel (.xlsx)"
+        case "pptx": "PowerPoint (.pptx)"
+        default: "." + format
+        }
+    }
+
+    private static func domain(_ address: String) -> String? {
+        let a = address.trimmingCharacters(in: .whitespaces).lowercased()
+        guard let at = a.lastIndex(of: "@") else { return nil }
+        let d = a[a.index(after: at)...].trimmingCharacters(in: CharacterSet(charactersIn: ">"))
+        return d.isEmpty ? nil : d
+    }
+}
+
+/// The user's last link-or-file choice, one per kind of audience (everyone outside
+/// their Google world, or not), kept across launches.
+public struct DriveAttachMemory: @unchecked Sendable {
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    private static func key(outside: Bool) -> String { outside ? "driveAttachMode.outside" : "driveAttachMode.inside" }
+
+    public func last(outside: Bool) -> DriveAttachMode? {
+        defaults.string(forKey: Self.key(outside: outside)).flatMap(DriveAttachMode.init(rawValue:))
+    }
+
+    public func remember(_ mode: DriveAttachMode, outside: Bool) {
+        defaults.set(mode.rawValue, forKey: Self.key(outside: outside))
+    }
+}
