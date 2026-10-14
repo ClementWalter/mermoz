@@ -637,6 +637,7 @@ pub fn seed(store: &Store) -> Result<()> {
         created: now_ms(),
         updated: now_ms(),
         attachments: vec![],
+        reply_to_message_id: None,
     };
     store.create_draft(&d)?;
     store.move_to_review(&d.id)?;

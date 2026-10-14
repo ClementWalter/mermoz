@@ -136,7 +136,14 @@ const MIGRATIONS: &[&str] = &[
     images::MIGRATION,
     push::MIGRATION,
     REPLY_TO,
+    MACHINE_MAIL,
 ];
+
+/// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null
+/// until known), what a bounce reports, and the message a draft answers.
+const MACHINE_MAIL: &str = "ALTER TABLE messages ADD COLUMN auto_kind TEXT;
+ALTER TABLE messages ADD COLUMN dsn_json TEXT;
+ALTER TABLE drafts ADD COLUMN reply_to_message_id TEXT;";
 
 /// `Reply-To` per message; null until known (older mail learns it when its thread opens).
 const REPLY_TO: &str = "ALTER TABLE messages ADD COLUMN reply_to_json TEXT;";
@@ -1080,7 +1087,7 @@ fn messages_where(
            {}, is_from_me,
            (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json,
            m.list_id IS NOT NULL, r.text, r.flags, r.forwarded_from, r.reaction, r.reaction_quote,
-           m.message_id_header, m.references_json, m.reply_to_json
+           m.message_id_header, m.references_json, m.reply_to_json, m.auto_kind, m.dsn_json
          FROM messages m {}{}
          WHERE {filter} ORDER BY date, m.rowid",
         bodies::HAS_HTML_OF_M,
@@ -1089,6 +1096,8 @@ fn messages_where(
     ))?;
     // (Message-ID, References) of each message, to find what a reaction is to.
     let mut ids: Vec<(String, Vec<String>)> = vec![];
+    // What each bounce reports, to mark the message that failed.
+    let mut dsns: Vec<Option<crate::dsn::Dsn>> = vec![];
     // (listed, stored reading, message)
     let mut msgs = st
         .query_map([arg], |r| {
@@ -1106,6 +1115,17 @@ fn messages_where(
                     Ok(reading)
                 })
                 .transpose()?;
+            let stored_kind = r.get::<_, Option<String>>(23)?;
+            let subject: String = r.get(7)?;
+            // Mail not classified yet: what its sender and subject say.
+            let kind = match stored_kind.as_deref() {
+                Some(k) => crate::dsn::AutoKind::from_stored(k),
+                None => crate::dsn::classify(&email, &subject, |_| None),
+            };
+            dsns.push(
+                r.get::<_, Option<String>>(24)?
+                    .and_then(|j| serde_json::from_str(&j).ok()),
+            );
             ids.push((
                 r.get::<_, Option<String>>(20)?.unwrap_or_default(),
                 serde_json::from_str::<Vec<String>>(&r.get::<_, String>(21)?).unwrap_or_default(),
@@ -1123,6 +1143,9 @@ fn messages_where(
                         .get::<_, Option<String>>(22)?
                         .and_then(|j| serde_json::from_str(&j).ok())
                         .unwrap_or_default(),
+                    is_bounce: kind == crate::dsn::AutoKind::Bounce,
+                    is_auto_reply: kind == crate::dsn::AutoKind::AutoReply,
+                    delivery_failure: None,
                     date: r.get(6)?,
                     subject: r.get(7)?,
                     body_new: String::new(),
@@ -1234,7 +1257,50 @@ fn messages_where(
     let mut msgs: Vec<Message> = msgs.into_iter().map(|(_, _, m)| m).collect();
     images::mark_repeated(&mut msgs);
     reactions::find_targets(&mut msgs, &ids, &reaction_quotes);
+    mark_delivery_failures(&mut msgs, &ids, &dsns);
     Ok(msgs)
+}
+
+/// Puts what each bounce reports on the sent message it reports on: the one whose
+/// Message-ID it names, else the user's latest earlier message to that recipient.
+fn mark_delivery_failures(
+    msgs: &mut [Message],
+    ids: &[(String, Vec<String>)],
+    dsns: &[Option<crate::dsn::Dsn>],
+) {
+    let bare = |s: &str| {
+        s.trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string()
+    };
+    for (b, dsn) in dsns.iter().enumerate() {
+        let Some(dsn) = dsn.as_ref().filter(|d| !d.recipient.is_empty()) else {
+            continue;
+        };
+        let by_id = dsn.original_message_id.as_ref().and_then(|want| {
+            ids.iter()
+                .position(|(mid, _)| !mid.is_empty() && bare(mid) == bare(want))
+        });
+        let failed = by_id.or_else(|| {
+            (0..b).rev().find(|&i| {
+                msgs[i].is_from_me
+                    && msgs[i]
+                        .to
+                        .iter()
+                        .chain(&msgs[i].cc)
+                        .any(|a| a.email.eq_ignore_ascii_case(&dsn.recipient))
+            })
+        });
+        if let Some(i) = failed.filter(|&i| i != b) {
+            msgs[i].delivery_failure = Some(crate::model::DeliveryFailure {
+                recipient: dsn.recipient.clone(),
+                status: dsn.status.clone(),
+                reason: crate::dsn::reason(dsn),
+                bounce_message_id: msgs[b].id.clone(),
+            });
+        }
+    }
 }
 
 /// What an incoming message's bubble shows.
@@ -1287,7 +1353,17 @@ fn draft_row(r: &Row) -> rusqlite::Result<Draft> {
         created: r.get(9)?,
         updated: r.get(10)?,
         attachments: vec![],
+        reply_to_message_id: r.get(11)?,
     })
+}
+
+/// A received message whose `Reply-To` and kind are not known yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissingHeaders {
+    pub id: String,
+    pub provider_id: String,
+    pub from: String,
+    pub subject: String,
 }
 
 /// (message id, from name, from email, subject, body) awaiting the agent.
@@ -1380,8 +1456,7 @@ struct FtsRow<'m> {
     body: &'m str,
 }
 
-const DRAFT_COLS: &str =
-    "id, account_id, thread_id, to_json, cc_json, subject, body, state, origin, created, updated";
+const DRAFT_COLS: &str = "id, account_id, thread_id, to_json, cc_json, subject, body, state, origin, created, updated, reply_to_message_id";
 
 impl Store {
     pub fn open(path: &Path, blobs: &Path) -> Result<Self> {
@@ -1843,8 +1918,9 @@ impl Store {
         let mid = new_id("msg");
         tx.execute(
             "INSERT INTO messages (id, account_id, provider_id, thread_id, from_name, from_email, to_json, cc_json, date, subject,
-               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth, bcc_json, list_id, reply_to_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth, bcc_json, list_id, reply_to_json,
+               auto_kind, dsn_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 mid,
                 account_id,
@@ -1867,6 +1943,8 @@ impl Store {
                 serde_json::to_string(&p.bcc)?,
                 p.list_id,
                 serde_json::to_string(&p.reply_to)?,
+                p.auto_kind,
+                p.dsn.as_ref().map(serde_json::to_string).transpose()?,
             ],
         )?;
         let msg_rowid = tx.last_insert_rowid();
@@ -2308,6 +2386,15 @@ impl Store {
     pub fn messages(&self, thread_id: &str) -> Result<Vec<Message>> {
         let r = self.r.lock().unwrap();
         messages_where(&r, "m.thread_id = ?1", thread_id, None)
+    }
+
+    /// One message, by its Mermoz id.
+    pub fn message(&self, id: &str) -> Result<Message> {
+        let r = self.r.lock().unwrap();
+        messages_where(&r, "m.id = ?1", id, None)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::NotFound(format!("message {id}")))
     }
 
     /// A message's own parts its HTML can show inline (`cid:` links), read from disk.
@@ -4004,25 +4091,44 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    /// (message id, provider id) of a thread's received messages whose `Reply-To` is not
-    /// known yet (stored before it was kept), newest first: the ones a reply reads.
-    pub fn missing_reply_to(&self, thread_id: &str) -> Result<Vec<(String, String)>> {
+    /// A thread's received messages stored before their `Reply-To` and kind (bounce,
+    /// auto-reply) were kept, newest first: the ones a reply reads.
+    pub fn missing_headers(&self, thread_id: &str) -> Result<Vec<MissingHeaders>> {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(
-            "SELECT id, provider_id FROM messages
-             WHERE thread_id = ?1 AND reply_to_json IS NULL AND is_from_me = 0
+            "SELECT id, provider_id, from_email, subject FROM messages
+             WHERE thread_id = ?1 AND is_from_me = 0 AND (reply_to_json IS NULL OR auto_kind IS NULL)
              ORDER BY date DESC LIMIT 20",
         )?;
         Ok(st
-            .query_map([thread_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([thread_id], |r| {
+                Ok(MissingHeaders {
+                    id: r.get(0)?,
+                    provider_id: r.get(1)?,
+                    from: r.get(2)?,
+                    subject: r.get(3)?,
+                })
+            })?
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn set_reply_to(&self, message_id: &str, reply_to: &[Address]) -> Result<()> {
+    /// Records what [`Self::missing_headers`] lacked.
+    pub fn set_headers(
+        &self,
+        message_id: &str,
+        reply_to: &[Address],
+        kind: crate::dsn::AutoKind,
+        dsn: Option<&crate::dsn::Dsn>,
+    ) -> Result<()> {
         let w = self.w.lock().unwrap();
         w.execute(
-            "UPDATE messages SET reply_to_json = ?2 WHERE id = ?1",
-            params![message_id, serde_json::to_string(reply_to)?],
+            "UPDATE messages SET reply_to_json = ?2, auto_kind = ?3, dsn_json = ?4 WHERE id = ?1",
+            params![
+                message_id,
+                serde_json::to_string(reply_to)?,
+                kind.as_str(),
+                dsn.map(serde_json::to_string).transpose()?
+            ],
         )?;
         Ok(())
     }
@@ -4055,7 +4161,7 @@ impl Store {
     pub fn create_draft(&self, d: &Draft) -> Result<Draft> {
         let w = self.w.lock().unwrap();
         w.execute(
-            &format!("INSERT INTO drafts ({DRAFT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
+            &format!("INSERT INTO drafts ({DRAFT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),
             params![
                 d.id,
                 d.account_id,
@@ -4067,7 +4173,8 @@ impl Store {
                 d.state,
                 d.origin,
                 d.created,
-                d.updated
+                d.updated,
+                d.reply_to_message_id
             ],
         )?;
         drop(w);
@@ -4361,12 +4468,13 @@ impl Store {
     }
 
     /// Reply threading headers: In-Reply-To and References from the last message.
-    pub fn reply_headers(&self, thread_id: &str) -> Result<(Option<String>, Vec<String>)> {
+    /// In-Reply-To and References for a reply to `message_id`.
+    pub fn reply_headers(&self, message_id: &str) -> Result<(Option<String>, Vec<String>)> {
         let r = self.r.lock().unwrap();
         let row: Option<(Option<String>, String)> = r
             .query_row(
-                "SELECT message_id_header, references_json FROM messages WHERE thread_id = ?1 ORDER BY date DESC LIMIT 1",
-                [thread_id],
+                "SELECT message_id_header, references_json FROM messages WHERE id = ?1",
+                [message_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -4380,7 +4488,7 @@ impl Store {
         Ok((mid, refs))
     }
 
-    /// Defaults for a reply-all to the latest received message ([`crate::reply`] rules).
+    /// Defaults for a reply-all to the thread's reply target ([`crate::reply`] rules).
     pub fn reply_defaults(
         &self,
         thread_id: &str,
@@ -4393,7 +4501,7 @@ impl Store {
         } else {
             format!("Re: {}", t.subject)
         };
-        let Some(last) = msgs.iter().rev().find(|m| !m.is_from_me).or(msgs.last()) else {
+        let Some(last) = crate::reply::target(&msgs) else {
             return Ok((vec![], vec![], subject));
         };
         let (to, cc) = crate::reply::reply_all(last, &[me.to_string()], &msgs);
@@ -6258,6 +6366,7 @@ mod tests {
             created: 0,
             updated: 0,
             attachments: vec![],
+            reply_to_message_id: None,
         };
         s.create_draft(&d).unwrap();
         s.move_to_review(&d.id).unwrap();
@@ -7679,6 +7788,7 @@ mod tests {
                 created: 0,
                 updated: 0,
                 attachments: vec![],
+                reply_to_message_id: None,
             })
             .unwrap();
         let file = env._dir.path().join("Relevé d'été.pdf");

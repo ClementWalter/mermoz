@@ -1,0 +1,54 @@
+Delivered-To: me@example.com
+Return-Path: <>
+From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>
+To: me@example.com
+Auto-Submitted: auto-replied
+Subject: Delivery Status Notification (Failure)
+Message-ID: <bounce-en@mx.google.example>
+Date: Tue, 13 Oct 2026 18:03:20 -0700
+MIME-Version: 1.0
+Content-Type: multipart/report; boundary="REPORT_EN"; report-type=delivery-status
+
+--REPORT_EN
+Content-Type: text/plain; charset="UTF-8"
+
+** Address not found **
+
+Your message wasn't delivered to no-reply@invoices.example because the address couldn't be found, or is unable to receive mail.
+
+Learn more here: https://support.google.example/mail/answer/6596
+
+The response was:
+
+The email account that you tried to reach does not exist.
+
+--REPORT_EN
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; googlemail.com
+Received-From-MTA: dns; me@example.com
+Arrival-Date: Tue, 13 Oct 2026 18:03:13 -0700 (PDT)
+X-Original-Message-ID: <sent-en@mail.gmail.example>
+
+Final-Recipient: rfc822; no-reply@invoices.example
+Action: failed
+Status: 5.1.1
+Remote-MTA: dns; mx.invoices.example. (192.0.2.10, the server for the domain
+ invoices.example.)
+Diagnostic-Code: smtp; 550-5.1.1 The email account that you tried to reach
+ does not exist. 550 5.1.1 fictional-id - gsmtp
+Last-Attempt-Date: Tue, 13 Oct 2026 18:03:20 -0700 (PDT)
+
+--REPORT_EN
+Content-Type: message/rfc822
+
+From: Me <me@example.com>
+To: no-reply@invoices.example
+Subject: Re: Votre facture
+Message-ID: <sent-en@mail.gmail.example>
+In-Reply-To: <invoice@invoices.example>
+Date: Tue, 13 Oct 2026 18:03:13 -0700
+
+Merci, je règle la facture demain.
+
+--REPORT_EN--

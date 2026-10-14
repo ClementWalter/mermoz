@@ -162,6 +162,46 @@ fn body_with_links(body: &str, links: &[Link]) -> String {
     out
 }
 
+/// The reply text followed by the answered message, quoted the way mail apps do:
+/// "On <date>, <name> <address> wrote:" then each of its lines after "> ".
+pub fn with_quote(body: &str, answered: &crate::model::Message) -> String {
+    let when = chrono::DateTime::from_timestamp_millis(answered.date)
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%a, %b %-d, %Y at %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default();
+    quote_block(body, &when, &answered.from, &answered.body_text)
+}
+
+/// [`with_quote`] with the date already in words.
+pub fn quote_block(body: &str, when: &str, from: &crate::model::Address, text: &str) -> String {
+    let who = if from.name.trim().is_empty() {
+        format!("<{}>", from.email)
+    } else {
+        format!("{} <{}>", from.name.trim(), from.email)
+    };
+    let intro = if when.is_empty() {
+        format!("{who} wrote:")
+    } else {
+        format!("On {when}, {who} wrote:")
+    };
+    let quoted: Vec<String> = text
+        .replace("\r\n", "\n")
+        .trim_end()
+        .lines()
+        .map(|l| {
+            if l.is_empty() {
+                ">".to_string()
+            } else {
+                format!("> {l}")
+            }
+        })
+        .collect();
+    format!("{}\n\n{intro}\n{}\n", body.trim_end(), quoted.join("\n"))
+}
+
 /// Plain-text message (multipart/mixed when it carries files); reply headers keep
 /// it in the recipient's existing thread.
 pub fn build(o: &Outgoing) -> Result<Vec<u8>> {
@@ -505,6 +545,23 @@ mod tests {
     #[case::unknown("blob.xyz", b"\x00\x01", "application/octet-stream")]
     fn content_type_detection(#[case] name: &str, #[case] head: &[u8], #[case] want: &str) {
         assert_eq!(mime_for(name, head), want);
+    }
+
+    #[rstest]
+    fn quote_names_the_author_and_date() {
+        let from = crate::model::Address {
+            name: "Franck ADAM".into(),
+            email: "franck@plomberie.example".into(),
+        };
+        assert_eq!(
+            quote_block(
+                "Merci.",
+                "Tue, Oct 13, 2026 at 01:41",
+                &from,
+                "Votre facture.\n\nCordialement"
+            ),
+            "Merci.\n\nOn Tue, Oct 13, 2026 at 01:41, Franck ADAM <franck@plomberie.example> wrote:\n> Votre facture.\n>\n> Cordialement\n"
+        );
     }
 
     #[rstest]

@@ -83,6 +83,9 @@ app, the CLI and the MCP server are clients of this protocol.
  "has_quoted": true, "has_signature": true, "forwarded": false, "forwarded_from": "Bank" | null, "quoted_only": false,
  "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
  "reaction": {"emoji": "❤️", "target_message_id": "msg_…" | null} | null,
+ "is_bounce": false, "is_auto_reply": false,
+ "delivery_failure": {"recipient": "no-reply@…", "status": "5.1.1", "reason": "address doesn't exist",
+                      "bounce_message_id": "msg_…"} | null,
  "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000,
                   "inline": false, "decorative": false}]}
 
@@ -90,14 +93,28 @@ app, the CLI and the MCP server are clients of this protocol.
 // it was kept learns it when its thread is opened (one metadata call per message,
 // then a threads_changed event).
 
+// is_bounce: a delivery failure report from the mail system (mailer-daemon, postmaster,
+// or multipart/report; report-type=delivery-status). is_auto_reply: an automatic answer
+// (Auto-Submitted other than "no", X-Autoreply, X-Autorespond, or an "Out of office" /
+// "Automatic reply" / "Réponse automatique" subject). delivery_failure: on the user's
+// message a bounce reports on (matched by the Message-ID in the bounce, else the
+// user's latest earlier message to that recipient): who it missed, the RFC 3463
+// status, why in plain words, and the bounce message. A client shows it on that
+// message rather than the bounce as a bubble. Older mail learns its kind and report
+// when its thread is opened, like reply_to.
+
 // ReplyAddressing (threads.get "reply"): the reply-all a conversation starts with,
-// after RFC 5322: on a received message To is its Reply-To (else From) plus its To,
+// answering message_id (in Gmail thread thread_id): the latest message from a real
+// correspondent, i.e. not the user, not a bounce or auto-reply, and not a no-reply
+// sender without a Reply-To that reaches someone; else the user's latest message
+// (its recipients are kept); else the latest that isn't a bounce or auto-reply.
+// Addressing follows RFC 5322: on a received message To is its Reply-To (else From) plus its To,
 // Cc its Cc; on the user's own message, its recipients again, a sender that asked for
 // replies elsewhere swapped for that address. The user's address is never included.
 // no_reply lists To addresses nobody reads (no-reply, noreply, do-not-reply,
 // donotreply, ne-pas-repondre, notifications@, mailer-daemon); suggestion is a
 // person's address found in the mail, offered in their place, or null.
-{"to": [Address], "cc": [Address], "no_reply": ["no-reply@…"],
+{"message_id": "msg_…", "thread_id": "thr_…", "to": [Address], "cc": [Address], "no_reply": ["no-reply@…"],
  "suggestion": {"name": "Franck Adam", "email": "franck@…"} | null}
 
 // Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
@@ -133,7 +150,12 @@ app, the CLI and the MCP server are clients of this protocol.
 {"id": "dft_…", "account_id": "acc_1", "thread_id": "thr_…" | null,
  "to": ["a@b.c"], "cc": [], "subject": "…", "body": "…",
  "state": "draft|review|sent|rejected", "origin": "app|agent",
- "created": 1791700000000, "updated": 1791700000000}
+ "created": 1791700000000, "updated": 1791700000000,
+ "reply_to_message_id": "msg_…" | null}
+// reply_to_message_id: the message the reply answers: it carries that message's
+// In-Reply-To/References and ends with it quoted ("On …, Name <addr> wrote:" then
+// "> " lines). Without it, a reply answers the thread's ReplyAddressing message and
+// adds no quote.
 
 // ChatMessage: one turn of "Chat about this". Actions are proposals; nothing is applied.
 {"id": "cht_…", "thread_id": "thr_…", "role": "user|assistant", "text": "light Markdown",
@@ -282,7 +304,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |
 | `drafts.list`        | `{"state"?: "review"}`                                                                   | `[Draft]`                                |
 | `drafts.get`         | `{"id"}`                                                                                 | `Draft`                                  |
-| `drafts.create`      | `{"account_id"?, "thread_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}` — with `thread_id`, it is a reply: recipients/subject default from the thread. All attachments are added or none (the draft is not created) | `Draft` |
+| `drafts.create`      | `{"account_id"?, "thread_id"?, "reply_to_message_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}` — with `thread_id`, it is a reply: recipients/subject default from the thread's reply target; with `reply_to_message_id`, a reply to that message (its thread; recipients by the ReplyAddressing rules from it, "Re: " its subject). All attachments are added or none (the draft is not created) | `Draft` |
 | `drafts.attach`      | `{"id", "attachments": [Attach]}` or `{"id", ...Attach}`                                 | `Draft`                                  |
 | `drafts.detach`      | `{"id", "attachment_id"}` (an id from `Draft.attachments`)                               | `Draft`                                  |
 | `drafts.update`      | `{"id", "to"?, "cc"?, "subject"?, "body"?}`                                              | `Draft`                                  |

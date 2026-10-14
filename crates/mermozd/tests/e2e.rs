@@ -4798,3 +4798,175 @@ fn failed_send_keeps_the_draft(synced: World) {
         "draft"
     );
 }
+
+// ---- bounces, auto-replies and replies pinned to a message ------------------------
+
+/// Gmail's report that the user's reply to the no-reply address bounced (fictional).
+const GMAIL_BOUNCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../mermoz-core/src/dsn/gmail_en.eml"
+));
+
+/// An invoice from a no-reply address, the craftsman writing herself, the user's
+/// reply that went to the no-reply address, then Gmail's bounce for it.
+fn add_bounced_thread(w: &World) {
+    let mut m = w.mailbox.lock().unwrap();
+    m.add_message(
+        "b1",
+        "t5",
+        &["INBOX"],
+        "From: \"Franck ADAM (via Invoices)\" <no-reply@invoices.example>\r\nTo: Me <me@example.com>\r\nSubject: Facture plomberie\r\nMessage-ID: <invoice@invoices.example>\r\nDate: Tue, 13 Oct 2026 01:41:00 -0700\r\n\r\nVotre facture est jointe.\r\n",
+        NOW - 400,
+    );
+    m.add_message(
+        "b2",
+        "t5",
+        &["INBOX"],
+        "From: Mme Adam <adam@plomberie.example>\r\nTo: Me <me@example.com>\r\nSubject: Re: Facture plomberie\r\nMessage-ID: <adam@plomberie.example>\r\nIn-Reply-To: <invoice@invoices.example>\r\nDate: Tue, 13 Oct 2026 09:00:00 -0700\r\n\r\nN'hésitez pas à me répondre directement.\r\n",
+        NOW - 300,
+    );
+    m.add_message(
+        "b3",
+        "t5",
+        &["SENT"],
+        "From: Me <me@example.com>\r\nTo: no-reply@invoices.example\r\nSubject: Re: Facture plomberie\r\nMessage-ID: <sent-en@mail.gmail.example>\r\nIn-Reply-To: <invoice@invoices.example>\r\nDate: Tue, 13 Oct 2026 18:03:13 -0700\r\n\r\nMerci, je règle la facture demain.\r\n",
+        NOW - 200,
+    );
+    m.add_message("b4", "t5", &["INBOX"], GMAIL_BOUNCE, NOW - 100);
+}
+
+#[fixture]
+fn bounced(world: World) -> World {
+    add_bounced_thread(&world);
+    sign_in(&world);
+    world.wait_until("initial import", |w| {
+        w.ok("threads.list", json!({}))["total"] == 4
+    });
+    world
+}
+
+fn thread_messages(w: &World, subject: &str) -> Vec<Value> {
+    let t = w.thread_by_subject(subject);
+    w.ok("threads.get", json!({ "id": t["id"] }))["messages"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn message_from(w: &World, subject: &str, from: &str) -> Value {
+    thread_messages(w, subject)
+        .into_iter()
+        .find(|m| m["from"]["email"] == from)
+        .unwrap_or_else(|| panic!("no message from {from}"))
+}
+
+#[rstest]
+fn reply_after_a_bounce_goes_to_the_last_person(bounced: World) {
+    assert_eq!(
+        reply_of(&bounced, "Facture plomberie")["to"][0]["email"],
+        "adam@plomberie.example"
+    );
+}
+
+#[rstest]
+fn reply_after_a_bounce_answers_the_last_persons_message(bounced: World) {
+    let adam = message_from(&bounced, "Facture plomberie", "adam@plomberie.example");
+    assert_eq!(
+        reply_of(&bounced, "Facture plomberie")["message_id"],
+        adam["id"]
+    );
+}
+
+#[rstest]
+fn the_bounce_is_marked_as_one(bounced: World) {
+    let b = message_from(
+        &bounced,
+        "Facture plomberie",
+        "mailer-daemon@googlemail.com",
+    );
+    assert_eq!(b["is_bounce"], true);
+}
+
+#[rstest]
+fn the_failed_message_carries_who_it_missed(bounced: World) {
+    let mine = message_from(&bounced, "Facture plomberie", "me@example.com");
+    assert_eq!(
+        mine["delivery_failure"]["recipient"],
+        "no-reply@invoices.example"
+    );
+}
+
+#[rstest]
+fn the_failed_message_carries_why(bounced: World) {
+    let mine = message_from(&bounced, "Facture plomberie", "me@example.com");
+    assert_eq!(mine["delivery_failure"]["reason"], "address doesn't exist");
+}
+
+#[rstest]
+fn the_failed_message_names_its_bounce(bounced: World) {
+    let mine = message_from(&bounced, "Facture plomberie", "me@example.com");
+    let b = message_from(
+        &bounced,
+        "Facture plomberie",
+        "mailer-daemon@googlemail.com",
+    );
+    assert_eq!(mine["delivery_failure"]["bounce_message_id"], b["id"]);
+}
+
+#[rstest]
+fn default_reply_after_a_bounce_threads_onto_the_persons_message(bounced: World) {
+    let d = app_reply(&bounced, "Facture plomberie");
+    bounced.ok("drafts.send", json!({ "id": d["id"] }));
+    assert!(
+        bounced.mailbox.lock().unwrap().sent[0]
+            .0
+            .contains("In-Reply-To: <adam@plomberie.example>")
+    );
+}
+
+/// A reply pinned to the invoice in the bounced thread: drafted, then sent.
+fn pinned_reply(w: &World) -> String {
+    let invoice = message_from(w, "Facture plomberie", "no-reply@invoices.example");
+    let d = w.ok(
+        "drafts.create",
+        json!({ "reply_to_message_id": invoice["id"], "body": "Bien reçu." }),
+    );
+    w.ok("drafts.send", json!({ "id": d["id"] }));
+    w.mailbox.lock().unwrap().sent[0].0.clone()
+}
+
+#[rstest]
+fn pinned_reply_threads_onto_its_message(bounced: World) {
+    assert!(pinned_reply(&bounced).contains("In-Reply-To: <invoice@invoices.example>"));
+}
+
+#[rstest]
+fn pinned_reply_is_addressed_from_its_message(bounced: World) {
+    assert!(pinned_reply(&bounced).contains("To: <no-reply@invoices.example>"));
+}
+
+#[rstest]
+fn pinned_reply_quotes_its_message(bounced: World) {
+    assert!(pinned_reply(&bounced).contains("> Votre facture est jointe."));
+}
+
+#[rstest]
+fn pinned_reply_draft_names_its_message(bounced: World) {
+    let invoice = message_from(&bounced, "Facture plomberie", "no-reply@invoices.example");
+    let d = bounced.ok(
+        "drafts.create",
+        json!({ "reply_to_message_id": invoice["id"], "body": "Bien reçu." }),
+    );
+    assert_eq!(d["reply_to_message_id"], invoice["id"]);
+}
+
+#[rstest]
+fn pinned_reply_goes_to_the_messages_reply_to(with_invoice: World) {
+    let t = with_invoice.thread_by_subject("Votre facture");
+    let m = &with_invoice.ok("threads.get", json!({ "id": t["id"] }))["messages"][0];
+    let d = with_invoice.ok(
+        "drafts.create",
+        json!({ "reply_to_message_id": m["id"], "body": "Merci." }),
+    );
+    assert_eq!(d["to"], json!(["franck@plomberie.example"]));
+}

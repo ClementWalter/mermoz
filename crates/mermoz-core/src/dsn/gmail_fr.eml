@@ -1,0 +1,42 @@
+Delivered-To: me@example.com
+Return-Path: <>
+From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>
+To: me@example.com
+Auto-Submitted: auto-replied
+Subject: =?UTF-8?Q?Notification_d'=C3=A9tat_de_remise_=28=C3=A9chec=29?=
+Message-ID: <bounce-fr@mx.google.example>
+Date: Mon, 12 Oct 2026 09:15:02 +0200
+MIME-Version: 1.0
+Content-Type: multipart/report; boundary="REPORT_FR"; report-type=delivery-status
+
+--REPORT_FR
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+** Adresse introuvable **
+
+Votre message n'a pas pu =C3=AAtre distribu=C3=A9 =C3=A0 contact@ancien-domaine.example, car le domaine ancien-domaine.example est introuvable.
+
+--REPORT_FR
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; googlemail.com
+Arrival-Date: Mon, 12 Oct 2026 00:14:58 -0700 (PDT)
+
+Final-Recipient: rfc822; contact@ancien-domaine.example
+Action: failed
+Status: 5.1.2
+Diagnostic-Code: smtp; DNS Error: DNS type 'mx' lookup of ancien-domaine.example
+ responded with code NXDOMAIN Domain name not found: ancien-domaine.example
+Last-Attempt-Date: Mon, 12 Oct 2026 00:15:02 -0700 (PDT)
+
+--REPORT_FR
+Content-Type: text/rfc822-headers
+
+From: Me <me@example.com>
+To: contact@ancien-domaine.example
+Subject: Devis cuisine
+Message-ID: <sent-fr@mail.gmail.example>
+Date: Mon, 12 Oct 2026 09:14:58 +0200
+
+--REPORT_FR--

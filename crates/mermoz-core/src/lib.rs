@@ -14,6 +14,7 @@ pub mod decorative;
 pub mod demo;
 pub mod drive;
 pub mod drive_cache;
+pub mod dsn;
 pub mod error;
 pub mod feed;
 pub mod gmail;

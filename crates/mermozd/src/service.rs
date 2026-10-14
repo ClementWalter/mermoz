@@ -100,7 +100,7 @@ impl Service {
         let Ok(items) = self.store.unverified_senders(thread_id) else {
             return;
         };
-        let replies = self.store.missing_reply_to(thread_id).unwrap_or_default();
+        let replies = self.store.missing_headers(thread_id).unwrap_or_default();
         if (items.is_empty() && replies.is_empty())
             || !self.verifying.lock().unwrap().insert(thread_id.to_string())
         {
@@ -116,7 +116,7 @@ impl Service {
         let (svc, tid) = (self.clone(), thread_id.to_string());
         tokio::spawn(async move {
             // Reply-To first: the reply composer reads it.
-            if let Err(e) = w.sync.backfill_reply_to(&replies).await {
+            if let Err(e) = w.sync.backfill_headers(&replies).await {
                 warn!(thread = %tid, "reply-to backfill failed: {e}");
             }
             if let Err(e) = w.sync.verify_senders(&items).await {

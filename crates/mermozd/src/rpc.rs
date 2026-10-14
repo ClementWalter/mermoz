@@ -532,9 +532,15 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "drafts.list" => to_value(st.drafts(opt_s(p, "state").as_deref())?),
         "drafts.get" => to_value(st.draft(&s(p, "id")?)?),
         "drafts.create" => {
-            let thread_id = match opt_s(p, "thread_id") {
-                Some(t) => Some(st.resolve_thread_id(&t)?),
+            // A reply pinned to one message continues that message's thread.
+            let answered = match opt_s(p, "reply_to_message_id") {
+                Some(id) => Some(st.message(&id)?),
                 None => None,
+            };
+            let thread_id = match (&answered, opt_s(p, "thread_id")) {
+                (Some(m), _) => Some(m.thread_id.clone()),
+                (None, Some(t)) => Some(st.resolve_thread_id(&t)?),
+                (None, None) => None,
             };
             let account_id = match (&thread_id, opt_s(p, "account_id")) {
                 (_, Some(a)) => st.account(&a)?.id,
@@ -546,9 +552,23 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                     .ok_or_else(|| RpcError::invalid("no account configured"))?,
             };
             let me = st.account(&account_id)?.email;
-            let (dto, dcc, dsubject) = match &thread_id {
-                Some(t) => st.reply_defaults(t, &me)?,
-                None => (vec![], vec![], String::new()),
+            let (dto, dcc, dsubject) = match (&answered, &thread_id) {
+                (Some(m), _) => {
+                    let thread = st.messages(&m.thread_id)?;
+                    let (to, cc) =
+                        mermoz_core::reply::reply_all(m, std::slice::from_ref(&me), &thread);
+                    let emails = |v: Vec<mermoz_core::model::Address>| -> Vec<String> {
+                        v.into_iter().map(|a| a.email).collect()
+                    };
+                    let subject = if m.subject.to_lowercase().starts_with("re:") {
+                        m.subject.clone()
+                    } else {
+                        format!("Re: {}", m.subject)
+                    };
+                    (emails(to), emails(cc), subject)
+                }
+                (None, Some(t)) => st.reply_defaults(t, &me)?,
+                (None, None) => (vec![], vec![], String::new()),
             };
             let body = s(p, "body")?;
             let now = now_ms();
@@ -569,6 +589,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 created: now,
                 updated: now,
                 attachments: vec![],
+                reply_to_message_id: answered.map(|m| m.id),
             };
             let specs = attachment_specs(p)?;
             let d = st.create_draft(&d)?;

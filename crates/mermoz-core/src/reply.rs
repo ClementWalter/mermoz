@@ -1,6 +1,8 @@
 //! Who a reply goes to (RFC 5322 §3.6.3): `Reply-To` when the sender set one, else
-//! `From`; reply-all adds the other recipients minus the user. Flags addresses that
-//! don't accept replies and, when it can, names the person behind them.
+//! `From`; reply-all adds the other recipients minus the user. The message answered
+//! by default is the latest from a real correspondent, never a bounce or an
+//! auto-reply. Flags addresses that don't accept replies and, when it can, names the
+//! person behind them.
 
 use crate::model::{Address, Message};
 use serde::{Deserialize, Serialize};
@@ -8,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// The recipients a reply to a conversation starts with.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ReplyAddressing {
+    /// The message the reply answers (threads onto it, quotes it).
+    pub message_id: String,
+    /// Its Gmail thread, which the reply continues.
+    pub thread_id: String,
     pub to: Vec<Address>,
     pub cc: Vec<Address>,
     /// Addresses in `to` that don't accept replies: the composer warns about them.
@@ -158,11 +164,28 @@ pub fn suggest_human(m: &Message, me: &[String]) -> Option<Address> {
     }
 }
 
-/// The reply-all a conversation starts with (`messages` oldest first), with its
-/// no-reply warning and suggestion. `None` for a conversation without messages.
-pub fn addressing(messages: &[Message], me: &[String]) -> Option<ReplyAddressing> {
-    let last = messages.last()?;
-    let (to, cc) = reply_all(last, me, messages);
+/// A message from a person the user can answer: not the user, not the mail system or
+/// an auto-reply, and not a no-reply sender without a Reply-To that reaches someone.
+pub fn is_real_correspondent(m: &Message) -> bool {
+    let reachable =
+        !is_no_reply(&m.from.email) || m.reply_to.iter().any(|a| !is_no_reply(&a.email));
+    !m.is_from_me && !m.is_bounce && !m.is_auto_reply && reachable
+}
+
+/// The message a reply answers by default (`messages` oldest first): the latest from a
+/// real correspondent; else the user's latest (a follow-up keeps its recipients); else
+/// the latest that isn't a bounce or auto-reply; else the latest.
+pub fn target(messages: &[Message]) -> Option<&Message> {
+    let latest = |f: &dyn Fn(&Message) -> bool| messages.iter().rev().find(|m| f(m));
+    latest(&is_real_correspondent)
+        .or_else(|| latest(&|m| m.is_from_me))
+        .or_else(|| latest(&|m| !m.is_bounce && !m.is_auto_reply))
+        .or_else(|| messages.last())
+}
+
+/// The reply-all to `answered`, with its no-reply warning and suggestion.
+pub fn addressing_for(answered: &Message, messages: &[Message], me: &[String]) -> ReplyAddressing {
+    let (to, cc) = reply_all(answered, me, messages);
     let no_reply: Vec<String> = to
         .iter()
         .filter(|a| is_no_reply(&a.email))
@@ -174,15 +197,23 @@ pub fn addressing(messages: &[Message], me: &[String]) -> Option<ReplyAddressing
         messages
             .iter()
             .rev()
-            .filter(|m| !m.is_from_me)
+            .filter(|m| !m.is_from_me && !m.is_bounce)
             .find_map(|m| suggest_human(m, me))
     };
-    Some(ReplyAddressing {
+    ReplyAddressing {
+        message_id: answered.id.clone(),
+        thread_id: answered.thread_id.clone(),
         to,
         cc,
         no_reply,
         suggestion,
-    })
+    }
+}
+
+/// The reply-all a conversation starts with (`messages` oldest first), answering its
+/// [`target`]. `None` for a conversation without messages.
+pub fn addressing(messages: &[Message], me: &[String]) -> Option<ReplyAddressing> {
+    Some(addressing_for(target(messages)?, messages, me))
 }
 
 #[cfg(test)]
@@ -208,6 +239,9 @@ mod tests {
             cc: cc.iter().map(|e| addr(e)).collect(),
             bcc: vec![],
             reply_to: reply_to.iter().map(|e| addr(e)).collect(),
+            is_bounce: false,
+            is_auto_reply: false,
+            delivery_failure: None,
             date: 0,
             subject: "s".into(),
             body_text: String::new(),
@@ -439,6 +473,133 @@ mod tests {
             emails_in("Write to <a@b.example>, or (c@d.example)."),
             vec!["a@b.example", "c@d.example"]
         );
+    }
+
+    fn with_id(mut m: Message, id: &str) -> Message {
+        m.id = id.into();
+        m
+    }
+
+    fn bounce() -> Message {
+        let mut m = msg("mailer-daemon@googlemail.com", &[ME], &[], &[]);
+        m.is_bounce = true;
+        m
+    }
+
+    fn auto_reply() -> Message {
+        let mut m = msg("lea@acme.example", &[ME], &[], &[]);
+        m.subject = "Réponse automatique : Devis".into();
+        m.is_auto_reply = true;
+        m
+    }
+
+    fn target_id(thread: &[Message]) -> &str {
+        target(thread).unwrap().id.as_str()
+    }
+
+    #[rstest]
+    fn target_skips_a_bounce(invoice: Message) {
+        let thread = vec![
+            with_id(invoice, "invoice"),
+            with_id(msg(ME, &["no-reply@invoices.example"], &[], &[]), "mine"),
+            with_id(bounce(), "bounce"),
+        ];
+        assert_eq!(target_id(&thread), "invoice");
+    }
+
+    #[rstest]
+    fn target_skips_an_auto_reply() {
+        let thread = vec![
+            with_id(msg("lea@acme.example", &[ME], &[], &[]), "lea"),
+            with_id(auto_reply(), "auto"),
+        ];
+        assert_eq!(target_id(&thread), "lea");
+    }
+
+    #[rstest]
+    fn target_skips_a_no_reply_sender_without_reply_to() {
+        let thread = vec![
+            with_id(msg("lea@acme.example", &[ME], &[], &[]), "lea"),
+            with_id(msg("noreply@shop.example", &[ME], &[], &[]), "shop"),
+        ];
+        assert_eq!(target_id(&thread), "lea");
+    }
+
+    #[rstest]
+    fn target_takes_a_no_reply_sender_with_a_person_in_reply_to(invoice: Message) {
+        let thread = vec![
+            with_id(msg("lea@acme.example", &[ME], &[], &[]), "lea"),
+            with_id(invoice, "invoice"),
+        ];
+        assert_eq!(target_id(&thread), "invoice");
+    }
+
+    #[rstest]
+    fn target_prefers_a_correspondent_over_my_later_message() {
+        let thread = vec![
+            with_id(msg("lea@acme.example", &[ME], &[], &[]), "lea"),
+            with_id(msg(ME, &["lea@acme.example"], &[], &[]), "mine"),
+        ];
+        assert_eq!(target_id(&thread), "lea");
+    }
+
+    #[rstest]
+    fn target_is_my_last_message_when_nobody_else_wrote() {
+        let thread = vec![
+            with_id(msg(ME, &["lea@acme.example"], &[], &[]), "first"),
+            with_id(msg(ME, &["lea@acme.example"], &[], &[]), "second"),
+            with_id(bounce(), "bounce"),
+        ];
+        assert_eq!(target_id(&thread), "second");
+    }
+
+    #[rstest]
+    fn self_only_reply_keeps_my_recipients() {
+        let thread = vec![
+            with_id(
+                msg(ME, &["lea@acme.example"], &["jo@acme.example"], &[]),
+                "mine",
+            ),
+            with_id(bounce(), "bounce"),
+        ];
+        assert_eq!(
+            emails(&addressing(&thread, &me()).unwrap().to),
+            vec!["lea@acme.example"]
+        );
+    }
+
+    #[rstest]
+    fn target_falls_back_to_a_no_reply_sender_when_alone() {
+        let thread = vec![with_id(
+            msg("noreply@shop.example", &[ME], &[], &[]),
+            "shop",
+        )];
+        assert_eq!(target_id(&thread), "shop");
+    }
+
+    #[rstest]
+    fn target_of_only_a_bounce_is_the_bounce() {
+        let thread = vec![with_id(bounce(), "bounce")];
+        assert_eq!(target_id(&thread), "bounce");
+    }
+
+    #[rstest]
+    fn reply_after_a_bounce_goes_to_the_reply_to(invoice: Message) {
+        let thread = vec![
+            with_id(invoice, "invoice"),
+            with_id(msg(ME, &["no-reply@invoices.example"], &[], &[]), "mine"),
+            with_id(bounce(), "bounce"),
+        ];
+        assert_eq!(
+            emails(&addressing(&thread, &me()).unwrap().to),
+            vec!["franck@plomberie.example"]
+        );
+    }
+
+    #[rstest]
+    fn addressing_names_the_answered_message(invoice: Message) {
+        let thread = vec![with_id(invoice, "invoice"), with_id(bounce(), "bounce")];
+        assert_eq!(addressing(&thread, &me()).unwrap().message_id, "invoice");
     }
 
     #[rstest]

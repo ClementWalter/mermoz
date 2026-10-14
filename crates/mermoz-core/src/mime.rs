@@ -34,6 +34,10 @@ pub struct ParsedMessage {
     pub auth_results: Vec<String>,
     /// The mailing list's identifier (`List-Id`), lowercase, without its display name.
     pub list_id: Option<String>,
+    /// Bounce, auto-reply or a person (see [`crate::dsn`]).
+    pub auto_kind: String,
+    /// What a bounce reports, when the message is one.
+    pub dsn: Option<crate::dsn::Dsn>,
 }
 
 fn addrs(a: Option<&mail_parser::Address>) -> Vec<Address> {
@@ -113,8 +117,17 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
     {
         references.push(r.to_string());
     }
+    let from = addrs(msg.from()).into_iter().next();
+    let kind = crate::dsn::classify(
+        from.as_ref().map_or("", |a| a.email.as_str()),
+        msg.subject().unwrap_or(""),
+        |name| msg.header_raw(name).map(|v| v.trim().to_string()),
+    );
+    let dsn = (kind == crate::dsn::AutoKind::Bounce)
+        .then(|| crate::dsn::parse(raw))
+        .flatten();
     Some(ParsedMessage {
-        from: addrs(msg.from()).into_iter().next(),
+        from,
         to: addrs(msg.to()),
         cc: addrs(msg.cc()),
         bcc: addrs(msg.bcc()),
@@ -128,6 +141,8 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
         attachments,
         auth_results: crate::auth::results_from_raw(raw),
         list_id: msg.header_raw("List-Id").and_then(list_id),
+        auto_kind: kind.as_str().to_string(),
+        dsn,
     })
 }
 

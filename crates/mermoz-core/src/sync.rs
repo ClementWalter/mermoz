@@ -414,23 +414,52 @@ impl AccountSync {
         Ok(n)
     }
 
-    /// Reads the `Reply-To` of messages stored before it was kept (one metadata call
-    /// each); returns how many were filled.
-    pub async fn backfill_reply_to(&self, items: &[(String, String)]) -> Result<usize> {
+    /// Reads the `Reply-To` and kind (bounce, auto-reply) of messages stored before they
+    /// were kept: one metadata call each, plus the whole message for a bounce, to read
+    /// what it reports. Returns how many were filled.
+    pub async fn backfill_headers(&self, items: &[crate::store::MissingHeaders]) -> Result<usize> {
+        const NAMES: &[&str] = &[
+            "Reply-To",
+            "Content-Type",
+            "Auto-Submitted",
+            "X-Autoreply",
+            "X-Autorespond",
+        ];
         let mut n = 0;
-        for (id, provider_id) in items {
-            let headers = match self.gmail.headers(provider_id, &["Reply-To"]).await {
+        for m in items {
+            let headers = match self.gmail.headers(&m.provider_id, NAMES).await {
                 Ok(h) => h,
                 // Gone from Gmail: nothing to learn, and nothing to ask again.
                 Err(Error::Upstream { status: 404, .. }) => vec![],
                 Err(e) => return Err(e),
+            };
+            let get = |name: &str| {
+                headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.clone())
             };
             let reply_to: Vec<_> = headers
                 .iter()
                 .filter(|(k, _)| k.eq_ignore_ascii_case("reply-to"))
                 .flat_map(|(_, v)| mime::header_addresses(v))
                 .collect();
-            self.store.set_reply_to(id, &reply_to)?;
+            let kind = crate::dsn::classify(&m.from, &m.subject, get);
+            let dsn = if kind == crate::dsn::AutoKind::Bounce {
+                match self.gmail.get_raw(&m.provider_id).await {
+                    Ok(raw) => raw
+                        .raw
+                        .as_deref()
+                        .and_then(|r| decode_raw(r).ok())
+                        .and_then(|bytes| crate::dsn::parse(&bytes)),
+                    Err(Error::Upstream { status: 404, .. }) => None,
+                    Err(e) => return Err(e),
+                }
+            } else {
+                None
+            };
+            self.store
+                .set_headers(&m.id, &reply_to, kind, dsn.as_ref())?;
             n += 1;
         }
         Ok(n)
@@ -508,13 +537,24 @@ impl AccountSync {
 
     /// Sends a draft now; the thread then waits on the other side.
     pub async fn send_draft(&self, draft: &Draft, after_status: Option<&str>) -> Result<()> {
-        let (in_reply_to, references, provider_thread) = match &draft.thread_id {
-            Some(t) => {
-                let (irt, refs) = self.store.reply_headers(t)?;
-                let (_, pt) = self.store.provider_thread_id(t)?;
-                (irt, refs, Some(pt))
-            }
-            None => (None, vec![], None),
+        // The message answered: the one the draft names, else the thread's reply target.
+        let answered = match (&draft.reply_to_message_id, &draft.thread_id) {
+            (Some(id), _) => Some(self.store.message(id)?),
+            (None, Some(t)) => crate::reply::target(&self.store.messages(t)?).cloned(),
+            (None, None) => None,
+        };
+        let (in_reply_to, references) = match &answered {
+            Some(m) => self.store.reply_headers(&m.id)?,
+            None => (None, vec![]),
+        };
+        let provider_thread = match &draft.thread_id {
+            Some(t) => Some(self.store.provider_thread_id(t)?.1),
+            None => None,
+        };
+        // A reply pinned to a message quotes it.
+        let body = match (&draft.reply_to_message_id, &answered) {
+            (Some(_), Some(m)) => compose::with_quote(&draft.body, m),
+            _ => draft.body.clone(),
         };
         let mut files = Vec::new();
         let mut links = Vec::new();
@@ -550,7 +590,7 @@ impl AccountSync {
             to: &draft.to,
             cc: &draft.cc,
             subject: &draft.subject,
-            body: &draft.body,
+            body: &body,
             in_reply_to: in_reply_to.as_deref(),
             references: &references,
             parts: &parts,

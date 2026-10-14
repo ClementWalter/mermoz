@@ -132,6 +132,15 @@ pub struct Message {
     /// Where the sender wants replies (`Reply-To`); empty when they want them at `from`.
     #[serde(default)]
     pub reply_to: Vec<Address>,
+    /// A delivery failure report (bounce) from the mail system, not a person.
+    #[serde(default)]
+    pub is_bounce: bool,
+    /// An automatic answer (out of office, auto-acknowledgement).
+    #[serde(default)]
+    pub is_auto_reply: bool,
+    /// This message didn't reach someone: what a bounce in the conversation says.
+    #[serde(default)]
+    pub delivery_failure: Option<DeliveryFailure>,
     pub date: i64,
     pub subject: String,
     pub body_text: String,
@@ -164,6 +173,18 @@ pub struct Message {
     /// Sender verification: "pass", "shared" (real domain on a platform anyone can use),
     /// "fail", "none", or null while not checked yet.
     pub auth: Option<String>,
+}
+
+/// A recipient a sent message didn't reach, as a bounce reported it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeliveryFailure {
+    pub recipient: String,
+    /// RFC 3463 status code, e.g. "5.1.1".
+    pub status: String,
+    /// Why, in plain words ("address doesn't exist").
+    pub reason: String,
+    /// The bounce message that reported it.
+    pub bounce_message_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -206,6 +227,10 @@ pub struct Draft {
     pub updated: i64,
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
+    /// The message this reply answers: it threads onto it, is addressed from it and
+    /// quotes it. None: the conversation's reply target ([`crate::reply::target`]).
+    #[serde(default)]
+    pub reply_to_message_id: Option<String>,
 }
 
 /// How a draft carries something: the file's bytes, or a link to it.
