@@ -103,6 +103,19 @@ pub struct AttachmentInfo {
     /// An image placed in the body (shown there), not a file sent along.
     #[serde(default)]
     pub inline: bool,
+    /// Decoration (signature logo, social icon, banner, tracking pixel), not content:
+    /// never shown as a photo nor counted in Photos. See [`crate::decorative`].
+    #[serde(default)]
+    pub decorative: bool,
+}
+
+/// A reaction (Outlook/Teams "[heart] Nora reacted to your message") to another message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Reaction {
+    /// The emoji ("❤️", "👍", "😆", "😮", "😢", "🎉", "😠").
+    pub emoji: String,
+    /// The message reacted to, when it is in this conversation.
+    pub target_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -137,6 +150,9 @@ pub struct Message {
     /// The message adds no words of its own: `body_new` is the text it quotes.
     #[serde(default)]
     pub quoted_only: bool,
+    /// The message is only a reaction to another one (`body_new` is then its emoji).
+    #[serde(default)]
+    pub reaction: Option<Reaction>,
     /// Reading version written by the built-in agent, when it has processed this message.
     pub body_clean: Option<String>,
     pub has_html: bool,

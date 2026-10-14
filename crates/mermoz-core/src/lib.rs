@@ -10,6 +10,7 @@ pub mod chat;
 pub mod chatgpt;
 pub mod compose;
 pub mod conversation;
+pub mod decorative;
 pub mod demo;
 pub mod drive;
 pub mod drive_cache;

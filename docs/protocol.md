@@ -81,7 +81,9 @@ app, the CLI and the MCP server are clients of this protocol.
  "subject": "…", "body_text": "… full text …", "body_new": "… what the bubble shows …",
  "has_quoted": true, "has_signature": true, "forwarded": false, "forwarded_from": "Bank" | null, "quoted_only": false,
  "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
- "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000}]}
+ "reaction": {"emoji": "❤️", "target_message_id": "msg_…" | null} | null,
+ "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000,
+                  "inline": false, "decorative": false}]}
 
 // Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
 // body_new    only what the sender newly wrote: greeting, body, sign-off name. LF line
@@ -95,6 +97,12 @@ app, the CLI and the MCP server are clients of this protocol.
 //             the forwarded text (its header block removed); forwarded_from names its
 //             author
 // quoted_only the message adds no words of its own; body_new is the text it quotes
+// reaction    an Outlook/Teams reaction ("[heart] Nora reacted to your message") to
+//             target_message_id (found by In-Reply-To, else by the words it quotes);
+//             body_new is then its emoji
+// attachments[].decorative  a signature logo, social icon, banner or tracking pixel:
+//             never shown as a photo nor counted in Photos (conversation files leave
+//             them out)
 
 // Status
 {"key": "todo", "name": "Todo", "order": 2, "color": "#5A7386"}

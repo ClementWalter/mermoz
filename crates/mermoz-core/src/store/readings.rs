@@ -29,8 +29,9 @@ pub(super) const JOIN_READING_OF_M: &str =
 /// Stores the reading of the message at `rowid` with id `message_id`.
 pub(super) fn save(conn: &Connection, rowid: i64, message_id: &str, r: &Reading) -> Result<()> {
     conn.prepare_cached(
-        "INSERT OR REPLACE INTO message_reading (msg, message_id, ver, text, flags, forwarded_from)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO message_reading
+           (msg, message_id, ver, text, flags, forwarded_from, reaction, reaction_quote)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?
     .execute(params![
         rowid,
@@ -38,7 +39,9 @@ pub(super) fn save(conn: &Connection, rowid: i64, message_id: &str, r: &Reading)
         VERSION,
         r.text,
         r.flags(),
-        r.forwarded_from
+        r.forwarded_from,
+        r.reaction,
+        r.reaction_quote
     ])?;
     Ok(())
 }
@@ -53,8 +56,8 @@ pub(super) fn read(subject: &str, text: &str, html: Option<&str>, listed: bool) 
     })
 }
 
-/// (rowid, id, subject, body_text, html, listed) of a message to read.
-type Pending = (i64, String, String, String, Option<String>, bool);
+/// (rowid, id, subject, body_text, html, listed, from_email) of a message to read.
+type Pending = (i64, String, String, String, Option<String>, bool, String);
 
 impl Store {
     /// Reads up to `limit` messages after rowid `after` whose reading is missing or
@@ -62,7 +65,7 @@ impl Store {
     /// outside the write lock. Returns the last rowid looked at, or None once all are
     /// current.
     pub fn read_bodies_batch(&self, after: i64, limit: i64) -> Result<Option<i64>> {
-        let pending: Vec<Pending> = {
+        let (pending, images): (Vec<Pending>, Vec<Vec<(String, bool)>>) = {
             let bg = self.bg.lock().unwrap();
             // Once done for this version it stays done: new mail is read at ingest.
             let done: Option<String> = bg
@@ -75,8 +78,8 @@ impl Store {
             if done.as_deref() == Some(VERSION.to_string().as_str()) {
                 return Ok(None);
             }
-            bg.prepare_cached(&format!(
-                "SELECT m.rowid, m.id, m.subject, m.body_text, {}, m.list_id IS NOT NULL
+            let pending = bg.prepare_cached(&format!(
+                "SELECT m.rowid, m.id, m.subject, m.body_text, {}, m.list_id IS NOT NULL, m.from_email
                  FROM messages m WHERE m.rowid > ?1 AND NOT EXISTS
                    (SELECT 1 FROM message_reading r
                     WHERE r.msg = m.rowid AND r.message_id = m.id AND r.ver = ?2)
@@ -91,9 +94,20 @@ impl Store {
                     r.get(3)?,
                     r.get(4)?,
                     r.get::<_, i64>(5)? != 0,
+                    r.get(6)?,
                 ))
             })?
-            .collect::<rusqlite::Result<_>>()?
+            .collect::<rusqlite::Result<Vec<Pending>>>()?;
+            // Their images are looked at here, on the background connection: reading
+            // the files never holds the write lock.
+            let images = pending
+                .iter()
+                .map(|(_, id, _, _, html, _, from)| {
+                    let list = super::images::unclassified(&bg, id)?;
+                    super::images::classify_stored(&bg, from, id, html.as_deref(), &list)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (pending, images)
         };
         let Some(last) = pending.last().map(|p| p.0) else {
             self.w.lock().unwrap().execute(
@@ -102,18 +116,22 @@ impl Store {
             )?;
             return Ok(None);
         };
-        let readings = par_map(&pending, |(_, _, subject, text, html, listed)| {
+        let readings = par_map(&pending, |(_, _, subject, text, html, listed, _)| {
             read(subject, text, html.as_deref(), *listed)
         });
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
-        for ((rowid, id, ..), r) in pending.iter().zip(&readings) {
+        for (((rowid, id, ..), r), flags) in pending.iter().zip(&readings).zip(&images) {
             // The message may have been deleted since it was read.
             let exists: bool = tx
                 .prepare_cached("SELECT 1 FROM messages WHERE rowid = ?1 AND id = ?2")?
                 .exists(params![rowid, id])?;
             if exists {
                 save(&tx, *rowid, id, r)?;
+                for (aid, decorative) in flags {
+                    tx.prepare_cached("UPDATE attachments SET decorative = ?2 WHERE id = ?1")?
+                        .execute(params![aid, *decorative as i64])?;
+                }
             }
         }
         tx.commit()?;

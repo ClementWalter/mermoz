@@ -887,6 +887,7 @@ mod tests {
             forwarded: false,
             forwarded_from: None,
             quoted_only: false,
+            reaction: None,
             body_clean: None,
             has_html: false,
             is_from_me: mine,

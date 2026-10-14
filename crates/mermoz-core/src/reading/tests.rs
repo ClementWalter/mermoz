@@ -684,6 +684,42 @@ fn a_plain_part_keeps_its_own_line_breaks() {
     assert_eq!(read(&mail("x", "Prix\nunitaire")).text, "Prix\nunitaire");
 }
 
+// ---- Outlook and Teams reactions ----
+
+const REACTION_TAIL: &str = "\n________________________________\nFrom: Teo Blanc <teo@mail.example>\nSent: Wednesday, 29 July 2026 12:10\nTo: Crèche du Parc <parc@mail.example>\nSubject: Re: Vacances\n\nNous partons en vacances jeudi.\n";
+
+#[rstest]
+#[case::heart_english("[heart]         CRECHE DU PARC reacted to your message:", "❤️")]
+#[case::heart_french("[heart]   CRÈCHE DU PARC a réagi à votre message :", "❤️")]
+#[case::like("[like] Nora Lind reacted to your message:", "👍")]
+#[case::laugh("[laugh] Nora Lind a réagi à votre message :", "😆")]
+#[case::surprised("[surprised] Nora Lind reacted to your message:", "😮")]
+#[case::sad("[sad] Nora Lind a réagi à votre message :", "😢")]
+fn a_reaction_is_its_emoji(#[case] line: &str, #[case] emoji: &str) {
+    let text = format!("{line}{REACTION_TAIL}");
+    assert_eq!(
+        read(&mail("Re: Vacances", &text)).reaction.as_deref(),
+        Some(emoji)
+    );
+}
+
+#[rstest]
+fn a_reaction_remembers_the_words_it_reacts_to() {
+    let text = format!("[heart] Nora Lind reacted to your message:{REACTION_TAIL}");
+    assert_eq!(
+        read(&mail("Re: Vacances", &text)).reaction_quote.as_deref(),
+        Some("Nous partons en vacances jeudi.")
+    );
+}
+
+#[rstest]
+#[case::bracket_in_prose("[heart] of the matter: we leave on Thursday.")]
+#[case::unknown_reaction("[dance] Nora Lind reacted to your message:")]
+#[case::quoted_mention("Nora wrote that she reacted to your message: fine.")]
+fn look_alikes_are_not_reactions(#[case] text: &str) {
+    assert_eq!(read(&mail("x", text)).reaction, None);
+}
+
 // ---- Unfilled mailing merge tags ----
 
 #[rstest]

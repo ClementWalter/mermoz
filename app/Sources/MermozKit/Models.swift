@@ -181,9 +181,25 @@ public struct Attachment: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var size: Int64
     /// An image placed in the body (shown there), not a file sent along.
     public var inline: Bool?
+    /// Decoration (signature logo, social icon, banner, tracking pixel): never a photo.
+    public var decorative: Bool?
 
-    public init(id: String, filename: String, mime: String, size: Int64, inline: Bool? = nil) {
+    public init(id: String, filename: String, mime: String, size: Int64, inline: Bool? = nil,
+                decorative: Bool? = nil) {
         self.id = id; self.filename = filename; self.mime = mime; self.size = size; self.inline = inline
+        self.decorative = decorative
+    }
+}
+
+/// A reaction (Outlook/Teams "[heart] Nora reacted to your message") to another message.
+public struct Reaction: Codable, Sendable, Equatable, Hashable {
+    /// "❤️", "👍", "😆", "😮", "😢", "🎉" or "😠".
+    public var emoji: String
+    /// The message reacted to, when it is in this conversation.
+    public var targetMessageId: String?
+
+    public init(emoji: String, targetMessageId: String? = nil) {
+        self.emoji = emoji; self.targetMessageId = targetMessageId
     }
 }
 
@@ -217,6 +233,8 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var forwardedFrom: String? = nil
     /// The message adds no words of its own: `bodyNew` is the text it quotes.
     public var quotedOnly: Bool? = nil
+    /// The message is only a reaction to another one (`bodyNew` is then its emoji).
+    public var reaction: Reaction? = nil
     /// Reading version written by the built-in agent.
     public var bodyClean: String?
     public var hasHtml: Bool

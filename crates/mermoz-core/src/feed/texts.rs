@@ -185,6 +185,7 @@ mod tests {
             forwarded: false,
             forwarded_from: None,
             quoted_only: false,
+            reaction: None,
             body_clean: None,
             has_html: false,
             is_from_me: mine,
@@ -194,6 +195,7 @@ mod tests {
                 mime: "application/pdf".into(),
                 size: 1,
                 inline: false,
+                decorative: false,
             }],
             auth: None,
         }

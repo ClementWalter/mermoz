@@ -818,7 +818,8 @@ impl Store {
             } else {
                 m.from.name.clone()
             };
-            for a in &m.attachments {
+            // Signature logos, icons and banners are not the conversation's photos.
+            for a in m.attachments.iter().filter(|a| !a.decorative) {
                 files.push(SharedFile {
                     id: a.id.clone(),
                     filename: a.filename.clone(),

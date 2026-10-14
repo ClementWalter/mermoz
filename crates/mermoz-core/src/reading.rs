@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this pipeline; bump it when its output changes, so cached readings are
 /// recomputed in the background.
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 
 /// What the pipeline reads from a message.
 #[derive(Debug, Clone, Copy, Default)]
@@ -54,6 +54,11 @@ pub struct Reading {
     pub bulk: bool,
     /// The message adds no words of its own: `text` is what it quotes.
     pub quoted_only: bool,
+    /// An Outlook/Teams reaction ("[heart] Nora reacted to your message:"): its emoji;
+    /// `text` is then that emoji alone.
+    pub reaction: Option<String>,
+    /// The start of the message the reaction is to, as it quotes it.
+    pub reaction_quote: Option<String>,
 }
 
 impl Reading {
@@ -83,8 +88,54 @@ impl Reading {
             forwarded_from,
             bulk: bit(3),
             quoted_only: bit(4),
+            reaction: None,
+            reaction_quote: None,
         }
     }
+}
+
+/// Outlook and Teams reaction names and the emoji they stand for.
+const REACTIONS: &[(&str, &str)] = &[
+    ("heart", "❤️"),
+    ("like", "👍"),
+    ("laugh", "😆"),
+    ("surprised", "😮"),
+    ("sad", "😢"),
+    ("celebrate", "🎉"),
+    ("angry", "😠"),
+];
+
+/// "[heart] Nora Lind reacted to your message:" (or "a réagi à votre message :") opening
+/// a message: its emoji and the text after that line.
+fn reaction(body: &str) -> Option<(&'static str, &str)> {
+    static LINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^\s*\[([a-z]+)\]\s+.{1,160}?\s+(?:reacted to your message|a réagi à votre message)\s*:?[ \t]*(?:\n|$)",
+        )
+        .expect("valid regex")
+    });
+    let c = LINE.captures(body)?;
+    let name = c[1].to_ascii_lowercase();
+    let emoji = REACTIONS.iter().find(|(n, _)| *n == name)?.1;
+    Some((emoji, &body[c.get(0)?.end()..]))
+}
+
+/// The opening of a reacted-to message as its quote shows it, for finding that message.
+fn reaction_target_quote(rest: &str) -> Option<String> {
+    let w = own_words(rest, true, false, 0);
+    let text = if w.text.is_empty() {
+        read_quoted(&w.quoted, false, 0)
+    } else {
+        w.text
+    };
+    let first: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(120)
+        .collect();
+    (!first.is_empty()).then_some(first)
 }
 
 /// Characters that take no room and carry no meaning in a chat bubble.
@@ -660,6 +711,15 @@ pub fn read(m: &Mail) -> Reading {
     };
     // A style sheet is never text, whichever part it came in.
     let body = newsletter::without_css(&body);
+    if let Some((emoji, rest)) = reaction(&body) {
+        return Reading {
+            text: emoji.to_string(),
+            has_quoted: true,
+            reaction: Some(emoji.to_string()),
+            reaction_quote: reaction_target_quote(rest),
+            ..Default::default()
+        };
+    }
     let bulk = m.listed || newsletter::is_bulk(&body, html);
     // In a newsletter, ">" marks buttons and pull quotes, never quoted history; a list
     // post (`listed`) is a person's reply and keeps its quotes.

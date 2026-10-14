@@ -110,7 +110,9 @@ public enum ChatPhotos {
     /// The message's attached photos, without the images pasted in its body.
     public static func attached(_ m: Message, pasted: [Attachment]) -> [Attachment] {
         let shown = Set(pasted.map(\.id))
-        return m.attachments.filter { $0.inline != true && !shown.contains($0.id) && isPhoto($0) }
+        return m.attachments.filter {
+            $0.inline != true && $0.decorative != true && !shown.contains($0.id) && isPhoto($0)
+        }
     }
 }
 

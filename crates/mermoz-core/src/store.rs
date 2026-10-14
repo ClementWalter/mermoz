@@ -17,7 +17,9 @@ mod counts;
 pub use conversations::{GroupingPlan, PairCandidate};
 
 mod feed;
+mod images;
 mod plan;
+mod reactions;
 mod readings;
 pub use feed::FEED_STATUSES;
 pub use plan::{BulkOp, PlanMatch};
@@ -128,6 +130,7 @@ const MIGRATIONS: &[&str] = &[
     addresses::MIGRATION,
     readings::MIGRATION,
     plan::MIGRATION,
+    images::MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
@@ -1065,13 +1068,16 @@ fn messages_where(
         "SELECT m.id, m.thread_id, from_name, from_email, to_json, cc_json, date, subject, body_text,
            {}, is_from_me,
            (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json,
-           m.list_id IS NOT NULL, r.text, r.flags, r.forwarded_from
+           m.list_id IS NOT NULL, r.text, r.flags, r.forwarded_from, r.reaction, r.reaction_quote,
+           m.message_id_header, m.references_json
          FROM messages m {}{}
          WHERE {filter} ORDER BY date, m.rowid",
         bodies::HAS_HTML_OF_M,
         readings::JOIN_READING_OF_M,
         crate::reading::VERSION,
     ))?;
+    // (Message-ID, References) of each message, to find what a reaction is to.
+    let mut ids: Vec<(String, Vec<String>)> = vec![];
     // (listed, stored reading, message)
     let mut msgs = st
         .query_map([arg], |r| {
@@ -1082,13 +1088,17 @@ fn messages_where(
             let stored = r
                 .get::<_, Option<String>>(15)?
                 .map(|text| -> rusqlite::Result<_> {
-                    Ok(crate::reading::Reading::from_parts(
-                        text,
-                        r.get(16)?,
-                        r.get(17)?,
-                    ))
+                    let mut reading =
+                        crate::reading::Reading::from_parts(text, r.get(16)?, r.get(17)?);
+                    reading.reaction = r.get(18)?;
+                    reading.reaction_quote = r.get(19)?;
+                    Ok(reading)
                 })
                 .transpose()?;
+            ids.push((
+                r.get::<_, Option<String>>(20)?.unwrap_or_default(),
+                serde_json::from_str::<Vec<String>>(&r.get::<_, String>(21)?).unwrap_or_default(),
+            ));
             Ok((
                 listed,
                 stored,
@@ -1106,6 +1116,7 @@ fn messages_where(
                     forwarded: false,
                     forwarded_from: None,
                     quoted_only: false,
+                    reaction: None,
                     body_clean: r.get(11)?,
                     body_text: r.get(8)?,
                     has_html: r.get::<_, i64>(9)? != 0,
@@ -1152,10 +1163,13 @@ fn messages_where(
         msgs[i].1 = Some(r);
     }
     let mut st = conn.prepare_cached(
-        "SELECT id, filename, mime, size, inline FROM attachments WHERE message_id = ?1",
+        "SELECT id, filename, mime, size, inline, decorative FROM attachments WHERE message_id = ?1",
     )?;
+    // Quoted openings of reactions, by message, to find their target below.
+    let mut reaction_quotes: Vec<Option<String>> = vec![];
     // A stored reading costs nothing to show, even before `latest`.
     for (_, stored, m) in msgs.iter_mut() {
+        let mut quote = None;
         if let Some(r) = stored.take() {
             m.body_new = r.text;
             m.has_quoted = r.has_quoted;
@@ -1163,20 +1177,49 @@ fn messages_where(
             m.forwarded = r.forwarded;
             m.forwarded_from = r.forwarded_from;
             m.quoted_only = r.quoted_only;
+            m.reaction = r.reaction.map(|emoji| crate::model::Reaction {
+                emoji,
+                target_message_id: None,
+            });
+            quote = r.reaction_quote;
         }
+        reaction_quotes.push(quote);
         m.attachments = st
             .query_map([&m.id], |r| {
+                let (filename, mime): (String, String) = (r.get(1)?, r.get(2)?);
+                let (size, inline): (i64, bool) = (r.get(3)?, r.get::<_, i64>(4)? != 0);
+                // Mail stored before images were classified: what its name, type and
+                // size say, until the background pass looks at the image itself.
+                let decorative = match r.get::<_, Option<i64>>(5)? {
+                    Some(d) => d != 0,
+                    None => crate::decorative::is_decorative(
+                        &crate::decorative::Image {
+                            filename: &filename,
+                            mime: &mime,
+                            size,
+                            inline,
+                            ..Default::default()
+                        },
+                        None,
+                        0,
+                        0,
+                    ),
+                };
                 Ok(AttachmentInfo {
                     id: r.get(0)?,
-                    filename: r.get(1)?,
-                    mime: r.get(2)?,
-                    size: r.get(3)?,
-                    inline: r.get::<_, i64>(4)? != 0,
+                    filename,
+                    mime,
+                    size,
+                    inline,
+                    decorative,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
     }
-    Ok(msgs.into_iter().map(|(_, _, m)| m).collect())
+    let mut msgs: Vec<Message> = msgs.into_iter().map(|(_, _, m)| m).collect();
+    images::mark_repeated(&mut msgs);
+    reactions::find_targets(&mut msgs, &ids, &reaction_quotes);
+    Ok(msgs)
 }
 
 /// What an incoming message's bubble shows.
@@ -1833,15 +1876,22 @@ impl Store {
             conversations::note_correspondents(tx, p.to.iter().chain(&p.cc).chain(&p.bcc))?;
         }
         addresses::note(tx, std::iter::once(&from).chain(&p.to).chain(&p.cc))?;
-        for a in &p.attachments {
+        let decorative = images::classify_incoming(
+            tx,
+            &from.email,
+            &mid,
+            &p.attachments,
+            p.body_html.as_deref(),
+        )?;
+        for (a, decorative) in p.attachments.iter().zip(decorative) {
             let aid = new_id("att");
             let dir = self.blobs.join(&aid);
             std::fs::create_dir_all(&dir)?;
             let path = dir.join(safe_filename(&a.filename));
             std::fs::write(&path, &a.data)?;
             tx.execute(
-                "INSERT INTO attachments (id, message_id, filename, mime, size, path, content_id, inline) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![aid, mid, a.filename, a.mime, a.data.len() as i64, path.to_string_lossy(), a.content_id, a.inline as i64],
+                "INSERT INTO attachments (id, message_id, filename, mime, size, path, content_id, inline, decorative) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![aid, mid, a.filename, a.mime, a.data.len() as i64, path.to_string_lossy(), a.content_id, a.inline as i64, decorative as i64],
             )?;
         }
         Self::refresh_thread(tx, &thread_id)?;

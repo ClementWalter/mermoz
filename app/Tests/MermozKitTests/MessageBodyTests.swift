@@ -225,3 +225,27 @@ func theBubbleShowsTheCoresTextAsIs(new: String) {
 @Test func aMessageWithoutWordsSaysItIsEmpty() {
     #expect(BubbleContent.compact(message(text: "\u{00A0}\n", new: ""), showAll: false).text == "(empty message)")
 }
+
+// ---- decoration is never a photo ----------------------------------------------------
+
+private let pastedPhoto = MermozKit.Attachment(id: "p", filename: "image001.png", mime: "image/png", size: 300_000,
+                                               inline: true, decorative: false)
+private let signatureLogo = MermozKit.Attachment(id: "s", filename: "image.png", mime: "image/png", size: 110_000,
+                                                 inline: true, decorative: true)
+
+@Test func signatureImagesAreNotPastedPhotos() {
+    #expect(MessageBody.inlineImages(message(attachments: [pastedPhoto, signatureLogo])).map(\.id) == ["p"])
+}
+
+@Test func decorationIsNotAnAttachedPhoto() {
+    let banner = MermozKit.Attachment(id: "b", filename: "banner.jpg", mime: "image/jpeg", size: 90_000, inline: false,
+                                      decorative: true)
+    #expect(ChatPhotos.attached(message(attachments: [banner]), pasted: []).isEmpty)
+}
+
+@Test func aReactionDecodesFromTheDaemon() throws {
+    let json = #"{"emoji": "❤️", "target_message_id": "msg_1"}"#.data(using: .utf8)!
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    #expect(try decoder.decode(Reaction.self, from: json) == Reaction(emoji: "❤️", targetMessageId: "msg_1"))
+}

@@ -38,9 +38,10 @@ public enum MessageBody {
         m.attachments.filter { $0.inline != true }
     }
 
-    /// Images placed in the body, shown under the text while the formatted version loads.
+    /// Photos pasted in the body (signature logos and icons left out), shown under the
+    /// text while the formatted version loads.
     public static func inlineImages(_ m: Message) -> [Attachment] {
-        m.attachments.filter { $0.inline == true && $0.mime.lowercased().hasPrefix("image/") }
+        m.attachments.filter { $0.inline == true && $0.decorative != true && $0.mime.lowercased().hasPrefix("image/") }
     }
 }
 
