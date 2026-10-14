@@ -142,8 +142,21 @@ public enum ChatRows {
                              time: (Int64) -> String)
         -> (rows: [ChatRowSpec], hosted: [String: HostedRow])
     {
+        let all = items.compactMap { if case let .message(m) = $0 { m } else { nil } }
+        let names = SenderIdentity.names(all, people: people)
+        // A reaction to a bubble on screen is a badge on that bubble, not a message of
+        // its own: it neither shows nor breaks the run it falls in. One to a message out
+        // of view (or opened as the whole email) stays, as a small line.
+        let bubbles = Set(all.filter { $0.reaction == nil && !expanded.contains($0.id) }.map(\.id))
+        var badges: [String: [ReactionBadge]] = [:]
+        var badged = Set<String>()
+        for m in all {
+            guard let r = m.reaction, let target = r.targetMessageId, bubbles.contains(target) else { continue }
+            badges[target, default: []].append(ReactionBadge(emoji: r.emoji, by: Self.reactor(m, names: names)))
+            badged.insert(m.id)
+        }
+        let items = items.filter { if case let .message(m) = $0 { !badged.contains(m.id) } else { true } }
         let runs = ChatRuns.startsRun(items)
-        let names = SenderIdentity.names(items.compactMap { if case let .message(m) = $0 { m } else { nil } }, people: people)
         var rows: [ChatRowSpec] = []
         var hosted: [String: HostedRow] = [:]
         if let summary, !summary.isEmpty {
@@ -159,6 +172,11 @@ public enum ChatRows {
             case let .marker(threadId, subject, date, joined):
                 rows.append(.marker(MarkerSpec(threadId: threadId, line: "\(time(date)) · \(subject.isEmpty ? "(no subject)" : subject)",
                                                joined: joined)))
+                previous = nil
+            case let .message(m) where m.reaction != nil:
+                // "❤️ Nora reacted": the message reacted to is not a bubble here.
+                rows.append(.marker(MarkerSpec(threadId: "", line: "\(m.reaction!.emoji) \(Self.reactor(m, names: names)) reacted",
+                                               joined: false)))
                 previous = nil
             case let .message(m):
                 let first = runs.contains(m.id)
@@ -180,13 +198,20 @@ public enum ChatRows {
                     rows.append(.bubble(BubbleSpec(
                         id: m.id, content: content, mine: m.isFromMe, firstOfRun: first, sender: names[key] ?? m.from.display,
                         senderKey: key,
-                        time: time(m.date), focused: focused == m.id, files: max(0, parts.fileCount - photos.count), note: note,
+                        // Signature logos and icons sent as files are no files to the reader.
+                        time: time(m.date), focused: focused == m.id,
+                        files: max(0, MessageBody.chips(m).filter { $0.decorative != true }.count - photos.count), note: note,
                         thumbnails: parts.thumbnails.map(\.id), photos: photos, caption: BubbleCaption.of(m),
-                        quoted: m.quotedOnly == true)))
+                        quoted: m.quotedOnly == true, reactions: badges[m.id] ?? [])))
                 }
                 previous = (m, parts.text)
             }
         }
         return (rows, hosted)
+    }
+
+    /// Who reacted, as the chat names them: "You" for the user.
+    static func reactor(_ m: Message, names: [String: String]) -> String {
+        m.isFromMe ? "You" : names[SenderIdentity.key(m.from)] ?? m.from.display
     }
 }

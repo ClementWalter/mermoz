@@ -33,16 +33,43 @@ public struct BubbleSpec: Equatable, Sendable {
     public var caption: String?
     /// The message adds no words of its own: its text is a quote, drawn dimmed with a bar.
     public var quoted: Bool
+    /// Reactions to this message, drawn as a badge on the bubble's bottom edge.
+    public var reactions: [ReactionBadge]
 
     public init(id: String, content: BubbleContent, mine: Bool, firstOfRun: Bool, sender: String, senderKey: String? = nil,
                 time: String, focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = [],
-                photos: [Attachment] = [], caption: String? = nil, quoted: Bool = false) {
+                photos: [Attachment] = [], caption: String? = nil, quoted: Bool = false, reactions: [ReactionBadge] = []) {
         self.id = id; self.content = content; self.mine = mine; self.firstOfRun = firstOfRun
         self.sender = sender; self.senderKey = senderKey ?? sender.lowercased(); self.time = time; self.focused = focused; self.files = files; self.note = note
         self.thumbnails = thumbnails
         self.photos = photos
         self.caption = caption
         self.quoted = quoted
+        self.reactions = reactions
+    }
+}
+
+/// One reaction to a message: the emoji and who sent it ("You" for the user).
+public struct ReactionBadge: Equatable, Sendable {
+    public var emoji: String
+    public var by: String
+
+    public init(emoji: String, by: String) { self.emoji = emoji; self.by = by }
+
+    /// What the badge shows: each emoji once, with how many sent it when more than one.
+    public static func label(_ reactions: [ReactionBadge]) -> String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for r in reactions {
+            if counts[r.emoji] == nil { order.append(r.emoji) }
+            counts[r.emoji, default: 0] += 1
+        }
+        return order.map { counts[$0]! > 1 ? "\($0) \(counts[$0]!)" : $0 }.joined(separator: " ")
+    }
+
+    /// The badge's tooltip: "❤️ by Nora, 👍 by You".
+    public static func tooltip(_ reactions: [ReactionBadge]) -> String {
+        reactions.map { "\($0.emoji) by \($0.by)" }.joined(separator: ", ")
     }
 }
 
@@ -138,6 +165,13 @@ public enum ChatMetrics {
     public static let photoGap: CGFloat = 4
     /// The caption line inside a bubble, over its text.
     public static let caption: CGFloat = 18
+    /// The reaction badge's height; it straddles the bubble's bottom edge by `reactionDrop`.
+    public static let reactionBadge: CGFloat = 22
+    public static let reactionDrop: CGFloat = 12
+    static var reactionFont: NSFont { .systemFont(ofSize: 12) }
+
+    /// Room a row keeps under its bubble for the reaction badge.
+    public static func below(_ spec: BubbleSpec) -> CGFloat { spec.reactions.isEmpty ? 0 : reactionDrop }
     /// How strongly a quote-only bubble's text shows.
     public static let quotedAlpha: CGFloat = 0.6
     static var captionFont: NSFont { .systemFont(ofSize: 11, weight: .medium) }
@@ -378,6 +412,8 @@ final class BubbleRowView: NSView {
     private(set) var photoRects: [CGRect] = []
     /// The pasted images' tiles, in this view.
     private(set) var thumbRects: [CGRect] = []
+    /// The reaction badge, in this view (empty without reactions).
+    private(set) var badgeRect: CGRect = .zero
     /// Opens the photos from the one at the index.
     var onPhoto: ((Int) -> Void)?
     /// The photo tile a press started on, and where: a drag takes the file out, a click opens it.
@@ -470,12 +506,15 @@ final class BubbleRowView: NSView {
             + (spec.files > 0 ? ", \(spec.files) file\(spec.files == 1 ? "" : "s") attached" : "")
             + (spec.photos.isEmpty ? "" : ", \(spec.photos.count) photo\(spec.photos.count == 1 ? "" : "s")")
             + (spec.caption.map { ". \($0)" } ?? "") + (spec.quoted ? ". Quotes an earlier message" : "")
-            + (spec.note.map { ". \($0)" } ?? ""))
+            + (spec.note.map { ". \($0)" } ?? "")
+            + (spec.reactions.isEmpty ? "" : ". Reactions: " + ReactionBadge.tooltip(spec.reactions)))
         setAccessibilityHelp("Opens the whole email")
         // The tooltip covers the bubble alone and is set again with it: a row moved to
         // another place or another message never keeps an old one.
         removeAllToolTips()
         addToolTip(bubbleRect, owner: self, userData: nil)
+        badgeRect = spec.reactions.isEmpty ? .zero : Self.badge(for: spec, bubble: bubbleRect, width: width)
+        if !spec.reactions.isEmpty { addToolTip(badgeRect, owner: self, userData: nil) }
         needsDisplay = true
     }
 
@@ -533,6 +572,7 @@ final class BubbleRowView: NSView {
             if spec.files > 0 { drawFiles(spec.files) }
             drawThumbnails(spec.thumbnails)
             drawPhotos(spec.photos)
+            if !spec.reactions.isEmpty { drawBadge(spec.reactions) }
         }
         let shape = NSBezierPath(roundedRect: bubbleRect.insetBy(dx: 0.5, dy: 0.5), xRadius: ChatMetrics.radius, yRadius: ChatMetrics.radius)
         (spec.mine ? colors.mineBackground : colors.theirsBackground).setFill()
@@ -557,6 +597,32 @@ final class BubbleRowView: NSView {
                 laid.draw(in: text.frame)
             }
         }
+    }
+
+    /// Where the reaction badge sits: on the bubble's bottom edge, at its outer corner
+    /// (right for theirs, left for mine), always inside the row.
+    static func badge(for spec: BubbleSpec, bubble: CGRect, width: CGFloat) -> CGRect {
+        let label = ReactionBadge.label(spec.reactions) as NSString
+        let w = ceil(label.size(withAttributes: [.font: ChatMetrics.reactionFont]).width) + 14
+        let x = spec.mine ? bubble.minX - 6 : bubble.maxX - w + 6
+        let y = bubble.maxY + ChatMetrics.reactionDrop - ChatMetrics.reactionBadge
+        return CGRect(x: min(max(0, x), max(0, width - w)), y: y, width: w, height: ChatMetrics.reactionBadge)
+    }
+
+    /// The badge: a white capsule with a thin border and the emojis.
+    private func drawBadge(_ reactions: [ReactionBadge]) {
+        let capsule = NSBezierPath(roundedRect: badgeRect.insetBy(dx: 0.5, dy: 0.5), xRadius: badgeRect.height / 2,
+                                   yRadius: badgeRect.height / 2)
+        NSColor.white.setFill()
+        capsule.fill()
+        colors.border.setStroke()
+        capsule.lineWidth = 1
+        capsule.stroke()
+        let label = NSAttributedString(string: ReactionBadge.label(reactions), attributes: [
+            .font: ChatMetrics.reactionFont, .foregroundColor: colors.secondary,
+        ])
+        let s = label.size()
+        label.draw(at: CGPoint(x: badgeRect.midX - s.width / 2, y: badgeRect.midY - s.height / 2))
     }
 
     var file: (String) async -> URL? = { _ in nil }
@@ -667,7 +733,12 @@ extension BubbleRowView: NSViewToolTipOwner {
     /// scrolled chat slides under, never on a hidden spare row.
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
               userData data: UnsafeMutableRawPointer?) -> String {
-        Self.tooltip(at: point, bubble: bubbleRect, visible: isHiddenOrHasHiddenAncestor ? .zero : visibleRect)
+        let visible = isHiddenOrHasHiddenAncestor ? .zero : visibleRect
+        // Over the reaction badge: who reacted ("❤️ by Nora").
+        if let spec, !spec.reactions.isEmpty, badgeRect.contains(point), visible.contains(point) {
+            return ReactionBadge.tooltip(spec.reactions)
+        }
+        return Self.tooltip(at: point, bubble: bubbleRect, visible: visible)
     }
 
     static func tooltip(at point: CGPoint, bubble: CGRect, visible: CGRect) -> String {
@@ -971,6 +1042,7 @@ public final class ChatStreamView: NSScrollView {
                                                          width: ChatMetrics.textWidth(width, mine: spec.mine),
                                                          maxLines: spec.content.maxLines)
                 let h = ChatMetrics.top(spec) + ChatMetrics.bubble(text: laid.size, spec, inner: ChatMetrics.innerWidth(spec, text: laid.size, chatWidth: width))
+                    + ChatMetrics.below(spec)
                 v.frame = CGRect(x: 0, y: y, width: width, height: h)
                 (v as? BubbleRowView)?.configure(spec, laid: laid, width: width, colors: colors) { [weak self] in
                     self?.actions.toggle(spec.id)
