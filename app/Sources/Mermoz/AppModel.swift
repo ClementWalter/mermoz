@@ -239,6 +239,9 @@ final class AppModel {
     @ObservationIgnored var dragIds: [String] = []
     /// Stands in for the daemon's merge calls in tests; the client otherwise.
     @ObservationIgnored var conversationsStub: (any ConversationBackend)?
+    /// Called once by the next drop handler with the merge it started, if any: SwiftUI
+    /// runs drop handlers later than the drop, so tests wait on this.
+    @ObservationIgnored var dropObserver: ((Task<Void, Never>?) -> Void)?
 
     /// Addresses seen in opened threads; feeds the compose recipient check.
     var checker = RecipientChecker()

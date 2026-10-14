@@ -46,54 +46,54 @@ private func model(_ n: Int = 4) -> (AppModel, StubConversations) {
 
 // MARK: drop handling
 
-@MainActor @Test func droppingARowOnAnotherMergesBoth() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func droppingARowOnAnotherMergesBoth() async {
     let (m, stub) = model()
     await m.dropMerge(["t2"], onto: "t1")?.value
     #expect(stub.merged == [["t2", "t1"]])
 }
 
-@MainActor @Test func droppingASelectionOnACardMergesAllIntoIt() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func droppingASelectionOnACardMergesAllIntoIt() async {
     let (m, stub) = model()
     await m.dropMerge(["t1\nt2\nt3"], onto: "t0")?.value
     #expect(stub.merged == [["t1", "t2", "t3", "t0"]])
 }
 
-@MainActor @Test func droppingACardOnItselfIsRefused() {
+@MainActor @Test(.timeLimit(.minutes(1))) func droppingACardOnItselfIsRefused() {
     let (m, _) = model()
     #expect(m.dropMerge(["t1"], onto: "t1") == nil)
 }
 
-@MainActor @Test func droppingACardOnItselfMergesNothing() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func droppingACardOnItselfMergesNothing() async {
     let (m, stub) = model()
     await m.dropMerge(["t1"], onto: "t1")?.value
     #expect(stub.merged.isEmpty)
 }
 
-@MainActor @Test func droppingASelectionOnOneOfItsOwnCardsIsRefused() {
+@MainActor @Test(.timeLimit(.minutes(1))) func droppingASelectionOnOneOfItsOwnCardsIsRefused() {
     let (m, _) = model()
     #expect(m.dropMerge(["t1\nt2"], onto: "t2") == nil)
 }
 
-@MainActor @Test func aDraggedStatusIsNoMerge() {
+@MainActor @Test(.timeLimit(.minutes(1))) func aDraggedStatusIsNoMerge() {
     let (m, _) = model()
     #expect(m.dropMerge(["status:todo"], onto: "t1") == nil)
 }
 
 // MARK: hover
 
-@MainActor @Test func aCardOffersToMergeTheCardDraggedOverIt() {
+@MainActor @Test(.timeLimit(.minutes(1))) func aCardOffersToMergeTheCardDraggedOverIt() {
     let (m, _) = model()
     _ = m.dragPayload("t2")
     #expect(m.canMerge(into: "t1"))
 }
 
-@MainActor @Test func aCardOffersNoMergeWithItself() {
+@MainActor @Test(.timeLimit(.minutes(1))) func aCardOffersNoMergeWithItself() {
     let (m, _) = model()
     _ = m.dragPayload("t1")
     #expect(!m.canMerge(into: "t1"))
 }
 
-@MainActor @Test func aSelectedCardOffersNoMergeWithItsOwnSelection() {
+@MainActor @Test(.timeLimit(.minutes(1))) func aSelectedCardOffersNoMergeWithItsOwnSelection() {
     let (m, _) = model()
     m.open("t1")
     m.click("t2", shift: true, command: false)
@@ -101,7 +101,7 @@ private func model(_ n: Int = 4) -> (AppModel, StubConversations) {
     #expect(!m.canMerge(into: "t2"))
 }
 
-@MainActor @Test func aDraggedStatusOffersNoMerge() {
+@MainActor @Test(.timeLimit(.minutes(1))) func aDraggedStatusOffersNoMerge() {
     let (m, _) = model()
     _ = m.dragPayload("t2")
     _ = m.statusDragPayload("todo")
@@ -110,32 +110,32 @@ private func model(_ n: Int = 4) -> (AppModel, StubConversations) {
 
 // MARK: after merging
 
-@MainActor @Test func theMergedConversationIsSelected() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func theMergedConversationIsSelected() async {
     let (m, _) = model()
     m.open("t3")
     await m.dropMerge(["t2"], onto: "t1")?.value
     #expect(m.selectedThreadId == "t1")
 }
 
-@MainActor @Test func theToastNamesTheConversation() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func theToastNamesTheConversation() async {
     let (m, _) = model()
     await m.dropMerge(["t2"], onto: "t1")?.value
     #expect(m.toast == "Merged into “Subject 1”")
 }
 
-@MainActor @Test func theToastOffersUndo() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func theToastOffersUndo() async {
     let (m, _) = model()
     await m.dropMerge(["t2"], onto: "t1")?.value
     #expect(m.toastUndo == m.toast)
 }
 
-@MainActor @Test func aMergeIsOneUndoEntry() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aMergeIsOneUndoEntry() async {
     let (m, _) = model()
     await m.dropMerge(["t2"], onto: "t1")?.value
     #expect(m.undoLabel == "Merge")
 }
 
-@MainActor @Test func aMergeClearsTheSelectionItCarried() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aMergeClearsTheSelectionItCarried() async {
     let (m, _) = model()
     m.open("t1")
     m.click("t2", shift: true, command: false)
@@ -143,14 +143,14 @@ private func model(_ n: Int = 4) -> (AppModel, StubConversations) {
     #expect(m.multiSelection.isEmpty)
 }
 
-@MainActor @Test func undoSplitsTheMergeBack() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func undoSplitsTheMergeBack() async {
     let (m, stub) = model()
     await m.dropMerge(["t2"], onto: "t1")?.value
     await m.undo()?.value
     #expect(stub.unmerged == [stub.undo])
 }
 
-@MainActor @Test func shiftMJoinsTheSelectionIntoTheOpenRow() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func shiftMJoinsTheSelectionIntoTheOpenRow() async {
     let (m, stub) = model()
     m.open("t1")
     m.click("t3", shift: true, command: false)
@@ -158,7 +158,7 @@ private func model(_ n: Int = 4) -> (AppModel, StubConversations) {
     #expect(stub.merged == [["t1", "t2", "t3"]])
 }
 
-@MainActor @Test func shiftMCanBeUndone() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func shiftMCanBeUndone() async {
     let (m, _) = model()
     m.open("t1")
     m.click("t2", shift: true, command: false)
@@ -235,17 +235,18 @@ private final class Stage {
         let inWindow = host.convert(NSPoint(x: point.x, y: host.isFlipped ? point.y : host.bounds.height - point.y), to: nil)
         guard let target = destination(at: inWindow, in: host) else { return false }
         let info = FakeDrop(text, at: inWindow, in: window)
-        // Every drop handler clears the drag it ends: that tells when one has run.
-        let pending = ["(drop pending)"]
-        model.dragIds = pending
-        _ = target.draggingEntered(info)
-        _ = target.draggingUpdated(info)
-        let taken = target.prepareForDragOperation(info) && target.performDragOperation(info)
-        target.concludeDragOperation(info)
-        // SwiftUI loads the dropped items asynchronously before calling the handler.
-        for _ in 0..<100 where model.dragIds == pending { try? await Task.sleep(for: .milliseconds(10)) }
-        // Then the merge it started reaches the stub daemon.
-        try? await Task.sleep(for: .milliseconds(30))
+        defer { info.pasteboard.releaseGlobally() }
+        var taken = false
+        // SwiftUI loads the dropped items asynchronously, then calls the handler; every
+        // handler here reports in, with the merge it started, which is awaited too.
+        let merge: Task<Void, Never>? = await withCheckedContinuation { done in
+            model.dropObserver = { done.resume(returning: $0) }
+            _ = target.draggingEntered(info)
+            _ = target.draggingUpdated(info)
+            taken = target.prepareForDragOperation(info) && target.performDragOperation(info)
+            target.concludeDragOperation(info)
+        }
+        await merge?.value
         return taken
     }
 
@@ -280,35 +281,35 @@ private let betweenTheCards = CGPoint(x: 125, y: 116)
 /// Below the last card.
 private let belowTheCards = CGPoint(x: 125, y: 380)
 
-@MainActor @Test func aDropOnABoardCardMergesIntoIt() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aDropOnABoardCardMergesIntoIt() async {
     let (stage, _, stub) = boardColumn()
     _ = await stage.drop("t2", at: onFirstCard)
     #expect(stub.merged == [["t2", "t0"]])
 }
 
-@MainActor @Test func aDropOnTheColumnBesideTheCardsMergesNothing() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aDropOnTheColumnBesideTheCardsMergesNothing() async {
     let (stage, _, stub) = boardColumn()
     _ = await stage.drop("t2", at: belowTheCards)
     #expect(stub.merged.isEmpty)
 }
 
-@MainActor @Test func aDropOnTheColumnBesideTheCardsIsTakenByTheColumn() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aDropOnTheColumnBesideTheCardsIsTakenByTheColumn() async {
     let (stage, _, _) = boardColumn()
     #expect(await stage.drop("t2", at: belowTheCards))
 }
 
-@MainActor @Test func aDropInTheGapBetweenCardsMergesNothing() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aDropInTheGapBetweenCardsMergesNothing() async {
     let (stage, _, stub) = boardColumn()
     _ = await stage.drop("t2", at: betweenTheCards)
     #expect(stub.merged.isEmpty)
 }
 
-@MainActor @Test func aDropInTheGapBetweenCardsIsTakenByTheColumn() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aDropInTheGapBetweenCardsIsTakenByTheColumn() async {
     let (stage, _, _) = boardColumn()
     #expect(await stage.drop("t2", at: betweenTheCards))
 }
 
-@MainActor @Test func aCardDroppedOnItselfOnTheBoardMergesNothing() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aCardDroppedOnItselfOnTheBoardMergesNothing() async {
     let (stage, _, stub) = boardColumn()
     _ = await stage.drop("t0", at: onFirstCard)
     #expect(stub.merged.isEmpty)
@@ -339,25 +340,25 @@ private func list() -> (Stage, AppModel, StubConversations) {
     return (stage, m, stub)
 }
 
-@MainActor @Test func aRowDroppedOnAnotherRowMergesIntoIt() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aRowDroppedOnAnotherRowMergesIntoIt() async {
     let (stage, _, stub) = list()
     _ = await stage.drop("t2", at: listRow(stage, "t0"))
     #expect(stub.merged == [["t2", "t0"]])
 }
 
-@MainActor @Test func aSelectionDroppedOnARowMergesAllIntoIt() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aSelectionDroppedOnARowMergesAllIntoIt() async {
     let (stage, _, stub) = list()
     _ = await stage.drop("t2\nt3", at: listRow(stage, "t0"))
     #expect(stub.merged == [["t2", "t3", "t0"]])
 }
 
-@MainActor @Test func aRowDroppedOnItselfMergesNothing() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aRowDroppedOnItselfMergesNothing() async {
     let (stage, _, stub) = list()
     _ = await stage.drop("t0", at: listRow(stage, "t0"))
     #expect(stub.merged.isEmpty)
 }
 
-@MainActor @Test func drawingTheRowsStartsNoDrag() {
+@MainActor @Test(.timeLimit(.minutes(1))) func drawingTheRowsStartsNoDrag() {
     let (_, m, _) = list()
     #expect(m.dragIds.isEmpty)
 }
@@ -376,13 +377,13 @@ private func feedCard(_ c: FeedCard) -> (Stage, StubConversations) {
     return (Stage(view, model: m, size: CGSize(width: 500, height: 220)), stub)
 }
 
-@MainActor @Test func aCardDroppedOnAFeedCardMergesIntoIt() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aCardDroppedOnAFeedCardMergesIntoIt() async {
     let (stage, stub) = feedCard(card(0))
     _ = await stage.drop("t2", at: CGPoint(x: 250, y: 110))
     #expect(stub.merged == [["t2", "t0"]])
 }
 
-@MainActor @Test func aBatchCardTakesNoMerge() async {
+@MainActor @Test(.timeLimit(.minutes(1))) func aBatchCardTakesNoMerge() async {
     let (stage, stub) = feedCard(card(0, batch: true))
     _ = await stage.drop("t2", at: CGPoint(x: 250, y: 110))
     #expect(stub.merged.isEmpty)

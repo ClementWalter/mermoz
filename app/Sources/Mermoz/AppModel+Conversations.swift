@@ -54,6 +54,7 @@ extension AppModel {
     /// value (status, priority, or its project). False when the column has none to give.
     func dropOnColumn(_ items: [String], group: ThreadGroup) -> Bool {
         dragIds = []
+        defer { dropHandled(nil) }
         let ids = MergeDrop.ids(in: items)
         guard !ids.isEmpty else { return false }
         switch group.field {
@@ -65,6 +66,13 @@ extension AppModel {
         default: return false
         }
         return true
+    }
+
+    /// Tells a waiting test that a drop handler ran, with the merge it started.
+    private func dropHandled(_ task: Task<Void, Never>?) {
+        let observer = dropObserver
+        dropObserver = nil
+        observer?(task)
     }
 
     /// The daemon's merge calls: the client, or a stub in tests.
@@ -79,8 +87,9 @@ extension AppModel {
     func dropMerge(_ items: [String], onto target: String) -> Task<Void, Never>? {
         dragIds = []
         let dropped = MergeDrop.ids(in: items)
-        guard MergeDrop.merge(dropped, onto: target) != nil else { return nil }
-        return merge(dropped, into: target)
+        let task = MergeDrop.merge(dropped, onto: target) == nil ? nil : merge(dropped, into: target)
+        dropHandled(task)
+        return task
     }
 
     /// Joins `ids` into `target`'s conversation, then shows it: selected, in the pane, with
