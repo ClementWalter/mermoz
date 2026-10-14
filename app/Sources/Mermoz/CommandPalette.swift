@@ -15,29 +15,37 @@ struct PaletteItem: Identifiable {
 struct CommandPalette: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
-    @State private var query = ""
     @State private var results: [ThreadSummary] = []
     /// Gmail's own results for this query, once asked.
     @State private var gmail: [GmailHit]?
     @State private var cursor = 0
+    @State private var navCache = NavCache()
     @FocusState private var focused: Bool
 
     var body: some View {
-        ZStack(alignment: .top) {
+        // Rows are worked out once per render, not once per use.
+        let items = self.items
+        return ZStack(alignment: .top) {
             Color(hex: "#D6E6F4").opacity(0.45).ignoresSafeArea()
                 .onTapGesture { close() }
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     Image(systemName: model.paletteMode == .search ? "magnifyingglass" : "arrow.right.circle")
                         .foregroundStyle(Theme.accent)
-                    TextField(placeholder, text: $query)
+                    TextField(placeholder, text: Binding(get: { askFlow.query }, set: { askFlow.query = $0 }))
                         .textFieldStyle(.plain)
                         .font(.system(size: 16))
                         .focused($focused)
                         // While a plan shows, Enter confirms it; the hidden list never runs.
-                        .onSubmit { askFlow.isActive ? confirmAsk() : runSelected() }
-                        .onKeyPress(.downArrow) { cursor = min(cursor + 1, max(items.count - 1, 0)); return .handled }
-                        .onKeyPress(.upArrow) { cursor = max(cursor - 1, 0); return .handled }
+                        .onSubmit { if askFlow.isActive { model.enterAsk() } else { runSelected(items) } }
+                        .onKeyPress(.downArrow) {
+                            if askFlow.isActive { askFlow.moveChoice(1) } else { cursor = min(cursor + 1, max(items.count - 1, 0)) }
+                            return .handled
+                        }
+                        .onKeyPress(.upArrow) {
+                            if askFlow.isActive { askFlow.moveChoice(-1) } else { cursor = max(cursor - 1, 0) }
+                            return .handled
+                        }
                         // Esc drops a plan first, then closes the palette.
                         .onKeyPress(.escape) { askFlow.isActive ? askFlow.cancel() : close(); return .handled }
                 }
@@ -80,9 +88,13 @@ struct CommandPalette: View {
                 }
                 }
                 HStack(spacing: 16) {
-                    if askFlow.preview != nil {
+                    if askFlow.canConfirm || askFlow.preview?.needsTypedCount == true {
                         Text(askFlow.preview?.needsTypedCount == true ? "type the count, then ↩ delete" : "↩ do it")
                         Text("esc cancel")
+                    } else if askFlow.takesAnswer {
+                        Text("↩ send the answer"); Text("↑↓ choose"); Text("esc cancel")
+                    } else if !askFlow.choices.isEmpty {
+                        Text("↑↓ choose"); Text("↩ use it"); Text("esc cancel")
                     } else if askFlow.isActive {
                         Text("esc back")
                     } else {
@@ -106,16 +118,18 @@ struct CommandPalette: View {
             focused = true
         }
         .onChange(of: query) {
-            cursor = 0
-            gmail = nil
+            // Only real changes are written: each write re-renders the palette.
+            if cursor != 0 { cursor = 0 }
+            if gmail != nil { gmail = nil }
             // Editing the sentence drops a plan made for the old one.
-            askFlow.cancel()
+            askFlow.fieldEdited()
         }
         .task { await askFlow.refreshAvailability(model.client) }
         .task(id: query) {
-            guard model.paletteMode == .search else { return }
+            // Answers to the AI are not searches.
+            guard model.paletteMode == .search, !askFlow.isActive else { return }
             // Debounce keystrokes so the daemon only sees settled queries.
-            try? await Task.sleep(for: .milliseconds(90))
+            try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled else { return }
             results = await model.search(query)
             cursor = 0
@@ -127,7 +141,7 @@ struct CommandPalette: View {
         case .status: "Set status…"
         case .priority: "Set priority…"
         case .project: "Add to project, or type a new name…"
-        default: "Search mail or run a command"
+        default: askFlow.takesAnswer ? "Answer, or pick one below…" : "Search mail or run a command"
         }
     }
 
@@ -172,12 +186,7 @@ struct CommandPalette: View {
                               icon: AnyView(Image(systemName: "magnifyingglass")), keepsOpen: true) {
                 Task { gmail = await model.searchGmail(typed) }
             }]
-            let ranked = commands(sel)
-                .map { ($0, CommandMatch.score(q, title: $0.item.title, keywords: $0.keywords)) }
-                .filter { $0.1 > 0 }
-                .sorted { $0.1 > $1.1 }
-                .prefix(8)
-                .map(\.0.item)
+            let ranked = rankedCommands(q, sel)
             // An instruction gets "Ask Mermoz to do" on top; the usual rows stay below.
             let ask = Self.askItem(typed, otherMatches: !ranked.isEmpty || !results.isEmpty,
                                    availability: askFlow.availability) {
@@ -247,13 +256,58 @@ struct CommandPalette: View {
             command("c-account", "Add Gmail account", "person.crop.circle.badge.plus", keywords: ["sign", "login", "connect"]) { model.addGmail() },
             command("c-people", "Go to People", "person.2", keywords: ["directory", "contacts"], navigation: true) { model.select(.people) },
         ]
-        out += model.statuses.map { s in
-            command("g-s-\(s.key)", "Go to \(s.name)", "circle", keywords: ["status", "open", "show"], navigation: true) { model.select(.status(s.key)) }
-        }
-        out += model.projects.map { p in
-            command("g-p-\(p.id)", "Go to \(p.name)", "folder", keywords: ["project", "label", "open", "show"], navigation: true) { model.select(.project(p.id)) }
-        }
         return out
+    }
+
+    /// "Go to <status / project>" targets with their words folded once, rebuilt only
+    /// when the statuses or projects change, so a keystroke only compares prefixes.
+    private final class NavCache {
+        struct Target {
+            let id: String
+            let title: String
+            let symbol: String
+            let selection: SidebarSelection
+            let prepared: CommandMatch.Prepared
+        }
+
+        private var statuses: [Status] = []
+        private var projects: [Project] = []
+        private var cached: [Target] = []
+
+        func targets(_ statuses: [Status], _ projects: [Project]) -> [Target] {
+            if statuses == self.statuses, projects == self.projects, !cached.isEmpty { return cached }
+            self.statuses = statuses
+            self.projects = projects
+            let go = { (id: String, name: String, symbol: String, sel: SidebarSelection, kw: [String]) in
+                Target(id: id, title: "Go to \(name)", symbol: symbol, selection: sel,
+                       prepared: CommandMatch.Prepared(title: "Go to \(name)", keywords: kw))
+            }
+            cached = statuses.map { go("g-s-\($0.key)", $0.name, "circle", .status($0.key), ["status", "open", "show"]) }
+                + projects.map { go("g-p-\($0.id)", $0.name, "folder", .project($0.id), ["project", "label", "open", "show"]) }
+            return cached
+        }
+    }
+
+    /// The best commands for the typed words: actions and "Go to …" targets, top 8.
+    private func rankedCommands(_ q: String, _ sel: String?) -> [PaletteItem] {
+        let words = CommandMatch.words(q)
+        var scored: [(Int, () -> PaletteItem)] = commands(sel).compactMap { c in
+            let s = CommandMatch.score(words, CommandMatch.Prepared(title: c.item.title, keywords: c.keywords))
+            return s > 0 ? (s, { c.item }) : nil
+        }
+        for t in navCache.targets(model.statuses, model.projects) {
+            let s = CommandMatch.score(words, t.prepared)
+            if s > 0 {
+                scored.append((s, {
+                    PaletteItem(id: t.id, title: t.title, icon: AnyView(Image(systemName: t.symbol))) { model.select(t.selection) }
+                }))
+            }
+        }
+        // Stable: equal scores keep their order (actions first, then statuses, projects).
+        return scored.enumerated()
+            .sorted { $0.element.0 != $1.element.0 ? $0.element.0 > $1.element.0 : $0.offset < $1.offset }
+            .prefix(8)
+            .map { $0.element.1() }
     }
 
     private var currentThread: ThreadSummary? {
@@ -290,6 +344,12 @@ struct CommandPalette: View {
 
     private var askFlow: AskFlow { model.askFlow }
 
+    /// The field's text (kept in the ask flow, which also uses it for answers).
+    private var query: String {
+        get { askFlow.query }
+        nonmutating set { askFlow.query = newValue }
+    }
+
     /// The "Ask Mermoz to do" row, when the text reads as an instruction. Without an AI
     /// the row says where to connect one, and opens Settings.
     static func askItem(_ text: String, otherMatches: Bool, availability: DoAvailability?,
@@ -303,12 +363,7 @@ struct CommandPalette: View {
                            keepsOpen: true, run: run)
     }
 
-    private func confirmAsk() {
-        guard askFlow.canConfirm else { return }
-        model.confirmAsk()
-    }
-
-    private func runSelected() {
+    private func runSelected(_ items: [PaletteItem]) {
         guard items.indices.contains(cursor) else { return }
         let item = items[cursor]
         if !item.keepsOpen { close() }

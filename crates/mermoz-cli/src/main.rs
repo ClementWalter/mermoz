@@ -419,6 +419,9 @@ fn print_plan(out: &Out, v: &Value) {
             "  I understood: {}",
             st["interpretation"].as_str().unwrap_or("")
         ));
+        if let Some(r) = st["resolved"].as_str() {
+            out.line(format!("  senders: {r}"));
+        }
         let counts: Vec<String> = st["by_status"]
             .as_array()
             .into_iter()
@@ -439,6 +442,23 @@ fn print_plan(out: &Out, v: &Value) {
     }
     if let Some(w) = v["warning"].as_str() {
         out.line(format!("note: {w}"));
+    }
+    print_choices(out, v);
+}
+
+/// Candidates the user can pick to re-plan ("Did you mean …").
+fn print_choices(out: &Out, v: &Value) {
+    let choices: Vec<&Value> = v["choices"].as_array().into_iter().flatten().collect();
+    if choices.is_empty() {
+        return;
+    }
+    out.line("did you mean:");
+    for c in choices {
+        out.line(format!(
+            "  {}   ({})",
+            c["label"].as_str().unwrap_or(""),
+            c["pick"]
+        ));
     }
 }
 
@@ -1807,6 +1827,8 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 // No AI, or the AI asked back: nothing was planned.
                 if out.json {
                     out.json(&v);
+                } else {
+                    print_choices(&out, &v);
                 }
                 return Err(invalid(
                     v["message"]

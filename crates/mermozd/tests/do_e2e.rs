@@ -216,8 +216,7 @@ fn sign_in(w: &World) {
 /// Four fictional threads in the inbox, then filed so the plan has something to sort:
 /// - "Old invoice" (250 days, Waiting) and "Old newsletter" (300 days, To do) match
 /// - "Ferry tickets" (200 days, Done) is done, "Garden quote" (10 days) is recent
-#[fixture]
-fn mail() -> World {
+fn start_mail(extra: fn(&mut stub_gmail::Mailbox, i64), extra_threads: usize) -> World {
     let home = tempfile::tempdir().unwrap();
     let mailbox: Shared = Default::default();
     {
@@ -253,6 +252,7 @@ fn mail() -> World {
             &raw("Paul Roux <paul@roux.example>", "Garden quote", "m4"),
             t - 10 * DAY,
         );
+        extra(&mut m, t);
     }
     let port = stub_gmail::start(mailbox.clone());
     std::fs::write(
@@ -270,12 +270,81 @@ fn mail() -> World {
     w.wait_for_socket();
     sign_in(&w);
     w.wait_until("initial import", |w| {
-        w.ok("threads.list", json!({}))["total"] == 4
+        w.ok("threads.list", json!({}))["total"] == 4 + extra_threads
     });
     w.set_status("Old invoice", "waiting");
     w.set_status("Old newsletter", "todo");
     w.set_status("Ferry tickets", "done");
     w.set_status("Garden quote", "todo");
+    w
+}
+
+/// A list address with no display name (3 threads) and look-alike notes (2), all recent.
+fn add_lists(m: &mut stub_gmail::Mailbox, t: i64) {
+    for i in 0..3 {
+        m.add_message(
+            &format!("c{i}"),
+            &format!("tc{i}"),
+            &["INBOX"],
+            &raw(
+                "esrin-gourmet-club@agency.example",
+                &format!("Gourmet Club renewal {i}"),
+                &format!("c{i}"),
+            ),
+            t - (5 + i) * DAY,
+        );
+    }
+    for i in 0..2 {
+        m.add_message(
+            &format!("n{i}"),
+            &format!("tn{i}"),
+            &["INBOX"],
+            &raw(
+                "gemini-notes@meet.example",
+                &format!("Notes: sync {i}"),
+                &format!("n{i}"),
+            ),
+            t - (3 + i) * DAY,
+        );
+    }
+}
+
+#[fixture]
+fn mail() -> World {
+    start_mail(add_lists, 5)
+}
+
+/// The acceptance case's shape: one display name "Gemini" on two domains. 40 meeting
+/// notes ("Notes: …") from gemini@google.example, and 1 unrelated thread from
+/// gemini@icloud.example (a crypto exchange).
+fn add_gemini(m: &mut stub_gmail::Mailbox, t: i64) {
+    for i in 0..40 {
+        m.add_message(
+            &format!("g{i}"),
+            &format!("tg{i}"),
+            &["INBOX"],
+            &raw(
+                "Gemini <gemini@google.example>",
+                &format!("Notes: “Q3-26 End of Quarter Showcase {i}” Oct 13, 2026"),
+                &format!("g{i}"),
+            ),
+            t - (20 + i) * DAY,
+        );
+    }
+    m.add_message(
+        "gx",
+        "tgx",
+        &["INBOX"],
+        &raw("Gemini <gemini@icloud.example>", "Your crypto weekly", "gx"),
+        t - 2 * DAY,
+    );
+}
+
+/// The base mailbox plus the Gemini mail, with an AI connected.
+#[fixture]
+fn gemini() -> World {
+    let w = start_mail(add_gemini, 41);
+    w.enable_ai();
     w
 }
 
@@ -369,9 +438,13 @@ fn preview_is_confirmed_with_enter(with_ai: World) {
 
 #[rstest]
 fn the_ai_gets_the_sentence_and_no_mail(with_ai: World) {
+    // No content words here ("archive", "months", "done"…): no candidates are added.
     ask(&with_ai);
     let body = with_ai.mailbox.lock().unwrap().do_asks[0].clone();
-    assert_eq!(body["messages"][0]["content"], SENTENCE);
+    assert_eq!(
+        body["messages"][0]["content"],
+        format!("Instruction: {SENTENCE}")
+    );
 }
 
 #[rstest]
@@ -715,4 +788,230 @@ fn an_agent_must_confirm_with_the_count(with_ai: World) {
         json!({ "id": plan["id"], "confirm": 99 }),
     );
     assert_eq!(run["isError"], true);
+}
+
+// ---- senders by their words, candidates, questions and picks
+
+const CLUB: &str = "esrin-gourmet-club@agency.example";
+const NOTES: &str = "gemini-notes@meet.example";
+const VAGUE: &str = "delete all the messages like notes from gemini";
+
+fn delete_from(words: &str) -> Value {
+    json!({ "understood": true, "steps": [{ "filter": { "from": [words] }, "action": { "kind": "delete" } }] })
+}
+
+fn asks_back(q: &str) -> Value {
+    json!({ "understood": false, "question": q, "steps": [] })
+}
+
+/// The text the stub AI received on its `n`th "Ask Mermoz to do" call.
+fn ai_saw(w: &World, n: usize) -> String {
+    w.mailbox.lock().unwrap().do_asks[n]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[rstest]
+fn a_sender_phrase_finds_an_address_with_no_name(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from("esrin gourmet club")]);
+    assert_eq!(ask(&with_ai)["total"], 3);
+}
+
+#[rstest]
+fn the_preview_names_the_resolved_sender(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from("esrin gourmet club")]);
+    assert_eq!(
+        ask(&with_ai)["steps"][0]["resolved"],
+        format!("from {CLUB} (3)")
+    );
+}
+
+#[rstest]
+fn nothing_matching_offers_the_closest_sender(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from("gourmet society")]);
+    assert_eq!(ask(&with_ai)["choices"][0]["pick"], json!({ "from": CLUB }));
+}
+
+#[rstest]
+fn picking_a_suggestion_replans_with_that_sender(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from("gourmet society")]);
+    let id = ask(&with_ai)["id"].clone();
+    let again = with_ai.ok("do.replan", json!({ "id": id, "pick": { "from": CLUB } }));
+    assert_eq!(again["total"], 3);
+}
+
+#[rstest]
+fn the_ai_is_given_the_mailbox_candidates(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from(NOTES)]);
+    with_ai.ok("do.ask", json!({ "text": VAGUE }));
+    assert!(ai_saw(&with_ai, 0).contains(&format!("- sender {NOTES} · 2 threads")));
+}
+
+#[rstest]
+fn the_ai_is_given_subject_beginnings(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from(NOTES)]);
+    with_ai.ok("do.ask", json!({ "text": VAGUE }));
+    assert!(ai_saw(&with_ai, 0).contains("- subject starts with \"Notes:\" · 2 threads"));
+}
+
+#[rstest]
+fn a_vague_sentence_resolves_through_the_candidates(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from(NOTES)]);
+    assert_eq!(with_ai.ok("do.ask", json!({ "text": VAGUE }))["total"], 2);
+}
+
+#[rstest]
+fn the_ai_never_sees_bodies(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from(NOTES)]);
+    with_ai.ok("do.ask", json!({ "text": VAGUE }));
+    assert!(!ai_saw(&with_ai, 0).contains("Hello"));
+}
+
+#[rstest]
+fn a_question_offers_the_candidates(with_ai: World) {
+    with_ai.ai_answers(vec![asks_back("Which notes?")]);
+    let v = with_ai.ok("do.ask", json!({ "text": VAGUE }));
+    assert_eq!(v["choices"][0]["pick"], json!({ "from": NOTES }));
+}
+
+#[rstest]
+fn a_question_can_be_answered(with_ai: World) {
+    with_ai.ai_answers(vec![asks_back("Which notes?")]);
+    let v = with_ai.ok("do.ask", json!({ "text": VAGUE }));
+    assert_eq!(v["can_answer"], true);
+}
+
+#[rstest]
+fn the_answer_goes_back_to_the_ai(with_ai: World) {
+    with_ai.ai_answers(vec![asks_back("Which notes?"), delete_from(NOTES)]);
+    with_ai.ok("do.ask", json!({ "text": VAGUE }));
+    with_ai.ok(
+        "do.ask",
+        json!({ "text": VAGUE, "rounds": [{ "question": "Which notes?", "answer": "the meeting notes" }] }),
+    );
+    assert!(
+        ai_saw(&with_ai, 1)
+            .contains("You asked: Which notes?\nThe user answered: the meeting notes")
+    );
+}
+
+#[rstest]
+fn an_answered_question_ends_in_a_plan(with_ai: World) {
+    with_ai.ai_answers(vec![asks_back("Which notes?"), delete_from(NOTES)]);
+    with_ai.ok("do.ask", json!({ "text": VAGUE }));
+    let v = with_ai.ok(
+        "do.ask",
+        json!({ "text": VAGUE, "rounds": [{ "question": "Which notes?", "answer": "the meeting notes" }] }),
+    );
+    assert_eq!(v["total"], 2);
+}
+
+#[rstest]
+fn after_two_rounds_no_more_answers_are_taken(with_ai: World) {
+    with_ai.ai_answers(vec![asks_back("Which notes?")]);
+    let rounds = json!([{ "question": "a", "answer": "b" }, { "question": "c", "answer": "d" }]);
+    let v = with_ai.ok("do.ask", json!({ "text": VAGUE, "rounds": rounds }));
+    assert_eq!(v["can_answer"], false);
+}
+
+#[rstest]
+fn picking_a_candidate_plans_with_that_filter_even_if_the_ai_still_asks(with_ai: World) {
+    with_ai.ai_answers(vec![asks_back("Which notes?")]);
+    let v = with_ai.ok(
+        "do.ask",
+        json!({ "text": VAGUE, "pick": { "subject_prefix": "Notes:" } }),
+    );
+    assert_eq!(
+        (v["total"].clone(), v["deletes"].clone()),
+        (json!(2), json!(true))
+    );
+}
+
+#[rstest]
+fn a_pick_replaces_the_filter_the_ai_chose(with_ai: World) {
+    with_ai.ai_answers(vec![delete_from("paul@roux.example")]);
+    let v = with_ai.ok(
+        "do.ask",
+        json!({ "text": VAGUE, "pick": { "from": NOTES } }),
+    );
+    assert_eq!(v["interpretation"], format!("from {NOTES}"));
+}
+
+// ---- acceptance: "delete all message from gemeni notes from google meet"
+
+const TYPO: &str = "delete all message from gemeni notes from google meet";
+const GEMINI: &str = "gemini@google.example";
+
+/// What a grounded AI answers: Gemini's Google address, subjects starting "Notes:".
+fn gemini_notes_plan() -> Value {
+    json!({ "understood": true, "steps": [{
+        "filter": { "from": [GEMINI], "subject_prefix": "Notes:" }, "action": { "kind": "delete" } }] })
+}
+
+#[rstest]
+fn the_ai_sees_gemini_with_its_notes_before_planning(gemini: World) {
+    gemini.ai_answers(vec![gemini_notes_plan()]);
+    gemini.ok("do.ask", json!({ "text": TYPO }));
+    assert!(ai_saw(&gemini, 0).contains(&format!(
+        "- sender Gemini <{GEMINI}> · 40 threads · subjects \"Notes:\""
+    )));
+}
+
+#[rstest]
+fn the_google_gemini_comes_before_the_other_one(gemini: World) {
+    gemini.ai_answers(vec![gemini_notes_plan()]);
+    gemini.ok("do.ask", json!({ "text": TYPO }));
+    let seen = ai_saw(&gemini, 0);
+    let first_sender = seen.lines().find(|l| l.starts_with("- sender ")).unwrap();
+    assert!(first_sender.contains(GEMINI));
+}
+
+#[rstest]
+fn a_description_put_in_the_sender_field_is_asked_again(gemini: World) {
+    gemini.ai_answers(vec![
+        delete_from("gemini notes from google meet"),
+        gemini_notes_plan(),
+    ]);
+    gemini.ok("do.ask", json!({ "text": TYPO }));
+    assert!(ai_saw(&gemini, 1).contains("'gemini notes from google meet' is not a sender"));
+}
+
+#[rstest]
+fn the_grounded_plan_deletes_the_40_notes(gemini: World) {
+    gemini.ai_answers(vec![gemini_notes_plan()]);
+    assert_eq!(gemini.ok("do.ask", json!({ "text": TYPO }))["total"], 40);
+}
+
+#[rstest]
+fn the_preview_names_gemini_as_the_user_knows_it(gemini: World) {
+    gemini.ai_answers(vec![gemini_notes_plan()]);
+    assert_eq!(
+        gemini.ok("do.ask", json!({ "text": TYPO }))["summary"],
+        format!(
+            "Delete 40 threads from Gemini <{GEMINI}> whose subject starts with “Notes:” (to Gmail Trash)"
+        )
+    );
+}
+
+#[rstest]
+fn the_typo_still_finds_gemini_and_the_subject_keeps_the_other_one_out(gemini: World) {
+    gemini.ai_answers(vec![json!({ "understood": true, "steps": [{
+        "filter": { "from": ["gemeni"], "subject_prefix": "Notes:" }, "action": { "kind": "delete" } }] })]);
+    assert_eq!(gemini.ok("do.ask", json!({ "text": TYPO }))["total"], 40);
+}
+
+#[rstest]
+fn running_it_leaves_the_icloud_gemini_alone(gemini: World) {
+    gemini.ai_answers(vec![gemini_notes_plan()]);
+    let id = gemini.ok("do.ask", json!({ "text": TYPO }))["id"].clone();
+    gemini.ok("do.run", json!({ "id": id, "confirm": 40 }));
+    assert_eq!(gemini.status_of("Your crypto weekly"), "todo");
+}
+
+#[rstest]
+fn a_question_offers_the_google_gemini_first(gemini: World) {
+    gemini.ai_answers(vec![asks_back("Which Gemini?")]);
+    let v = gemini.ok("do.ask", json!({ "text": TYPO }));
+    assert_eq!(v["choices"][0]["pick"], json!({ "from": GEMINI }));
 }

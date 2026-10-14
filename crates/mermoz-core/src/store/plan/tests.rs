@@ -349,3 +349,142 @@ fn an_undone_run_records_when(mailbox: Mailbox) {
     s.set_bulk_op_state("op1", "undone", 2, None).unwrap();
     assert!(s.bulk_op("op1").unwrap().undone.is_some());
 }
+
+// ---- senders by their words, suggestions and candidates
+
+/// Fictional list mail with no display name, look-alike notes, and a person:
+/// - 3 threads "Gourmet Club renewal …" from esrin-gourmet-club@agency.example ("")
+/// - 2 threads "Notes: …" from gemini-notes@meet.example ("")
+/// - 1 thread "Lunch" from Chloé Dupré <chloe@dupre.example>
+#[fixture]
+fn clubs() -> Mailbox {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("db.sqlite"), &dir.path().join("blobs")).unwrap();
+    store.add_account(ME, "gmail").unwrap();
+    let m = Mailbox { _dir: dir, store };
+    for i in 0..3 {
+        m.mail(
+            &format!("c{i}"),
+            ("", "esrin-gourmet-club@agency.example"),
+            10 + i,
+            &format!("Gourmet Club renewal {i}"),
+            "Renew your membership",
+        );
+    }
+    m.mail(
+        "n1",
+        ("", "gemini-notes@meet.example"),
+        3,
+        "Notes: weekly sync",
+        "Summary",
+    );
+    m.mail(
+        "n2",
+        ("", "gemini-notes@meet.example"),
+        4,
+        "Notes: design review",
+        "Summary",
+    );
+    m.mail(
+        "p1",
+        ("Chloé Dupré", "chloe@dupre.example"),
+        2,
+        "Lunch",
+        "Tomorrow?",
+    );
+    m
+}
+
+fn from(words: &str) -> Filter {
+    Filter {
+        from: vec![words.into()],
+        ..Default::default()
+    }
+}
+
+#[rstest]
+#[case::words_of_the_address("esrin gourmet club")]
+#[case::with_filler("the esrin gourmet club")]
+#[case::typo("esrin gourmt club")]
+#[case::part_of_the_words("gourmet club")]
+fn a_sender_with_no_name_is_found_by_the_words_of_its_address(clubs: Mailbox, #[case] typed: &str) {
+    assert_eq!(clubs.subjects(from(typed)).len(), 3);
+}
+
+#[rstest]
+fn a_name_with_accents_is_found_without_them(clubs: Mailbox) {
+    assert_eq!(clubs.subjects(from("chloe dupre")), vec!["Lunch"]);
+}
+
+#[rstest]
+fn the_resolved_sender_is_the_address(clubs: Mailbox) {
+    let s = clubs
+        .store
+        .resolve_senders(&["esrin gourmet club".into()])
+        .unwrap();
+    assert_eq!(
+        (s[0].email.as_str(), s[0].threads),
+        ("esrin-gourmet-club@agency.example", 3)
+    );
+}
+
+#[rstest]
+fn no_match_suggests_the_closest_sender(clubs: Mailbox) {
+    let s = clubs
+        .store
+        .sender_suggestions(&["gourmet society".into()], 3)
+        .unwrap();
+    assert_eq!(s[0].email, "esrin-gourmet-club@agency.example");
+}
+
+#[rstest]
+fn no_word_in_common_falls_back_to_subjects(clubs: Mailbox) {
+    let s = clubs
+        .store
+        .sender_suggestions(&["membership renewal".into()], 3)
+        .unwrap();
+    assert_eq!(s[0].email, "esrin-gourmet-club@agency.example");
+}
+
+#[rstest]
+fn candidates_name_the_sender(clubs: Mailbox) {
+    let c = clubs
+        .store
+        .candidates("delete all the messages like notes from gemini")
+        .unwrap();
+    assert_eq!(c.senders[0].email, "gemini-notes@meet.example");
+}
+
+#[rstest]
+fn candidates_name_the_subject_beginning(clubs: Mailbox) {
+    let c = clubs
+        .store
+        .candidates("delete all the messages like notes from gemini")
+        .unwrap();
+    assert_eq!(
+        (c.subjects[0].prefix.as_str(), c.subjects[0].threads),
+        ("Notes:", 2)
+    );
+}
+
+#[rstest]
+fn a_subject_prefix_filters(clubs: Mailbox) {
+    let f = Filter {
+        subject_prefix: Some("notes:".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        clubs.subjects(f),
+        vec!["Notes: design review", "Notes: weekly sync"]
+    );
+}
+
+#[rstest]
+#[case::colon("Notes: weekly sync", "Notes:")]
+#[case::reply("Re: Fwd: Notes: weekly sync", "Notes:")]
+#[case::three_words("Gourmet Club renewal 2026", "Gourmet Club renewal")]
+#[case::short("Lunch", "Lunch")]
+#[case::late_colon("A very long subject that runs on and on: yes", "A very long")]
+fn subjects_group_by_how_they_begin(#[case] subject: &str, #[case] want: &str) {
+    assert_eq!(subject_pattern(subject), want);
+}

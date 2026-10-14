@@ -5,7 +5,8 @@
 use super::{Store, fts_query};
 use crate::error::{Error, Result};
 use crate::model::{ThreadState, now_ms};
-use crate::plan::{Filter, cutoff};
+use crate::plan::senders::{self, Entry, Sender};
+use crate::plan::{CandidateSender, CandidateSubject, Candidates, Filter, cutoff};
 use rusqlite::{OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 
@@ -80,25 +81,32 @@ impl Store {
             a.push(cutoff(now, age).into());
         }
         if !f.from.is_empty() {
-            // An address matches exactly, a domain its addresses and subdomains, else a name.
-            let mut any: Vec<String> = vec![];
-            for s in &f.from {
-                if s.contains('@') {
-                    any.push("lower(m.from_email) = ?".into());
-                    a.push(s.clone().into());
-                } else if s.contains('.') && !s.contains(' ') {
-                    any.push("(lower(m.from_email) LIKE ? OR lower(m.from_email) LIKE ?)".into());
-                    a.push(format!("%@{s}").into());
-                    a.push(format!("%.{s}").into());
-                } else {
-                    any.push("lower(m.from_name) LIKE ?".into());
-                    a.push(format!("%{s}%").into());
-                }
+            // Senders are matched by their words first (see plan::senders), then their
+            // mail is found by address.
+            let emails: Vec<String> = self
+                .resolve_senders(&f.from)?
+                .into_iter()
+                .map(|s| s.email)
+                .collect();
+            if emails.is_empty() {
+                c.push("0".into());
+            } else {
+                c.push(format!(
+                    "EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND m.is_from_me = 0
+                       AND lower(m.from_email) IN ({}))",
+                    marks(emails.len())
+                ));
+                a.extend(emails.into_iter().map(Into::into));
             }
-            c.push(format!(
-                "EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND m.is_from_me = 0 AND ({}))",
-                any.join(" OR ")
-            ));
+        }
+        if let Some(p) = &f.subject_prefix {
+            let esc = p
+                .to_lowercase()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            c.push("lower(t.subject) LIKE ? ESCAPE '\\'".into());
+            a.push(format!("{esc}%").into());
         }
         if !f.projects.is_empty() {
             c.push(format!(
@@ -158,6 +166,175 @@ impl Store {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Every address that wrote to the user, with its names, list and thread count.
+    fn senders(&self) -> Result<Vec<Sender>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT lower(from_email), group_concat(DISTINCT from_name), max(list_id), count(DISTINCT thread_id)
+             FROM messages WHERE is_from_me = 0 AND from_email != '' GROUP BY lower(from_email)",
+        )?;
+        Ok(st
+            .query_map([], |r| {
+                Ok(Sender {
+                    email: r.get(0)?,
+                    names: r
+                        .get::<_, Option<String>>(1)?
+                        .unwrap_or_default()
+                        .replace(',', " "),
+                    list: r.get(2)?,
+                    threads: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The senders a plan's "from" entries name (any entry), most threads first.
+    pub fn resolve_senders(&self, from: &[String]) -> Result<Vec<CandidateSender>> {
+        let entries: Vec<Entry> = from.iter().map(|f| senders::entry(f)).collect();
+        let mut hits: Vec<CandidateSender> = self
+            .senders()?
+            .into_iter()
+            .filter(|s| entries.iter().any(|e| senders::matches(e, s)))
+            .map(candidate)
+            .collect();
+        hits.sort_by(|a, b| b.threads.cmp(&a.threads));
+        Ok(hits)
+    }
+
+    /// For "from" entries that matched no one: the closest senders by their words
+    /// (any word found), else the senders of mail with those words in its subject or
+    /// sender fields.
+    pub fn sender_suggestions(
+        &self,
+        from: &[String],
+        limit: usize,
+    ) -> Result<Vec<CandidateSender>> {
+        let entries: Vec<Entry> = from.iter().map(|f| senders::entry(f)).collect();
+        let all = self.senders()?;
+        let close: Vec<CandidateSender> = senders::closest(&entries, &all, limit)
+            .into_iter()
+            .cloned()
+            .map(candidate)
+            .collect();
+        if !close.is_empty() {
+            return Ok(close);
+        }
+        let words: Vec<String> = from.iter().flat_map(|f| senders::words(f)).collect();
+        self.senders_of_hits(&words, "{subject sender}", limit)
+    }
+
+    /// How a sender's recent subjects begin, the shared beginnings (2+ threads) first.
+    fn sender_subjects(&self, email: &str) -> Result<Vec<String>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT t.subject FROM threads t WHERE t.id IN
+               (SELECT m.thread_id FROM messages m WHERE lower(m.from_email) = ?1)
+             ORDER BY t.last_date DESC LIMIT 300",
+        )?;
+        let rows: Vec<String> = st
+            .query_map([email], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut counts: Vec<(String, usize)> = vec![];
+        for s in rows {
+            let p = subject_pattern(&s);
+            match counts.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&p)) {
+                Some((_, n)) => *n += 1,
+                None if !p.is_empty() => counts.push((p, 1)),
+                None => {}
+            }
+        }
+        counts.retain(|(_, n)| *n >= 2);
+        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(counts.into_iter().take(2).map(|(p, _)| p).collect())
+    }
+
+    /// Senders whose mail has any of `words` in `columns`, most threads first.
+    fn senders_of_hits(
+        &self,
+        words: &[String],
+        columns: &str,
+        limit: usize,
+    ) -> Result<Vec<CandidateSender>> {
+        let Some(q) = any_of(words, columns) else {
+            return Ok(vec![]);
+        };
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT lower(m.from_email), max(m.from_name), count(DISTINCT m.thread_id) AS n
+             FROM messages_fts f JOIN messages m ON m.fts_rowid = f.rowid
+             WHERE messages_fts MATCH ?1 AND m.is_from_me = 0 AND m.from_email != ''
+             GROUP BY lower(m.from_email) ORDER BY n DESC LIMIT ?2",
+        )?;
+        Ok(st
+            .query_map(params![q, limit as i64], |r| {
+                Ok(CandidateSender {
+                    email: r.get(0)?,
+                    name: r.get(1)?,
+                    threads: r.get(2)?,
+                    subjects: vec![],
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// What the mailbox holds for an instruction's content words: senders named by
+    /// them, and subject beginnings shared by threads mentioning them. Aggregates only.
+    pub fn candidates(&self, sentence: &str) -> Result<Candidates> {
+        let words = senders::content_words(sentence);
+        if words.is_empty() {
+            return Ok(Candidates::default());
+        }
+        let all = self.senders()?;
+        let mut found: Vec<CandidateSender> =
+            senders::closest(&[Entry::Words(words.clone())], &all, 5)
+                .into_iter()
+                .cloned()
+                .map(candidate)
+                .collect();
+        for s in self.senders_of_hits(&words, "sender", 5)? {
+            if found.len() < 5 && !found.iter().any(|f| f.email == s.email) {
+                found.push(s);
+            }
+        }
+        let mut subjects: Vec<CandidateSubject> = vec![];
+        if let Some(q) = any_of(&words, "subject") {
+            let r = self.r.lock().unwrap();
+            let mut st = r.prepare_cached(
+                "SELECT DISTINCT t.id, t.subject FROM messages_fts f
+                 JOIN messages m ON m.fts_rowid = f.rowid JOIN threads t ON t.id = m.thread_id
+                 WHERE messages_fts MATCH ?1 AND t.status != 'deleted' LIMIT 5000",
+            )?;
+            let rows: Vec<String> = st
+                .query_map([q], |r| r.get(1))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut counts: Vec<(String, i64)> = vec![];
+            for s in rows {
+                let p = subject_pattern(&s);
+                if p.is_empty() {
+                    continue;
+                }
+                match counts.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&p)) {
+                    Some((_, n)) => *n += 1,
+                    None => counts.push((p, 1)),
+                }
+            }
+            counts.retain(|(_, n)| *n >= 2);
+            counts.sort_by(|a, b| b.1.cmp(&a.1));
+            subjects = counts
+                .into_iter()
+                .take(4)
+                .map(|(prefix, threads)| CandidateSubject { prefix, threads })
+                .collect();
+        }
+        for s in &mut found {
+            s.subjects = self.sender_subjects(&s.email)?;
+        }
+        Ok(Candidates {
+            senders: found,
+            subjects,
+        })
     }
 
     /// Logs a planned run with the threads each step will change.
@@ -272,6 +449,53 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         rows.iter().map(|s| Ok(serde_json::from_str(s)?)).collect()
     }
+}
+
+fn candidate(s: Sender) -> CandidateSender {
+    CandidateSender {
+        name: s.names.split_whitespace().collect::<Vec<_>>().join(" "),
+        email: s.email,
+        threads: s.threads,
+        subjects: vec![],
+    }
+}
+
+/// An FTS5 query for any of `words` in `columns` ("subject", "{subject sender}").
+fn any_of(words: &[String], columns: &str) -> Option<String> {
+    let terms: Vec<String> = words
+        .iter()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{w}\""))
+        .collect();
+    (!terms.is_empty()).then(|| format!("{columns} : ({})", terms.join(" OR ")))
+}
+
+/// How a subject begins, for grouping look-alike mail: "Re:"/"Fwd:" dropped, then
+/// the text through an early colon ("Notes:"), else its first three words.
+pub fn subject_pattern(subject: &str) -> String {
+    let mut s = subject.trim();
+    loop {
+        let lower = s.to_lowercase();
+        match ["re:", "fwd:", "fw:", "tr:"]
+            .iter()
+            .find(|p| lower.starts_with(*p))
+        {
+            Some(p) => s = s[p.len()..].trim_start(),
+            None => break,
+        }
+    }
+    if let Some(i) = s.find(':')
+        && i > 0
+        && s[..i].chars().count() <= 30
+    {
+        return s[..=i].to_string();
+    }
+    s.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
 }
 
 const OP_COLS: &str = "id, sentence, plan_json, summary, state, total, done, origin, error, created, finished, undone";

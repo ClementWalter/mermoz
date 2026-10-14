@@ -121,6 +121,9 @@ pub struct Filter {
     /// Full-text words, as the search box takes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// The subject starts with this ("Notes:"), case aside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_prefix: Option<String>,
 }
 
 impl Filter {
@@ -203,13 +206,13 @@ pub fn schema() -> Value {
                     "filter": {
                         "type": "object", "additionalProperties": false,
                         "required": ["status_in", "status_not_in", "older_than", "newer_than", "from", "projects",
-                                     "not_projects", "unread", "has_attachment", "account", "query"],
+                                     "not_projects", "unread", "has_attachment", "account", "query", "subject_prefix"],
                         "properties": {
                             "status_in": str_list, "status_not_in": str_list,
                             "older_than": age, "newer_than": age,
                             "from": str_list, "projects": str_list, "not_projects": str_list,
                             "unread": opt_bool, "has_attachment": opt_bool,
-                            "account": opt_str, "query": opt_str
+                            "account": opt_str, "query": opt_str, "subject_prefix": opt_str
                         }
                     },
                     "action": {
@@ -252,10 +255,14 @@ Each step has a filter (which email threads) and one action.\n\
 Filter fields (leave empty / null when not said):\n\
 - status_in / status_not_in: status keys. Statuses: {statuses}. \"done\" means handled, \"archive\" filed away, \"deleted\" is Gmail Trash.\n\
 - older_than / newer_than: age of the thread's latest email, e.g. {{\"amount\": 5, \"unit\": \"month\"}}.\n\
-- from: email addresses, domains (example.com) or names of people who wrote in the thread.\n\
+- from: who wrote: an email address, a domain (example.com) or a person's or organization's name, \
+never a description of the mail. Spread the words: \"notes from gemini in google meet\" is from Gemini \
+(its address among the candidates) with subject_prefix \"Notes:\", not from \"gemini notes from google meet\". \
+Words may be misspelled: match them to the candidates.\n\
 - projects / not_projects: the user's projects (Gmail labels): {projects}.\n\
 - unread: true for unread threads, false for read ones. has_attachment: true / false.\n\
 - account: one of {accounts}. query: words the emails must contain (only when the user names words to find).\n\
+- subject_prefix: the beginning of the subject, e.g. \"Notes:\" (for mail that always starts its subject the same way).\n\
 Actions (kind):\n\
 - set_status with status (a status key; archive and done included, never unread, review or deleted)\n\
 - add_project / remove_project with project\n\
@@ -263,12 +270,169 @@ Actions (kind):\n\
 - later with until (YYYY-MM-DD, a day after today): hide the threads until that morning\n\
 - delete: move to Gmail Trash\n\
 Use several steps only when the user asks for several things.\n\
+The message may list candidates Mermoz found in the mailbox for the instruction's words: sender \
+addresses and subject beginnings, with thread counts. When the instruction points at one of them, \
+use it exactly (from with the address, or subject_prefix) rather than asking. It may also hold earlier \
+rounds: your question and the user's answer; use the answer.\n\
 There is no action to send, reply, forward or write email, and none to unsubscribe or create rules. \
 If the instruction asks for anything the actions above can't do, or is too unclear to act on safely, \
 set understood to false, steps to [], and put in question one short sentence, in the user's language, \
 saying what you can't do or what to make clear. Otherwise understood is true and question is null.",
         weekday = today.weekday(),
     )
+}
+
+/// A sender found locally for the instruction's words.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateSender {
+    pub email: String,
+    pub name: String,
+    pub threads: i64,
+    /// How its threads' subjects usually begin ("Notes:"), most common first.
+    #[serde(default)]
+    pub subjects: Vec<String>,
+}
+
+impl CandidateSender {
+    /// "Gemini <gemini@google.example>", or the address alone.
+    pub fn display(&self) -> String {
+        if self.name.is_empty() {
+            self.email.clone()
+        } else {
+            format!("{} <{}>", self.name, self.email)
+        }
+    }
+}
+
+/// A subject beginning many threads share ("Notes:").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateSubject {
+    pub prefix: String,
+    pub threads: i64,
+}
+
+/// What the mailbox holds for the instruction's words: aggregates only (sender
+/// addresses and names, subject beginnings, counts), never bodies.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Candidates {
+    pub senders: Vec<CandidateSender>,
+    pub subjects: Vec<CandidateSubject>,
+}
+
+impl Candidates {
+    pub fn is_empty(&self) -> bool {
+        self.senders.is_empty() && self.subjects.is_empty()
+    }
+}
+
+/// A filter the user picked among the candidates; it replaces the plan's own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pick {
+    From(String),
+    SubjectPrefix(String),
+}
+
+impl Pick {
+    fn words(&self) -> String {
+        match self {
+            Pick::From(e) => format!("sender {e}"),
+            Pick::SubjectPrefix(p) => format!("subject starting with \"{p}\""),
+        }
+    }
+
+    /// Puts the picked filter in every step, in place of the sender, words and
+    /// subject the AI chose, so the plan uses exactly what the user picked.
+    pub fn apply(&self, plan: &mut Plan) {
+        for s in &mut plan.steps {
+            s.filter.from.clear();
+            s.filter.query = None;
+            s.filter.subject_prefix = None;
+            match self {
+                Pick::From(e) => s.filter.from = vec![e.clone()],
+                Pick::SubjectPrefix(p) => s.filter.subject_prefix = Some(p.clone()),
+            }
+        }
+    }
+}
+
+/// The user's turn for the AI: the instruction, earlier (question, answer) rounds,
+/// the local candidates and any pick.
+pub fn user_prompt(
+    sentence: &str,
+    rounds: &[(String, String)],
+    c: &Candidates,
+    pick: Option<&Pick>,
+) -> String {
+    let mut out = format!("Instruction: {sentence}");
+    for (q, a) in rounds {
+        out.push_str(&format!("\nYou asked: {q}\nThe user answered: {a}"));
+    }
+    if !c.is_empty() {
+        out.push_str("\n\nCandidates in the mailbox for these words:");
+        for s in &c.senders {
+            let subjects = if s.subjects.is_empty() {
+                String::new()
+            } else {
+                let quoted: Vec<String> = s.subjects.iter().map(|p| format!("\"{p}\"")).collect();
+                format!(" · subjects {}", quoted.join(", "))
+            };
+            out.push_str(&format!(
+                "\n- sender {} · {} threads{subjects}",
+                s.display(),
+                s.threads
+            ));
+        }
+        for s in &c.subjects {
+            out.push_str(&format!(
+                "\n- subject starts with \"{}\" · {} threads",
+                s.prefix, s.threads
+            ));
+        }
+    }
+    if let Some(p) = pick {
+        out.push_str(&format!(
+            "\n\nThe user picked the {}: use it as the filter.",
+            p.words()
+        ));
+    }
+    out
+}
+
+/// The action an instruction's verb names, for when the user picked a filter but the
+/// AI still asks: "delete …", "archive …", "mark … read".
+pub fn action_from_sentence(sentence: &str) -> Option<Action> {
+    let w = senders::words(sentence);
+    let has = |xs: &[&str]| w.iter().any(|x| xs.contains(&x.as_str()));
+    if has(&[
+        "delete",
+        "trash",
+        "remove",
+        "supprime",
+        "supprimer",
+        "efface",
+        "effacer",
+        "jette",
+    ]) {
+        return Some(Action::Delete);
+    }
+    if has(&["archive", "archiver", "archives"]) {
+        return Some(Action::SetStatus {
+            status: "archive".into(),
+        });
+    }
+    if has(&["unread"]) || senders::fold(sentence).contains("non lu") {
+        return Some(Action::MarkUnread);
+    }
+    if has(&["read", "lu", "lus"]) {
+        return Some(Action::MarkRead);
+    }
+    if has(&["done", "termine", "fini"]) {
+        return Some(Action::SetStatus {
+            status: "done".into(),
+        });
+    }
+    None
 }
 
 // ---- checking a plan -------------------------------------------------------
@@ -317,6 +481,8 @@ struct RawFilter {
     account: Option<String>,
     #[serde(default)]
     query: Option<String>,
+    #[serde(default)]
+    subject_prefix: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -446,14 +612,34 @@ fn filter(f: RawFilter, vocab: &Vocab) -> Result<Filter, String> {
             .into_iter()
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
-            .collect(),
+            .map(sender_entry)
+            .collect::<Result<_, _>>()?,
         projects: projects(f.projects, vocab)?,
         not_projects: projects(f.not_projects, vocab)?,
         unread: f.unread,
         has_attachment: f.has_attachment,
         account,
         query: nonempty(f.query),
+        subject_prefix: nonempty(f.subject_prefix),
     })
+}
+
+/// A sender is an address, a domain, or a name of at most four words with no linking
+/// words: "gemini notes from google meet" describes mail and is refused.
+fn sender_entry(s: String) -> Result<String, String> {
+    let linking = [
+        "from", "of", "the", "in", "on", "about", "like", "de", "du", "des", "sur",
+    ];
+    if let senders::Entry::Words(_) = senders::entry(&s) {
+        let w = senders::words(&s);
+        if w.len() > 4 || w.iter().any(|x| linking.contains(&x.as_str())) {
+            return Err(format!(
+                "'{s}' is not a sender: put a person's or organization's name or an address in from, \
+                 and words about the mail in subject_prefix or query."
+            ));
+        }
+    }
+    Ok(s)
 }
 
 fn action(a: RawAction, vocab: &Vocab, today: NaiveDate) -> Result<Action, String> {
@@ -627,6 +813,9 @@ pub fn filter_words(f: &Filter, vocab: &Vocab) -> String {
     if let Some(q) = &f.query {
         parts.push(format!("mentioning “{q}”"));
     }
+    if let Some(p) = &f.subject_prefix {
+        parts.push(format!("whose subject starts with “{p}”"));
+    }
     if let Some(a) = &f.account {
         parts.push(format!("on {}", vocab.account_email(a)));
     }
@@ -681,6 +870,9 @@ pub fn interpretation(f: &Filter, vocab: &Vocab) -> String {
     if let Some(q) = &f.query {
         c.push(format!("contains “{q}”"));
     }
+    if let Some(p) = &f.subject_prefix {
+        c.push(format!("subject starts with “{p}”"));
+    }
     if c.is_empty() {
         "every email in Mermoz".into()
     } else {
@@ -701,6 +893,8 @@ pub fn verb(a: &Action, vocab: &Vocab) -> String {
         Action::Delete => "Delete".into(),
     }
 }
+
+pub mod senders;
 
 #[cfg(test)]
 mod tests;

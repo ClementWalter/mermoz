@@ -9,6 +9,20 @@ extension AppModel {
         askFlow.start(text, backend: b)
     }
 
+    /// Enter while a plan or a question shows: runs, answers, picks or starts over.
+    @discardableResult
+    func enterAsk(backend: AskBackend? = nil) -> Task<Void, Never>? {
+        guard let b = backend ?? client else { return nil }
+        return askFlow.enter(backend: b) { [weak self] r in self?.didRunAsk(r) }
+    }
+
+    /// A choice clicked (or picked with ↩): re-plans with exactly that filter.
+    @discardableResult
+    func pickAsk(_ c: DoChoice, backend: AskBackend? = nil) -> Task<Void, Never>? {
+        guard let b = backend ?? client else { return nil }
+        return askFlow.pick(c, backend: b)
+    }
+
     /// Enter on a previewed plan: runs it, then offers one Undo for all of it.
     @discardableResult
     func confirmAsk(backend: AskBackend? = nil) -> Task<Void, Never>? {
@@ -23,6 +37,7 @@ extension AppModel {
         let n = AskIntent.count(r.done)
         toast = "\(r.undoLabel): \(n) thread\(r.done == 1 ? "" : "s") · ⌘Z to undo"
         paletteMode = nil
+        askFlow.query = ""
         refreshCounts()
         Task { await loadList() }
     }

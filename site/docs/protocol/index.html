@@ -211,16 +211,23 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 </code></pre>
 <h2 id="ask-mermoz-to-do">Ask Mermoz to do</h2>
 <p>A sentence typed in ⌘K ("archive all messages past 5 months not in done") goes to the
-first account's allowed AI with only the names of statuses, projects and accounts (never
-mail). The AI fills a fixed schema; the daemon checks it strictly (unknown fields, actions,
-statuses or projects are refused and asked again once with the reason) and resolves it
-locally. Nothing in the schema can send, reply to or forward mail.</p>
+first account's allowed AI with the names of statuses, projects and accounts, and the
+<strong>candidates</strong> found locally for the sentence's content words: up to 5 senders (address,
+display name, thread count, how their subjects usually begin) and up to 4 shared subject
+beginnings with counts. Never bodies. The AI fills a fixed schema; the daemon checks it
+strictly (unknown fields, actions, statuses or projects, or a description put in <code>from</code>,
+are refused and asked again once with the reason) and resolves it locally. Nothing in the
+schema can send, reply to or forward mail.</p>
+<p>Senders are matched by their words: the display names, the address cut on <code>.</code> <code>-</code> <code>_</code> <code>+</code>
+<code>@</code>, and the mailing list, accents and case aside, with one typo allowed in words of 5+
+letters (two in 8+). An entry matches a sender when every content word is found;
+<code>a@b.example</code> matches that address only, <code>b.example</code> its addresses and subdomains.</p>
 <pre><code class="language-jsonc">// Plan: 1–5 steps, each a filter (every field narrows; empty ones don't) and one action.
 {&quot;steps&quot;: [{&quot;filter&quot;: {&quot;status_in&quot;: [key], &quot;status_not_in&quot;: [key],
                        &quot;older_than&quot;: {&quot;amount&quot;: 5, &quot;unit&quot;: &quot;day|week|month|year&quot;}, &quot;newer_than&quot;: …,
                        &quot;from&quot;: [&quot;nora@lind.example&quot;, &quot;news.example&quot;, &quot;Paul&quot;],  // address, domain, or name
                        &quot;projects&quot;: [name], &quot;not_projects&quot;: [name], &quot;unread&quot;: bool, &quot;has_attachment&quot;: bool,
-                       &quot;account&quot;: &quot;acc_1&quot;, &quot;query&quot;: &quot;words&quot;},
+                       &quot;account&quot;: &quot;acc_1&quot;, &quot;query&quot;: &quot;words&quot;, &quot;subject_prefix&quot;: &quot;Notes:&quot;},
             &quot;action&quot;: {&quot;kind&quot;: &quot;set_status&quot;, &quot;status&quot;: &quot;archive&quot;}       // any status but unread / review
                       | {&quot;kind&quot;: &quot;add_project&quot; | &quot;remove_project&quot;, &quot;project&quot;: name}
                       | {&quot;kind&quot;: &quot;mark_read&quot; | &quot;mark_unread&quot;}
@@ -233,11 +240,21 @@ locally. Nothing in the schema can send, reply to or forward mail.</p>
  &quot;summary&quot;: &quot;Archive 1,842 threads older than 5 months that aren't Done&quot;,
  &quot;interpretation&quot;: &quot;status ≠ Done AND older than 5 months&quot;,
  &quot;steps&quot;: [{&quot;summary&quot;, &quot;interpretation&quot;, &quot;action&quot;: &quot;Archive&quot;, &quot;count&quot;: 1842,
+            &quot;resolved&quot;: &quot;from gemini@google.example (40)&quot; | null,       // who the sender words matched
+            &quot;senders&quot;: [{&quot;email&quot;, &quot;name&quot;, &quot;threads&quot;}],                   // the first 5
+            &quot;suggestions&quot;: [Choice],                                      // closest senders, when 0 match
             &quot;by_status&quot;: [{&quot;status&quot;: &quot;todo&quot;, &quot;name&quot;: &quot;To do&quot;, &quot;count&quot;: 1200}],
             &quot;sample&quot;: [{&quot;id&quot;, &quot;number&quot;, &quot;status&quot;, &quot;subject&quot;, &quot;last_from&quot;, &quot;last_date&quot;}]}],   // first 5
  &quot;total&quot;: 1842, &quot;deletes&quot;: false, &quot;confirm&quot;: &quot;enter&quot; | &quot;type_count&quot;,
+ &quot;choices&quot;: [Choice],   // when nothing matches: the suggestions, then the sentence's candidates
  &quot;warning&quot;: &quot;Nothing matches. I understood: …&quot; | &quot;This applies to every email in Mermoz.&quot; | null}
-{&quot;kind&quot;: &quot;question&quot; | &quot;needs_ai&quot;, &quot;message&quot;: &quot;…&quot;}
+{&quot;kind&quot;: &quot;question&quot;, &quot;message&quot;: &quot;Which notes do you mean?&quot;, &quot;choices&quot;: [Choice], &quot;round&quot;: 1,
+ &quot;can_answer&quot;: true}   // false after 2 answered rounds: pick a choice or say it another way
+{&quot;kind&quot;: &quot;needs_ai&quot;, &quot;message&quot;: &quot;…&quot;}
+
+// Choice: a candidate the user can pick; `pick` re-plans with exactly that filter.
+{&quot;label&quot;: &quot;Gemini · gemini@google.example · 40 threads · “Notes:…”&quot;, &quot;pick&quot;: {&quot;from&quot;: &quot;gemini@google.example&quot;}, &quot;threads&quot;: 40}
+{&quot;label&quot;: &quot;Subject “Notes:…” · 42 threads&quot;, &quot;pick&quot;: {&quot;subject_prefix&quot;: &quot;Notes:&quot;}, &quot;threads&quot;: 42}
 
 // DoOperation (the operation log; survives restarts)
 {&quot;id&quot;: &quot;bop_…&quot;, &quot;sentence&quot;, &quot;plan&quot;: Plan, &quot;summary&quot;, &quot;state&quot;: &quot;planned|running|done|failed|undone&quot;,
@@ -259,7 +276,12 @@ locally. Nothing in the schema can send, reply to or forward mail.</p>
 </tr>
 <tr>
 <td><code>do.ask</code></td>
-<td><code>{"text"}</code> — the AI plans, the daemon previews; nothing changes</td>
+<td><code>{"text", "rounds"?: [{"question", "answer"}], "pick"?: {"from"} | {"subject_prefix"}}</code> — the AI plans from the sentence, the answers so far (at most 2) and the candidates, the daemon previews; nothing changes. A <code>pick</code> replaces the plan's sender, words and subject in every step; when the AI still asks, the sentence's verb (delete, archive, mark read…) plans with the pick alone</td>
+<td><code>DoPreview</code></td>
+</tr>
+<tr>
+<td><code>do.replan</code></td>
+<td><code>{"id", "pick"}</code> — a planned preview again with the picked filter (no AI)</td>
 <td><code>DoPreview</code></td>
 </tr>
 <tr>

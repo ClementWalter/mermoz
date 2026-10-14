@@ -22,7 +22,34 @@ public enum CommandMatch {
         return total
     }
 
-    static func words(_ s: String) -> [String] {
+    /// A command's words, folded once, so scoring it per keystroke folds nothing.
+    public struct Prepared: Sendable {
+        let title: [String]
+        let keywords: [String]
+
+        public init(title: String, keywords: [String] = []) {
+            self.title = CommandMatch.words(title)
+            self.keywords = keywords.flatMap(CommandMatch.words)
+        }
+    }
+
+    /// `score` for already-folded query words and a prepared command.
+    public static func score(_ q: [String], _ p: Prepared) -> Int {
+        guard !q.isEmpty else { return 1 }
+        var total = 0
+        for w in q {
+            if let i = p.title.firstIndex(where: { $0.hasPrefix(w) }) {
+                total += 100 - i
+            } else if p.keywords.contains(where: { $0.hasPrefix(w) }) {
+                total += 10
+            } else {
+                return 0
+            }
+        }
+        return total
+    }
+
+    public static func words(_ s: String) -> [String] {
         s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init)

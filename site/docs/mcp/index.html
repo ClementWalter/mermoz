@@ -721,10 +721,22 @@ args = [&quot;mcp&quot;]
 </thead>
 <tbody>
 <tr>
+<td><code>pick</code></td>
+<td>object</td>
+<td>no</td>
+<td>a <code>pick</code> from the returned <code>choices</code> ({from} or {subject_prefix}): plan with exactly that filter</td>
+</tr>
+<tr>
 <td><code>plan</code></td>
 <td>object</td>
 <td>no</td>
 <td>a plan as returned in <code>plan</code></td>
+</tr>
+<tr>
+<td><code>rounds</code></td>
+<td>array of object</td>
+<td>no</td>
+<td>when it answered with a question: [{question, answer}] so far (at most 2)</td>
 </tr>
 <tr>
 <td><code>sentence</code></td>

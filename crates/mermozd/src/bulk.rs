@@ -5,7 +5,9 @@
 
 use crate::service::Service;
 use mermoz_core::model::{ThreadState, new_id, now_ms};
-use mermoz_core::plan::{self, Action, Outcome, Plan, Vocab};
+use mermoz_core::plan::{
+    self, Action, CandidateSender, CandidateSubject, Candidates, Outcome, Pick, Plan, Step, Vocab,
+};
 use mermoz_core::store::{BulkOp, PlanMatch, ThreadPatch};
 use mermoz_core::sync::Event;
 use mermoz_core::{Error, Result};
@@ -57,9 +59,62 @@ pub fn status(svc: &Service) -> Result<Value> {
     })
 }
 
-/// Asks the AI for a plan (once more, with the reason, when its first answer is
-/// refused) and previews it.
-pub async fn ask(svc: &Arc<Service>, sentence: &str, origin: &str) -> Result<Value> {
+/// One earlier round of a clarification: the AI's question and the user's answer.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Round {
+    pub question: String,
+    pub answer: String,
+}
+
+/// Rounds of questions the user answers before the AI must plan or give up.
+pub const MAX_ROUNDS: usize = 2;
+
+/// A candidate as the palette offers it: a label and the exact filter it picks.
+fn choice_sender(s: &CandidateSender) -> Value {
+    let mut label = if s.name.is_empty() {
+        format!("{} · {} threads", s.email, plan::count(s.threads as usize))
+    } else {
+        format!(
+            "{} · {} · {} threads",
+            s.name,
+            s.email,
+            plan::count(s.threads as usize)
+        )
+    };
+    if let Some(p) = s.subjects.first() {
+        label.push_str(&format!(" · “{p}…”"));
+    }
+    json!({ "label": label, "pick": { "from": s.email }, "threads": s.threads })
+}
+
+fn choice_subject(s: &CandidateSubject) -> Value {
+    json!({ "label": format!("Subject “{}…” · {} threads", s.prefix, plan::count(s.threads as usize)),
+            "pick": { "subject_prefix": s.prefix }, "threads": s.threads })
+}
+
+fn choices(c: &Candidates) -> Vec<Value> {
+    c.senders
+        .iter()
+        .map(choice_sender)
+        .chain(c.subjects.iter().map(choice_subject))
+        .collect()
+}
+
+fn question(message: &str, c: &Candidates, round: usize) -> Value {
+    json!({ "kind": "question", "message": message, "choices": choices(c),
+            "round": round, "can_answer": round <= MAX_ROUNDS })
+}
+
+/// Asks the AI for a plan grounded in what the mailbox holds for the sentence's words
+/// (once more, with the reason, when its answer is refused), then previews it. `rounds`
+/// are the questions already answered; `pick` is a candidate the user chose.
+pub async fn ask(
+    svc: &Arc<Service>,
+    sentence: &str,
+    rounds: &[Round],
+    pick: Option<&Pick>,
+    origin: &str,
+) -> Result<Value> {
     let sentence = sentence.trim();
     if sentence.is_empty() {
         return Err(Error::InvalidParams("Say what to do first.".into()));
@@ -71,8 +126,25 @@ pub async fn ask(svc: &Arc<Service>, sentence: &str, origin: &str) -> Result<Val
     let vocab = vocab(svc)?;
     let today = plan::today();
     let system = plan::system_prompt(&vocab, today);
+    let candidates = {
+        let (st, s) = (svc.store.clone(), sentence.to_string());
+        tokio::task::spawn_blocking(move || st.candidates(&s))
+            .await
+            .map_err(|e| Error::other(e.to_string()))??
+    };
+    let pairs: Vec<(String, String)> = rounds
+        .iter()
+        .map(|r| (r.question.clone(), r.answer.clone()))
+        .collect();
+    let mut base = plan::user_prompt(sentence, &pairs, &candidates, pick);
+    if rounds.len() >= MAX_ROUNDS {
+        base.push_str(
+            "\n\nThe user has answered enough questions: return a plan, or set understood to false \
+             with one short sentence saying why it can't be done.",
+        );
+    }
     let ai = mermoz_core::agent::Client::new();
-    let mut user = sentence.to_string();
+    let mut user = base.clone();
     let mut refusal = String::new();
     for _ in 0..2 {
         let raw = ai
@@ -82,21 +154,41 @@ pub async fn ask(svc: &Arc<Service>, sentence: &str, origin: &str) -> Result<Val
             .map_err(|_| "The answer wasn't a plan.".to_string())
             .and_then(|v| plan::validate(&v, &vocab, today));
         match checked {
-            Ok(Outcome::Plan(p)) => return preview(svc, sentence, p, origin),
-            Ok(Outcome::Question(q)) => return Ok(json!({ "kind": "question", "message": q })),
+            Ok(Outcome::Plan(mut p)) => {
+                if let Some(pick) = pick {
+                    pick.apply(&mut p);
+                }
+                return preview(svc, sentence, p, origin);
+            }
+            Ok(Outcome::Question(q)) => {
+                // A picked filter with a plain verb needs no more questions.
+                if let (Some(pick), Some(action)) = (pick, plan::action_from_sentence(sentence)) {
+                    let mut p = Plan {
+                        steps: vec![Step {
+                            filter: Default::default(),
+                            action,
+                        }],
+                    };
+                    pick.apply(&mut p);
+                    return preview(svc, sentence, p, origin);
+                }
+                return Ok(question(&q, &candidates, rounds.len() + 1));
+            }
             Err(why) => {
                 tracing::info!("plan refused: {why}");
                 user = format!(
-                    "{sentence}\n\nYour previous plan was refused: {why} Answer again with the schema, \
+                    "{base}\n\nYour previous plan was refused: {why} Answer again with the schema, \
                      or set understood to false if the instruction can't be done with it."
                 );
                 refusal = why;
             }
         }
     }
-    Ok(
-        json!({ "kind": "question", "message": format!("I couldn't make a safe plan from that. {refusal}") }),
-    )
+    Ok(question(
+        &format!("I couldn't make a safe plan from that. {refusal}"),
+        &candidates,
+        rounds.len() + 1,
+    ))
 }
 
 /// Checks a plan given as JSON (CLI, agents, tests) and previews it, without the AI.
@@ -104,12 +196,46 @@ pub fn preview_json(svc: &Arc<Service>, sentence: &str, v: &Value, origin: &str)
     let vocab = vocab(svc)?;
     match plan::validate(v, &vocab, plan::today()) {
         Ok(Outcome::Plan(p)) => preview(svc, sentence, p, origin),
-        Ok(Outcome::Question(q)) => Ok(json!({ "kind": "question", "message": q })),
+        Ok(Outcome::Question(q)) => Ok(json!({ "kind": "question", "message": q, "choices": [] })),
         Err(why) => Err(Error::InvalidParams(why)),
     }
 }
 
+/// A planned preview again with the user's picked filter in every step (no AI).
+pub fn replan(svc: &Arc<Service>, id: &str, pick: &Pick, origin: &str) -> Result<Value> {
+    let op = svc.store.bulk_op(id)?;
+    if op.state != "planned" {
+        return Err(Error::InvalidParams(
+            "This plan already ran. Ask again for a new one.".into(),
+        ));
+    }
+    let mut p: Plan = serde_json::from_value(op.plan.clone())
+        .map_err(|e| Error::other(format!("stored plan unreadable: {e}")))?;
+    pick.apply(&mut p);
+    preview(svc, &op.sentence, p, origin)
+}
+
+/// "from a@x (34), b@y (2) and 3 more": who the sender words resolved to.
+fn resolved_words(senders: &[CandidateSender]) -> Option<String> {
+    let shown: Vec<String> = senders
+        .iter()
+        .take(3)
+        .map(|s| format!("{} ({})", s.email, plan::count(s.threads as usize)))
+        .collect();
+    if shown.is_empty() {
+        return None;
+    }
+    let more = senders.len().saturating_sub(3);
+    let tail = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    Some(format!("from {}{tail}", shown.join(", ")))
+}
+
 /// Resolves every step locally, logs the run as planned and describes it in plain words.
+/// A step that matches nothing offers the closest senders, and the sentence's candidates.
 fn preview(svc: &Arc<Service>, sentence: &str, p: Plan, origin: &str) -> Result<Value> {
     let st = &svc.store;
     let vocab = vocab(svc)?;
@@ -117,6 +243,7 @@ fn preview(svc: &Arc<Service>, sentence: &str, p: Plan, origin: &str) -> Result<
     let mut steps = vec![];
     let mut targets: Vec<Vec<String>> = vec![];
     let mut all: BTreeSet<String> = BTreeSet::new();
+    let mut offered: Vec<Value> = vec![];
     for s in &p.steps {
         let matches = st.plan_matches(&s.filter, now)?;
         let mut by_status: BTreeMap<String, usize> = BTreeMap::new();
@@ -127,9 +254,31 @@ fn preview(svc: &Arc<Service>, sentence: &str, p: Plan, origin: &str) -> Result<
         let mut counts: Vec<(String, usize)> = by_status.into_iter().collect();
         counts.sort_by_key(|(k, _)| order.iter().position(|o| o == k).unwrap_or(usize::MAX));
         all.extend(matches.iter().map(|m| m.id.clone()));
+        let senders = if s.filter.from.is_empty() {
+            vec![]
+        } else {
+            st.resolve_senders(&s.filter.from)?
+        };
+        let suggestions: Vec<Value> = if matches.is_empty() && !s.filter.from.is_empty() {
+            st.sender_suggestions(&s.filter.from, 3)?
+                .iter()
+                .map(choice_sender)
+                .collect()
+        } else {
+            vec![]
+        };
+        offered.extend(suggestions.iter().cloned());
+        // One sender matched: the sentence names it as the user knows it.
+        let mut shown = s.clone();
+        if let [one] = senders.as_slice() {
+            shown.filter.from = vec![one.display()];
+        }
         steps.push(json!({
-            "summary": plan::sentence(s, matches.len(), &vocab),
+            "summary": plan::sentence(&shown, matches.len(), &vocab),
             "interpretation": plan::interpretation(&s.filter, &vocab),
+            "resolved": resolved_words(&senders),
+            "senders": senders.iter().take(5).collect::<Vec<_>>(),
+            "suggestions": suggestions,
             "action": plan::verb(&s.action, &vocab),
             "count": matches.len(),
             "by_status": counts.iter().map(|(k, n)| json!({ "status": k, "name": vocab.status_name(k), "count": n })).collect::<Vec<_>>(),
@@ -138,6 +287,14 @@ fn preview(svc: &Arc<Service>, sentence: &str, p: Plan, origin: &str) -> Result<
         targets.push(matches.into_iter().map(|m| m.id).collect());
     }
     let total = all.len();
+    if total == 0 {
+        // Never a dead end: what the mailbox holds for the sentence's words too.
+        for c in choices(&st.candidates(sentence)?) {
+            if offered.len() < 5 && !offered.iter().any(|o| o["pick"] == c["pick"]) {
+                offered.push(c);
+            }
+        }
+    }
     let summary = steps
         .iter()
         .filter_map(|s| s["summary"].as_str())
@@ -178,7 +335,7 @@ fn preview(svc: &Arc<Service>, sentence: &str, p: Plan, origin: &str) -> Result<
     Ok(json!({
         "kind": "plan", "id": id, "sentence": sentence, "plan": plan_json,
         "summary": summary, "interpretation": interpretation, "steps": steps,
-        "total": total, "deletes": p.deletes(), "warning": warning,
+        "total": total, "deletes": p.deletes(), "warning": warning, "choices": offered,
         // A delete is confirmed by typing the count; everything else by Enter.
         "confirm": if p.deletes() { "type_count" } else { "enter" },
     }))

@@ -430,12 +430,33 @@ AI plans it.
   "✦ Ask Mermoz to do: “…”". The usual commands and search results stay below.
 - **Plan, don't act.** The first account's allowed AI turns the sentence into a typed
   plan: filters (status in / not in, older / newer than, sender or domain, project,
-  unread, attachment, account, words) and one action per step (set status, Archive and
-  Done included; add or remove a project; read / unread; Later until a day; delete to
-  Trash), at most five steps. The AI sees the sentence and the names of statuses,
-  projects and accounts, never mail. Every plan is checked strictly; an unknown action,
-  field, status or project is refused and asked again once with the reason. Send, reply
+  unread, attachment, account, words, subject beginning) and one action per step (set
+  status, Archive and Done included; add or remove a project; read / unread; Later until
+  a day; delete to Trash), at most five steps. Every plan is checked strictly; an unknown
+  action, field, status or project, or a description put in the sender field ("gemini
+  notes from google meet"), is refused and asked again once with the reason. Send, reply
   and forward don't exist in the schema.
+- **Grounded locally first (privacy change, 2026-10-13).** Before the AI is called,
+  Mermoz looks up the sentence's content words in the mailbox: senders by the words of
+  their names, addresses and lists (accents aside, one typo allowed), and threads with
+  those words in their subject or sender. The AI then sees, besides the sentence and the
+  names of statuses, projects and accounts, **aggregates only**: up to 5 sender addresses
+  with their display names, thread counts and how their subjects usually begin, and up to
+  4 shared subject beginnings with counts ("Notes:" · 40 threads). Never bodies, never a
+  whole subject list. So "delete all message from gemeni notes from google meet" becomes
+  Gemini's Google address with subjects starting "Notes:", leaving another "Gemini" on
+  another domain alone.
+- **Senders by their words.** A sender filter matches names, the address cut on `.` `-`
+  `_` `+` and the mailing list, so "esrin gourmet club" finds
+  `esrin-gourmet-club@…` with no display name. The preview says who matched
+  ("Matched from …@… (34)"), and a single match is named in the sentence
+  ("Delete 40 threads from Gemini <…>").
+- **Never a dead end.** When the AI asks back, the field takes the answer (Enter sends
+  it, two rounds at most) and the candidates show as choices ("Gemini · …@… · 40 threads
+  · “Notes:…”", "Subject “Notes:…” · 40 threads"); ↑↓ and Enter, or a click, re-plan with
+  exactly that filter. A plan that matches nothing offers the closest senders and the
+  sentence's candidates the same way. After two answers, Enter on a new sentence starts
+  over.
 - **Preview.** Mermoz resolves the filter locally and shows the plan in plain words
   ("Archive 1,842 threads older than 5 months that aren't Done"), how it was read
   ("I understood: status ≠ Done AND older than 5 months"), a count per current status
@@ -446,6 +467,10 @@ AI plans it.
   labels follow; progress shows in the palette, then a toast and one ⌘Z for the whole
   run. Every thread's state before the run is logged, so undo works after a restart.
 - **Without AI** the row says to connect one in Settings › Agents and opens Settings.
+- **Typing stays free.** No AI or daemon call per keystroke (search waits 80 ms of
+  quiet); intent is a pure word check; the "Go to …" targets are folded once, not per
+  key. Measured in-process with 300 projects: about 2 ms of main-thread work per
+  keystroke, render and layout included (budget 4 ms).
 - **CLI / MCP:** `mermoz do "<sentence>"` prints the plan and counts (dry run);
   `--yes` runs it (`--confirm N` for a delete), `--undo <id>`, `--history`, `--plan
   file.json` without the AI. MCP `plan_bulk_action`, `run_bulk_action` (needs the plan's

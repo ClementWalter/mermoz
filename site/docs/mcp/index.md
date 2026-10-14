@@ -285,7 +285,9 @@ Plan a change to many threads from a plain-words instruction ("archive all messa
 
 | parameter | type | required | notes |
 | --- | --- | --- | --- |
+| `pick` | object | no | a `pick` from the returned `choices` ({from} or {subject_prefix}): plan with exactly that filter |
 | `plan` | object | no | a plan as returned in `plan` |
+| `rounds` | array of object | no | when it answered with a question: [{question, answer}] so far (at most 2) |
 | `sentence` | string | no | what to do, in plain words |
 
 ### run_bulk_action

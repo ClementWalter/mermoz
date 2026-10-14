@@ -96,6 +96,16 @@ async fn inline_images(svc: &Arc<Service>, mid: &str, html: String) -> Result<St
     Ok(inline::resolve(&html, &st.inline_parts(mid)?).0)
 }
 
+/// `pick`: a candidate filter the user chose in "Ask Mermoz to do".
+fn pick_param(p: &Value) -> Result<Option<mermoz_core::plan::Pick>, RpcError> {
+    match p.get("pick") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| {
+            RpcError::invalid("'pick' must be {\"from\": address} or {\"subject_prefix\": text}")
+        }),
+    }
+}
+
 /// A boolean parameter, false when absent.
 fn flag(p: &Value, k: &str) -> bool {
     p.get(k).and_then(|v| v.as_bool()).unwrap_or(false)
@@ -1100,7 +1110,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "do.status" => Ok(crate::bulk::status(svc)?),
         "do.ask" => {
             let origin = if caller.is_app { "app" } else { "agent" };
-            match crate::bulk::ask(svc, &s(p, "text")?, origin).await {
+            let rounds: Vec<crate::bulk::Round> = match p.get("rounds") {
+                None | Some(Value::Null) => vec![],
+                Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+                    RpcError::invalid(format!("'rounds' must be [{{question, answer}}]: {e}"))
+                })?,
+            };
+            let pick = pick_param(p)?;
+            match crate::bulk::ask(svc, &s(p, "text")?, &rounds, pick.as_ref(), origin).await {
                 Ok(v) => Ok(v),
                 Err(Error::Upstream {
                     status: 401 | 403, ..
@@ -1128,6 +1145,15 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let id = s(p, "id")?;
             let confirm = p.get("confirm").and_then(|v| v.as_i64());
             Ok(crate::bulk::run(svc, &id, confirm).await?)
+        }
+        "do.replan" => {
+            let origin = if caller.is_app { "app" } else { "agent" };
+            let pick = pick_param(p)?.ok_or_else(|| {
+                RpcError::invalid(
+                    "missing 'pick' ({\"from\": address} or {\"subject_prefix\": text})",
+                )
+            })?;
+            Ok(crate::bulk::replan(svc, &s(p, "id")?, &pick, origin)?)
         }
         "do.undo" => Ok(crate::bulk::undo(svc, &s(p, "id")?)?),
         "do.get" => to_value(st.bulk_op(&s(p, "id")?)?),

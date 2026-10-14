@@ -51,15 +51,62 @@ public struct DoStep: Codable, Sendable, Equatable {
     public var count: Int
     public var byStatus: [DoStatusCount]
     public var sample: [DoSample]
+    /// Who the sender words matched: "from club@agency.example (34)".
+    public var resolved: String?
 
     public init(summary: String, interpretation: String, action: String, count: Int,
-                byStatus: [DoStatusCount] = [], sample: [DoSample] = []) {
+                byStatus: [DoStatusCount] = [], sample: [DoSample] = [], resolved: String? = nil) {
+        self.resolved = resolved
         self.summary = summary
         self.interpretation = interpretation
         self.action = action
         self.count = count
         self.byStatus = byStatus
         self.sample = sample
+    }
+}
+
+/// The exact filter a choice picks: one sender, or a subject beginning.
+public struct DoPick: Codable, Sendable, Equatable {
+    public var from: String?
+    public var subjectPrefix: String?
+
+    public init(from: String? = nil, subjectPrefix: String? = nil) {
+        self.from = from
+        self.subjectPrefix = subjectPrefix
+    }
+
+    /// Written as the protocol spells it (`subject_prefix`); `Params` keeps keys as given.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DynamicKey.self)
+        if let from { try c.encode(from, forKey: DynamicKey("from")) }
+        if let subjectPrefix { try c.encode(subjectPrefix, forKey: DynamicKey("subject_prefix")) }
+    }
+}
+
+/// A candidate offered under a question or an empty preview: "Gemini · notes@… · 42 threads".
+public struct DoChoice: Codable, Sendable, Equatable, Identifiable {
+    public var label: String
+    public var pick: DoPick
+    public var threads: Int
+
+    public var id: String { label }
+
+    public init(label: String, pick: DoPick, threads: Int) {
+        self.label = label
+        self.pick = pick
+        self.threads = threads
+    }
+}
+
+/// One answered question, sent back with the next ask.
+public struct DoRound: Codable, Sendable, Equatable {
+    public var question: String
+    public var answer: String
+
+    public init(question: String, answer: String) {
+        self.question = question
+        self.answer = answer
     }
 }
 
@@ -76,10 +123,16 @@ public struct DoPreview: Codable, Sendable, Equatable {
     public var warning: String?
     /// "enter", or "type_count" for a delete.
     public var confirm: String?
+    /// Candidates to pick from: under a question, or when nothing matched.
+    public var choices: [DoChoice]?
+    /// A question that still takes an answer (at most 2 rounds).
+    public var canAnswer: Bool?
 
     public init(kind: String, message: String? = nil, id: String? = nil, summary: String? = nil,
                 interpretation: String? = nil, steps: [DoStep]? = nil, total: Int? = nil, deletes: Bool? = nil,
-                warning: String? = nil, confirm: String? = nil) {
+                warning: String? = nil, confirm: String? = nil, choices: [DoChoice]? = nil, canAnswer: Bool? = nil) {
+        self.choices = choices
+        self.canAnswer = canAnswer
         self.kind = kind
         self.message = message
         self.id = id
@@ -93,6 +146,7 @@ public struct DoPreview: Codable, Sendable, Equatable {
     }
 
     public var isPlan: Bool { kind == "plan" && id != nil }
+    public var isQuestion: Bool { kind == "question" }
     public var needsTypedCount: Bool { confirm == "type_count" }
 }
 
@@ -128,7 +182,8 @@ public struct DoOperation: Codable, Sendable, Equatable {
 /// The daemon calls the bar makes; the app's client, or a stub in tests.
 public protocol AskBackend: Sendable {
     func doStatus() async throws -> DoAvailability
-    func doAsk(_ text: String) async throws -> DoPreview
+    func doAsk(_ text: String, rounds: [DoRound], pick: DoPick?) async throws -> DoPreview
+    func doReplan(_ id: String, pick: DoPick) async throws -> DoPreview
     func doRun(_ id: String, confirm: Int?) async throws -> DoRunResult
     func doGet(_ id: String) async throws -> DoOperation
     func doUndo(_ id: String) async throws
@@ -140,8 +195,14 @@ extension DaemonClient: AskBackend {
         return try RPCCoding.decoder().decode(DoAvailability.self, from: data)
     }
 
-    public func doAsk(_ text: String) async throws -> DoPreview {
-        let data = try await connection.call("do.ask", params: Params().with("text", text).data())
+    public func doAsk(_ text: String, rounds: [DoRound], pick: DoPick?) async throws -> DoPreview {
+        let p = Params().with("text", text).with("rounds", rounds.isEmpty ? nil : rounds).with("pick", pick)
+        let data = try await connection.call("do.ask", params: p.data())
+        return try RPCCoding.decoder().decode(DoPreview.self, from: data)
+    }
+
+    public func doReplan(_ id: String, pick: DoPick) async throws -> DoPreview {
+        let data = try await connection.call("do.replan", params: Params().with("id", id).with("pick", pick).data())
         return try RPCCoding.decoder().decode(DoPreview.self, from: data)
     }
 

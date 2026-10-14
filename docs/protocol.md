@@ -146,10 +146,18 @@ app, the CLI and the MCP server are clients of this protocol.
 ## Ask Mermoz to do
 
 A sentence typed in ⌘K ("archive all messages past 5 months not in done") goes to the
-first account's allowed AI with only the names of statuses, projects and accounts (never
-mail). The AI fills a fixed schema; the daemon checks it strictly (unknown fields, actions,
-statuses or projects are refused and asked again once with the reason) and resolves it
-locally. Nothing in the schema can send, reply to or forward mail.
+first account's allowed AI with the names of statuses, projects and accounts, and the
+**candidates** found locally for the sentence's content words: up to 5 senders (address,
+display name, thread count, how their subjects usually begin) and up to 4 shared subject
+beginnings with counts. Never bodies. The AI fills a fixed schema; the daemon checks it
+strictly (unknown fields, actions, statuses or projects, or a description put in `from`,
+are refused and asked again once with the reason) and resolves it locally. Nothing in the
+schema can send, reply to or forward mail.
+
+Senders are matched by their words: the display names, the address cut on `.` `-` `_` `+`
+`@`, and the mailing list, accents and case aside, with one typo allowed in words of 5+
+letters (two in 8+). An entry matches a sender when every content word is found;
+`a@b.example` matches that address only, `b.example` its addresses and subdomains.
 
 ```jsonc
 // Plan: 1–5 steps, each a filter (every field narrows; empty ones don't) and one action.
@@ -157,7 +165,7 @@ locally. Nothing in the schema can send, reply to or forward mail.
                        "older_than": {"amount": 5, "unit": "day|week|month|year"}, "newer_than": …,
                        "from": ["nora@lind.example", "news.example", "Paul"],  // address, domain, or name
                        "projects": [name], "not_projects": [name], "unread": bool, "has_attachment": bool,
-                       "account": "acc_1", "query": "words"},
+                       "account": "acc_1", "query": "words", "subject_prefix": "Notes:"},
             "action": {"kind": "set_status", "status": "archive"}       // any status but unread / review
                       | {"kind": "add_project" | "remove_project", "project": name}
                       | {"kind": "mark_read" | "mark_unread"}
@@ -170,11 +178,21 @@ locally. Nothing in the schema can send, reply to or forward mail.
  "summary": "Archive 1,842 threads older than 5 months that aren't Done",
  "interpretation": "status ≠ Done AND older than 5 months",
  "steps": [{"summary", "interpretation", "action": "Archive", "count": 1842,
+            "resolved": "from gemini@google.example (40)" | null,       // who the sender words matched
+            "senders": [{"email", "name", "threads"}],                   // the first 5
+            "suggestions": [Choice],                                      // closest senders, when 0 match
             "by_status": [{"status": "todo", "name": "To do", "count": 1200}],
             "sample": [{"id", "number", "status", "subject", "last_from", "last_date"}]}],   // first 5
  "total": 1842, "deletes": false, "confirm": "enter" | "type_count",
+ "choices": [Choice],   // when nothing matches: the suggestions, then the sentence's candidates
  "warning": "Nothing matches. I understood: …" | "This applies to every email in Mermoz." | null}
-{"kind": "question" | "needs_ai", "message": "…"}
+{"kind": "question", "message": "Which notes do you mean?", "choices": [Choice], "round": 1,
+ "can_answer": true}   // false after 2 answered rounds: pick a choice or say it another way
+{"kind": "needs_ai", "message": "…"}
+
+// Choice: a candidate the user can pick; `pick` re-plans with exactly that filter.
+{"label": "Gemini · gemini@google.example · 40 threads · “Notes:…”", "pick": {"from": "gemini@google.example"}, "threads": 40}
+{"label": "Subject “Notes:…” · 42 threads", "pick": {"subject_prefix": "Notes:"}, "threads": 42}
 
 // DoOperation (the operation log; survives restarts)
 {"id": "bop_…", "sentence", "plan": Plan, "summary", "state": "planned|running|done|failed|undone",
@@ -184,7 +202,8 @@ locally. Nothing in the schema can send, reply to or forward mail.
 | method | params | result |
 | --- | --- | --- |
 | `do.status` | `{}` | `{"available": true, "provider_name"}` or `{"available": false, "message"}` |
-| `do.ask` | `{"text"}` — the AI plans, the daemon previews; nothing changes | `DoPreview` |
+| `do.ask` | `{"text", "rounds"?: [{"question", "answer"}], "pick"?: {"from"} \| {"subject_prefix"}}` — the AI plans from the sentence, the answers so far (at most 2) and the candidates, the daemon previews; nothing changes. A `pick` replaces the plan's sender, words and subject in every step; when the AI still asks, the sentence's verb (delete, archive, mark read…) plans with the pick alone | `DoPreview` |
+| `do.replan` | `{"id", "pick"}` — a planned preview again with the picked filter (no AI) | `DoPreview` |
 | `do.preview` | `{"plan", "text"?}` — a plan given as JSON, checked and previewed without the AI | `DoPreview` |
 | `do.run` | `{"id", "confirm"?}` — runs a planned preview once, 200 threads per write through the same store changes as `threads.update` / `threads.mark_read` / `feed.snooze` (Gmail write-back included), logging each thread's state first; emits `do_progress`. A plan that deletes needs `confirm` equal to its `total` | `{"id", "done", "total", "undo_label"}` |
 | `do.undo` | `{"id"}` — puts every thread the run changed back as it was (Later is lifted) | `{"id", "restored"}` |

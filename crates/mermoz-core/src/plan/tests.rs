@@ -414,3 +414,110 @@ fn a_status_move_names_the_status(vocab: Vocab) {
         "Move 3 threads in Travel to Done"
     );
 }
+
+// ---- senders, candidates and picks
+
+#[rstest]
+#[case::description("gemini notes from google meet")]
+#[case::too_many_words("the notes that gemini writes")]
+#[case::about("mail about the gourmet club")]
+fn a_description_in_the_sender_field_is_refused(vocab: Vocab, #[case] from: &str) {
+    let v = with_filter(json!({ "from": [from] }));
+    assert!(checked(v, &vocab).unwrap_err().contains("is not a sender"));
+}
+
+#[rstest]
+#[case::name("Gemini")]
+#[case::full_name("Pierre-Etienne Nageotte")]
+#[case::list_words("esrin gourmet club")]
+#[case::address("gemini@google.example")]
+#[case::domain("news.example")]
+fn a_name_or_address_is_a_sender(vocab: Vocab, #[case] from: &str) {
+    assert!(checked(with_filter(json!({ "from": [from] })), &vocab).is_ok());
+}
+
+#[rstest]
+fn a_subject_prefix_is_kept(vocab: Vocab) {
+    let step = first_step(with_filter(json!({ "subject_prefix": "Notes:" })), &vocab);
+    assert_eq!(step.filter.subject_prefix.as_deref(), Some("Notes:"));
+}
+
+fn gemini() -> CandidateSender {
+    CandidateSender {
+        email: "gemini@google.example".into(),
+        name: "Gemini".into(),
+        threads: 40,
+        subjects: vec!["Notes:".into()],
+    }
+}
+
+#[rstest]
+fn the_prompt_lists_a_candidate_with_its_subjects() {
+    let c = Candidates {
+        senders: vec![gemini()],
+        subjects: vec![],
+    };
+    assert!(
+        user_prompt("delete gemini notes", &[], &c, None)
+            .contains("- sender Gemini <gemini@google.example> · 40 threads · subjects \"Notes:\"")
+    );
+}
+
+#[rstest]
+fn the_prompt_carries_the_rounds() {
+    let rounds = vec![("Which notes?".to_string(), "the meeting ones".to_string())];
+    assert!(
+        user_prompt("delete notes", &rounds, &Candidates::default(), None)
+            .contains("You asked: Which notes?\nThe user answered: the meeting ones")
+    );
+}
+
+#[rstest]
+fn the_prompt_says_what_was_picked() {
+    let pick = Pick::SubjectPrefix("Notes:".into());
+    assert!(
+        user_prompt("delete notes", &[], &Candidates::default(), Some(&pick))
+            .contains("The user picked the subject starting with \"Notes:\"")
+    );
+}
+
+#[rstest]
+fn a_pick_replaces_the_sender_and_words() {
+    let mut p = Plan {
+        steps: vec![Step {
+            filter: Filter {
+                from: vec!["gemini notes".into()],
+                query: Some("meet".into()),
+                older_than: Some(Age {
+                    amount: 1,
+                    unit: Unit::Year,
+                }),
+                ..Default::default()
+            },
+            action: Action::Delete,
+        }],
+    };
+    Pick::From("gemini@google.example".into()).apply(&mut p);
+    assert_eq!(
+        p.steps[0].filter,
+        Filter {
+            from: vec!["gemini@google.example".into()],
+            older_than: Some(Age {
+                amount: 1,
+                unit: Unit::Year
+            }),
+            ..Default::default()
+        }
+    );
+}
+
+#[rstest]
+#[case::delete("delete all the messages like notes from gemini", Some(Action::Delete))]
+#[case::french("supprime les notes de gemini", Some(Action::Delete))]
+#[case::archive("archive the club mail", Some(Action::SetStatus { status: "archive".into() }))]
+#[case::unread("mark them unread", Some(Action::MarkUnread))]
+#[case::read("mark the newsletters read", Some(Action::MarkRead))]
+#[case::unknown("tidy up gemini", None)]
+fn the_verb_names_the_action(#[case] sentence: &str, #[case] want: Option<Action>) {
+    assert_eq!(action_from_sentence(sentence), want);
+}
