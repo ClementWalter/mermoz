@@ -370,7 +370,12 @@ App: list rows and board cards are conversations ("3 threads"); the reading pane
 is the chat with Messages / People / Docs / Links / Photos tabs, a marker per
 Gmail thread with "Not the same conversation", the reply target named above the
 composer, and Chat about this over the whole conversation. ⇧M or the row menu
-joins selected conversations. The sidebar's Browse section holds People, Docs
+joins selected conversations; so does dropping rows or cards onto another row or
+card (List, Board, a single mail's Feed card), which is outlined "Merge into this
+conversation" while a drop would merge. On the Board only the card merges: its
+column's header, gaps and empty space still set the status. The merged
+conversation opens with "Merged into '…' · Undo"; ⌘Z puts each thread back in
+its conversation and the grouping forgets the join. The sidebar's Browse section holds People, Docs
 (every shared file) and Feeds. The Docs tab merges attachments with files linked
 from other sources (a second source plugs in without changing the tab). The demo
 data (`seed_demo`) includes a three-thread conversation and a feed.

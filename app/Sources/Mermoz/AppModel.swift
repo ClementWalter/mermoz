@@ -191,11 +191,20 @@ final class AppModel {
         var unsnooze: [String] = []
         /// An "Ask Mermoz to do" run: undone as a whole by the daemon.
         var doOperation: String?
+        /// A manual merge: undone by putting each thread back in its conversation.
+        var unmerge: MergeUndo?
     }
 
     var paletteMode: PaletteMode?
     var showShortcuts = false
     var toast: String?
+    /// The toast showing an Undo button (the same text as `toast` while it shows).
+    var toastUndo: String?
+    /// The threads of the drag in progress (or the last one), set as it starts, so a
+    /// card under it can tell whether a drop would merge before anything is dropped.
+    @ObservationIgnored var dragIds: [String] = []
+    /// Stands in for the daemon's merge calls in tests; the client otherwise.
+    @ObservationIgnored var conversationsStub: (any ConversationBackend)?
 
     /// Addresses seen in opened threads; feeds the compose recipient check.
     var checker = RecipientChecker()
@@ -849,7 +858,14 @@ final class AppModel {
 
     /// What a drag carries: every selected id when dragging one of them.
     func dragPayload(_ id: String) -> String {
-        multiSelection.count > 1 && multiSelection.contains(id) ? multiSelection.joined(separator: "\n") : id
+        dragIds = multiSelection.count > 1 && multiSelection.contains(id) ? multiSelection : [id]
+        return dragIds.joined(separator: "\n")
+    }
+
+    /// What dragging a sidebar status carries; it is no thread, so no card offers a merge.
+    func statusDragPayload(_ key: String) -> String {
+        dragIds = []
+        return "status:\(key)"
     }
 
     /// Puts back what reading applied: To do, without the projects the AI added.
@@ -1013,9 +1029,12 @@ final class AppModel {
 
     /// Puts the threads of the last change back as they were: read state, status,
     /// priority, projects and follow-up date.
-    func undo() {
-        guard let entry = undoStack.popLast(), let client else { toast = "Nothing to undo"; return }
-        Task {
+    @discardableResult
+    func undo() -> Task<Void, Never>? {
+        guard let entry = undoStack.popLast() else { toast = "Nothing to undo"; return nil }
+        if let token = entry.unmerge { return unmerge(token, label: entry.label) }
+        guard let client else { toast = "Nothing to undo"; return nil }
+        return Task {
             do {
                 if let op = entry.doOperation {
                     try await client.doUndo(op)

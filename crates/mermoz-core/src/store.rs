@@ -14,7 +14,9 @@ mod addresses;
 mod bodies;
 mod conversations;
 mod counts;
-pub use conversations::{GroupingPlan, PairCandidate};
+pub use conversations::{
+    GroupingPlan, MergeUndo, MergedPair, MergedThread, PairCandidate, PairRecord,
+};
 
 mod feed;
 mod images;

@@ -1,4 +1,5 @@
-/// Board mode: one column per open status; dropping a card changes its status.
+/// Board mode: one column per open status; dropping a card on a column changes its
+/// status, dropping it on another card merges the two conversations.
 import MermozKit
 import SwiftUI
 
@@ -125,18 +126,7 @@ struct BoardColumn: View {
         .background(Color.white.opacity(targeted ? 0.6 : 0.32), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(targeted ? Theme.accent.opacity(0.5) : Color.white.opacity(0.8)))
         .dropDestination(for: String.self) { items, _ in
-            // A multi-selection drag carries its ids one per line.
-            let ids = items.flatMap { $0.split(separator: "\n").map(String.init) }
-            // Dropping sets the column's value: status, priority, or adds the project.
-            switch group.field {
-            case .status: model.update(ids, status: group.key)
-            case .priority: model.update(ids, priority: Int(group.key) ?? 0)
-            case .project:
-                if group.key.isEmpty { return false }
-                model.update(ids, addProjects: [group.key])
-            default: return false
-            }
-            return true
+            model.dropOnColumn(items, group: group)
         } isTargeted: { targeted = $0 }
     }
 
@@ -195,6 +185,9 @@ struct BoardCard: View {
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(selected ? Theme.accent : Color.white, lineWidth: selected ? 2 : 1))
         .contentShape(Rectangle())
         .draggable(model.dragPayload(thread.id))
+        // The card's own drop target, inside the column's: a drop on the card merges, one
+        // on the column's header, gaps or empty space sets its status.
+        .mergeDropTarget(thread.id, radius: 11)
         .contextMenu { ConversationMenu() }
     }
 }

@@ -301,6 +301,40 @@ fn record_pair(
     Ok(())
 }
 
+/// What a manual merge changed, for [`Store::unmerge`]. Field names are single words
+/// so the token goes through the app's snake_case/camelCase coding unchanged.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MergeUndo {
+    pub threads: Vec<MergedThread>,
+    pub pairs: Vec<MergedPair>,
+}
+
+/// A thread's conversation and grouping state before a merge.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MergedThread {
+    pub id: String,
+    pub conversation: Option<String>,
+    pub state: String,
+}
+
+/// A pair a merge recorded as joined, and its row before (none: it was new).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MergedPair {
+    pub later: String,
+    pub earlier: String,
+    pub prior: Option<PairRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PairRecord {
+    pub people: String,
+    pub jev: Option<f64>,
+    pub ai: Option<i64>,
+    pub decision: String,
+    pub source: String,
+    pub created: i64,
+}
+
 impl Store {
     /// Threads waiting in one grouping stage, recent mail first (the rest follows).
     /// With `wait_for_router`, new Unread mail waits for its routing verdict, whose
@@ -685,6 +719,14 @@ impl Store {
     /// Joins the conversations of the given threads into the one of the latest thread.
     /// Returns the conversation id and every thread now in it.
     pub fn merge_threads(&self, ids: &[String]) -> Result<(String, Vec<String>)> {
+        self.merge_threads_undoable(ids).map(|(c, m, _)| (c, m))
+    }
+
+    /// [`Self::merge_threads`], with what [`Self::unmerge`] needs to put it back.
+    pub fn merge_threads_undoable(
+        &self,
+        ids: &[String],
+    ) -> Result<(String, Vec<String>, MergeUndo)> {
         if ids.len() < 2 {
             return Err(Error::InvalidParams(
                 "pick at least two conversations to merge".into(),
@@ -706,9 +748,59 @@ impl Store {
         }
         let (_, lead) = latest.expect("two ids");
         let into = conversation_of(&tx, &lead)?;
+        let mut undo = MergeUndo::default();
+        // Every thread of every conversation joined, as it was before.
+        let mut seen = BTreeSet::new();
+        for id in ids {
+            let cid = conversation_of(&tx, id)?;
+            if !seen.insert(cid.clone()) {
+                continue;
+            }
+            let mut st = tx.prepare_cached(
+                "SELECT id, conversation_id, conv_state FROM threads WHERE conversation_id = ?1",
+            )?;
+            let rows = st.query_map([&cid], |r| {
+                Ok(MergedThread {
+                    id: r.get(0)?,
+                    conversation: r.get(1)?,
+                    state: r.get(2)?,
+                })
+            })?;
+            for t in rows {
+                undo.threads.push(t?);
+            }
+        }
         for id in ids.iter().filter(|i| **i != lead) {
             absorb(&tx, &conversation_of(&tx, id)?, &into)?;
             let (later, earlier) = order_pair(&tx, id, &lead)?;
+            if !undo
+                .pairs
+                .iter()
+                .any(|p| p.later == later && p.earlier == earlier)
+            {
+                let prior = tx
+                    .query_row(
+                        "SELECT people, jev, ai, decision, source, created FROM conversation_pairs
+                         WHERE later = ?1 AND earlier = ?2",
+                        params![later, earlier],
+                        |r| {
+                            Ok(PairRecord {
+                                people: r.get(0)?,
+                                jev: r.get(1)?,
+                                ai: r.get(2)?,
+                                decision: r.get(3)?,
+                                source: r.get(4)?,
+                                created: r.get(5)?,
+                            })
+                        },
+                    )
+                    .optional()?;
+                undo.pairs.push(MergedPair {
+                    later: later.clone(),
+                    earlier: earlier.clone(),
+                    prior,
+                });
+            }
             record_pair(&tx, &later, &earlier, &[], (None, None), "join", "user")?;
         }
         tx.execute(
@@ -720,7 +812,44 @@ impl Store {
             .query_map([&into], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         tx.commit()?;
-        Ok((into, members))
+        Ok((into, members, undo))
+    }
+
+    /// Takes a merge back: each thread returns to the conversation it was in, and the
+    /// pairs the merge taught are as they were before it. Returns the threads touched.
+    pub fn unmerge(&self, undo: &MergeUndo) -> Result<Vec<String>> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        for t in &undo.threads {
+            tx.execute(
+                "UPDATE threads SET conversation_id = ?2, conv_state = ?3 WHERE id = ?1",
+                params![t.id, t.conversation, t.state],
+            )?;
+        }
+        for p in &undo.pairs {
+            match &p.prior {
+                None => {
+                    tx.execute(
+                        "DELETE FROM conversation_pairs WHERE later = ?1 AND earlier = ?2",
+                        params![p.later, p.earlier],
+                    )?;
+                }
+                Some(r) => {
+                    tx.execute(
+                        "INSERT INTO conversation_pairs (later, earlier, people, jev, ai, decision, source, created)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                         ON CONFLICT(later, earlier) DO UPDATE SET people = excluded.people, jev = excluded.jev,
+                           ai = excluded.ai, decision = excluded.decision, source = excluded.source,
+                           created = excluded.created",
+                        params![
+                            p.later, p.earlier, r.people, r.jev, r.ai, r.decision, r.source, r.created
+                        ],
+                    )?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(undo.threads.iter().map(|t| t.id.clone()).collect())
     }
 
     /// Ids of a thread's conversation, oldest first.
@@ -1413,6 +1542,102 @@ mod tests {
         let (a, b) = env.pair(3);
         env.store.merge_threads(&[a.clone(), b.clone()]).unwrap();
         assert_eq!(env.conv(&a), env.conv(&b));
+    }
+
+    #[rstest]
+    fn unmerging_puts_the_conversations_apart_again(env: Env) {
+        let (a, b) = env.pair(3);
+        let (_, _, undo) = env
+            .store
+            .merge_threads_undoable(&[a.clone(), b.clone()])
+            .unwrap();
+        env.store.unmerge(&undo).unwrap();
+        assert_ne!(env.conv(&a), env.conv(&b));
+    }
+
+    #[rstest]
+    fn unmerging_keeps_a_joined_conversation_whole(env: Env) {
+        let (a, b) = env.joined_pair();
+        let c = env.mail(Mail {
+            gthread: "gc",
+            subject: "Keys",
+            days_ago: 0,
+            ..Default::default()
+        });
+        let (_, _, undo) = env
+            .store
+            .merge_threads_undoable(&[c.clone(), b.clone()])
+            .unwrap();
+        env.store.unmerge(&undo).unwrap();
+        assert_eq!(env.conv(&a), env.conv(&b));
+    }
+
+    #[rstest]
+    fn unmerging_leaves_the_merged_in_thread_alone(env: Env) {
+        let (a, b) = env.joined_pair();
+        let c = env.mail(Mail {
+            gthread: "gc",
+            subject: "Keys",
+            days_ago: 0,
+            ..Default::default()
+        });
+        let (_, _, undo) = env
+            .store
+            .merge_threads_undoable(&[c.clone(), b.clone()])
+            .unwrap();
+        env.store.unmerge(&undo).unwrap();
+        assert_ne!(env.conv(&c), env.conv(&a));
+    }
+
+    #[rstest]
+    fn unmerging_forgets_the_manual_join(env: Env) {
+        let (a, b) = env.pair(3);
+        let (_, _, undo) = env
+            .store
+            .merge_threads_undoable(&[a.clone(), b.clone()])
+            .unwrap();
+        env.store.unmerge(&undo).unwrap();
+        let joins: i64 = env
+            .store
+            .r
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM conversation_pairs WHERE source = 'user' AND decision = 'join'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(joins, 0);
+    }
+
+    #[rstest]
+    fn a_merge_is_learned_as_a_manual_join(env: Env) {
+        let (a, b) = env.pair(3);
+        env.store.merge_threads(&[a.clone(), b.clone()]).unwrap();
+        let joins: i64 = env
+            .store
+            .r
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM conversation_pairs WHERE source = 'user' AND decision = 'join'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(joins, 1);
+    }
+
+    #[rstest]
+    fn unmerging_restores_the_lead_of_each_conversation(env: Env) {
+        let (a, b) = env.pair(3);
+        let (_, _, undo) = env
+            .store
+            .merge_threads_undoable(&[a.clone(), b.clone()])
+            .unwrap();
+        env.store.unmerge(&undo).unwrap();
+        assert_eq!(env.leads().len(), 2);
     }
 
     #[rstest]

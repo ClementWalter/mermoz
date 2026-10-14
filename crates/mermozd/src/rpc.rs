@@ -7,7 +7,7 @@ use mermoz_core::model::{Draft, new_id, now_ms};
 use mermoz_core::oauth::ClientConfig;
 use mermoz_core::sanitize::{has_remote_images, sanitize_html_with};
 use mermoz_core::store::{
-    AttachmentSource, ColumnScope, NewAttachment, SortAnswer, SortUndo, SuggestedFilter,
+    AttachmentSource, ColumnScope, MergeUndo, NewAttachment, SortAnswer, SortUndo, SuggestedFilter,
     SuggestionGroup, ThreadFilter, ThreadPatch,
 };
 use mermoz_core::sync::Event;
@@ -336,9 +336,20 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .iter()
                 .map(|i| st.resolve_thread_id(i))
                 .collect::<Result<_, _>>()?;
-            let (conversation, members) = st.merge_threads(&ids)?;
+            let (conversation, members, undo) = st.merge_threads_undoable(&ids)?;
             let _ = svc.events.send(Event::ThreadsChanged(members.clone()));
-            Ok(json!({ "conversation_id": conversation, "threads": members.len() }))
+            Ok(
+                json!({ "conversation_id": conversation, "threads": members.len(),
+                "members": members, "undo": undo }),
+            )
+        }
+        "conversations.unmerge" => {
+            let undo: MergeUndo =
+                serde_json::from_value(p.get("undo").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| RpcError::invalid(format!("bad 'undo': {e}")))?;
+            let touched = st.unmerge(&undo)?;
+            let _ = svc.events.send(Event::ThreadsChanged(touched.clone()));
+            Ok(json!({ "threads": touched.len() }))
         }
         "conversations.progress" => {
             let b = st.grouping_backlog()?;

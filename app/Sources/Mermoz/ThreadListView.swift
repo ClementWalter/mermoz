@@ -383,6 +383,7 @@ struct ThreadRow: View, Equatable {
         .overlay(alignment: .top) { Rectangle().fill(Theme.line.opacity(0.8)).frame(height: 1) }
         .contentShape(Rectangle())
         .draggable(model.dragPayload(thread.id))
+        .mergeDropTarget(thread.id)
         .contextMenu { ConversationMenu() }
     }
 }

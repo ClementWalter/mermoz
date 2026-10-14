@@ -198,7 +198,7 @@ struct StatusRow: View {
         .onTapGesture { model.select(.status(status.key)) }
         .accessibilityAddTraits(.isButton)
         // Drag a status onto another to reorder; drop thread cards to move them here.
-        .draggable("status:\(status.key)") {
+        .draggable(model.statusDragPayload(status.key)) {
             HStack(spacing: 6) { StatusIcon(key: status.key, color: Color(hex: status.color)); Text(status.name) }
                 .padding(6).background(.white, in: RoundedRectangle(cornerRadius: 6))
         }

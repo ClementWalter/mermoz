@@ -144,11 +144,6 @@ public final class DaemonClient: Sendable {
         try await callVoid("conversations.split", Params().with("id", threadId))
     }
 
-    /// Joins the conversations of these threads into one.
-    public func mergeConversations(_ threadIds: [String]) async throws {
-        try await callVoid("conversations.merge", Params().with("ids", threadIds))
-    }
-
     /// The email exactly as received (all headers), fetched only on request.
     public func messageSource(_ id: String) async throws -> MessageSource {
         try await call("messages.source", Params().with("id", id))

@@ -3335,6 +3335,45 @@ fn merging_joins_conversations_by_hand(nora: World) {
 }
 
 #[rstest]
+fn undoing_a_merge_puts_the_conversations_apart(nora: World) {
+    let a = nora.thread_by_subject("Audit report v2")["id"].clone();
+    let b = nora.thread_by_subject("Budget sheet")["id"].clone();
+    let merged = nora.ok("conversations.merge", json!({ "ids": [a, b] }));
+    nora.ok("conversations.unmerge", json!({ "undo": merged["undo"] }));
+    assert_ne!(
+        conversation_of(&nora, "Audit report v2"),
+        conversation_of(&nora, "Budget sheet")
+    );
+}
+
+#[rstest]
+fn a_merge_lists_the_threads_now_together(nora: World) {
+    let a = nora.thread_by_subject("Audit report v2")["id"].clone();
+    let b = nora.thread_by_subject("Budget sheet")["id"].clone();
+    let merged = nora.ok("conversations.merge", json!({ "ids": [a, b] }));
+    assert_eq!(merged["members"].as_array().unwrap().len(), 2);
+}
+
+#[rstest]
+fn undoing_a_merge_lists_both_conversations_again(nora: World) {
+    let listed = |w: &World| {
+        w.ok(
+            "threads.list",
+            json!({ "conversations": true, "limit": 200 }),
+        )["threads"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let before = listed(&nora);
+    let a = nora.thread_by_subject("Audit report v2")["id"].clone();
+    let b = nora.thread_by_subject("Budget sheet")["id"].clone();
+    let merged = nora.ok("conversations.merge", json!({ "ids": [a, b] }));
+    nora.ok("conversations.unmerge", json!({ "undo": merged["undo"] }));
+    assert_eq!(listed(&nora), before);
+}
+
+#[rstest]
 fn chat_about_a_conversation_reads_every_thread(nora: World) {
     allow_ai(&nora);
     let id = nora.thread_by_subject("Signing postponed")["id"].clone();

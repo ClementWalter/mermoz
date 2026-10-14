@@ -40,22 +40,95 @@ extension AppModel {
     }
 
     /// Joins the selected rows into one conversation (⇧M, or the row menu).
-    func mergeSelected() {
+    @discardableResult
+    func mergeSelected() -> Task<Void, Never>? {
         let ids = targetIds
-        guard ids.count > 1, let client else {
+        guard ids.count > 1, let target = selectedThreadId ?? ids.last else {
             toast = "Select two conversations or more to join them (⇧ or ⌘ click)"
-            return
+            return nil
         }
-        Task {
+        return merge(ids.filter { $0 != target }, into: target)
+    }
+
+    /// Rows or cards dropped on a Board column, beside its cards: they take the column's
+    /// value (status, priority, or its project). False when the column has none to give.
+    func dropOnColumn(_ items: [String], group: ThreadGroup) -> Bool {
+        dragIds = []
+        let ids = MergeDrop.ids(in: items)
+        guard !ids.isEmpty else { return false }
+        switch group.field {
+        case .status: update(ids, status: group.key)
+        case .priority: update(ids, priority: Int(group.key) ?? 0)
+        case .project:
+            if group.key.isEmpty { return false }
+            update(ids, addProjects: [group.key])
+        default: return false
+        }
+        return true
+    }
+
+    /// The daemon's merge calls: the client, or a stub in tests.
+    var conversationCalls: (any ConversationBackend)? { conversationsStub ?? client }
+
+    /// Whether the drag in progress would merge into `target`: anything but itself.
+    func canMerge(into target: String) -> Bool { MergeDrop.merge(dragIds, onto: target) != nil }
+
+    /// Rows or cards dropped onto another one: they join its conversation. Nil (the drop
+    /// is refused) when nothing but the target itself was dropped.
+    @discardableResult
+    func dropMerge(_ items: [String], onto target: String) -> Task<Void, Never>? {
+        dragIds = []
+        let dropped = MergeDrop.ids(in: items)
+        guard MergeDrop.merge(dropped, onto: target) != nil else { return nil }
+        return merge(dropped, into: target)
+    }
+
+    /// Joins `ids` into `target`'s conversation, then shows it: selected, in the pane, with
+    /// "Merged into '…' · Undo"; ⌘Z puts the conversations back apart.
+    @discardableResult
+    func merge(_ ids: [String], into target: String) -> Task<Void, Never>? {
+        guard let calls = conversationCalls, let all = MergeDrop.merge(ids, onto: target) else { return nil }
+        let subject = summary(of: target)?.subject
+        return Task {
             do {
-                try await client.mergeConversations(ids)
-                toast = "Joined into one conversation"
+                let r = try await calls.mergeConversations(all)
+                undoStack.append(UndoEntry(label: "Merge", before: [], unmerge: r.undo))
+                if undoStack.count > 100 { undoStack.removeFirst() }
                 multiSelection = []
+                await loadList()
+                refreshCounts()
+                // The conversation's row now carries one of its threads, maybe not the target.
+                let shown = threads.first { r.members.contains($0.id) }?.id
+                    ?? feed?.cards.first { r.members.contains($0.thread.id) }?.thread.id
+                    ?? target
+                if let card = feed?.cards.first(where: { $0.thread.id == shown }) { feedFocus = card.id }
+                if selectedThreadId == shown { await reloadDetail() } else { open(shown) }
+                let name = summary(of: shown)?.subject ?? subject ?? ""
+                let text = "Merged into “\(name.isEmpty ? "(no subject)" : name)”"
+                toast = text
+                toastUndo = text
+            } catch { report(error) }
+        }
+    }
+
+    /// ⌘Z after a merge: each thread back in the conversation it was in.
+    @discardableResult
+    func unmerge(_ token: MergeUndo, label: String) -> Task<Void, Never>? {
+        guard let calls = conversationCalls else { return nil }
+        return Task {
+            do {
+                try await calls.unmergeConversations(token)
+                toast = "Undid \(label)"
                 await loadList()
                 refreshCounts()
                 await reloadDetail()
             } catch { report(error) }
         }
+    }
+
+    /// A thread as the List, the pane or the Feed holds it.
+    func summary(of id: String) -> ThreadSummary? {
+        threads.first { $0.id == id } ?? (detail?.thread.id == id ? detail?.thread : nil) ?? feedThread(id)
     }
 
     /// Files linked to the conversation from other sources than attachments: Google

@@ -232,16 +232,29 @@ struct ToastView: View {
 
     var body: some View {
         if let t = model.toast {
-            Text(t)
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(Theme.text)
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .glassEffect(.regular, in: Capsule())
-                .padding(.bottom, 18)
-                .task(id: t) {
-                    try? await Task.sleep(for: .seconds(2.5))
-                    if model.toast == t { model.toast = nil }
+            let undoable = model.toastUndo == t
+            HStack(spacing: 6) {
+                Text(t)
+                if undoable {
+                    Text("·").foregroundStyle(Theme.text3)
+                    Button("Undo") { model.undo() }
+                        .buttonStyle(.plain).foregroundStyle(Theme.accent).fontWeight(.semibold)
+                        .help("Undo (⌘Z)")
                 }
+            }
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .glassEffect(.regular, in: Capsule())
+            .padding(.bottom, 18)
+            .task(id: t) {
+                // Long enough to reach the Undo button when there is one.
+                try? await Task.sleep(for: .seconds(undoable ? 6 : 2.5))
+                if model.toast == t {
+                    model.toast = nil
+                    model.toastUndo = nil
+                }
+            }
         }
     }
 }

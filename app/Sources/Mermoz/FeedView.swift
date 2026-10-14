@@ -208,6 +208,24 @@ struct FeedCardView: View, Equatable {
         .contentShape(Rectangle())
         // Like a row in the List: a click shows the mail in the reading pane.
         .onTapGesture { model.openCard(card) }
+        .modifier(CardDragMerge(card: card))
+    }
+}
+
+/// A single mail's card drags like a List row and takes rows or cards dropped on it into
+/// its conversation; a batch of mails does neither.
+struct CardDragMerge: ViewModifier {
+    @Environment(AppModel.self) private var model
+    let card: FeedCard
+
+    func body(content: Content) -> some View {
+        if card.isBatch {
+            content
+        } else {
+            content
+                .draggable(model.dragPayload(card.thread.id))
+                .mergeDropTarget(card.thread.id, radius: 12)
+        }
     }
 }
 

@@ -241,7 +241,8 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
 | `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n}` (`earlier`: messages left out by `latest`) |
 | `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
-| `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's                | `{"conversation_id", "threads": n}`      |
+| `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's; a manual join the grouping learns from | `{"conversation_id", "threads": n, "members": [id], "undo"}` |
+| `conversations.unmerge` | `{"undo"}` — the `undo` a merge returned: each thread back in its conversation, the join unlearned | `{"threads": n}` |
 | `conversations.progress` | `{}` — background grouping                                                           | `{"pending": n, "waiting_for_ai": n}`    |
 | `files.list`         | `{"query"?, "limit"?: 200}` — files shared anywhere, newest first                        | `[SharedFile]`                           |
 | `threads.update`     | the other open threads of each conversation follow · `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
