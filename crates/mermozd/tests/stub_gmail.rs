@@ -42,6 +42,8 @@ pub struct Mailbox {
     pub jev_auth: Vec<String>,
     /// Feed judgments the stub Jev made.
     pub jev_feed_calls: usize,
+    /// The subject of each thread the stub Jev judged for the feed.
+    pub jev_feed_subjects: Vec<String>,
     /// Card words the stub AI wrote.
     pub feed_text_calls: usize,
     /// Jev answers 429 (Retry-After 100 ms) to this many calls first.
@@ -410,7 +412,12 @@ async fn system_one(
     let feed_kind = questions
         .get("kind")
         .map(|_| feed_kind(body["state"]["subject"].as_str().unwrap_or("")));
-    s.lock().unwrap().jev_feed_calls += feed_kind.is_some() as usize;
+    if feed_kind.is_some() {
+        let mut m = s.lock().unwrap();
+        m.jev_feed_calls += 1;
+        m.jev_feed_subjects
+            .push(body["state"]["subject"].as_str().unwrap_or("").to_string());
+    }
     let mut answers = serde_json::Map::new();
     for (id, q) in questions.as_object().into_iter().flatten() {
         let first_option = || {

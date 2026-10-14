@@ -833,3 +833,131 @@ fn mail_back_from_later_is_first_among_unread() {
     let f = feed(vec![idle("newer", "unread", 1), back]);
     assert_eq!(ids(&f), vec!["back", "newer"]);
 }
+
+// ---- conversations ---------------------------------------------------------------
+
+/// Thread `id` of conversation `conv`, last written `days` ago.
+fn in_conv(conv: &str, id: &str, status: &str, days: i64, j: Option<Judgment>) -> FeedUnit {
+    let mut u = idle(id, status, days);
+    u.threads[0].conversation_id = conv.into();
+    u.judgment = j;
+    u
+}
+
+/// Three threads of conversation "c": "old" (5 days), "mid" (3) and "new" (1).
+fn conversation(statuses: [&str; 3], judgments: [Option<Judgment>; 3]) -> Vec<FeedUnit> {
+    let [a, b, c] = judgments;
+    vec![
+        in_conv("c", "new", statuses[2], 1, c),
+        in_conv("c", "mid", statuses[1], 3, b),
+        in_conv("c", "old", statuses[0], 5, a),
+    ]
+}
+
+fn folded(units: Vec<FeedUnit>) -> Feed {
+    feed(fold(units, today()))
+}
+
+#[rstest]
+fn a_conversation_is_one_card() {
+    let f = folded(conversation(["todo"; 3], [None, None, None]));
+    assert_eq!(ids(&f), vec!["c"]);
+}
+
+#[rstest]
+fn a_conversation_card_is_about_its_newest_thread() {
+    let f = folded(conversation(["todo"; 3], [None, None, None]));
+    assert_eq!(f.sections[0].cards[0].thread.id, "new");
+}
+
+#[rstest]
+fn a_conversation_with_one_unread_thread_is_unread() {
+    let f = folded(conversation(["unread", "todo", "todo"], [None, None, None]));
+    assert_eq!(f.sections[0].key, Section::Unread);
+}
+
+#[rstest]
+fn a_conversation_takes_its_newest_judgment() {
+    let f = folded(conversation(
+        ["todo"; 3],
+        [
+            Some(judged(Kind::Payment)),
+            Some(judged(Kind::Decision)),
+            None,
+        ],
+    ));
+    assert_eq!(f.sections[0].cards[0].kind, Kind::Decision);
+}
+
+#[rstest]
+fn a_deadline_in_an_older_thread_is_kept() {
+    let f = folded(conversation(
+        ["todo"; 3],
+        [
+            Some(due_in(Kind::Event, 4)),
+            None,
+            Some(judged(Kind::Reply)),
+        ],
+    ));
+    assert_eq!(f.sections[0].cards[0].due, due_in(Kind::Event, 4).due);
+}
+
+#[rstest]
+fn a_deadline_ahead_wins_over_one_that_passed() {
+    let f = folded(conversation(
+        ["todo"; 3],
+        [
+            Some(due_in(Kind::Event, 6)),
+            None,
+            Some(due_in(Kind::Event, -2)),
+        ],
+    ));
+    assert_eq!(f.sections[0].cards[0].due, due_in(Kind::Event, 6).due);
+}
+
+#[rstest]
+fn the_nearest_deadline_ahead_is_shown() {
+    let f = folded(conversation(
+        ["todo"; 3],
+        [
+            Some(due_in(Kind::Event, 3)),
+            None,
+            Some(due_in(Kind::Event, 9)),
+        ],
+    ));
+    assert_eq!(f.sections[0].cards[0].due, due_in(Kind::Event, 3).due);
+}
+
+#[rstest]
+fn a_follow_up_date_on_an_older_thread_counts() {
+    let mut units = conversation(["todo"; 3], [None, None, None]);
+    units[2].threads[0].due = Some((today() + chrono::Duration::days(1)).to_string());
+    assert_eq!(folded(units).sections[0].key, Section::Now);
+}
+
+#[rstest]
+fn the_batch_counts_conversations() {
+    let units: Vec<FeedUnit> = conversation(["unread"; 3], [None, None, None])
+        .into_iter()
+        .map(|u| FeedUnit {
+            learned_noise: true,
+            judgment: Some(judged(Kind::Cleanup)),
+            ..u
+        })
+        .collect();
+    assert_eq!(folded(units).sections[0].cards[0].members.len(), 1);
+}
+
+#[rstest]
+fn the_feed_counts_conversations() {
+    assert_eq!(
+        folded(conversation(["todo"; 3], [None, None, None])).open,
+        1
+    );
+}
+
+#[rstest]
+fn a_lone_thread_keeps_its_own_id() {
+    let f = folded(vec![unit("t", "todo", None)]);
+    assert_eq!(ids(&f), vec!["t"]);
+}

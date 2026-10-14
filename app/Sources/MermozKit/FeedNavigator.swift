@@ -1,6 +1,7 @@
 /// The Feed's focused card and the reading pane move together: on j/k and the arrows, when
-/// an action takes a card away, and when undo brings it back. Kept pure so the pairing is
-/// tested; the app applies `focus` and `pane` in one go.
+/// an action takes a card away, and when undo brings it back. A card is a conversation,
+/// keyed by its conversation id; the pane shows the conversation through its newest
+/// thread. Kept pure so the pairing is tested; the app applies `focus` and `pane` in one go.
 import Foundation
 
 public struct FeedNavigator: Equatable, Sendable {
@@ -33,10 +34,24 @@ public struct FeedNavigator: Equatable, Sendable {
         land(on: feed.card(FeedFocus.after(removing: cardId, from: ids)))
     }
 
-    /// Undo brought these threads back: their card is focused and shown again.
+    /// Undo brought these threads back: their card is focused and shown again. A
+    /// conversation's card is found by its id or by the thread it shows.
     public mutating func restore(_ threadIds: [String], in feed: Feed) {
-        guard let card = feed.cards.first(where: { !Set($0.threadIds).isDisjoint(with: threadIds) }) else { return }
+        let back = Set(threadIds)
+        guard let card = feed.cards.first(where: { back.contains($0.id) || !back.isDisjoint(with: $0.threadIds) })
+        else { return }
         land(on: card)
+    }
+
+    /// After a refresh: a focused card whose id is gone (its thread joined another
+    /// conversation) is found again by the mail in the pane; else the first card.
+    public mutating func refocus(in feed: Feed) {
+        guard feed.card(focus) == nil else { return }
+        if let pane, let card = feed.cards.first(where: { $0.threadIds.contains(pane) }) {
+            focus = card.id
+        } else {
+            focus = feed.cards.first?.id
+        }
     }
 
     /// The cards around the focus, whose mail is worth fetching ahead.

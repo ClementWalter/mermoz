@@ -1,6 +1,6 @@
-//! The Feed on the daemon side: Jev judges open threads in the background (one call per
-//! thread, redone when new mail arrives), and the account's AI writes a card's words
-//! only when the app shows that card.
+//! The Feed on the daemon side: Jev judges open conversations in the background (one
+//! call on each conversation's newest thread, redone when new mail arrives), and the
+//! account's AI writes a card's words only when the app shows that card.
 
 use crate::service::{Service, pause_reason, transient};
 use mermoz_core::feed::{self, dates, later, money, texts};
@@ -154,9 +154,14 @@ async fn judge_round(svc: &Arc<Service>, p: jev::Provider, key: &str) -> Result<
     let mut outcomes = vec![];
     let mut scanned = vec![];
     for (tid, last_date, backlog) in batch {
-        let input = st.route_input(&tid)?;
+        // One call per conversation, on its newest thread, reading the whole conversation.
+        let (input, written) = st.feed_input(&tid)?;
         let text = mermoz_core::store::Store::feed_text(&input);
-        let found = dates::candidates(&text, feed::day_of(last_date));
+        let mut parts = vec![(input.subject.as_str(), feed::day_of(last_date))];
+        for (m, at) in input.recent_messages.iter().zip(&written) {
+            parts.push((m.text.as_str(), feed::day_of(*at)));
+        }
+        let found = dates::candidates_in(&parts);
         // Backlog is only worth a call when a date it mentions is close.
         if backlog && !feed::backlog_worth_judging(&found, today) {
             st.save_judgment(&tid, &Default::default(), last_date, false, &today_s)?;

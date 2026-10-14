@@ -1,9 +1,11 @@
 //! The Feed: everything open, as an ordered stream of cards, one thing to do each.
 //!
+//! One card per conversation (Gmail threads read as one chat), shown as its newest thread.
 //! Code decides what is in the feed, in which section and in what order, so the order is
-//! stable and every position can be explained. Jev supplies the per-thread judgments
-//! (card kind, needs a reply, urgency, the deadline and the amount among those written in
-//! the mail); the account's AI only writes words (title, why now, drafts), lazily.
+//! stable and every position can be explained. Jev supplies the judgments, one call on a
+//! conversation's newest thread (card kind, needs a reply, urgency, the deadline and the
+//! amount among those written in the mail); the account's AI only writes words (title,
+//! why now, drafts), lazily.
 
 pub mod dates;
 pub mod later;
@@ -14,7 +16,7 @@ use crate::model::ThreadSummary;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub use texts::Texts;
 
@@ -241,11 +243,13 @@ impl Section {
     }
 }
 
-/// One piece of work the feed can show. Today it is one Gmail thread; a conversation
-/// (several threads with the same people about one topic) fits the same shape, with
-/// its threads in `threads`, the most recent first.
+/// One piece of work the feed can show: a conversation (Gmail threads with the same
+/// people about one matter, or one automated sender's mail), with its threads in the
+/// feed in `threads`, the most recent first. The store reads one unit per thread;
+/// [`fold`] joins them per conversation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedUnit {
+    /// The conversation id (a lone thread's own id).
     pub id: String,
     pub threads: Vec<ThreadSummary>,
     pub judgment: Option<Judgment>,
@@ -307,12 +311,88 @@ pub fn effective_kind(u: &FeedUnit) -> Kind {
     }
 }
 
+/// The follow-up date the user set on the conversation (the earliest when its threads
+/// differ).
+pub fn follow_up_of(u: &FeedUnit) -> Option<String> {
+    u.threads.iter().filter_map(|t| t.due.clone()).min()
+}
+
 /// The deadline a card shows: the user's own follow-up date first, else the one Jev picked.
 pub fn due_of(u: &FeedUnit) -> Option<String> {
-    u.primary()
-        .due
-        .clone()
-        .or_else(|| u.judgment.as_ref().and_then(|j| j.due.clone()))
+    follow_up_of(u).or_else(|| u.judgment.as_ref().and_then(|j| j.due.clone()))
+}
+
+/// The deadline among several ("YYYY-MM-DD", time): the nearest one still ahead, else
+/// the one that passed last.
+fn nearest_due(
+    dues: impl Iterator<Item = (String, Option<String>)>,
+    today: NaiveDate,
+) -> Option<(String, Option<String>)> {
+    let all: Vec<_> = dues.collect();
+    let ahead = all
+        .iter()
+        .filter(|(d, _)| days_until(d, today).is_some_and(|n| n >= 0))
+        .min_by(|a, b| a.0.cmp(&b.0));
+    ahead
+        .or_else(|| all.iter().max_by(|a, b| a.0.cmp(&b.0)))
+        .cloned()
+}
+
+/// One unit per conversation, in the order the conversations first appear. A
+/// conversation shows as its newest thread (its kind, dates, status, words and sender),
+/// judged by its newest judgment; a deadline from any of its threads counts, and it is
+/// unread while any of them is.
+pub fn fold(units: Vec<FeedUnit>, today: NaiveDate) -> Vec<FeedUnit> {
+    let mut order: Vec<String> = vec![];
+    let mut groups: HashMap<String, Vec<FeedUnit>> = HashMap::new();
+    for u in units {
+        let t = u.primary();
+        let key = if t.conversation_id.is_empty() {
+            t.id.clone()
+        } else {
+            t.conversation_id.clone()
+        };
+        groups
+            .entry(key.clone())
+            .or_insert_with(|| {
+                order.push(key);
+                vec![]
+            })
+            .push(u);
+    }
+    order
+        .into_iter()
+        .filter_map(|k| groups.remove(&k).map(|g| join(k, g, today)))
+        .collect()
+}
+
+/// A conversation's units as one (see [`fold`]).
+fn join(id: String, mut parts: Vec<FeedUnit>, today: NaiveDate) -> FeedUnit {
+    parts.sort_by_key(|u| std::cmp::Reverse(u.primary().last_date));
+    let judgments: Vec<&Judgment> = parts.iter().filter_map(|u| u.judgment.as_ref()).collect();
+    let mut judgment = judgments.first().map(|j| (*j).clone());
+    if let Some(j) = judgment.as_mut() {
+        let dues = judgments
+            .iter()
+            .filter_map(|x| x.due.clone().map(|d| (d, x.due_time.clone())));
+        if let Some((due, time)) = nearest_due(dues, today) {
+            j.due = Some(due);
+            j.due_time = time;
+        }
+        if j.amount.is_none() {
+            j.amount = judgments.iter().find_map(|x| x.amount.clone());
+        }
+    }
+    let back_from_later = parts.iter().find_map(|u| u.back_from_later.clone());
+    let threads = parts.iter().flat_map(|u| u.threads.clone()).collect();
+    let lead = parts.swap_remove(0);
+    FeedUnit {
+        id,
+        threads,
+        judgment,
+        back_from_later,
+        ..lead
+    }
 }
 
 /// How long the user waits before a nudge is due: twice the usual answer time, at least 2 days.
@@ -434,7 +514,6 @@ pub fn due_words(date: &str, today: NaiveDate) -> String {
 /// "Why this card?": the facts that put it here, in plain words, without numbers from
 /// the model. The AI's own sentence (`Texts::why`) comes on top when there is one.
 pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
-    let t = u.primary();
     let j = u.judgment.as_ref();
     let mut out = vec![];
     if let Some(when) = &u.back_from_later {
@@ -466,7 +545,7 @@ pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
     }
     if let Some(due) = due_of(u) {
         let words = due_words(&due, today);
-        let mine = t.due.is_some();
+        let mine = follow_up_of(u).is_some();
         out.push(match (kind, days_until(&due, today)) {
             (_, Some(d)) if d < 0 => format!("The date passed {words}."),
             (Kind::Event, _) => format!("It happens {}.", on(&words)),
@@ -499,7 +578,7 @@ pub fn reasons(u: &FeedUnit, kind: Kind, today: NaiveDate) -> Vec<String> {
     if j.is_some_and(|j| j.sender_weight >= 0.5) {
         out.push("You usually answer these people.".into());
     }
-    if t.unread {
+    if u.threads.iter().any(|t| t.unread) {
         out.push("You haven't read it yet.".into());
     }
     if out.is_empty() {
@@ -524,15 +603,17 @@ fn plural_days(n: i64) -> String {
     }
 }
 
-/// One card of the feed. Batches (clean-up, reading) carry their threads in `members`.
+/// One card of the feed: a conversation, or a batch (clean-up, reading) of
+/// conversations, each as its newest thread in `members`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Card {
+    /// The conversation id, or `batch:cleanup` / `batch:reading`.
     pub id: String,
     pub kind: Kind,
     pub section: Section,
-    /// The thread the card is about (a batch's most recent one).
+    /// The conversation's newest thread (a batch's most recent one).
     pub thread: ThreadSummary,
-    /// Every thread a batch covers; empty for single cards.
+    /// The newest thread of each conversation a batch covers; empty for single cards.
     pub members: Vec<ThreadSummary>,
     /// What to do, as a short phrase: the AI's when written, else the subject.
     pub title: String,
@@ -567,7 +648,7 @@ pub const MAX_BATCH_MEMBERS: usize = 50;
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Feed {
     pub sections: Vec<FeedSection>,
-    /// Open threads in the feed (a batch counts each of its threads).
+    /// Open conversations in the feed (a batch counts each of its conversations).
     pub open: usize,
     /// How many of them Jev has judged; the rest show plain facts until it has.
     pub judged: usize,
@@ -719,12 +800,8 @@ fn place_batch(kind: Kind, units: Vec<FeedUnit>, ai: &HashSet<String>) -> Placed
 /// newest first; the rest follows [`section`] and [`order_key`]. `ai_accounts` are the
 /// accounts whose mail may go to an AI.
 pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<String>) -> Feed {
-    let open = units.iter().map(|u| u.threads.len()).sum();
-    let judged = units
-        .iter()
-        .filter(|u| u.judgment.is_some())
-        .map(|u| u.threads.len())
-        .sum();
+    let open = units.len();
+    let judged = units.iter().filter(|u| u.judgment.is_some()).count();
     // Cards are built only for the units shown: ordering needs every unit, words don't.
     let mut placed: Vec<Placed> = vec![];
     let (mut cleanup, mut reading) = (vec![], vec![]);

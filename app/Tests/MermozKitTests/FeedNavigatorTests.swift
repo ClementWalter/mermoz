@@ -185,3 +185,87 @@ private let afterReading = Feed(sections: [
     let next = FeedHold.keep("v", from: beforeReading, in: afterReading)
     #expect(next == afterReading)
 }
+
+// MARK: conversations
+
+/// A conversation card: keyed by the conversation id (its first thread, `old`), shown
+/// through its newest thread `new`.
+private func conversationCard(_ conv: String, newest: String, in section: String = "now") -> FeedCard {
+    FeedCard(id: conv, kind: .reply, section: section, thread: thread(newest), title: "T")
+}
+
+private let conversations = Feed(sections: [FeedSection(key: "now", title: "Now", cards: [
+    card("a"), conversationCard("old", newest: "new"), card("c"),
+])])
+
+@Test func anArrowOntoAConversationFocusesItsId() {
+    var nav = on("a")
+    nav.move(by: 1, in: conversations)
+    #expect(nav.focus == "old")
+}
+
+@Test func anArrowOntoAConversationShowsItsNewestThread() {
+    var nav = on("a")
+    nav.move(by: 1, in: conversations)
+    #expect(nav.pane == "new")
+}
+
+@Test func archivingAConversationMovesFocusAndPaneTogether() {
+    var nav = FeedNavigator(focus: "old", pane: "new")
+    nav.leave("old", in: conversations)
+    #expect(nav == on("c"))
+}
+
+@Test func undoOfAConversationFindsItFromAnyOfItsThreads() {
+    var nav = on("c")
+    nav.restore(["old", "mid", "new"], in: conversations)
+    #expect(nav == FeedNavigator(focus: "old", pane: "new"))
+}
+
+@Test func undoOfAConversationFindsItByItsNewestThread() {
+    var nav = on("c")
+    nav.restore(["new"], in: conversations)
+    #expect(nav.focus == "old")
+}
+
+@Test func aConversationsNeighboursAreFetchedByTheirThreads() {
+    #expect(FeedNavigator(focus: "old", pane: "new").neighbours(in: conversations) == ["thr_c", "thr_a"])
+}
+
+@Test func aConversationThatJoinsAnotherKeepsTheFocus() {
+    // The focused thread `t5` joined the conversation `t1`: its card has a new id.
+    let after = Feed(sections: [FeedSection(key: "now", title: "Now", cards: [card("a"), conversationCard("t1", newest: "t5")])])
+    var nav = FeedNavigator(focus: "t5", pane: "t5")
+    nav.refocus(in: after)
+    #expect(nav.focus == "t1")
+}
+
+@Test func aFocusThatIsGoneFallsBackToTheFirstCard() {
+    var nav = FeedNavigator(focus: "gone", pane: nil)
+    nav.refocus(in: conversations)
+    #expect(nav.focus == "a")
+}
+
+@Test func aFocusStillThereIsKept() {
+    var nav = FeedNavigator(focus: "old", pane: "new")
+    nav.refocus(in: conversations)
+    #expect(nav.focus == "old")
+}
+
+@Test func readingAFocusedUnreadConversationKeepsItInPlace() {
+    let before = Feed(sections: [
+        FeedSection(key: "unread", title: "Unread", cards: [conversationCard("old", newest: "new", in: "unread")]),
+        FeedSection(key: "today", title: "Today", cards: [card("a", in: "today")]),
+    ])
+    let after = Feed(sections: [
+        FeedSection(key: "today", title: "Today", cards: [card("a", in: "today"), conversationCard("old", newest: "new", in: "today")]),
+    ])
+    #expect(FeedHold.keep("old", from: before, in: after).cards.map(\.id) == ["old", "a"])
+}
+
+@Test func aConversationIsCachedUnderTheThreadInThePane() {
+    var cache = DetailCache(capacity: 2)
+    let nav = FeedNavigator(focus: "old", pane: "new")
+    cache.put(detail("new"), for: nav.pane!)
+    #expect(cache.get(FeedSelection.thread(of: conversationCard("old", newest: "new"))) == detail("new"))
+}

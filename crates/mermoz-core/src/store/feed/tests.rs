@@ -497,3 +497,115 @@ fn archived_mail_stays_archived_when_its_time_comes(env: Env) {
     env.store.wake_snoozed(&t).unwrap();
     assert_eq!(env.store.thread(&t).unwrap().status, "archive");
 }
+
+// ---- conversations ---------------------------------------------------------------
+
+/// Three threads from one person read as one conversation, oldest first.
+#[fixture]
+fn three(env: Env) -> (Env, Vec<String>) {
+    let ids: Vec<String> = [3, 2, 1]
+        .iter()
+        .map(|d| env.mail(&format!("m{d}"), &format!("t{d}"), MARIE, *d, "hi"))
+        .collect();
+    env.store.merge_threads(&ids).unwrap();
+    (env, ids)
+}
+
+#[rstest]
+fn a_conversation_is_one_unit(three: (Env, Vec<String>)) {
+    let (env, _) = three;
+    assert_eq!(env.units().len(), 1);
+}
+
+#[rstest]
+fn a_conversation_unit_shows_its_newest_thread(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    assert_eq!(env.units()[0].primary().id, ids[2]);
+}
+
+#[rstest]
+fn a_conversation_unit_holds_its_three_threads(three: (Env, Vec<String>)) {
+    let (env, _) = three;
+    assert_eq!(env.units()[0].threads.len(), 3);
+}
+
+#[rstest]
+fn only_the_newest_thread_of_a_conversation_is_judged(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    let judged: Vec<String> = env.to_judge().into_iter().map(|t| t.0).collect();
+    assert_eq!(judged, vec![ids[2].clone()]);
+}
+
+#[rstest]
+fn a_deadline_judged_in_an_older_thread_is_kept(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    env.judge(&ids[0], &due_in(5));
+    env.judge(&ids[2], &Judgment::default());
+    assert_eq!(env.units()[0].judgment.as_ref().unwrap().due, due_in(5).due);
+}
+
+#[rstest]
+fn the_feed_reads_the_whole_conversation(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    assert_eq!(
+        env.store
+            .feed_input(&ids[2])
+            .unwrap()
+            .0
+            .recent_messages
+            .len(),
+        3
+    );
+}
+
+#[rstest]
+fn putting_a_conversation_off_puts_off_its_threads(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    let n = env
+        .store
+        .snooze(std::slice::from_ref(&ids[2]), now_ms() + DAY_MS, None)
+        .unwrap();
+    assert_eq!(n, 3);
+}
+
+#[rstest]
+fn a_conversation_put_off_leaves_the_feed(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    env.store
+        .snooze(std::slice::from_ref(&ids[2]), now_ms() + DAY_MS, None)
+        .unwrap();
+    assert!(env.units().is_empty());
+}
+
+#[rstest]
+fn the_state_before_a_change_covers_the_conversation(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    let before = env
+        .store
+        .states_before_update(std::slice::from_ref(&ids[2]))
+        .unwrap();
+    assert_eq!(before.len(), 3);
+}
+
+#[rstest]
+fn restoring_puts_each_thread_back_in_its_own_status(three: (Env, Vec<String>)) {
+    let (env, ids) = three;
+    env.store.mark_read(&ids[2], true).unwrap();
+    env.set_status(&ids[0], "todo");
+    // Unread mail in one thread only: the others keep their status.
+    env.store.mark_read(&ids[1], false).unwrap();
+    let before = env.store.states_before_update(&ids).unwrap();
+    env.set_status(&ids[2], "archive");
+    env.store.restore_threads(&before).unwrap();
+    let now: Vec<(String, String)> = before
+        .iter()
+        .map(|b| (b.id.clone(), env.store.thread(&b.id).unwrap().status))
+        .collect();
+    assert_eq!(
+        now,
+        before
+            .iter()
+            .map(|b| (b.id.clone(), b.status.clone()))
+            .collect::<Vec<_>>()
+    );
+}

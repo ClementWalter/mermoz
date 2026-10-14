@@ -272,6 +272,10 @@ fn main() {
             },
         )
         .unwrap();
+    // Most of them in conversations of three, which the feed folds into one card each.
+    for c in ids[..150.min(ids.len())].chunks(3).filter(|c| c.len() > 1) {
+        store.merge_threads(c).unwrap();
+    }
     let mut feed = time(50, || {
         let today = mermoz_core::feed::today();
         let units = store

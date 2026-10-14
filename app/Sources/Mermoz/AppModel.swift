@@ -193,6 +193,11 @@ final class AppModel {
         var doOperation: String?
         /// A manual merge: undone by putting each thread back in its conversation.
         var unmerge: MergeUndo?
+        /// Every thread a status change reached, as mermozd saw it before: a
+        /// conversation's threads all come back, each in its own state.
+        var restore: [ThreadState] = []
+        /// Finds this entry again once mermozd answers.
+        var token = UUID()
     }
 
     var paletteMode: PaletteMode?
@@ -1050,6 +1055,14 @@ final class AppModel {
                         await loadFeed()
                         feedRestore([s.id])
                     }
+                    return
+                }
+                if !entry.restore.isEmpty {
+                    try await client.restoreThreads(entry.restore)
+                    toast = "Undid \(entry.label)"
+                    refreshCounts()
+                    await loadList()
+                    if showsFeed { feedRestore(entry.restore.map(\.id)) }
                     return
                 }
                 if !entry.rejected.isEmpty { try await client.reopenSuggestions(entry.rejected) }

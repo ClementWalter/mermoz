@@ -154,9 +154,12 @@ public final class DaemonClient: Sendable {
         try await call("files.list", Params().with("query", query).with("limit", limit))
     }
 
+    /// Returns every thread the change reached (the open threads of each conversation
+    /// follow), as it was: `restoreThreads` undoes it exactly.
+    @discardableResult
     public func updateThreads(ids: [String], status: String? = nil, priority: Int? = nil,
                               addProjects: [String] = [], removeProjects: [String] = [],
-                              due: Patch<String> = .keep) async throws {
+                              due: Patch<String> = .keep) async throws -> [ThreadState] {
         var p = Params().with("ids", ids).with("status", status).with("priority", priority)
         if !addProjects.isEmpty { p = p.with("add_projects", addProjects) }
         if !removeProjects.isEmpty { p = p.with("remove_projects", removeProjects) }
@@ -165,7 +168,13 @@ public final class DaemonClient: Sendable {
         case let .set(v): p = p.with("due", v)
         case .clear: p = p.null("due")
         }
-        try await callVoid("threads.update", p)
+        struct R: Decodable { var before: [ThreadState]? }
+        return try await call("threads.update", p, as: R.self).before ?? []
+    }
+
+    /// Puts threads back exactly as they were, each in its own state.
+    public func restoreThreads(_ states: [ThreadState]) async throws {
+        try await callVoid("threads.restore", Params().with("threads", states))
     }
 
     /// Turns suggestions down; the threads stay put and are not suggested again.

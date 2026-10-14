@@ -2311,45 +2311,47 @@ fn forgotten_refusal_is_offered_again(synced: World) {
     );
 }
 
-/// `n` read automated mails from one no-reply sender, "Parcel statement 0" to
-/// "Parcel statement n-1"; the stub Jev judges a "statement" automatic mail, so the
+/// "Parcel statement `i`" arrives, newer than the ones before: a read automated mail
+/// from one no-reply sender; the stub Jev judges a "statement" automatic mail, so the
 /// Feed's background judging agrees with the no-reply sender.
-fn parcels(w: &World, n: usize) {
-    {
-        let mut m = w.mailbox.lock().unwrap();
-        for i in 0..n {
-            let id = format!("p{i}");
-            m.add_message(
-                &id,
-                &format!("tp{i}"),
-                &["INBOX"],
-                &raw(
-                    "Parcel Hub <noreply@parcels.example>",
-                    &format!("Parcel statement {i}"),
-                    "On its way",
-                    &id,
-                ),
-                NOW - 7000 - i as i64,
-            );
-        }
-    }
-    w.wait_until("sync", |w| {
-        w.ok("threads.list", json!({}))["total"] == 3 + n as i64
+fn parcel_arrives(w: &World, i: usize) {
+    let id = format!("p{i}");
+    let subject = format!("Parcel statement {i}");
+    w.mailbox.lock().unwrap().add_message(
+        &id,
+        &format!("tp{i}"),
+        &["INBOX"],
+        &raw(
+            "Parcel Hub <noreply@parcels.example>",
+            &subject,
+            "On its way",
+            &id,
+        ),
+        NOW - 7000 + i as i64,
+    );
+    w.wait_until("the parcel", |w| {
+        w.ok("threads.list", json!({}))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == subject)
     });
 }
 
 #[rstest]
 fn three_accepted_archives_put_the_sender_in_the_batch_card(synced: World) {
-    parcels(&synced, 4);
     // No Receipts folder: the stub suggests Archive alone.
     synced.ok("router.set", json!({ "api_key": "jev-test" }));
+    // The parcels are one conversation: each yes archives it, the next parcel opens it.
     for i in 0..3 {
+        parcel_arrives(&synced, i);
         let id = synced.thread_by_subject(&format!("Parcel statement {i}"))["id"].clone();
         synced.wait_until("suggestion", |w| {
             !suggested(&w.ok("threads.suggest", json!({ "ids": [id] }))).is_empty()
         });
         synced.ok("sort.answer", json!({ "id": id, "answer": "yes" }));
     }
+    parcel_arrives(&synced, 3);
     let batch = synced.ok("feed.list", json!({}))["sections"]
         .as_array()
         .unwrap()
@@ -4276,6 +4278,137 @@ fn later_offers_tomorrow_morning(demo: World) {
             .iter()
             .any(|o| o["label"] == "Tomorrow morning")
     );
+}
+
+// ---- Feed: one card per conversation (demo mailbox) ------------------------------
+
+/// Three demo threads made one conversation, oldest first: a lease amendment (with a
+/// date), a school bill (with a date) and a bank statement (none), all unread.
+const MERGED: [&str; 3] = [
+    "Avenant au bail à signer",
+    "Facture cantine — octobre",
+    "Your October statement is ready",
+];
+
+#[fixture]
+fn merged(demo: World) -> World {
+    let ids: Vec<Value> = MERGED
+        .iter()
+        .map(|s| demo.thread_by_subject(s)["id"].clone())
+        .collect();
+    demo.ok("conversations.merge", json!({ "ids": ids }));
+    demo
+}
+
+impl World {
+    /// Cards about any of the merged threads.
+    fn merged_cards(&self) -> Vec<Value> {
+        self.cards()
+            .into_iter()
+            .filter(|c| MERGED.iter().any(|s| c["thread"]["subject"] == *s))
+            .collect()
+    }
+
+    /// How many of the merged threads are in `status`.
+    fn merged_in(&self, status: &str) -> usize {
+        MERGED
+            .iter()
+            .filter(|s| self.thread_by_subject(s)["status"] == status)
+            .count()
+    }
+
+    /// Archives the merged conversation's card as the Feed's `a` does; returns the
+    /// threads as they were.
+    fn archive_merged(&self) -> Value {
+        let id = self.merged_cards()[0]["thread"]["id"].clone();
+        self.ok(
+            "threads.update",
+            json!({ "ids": [id], "status": "archive" }),
+        )["before"]
+            .clone()
+    }
+}
+
+#[rstest]
+fn three_threads_of_one_conversation_are_one_card(merged: World) {
+    assert_eq!(merged.merged_cards().len(), 1);
+}
+
+#[rstest]
+fn the_conversation_card_is_keyed_by_the_conversation(merged: World) {
+    assert_eq!(
+        merged.merged_cards()[0]["id"],
+        conversation_of(&merged, MERGED[2])
+    );
+}
+
+#[rstest]
+fn automated_mail_from_one_sender_is_one_card(demo: World) {
+    let n = demo
+        .cards()
+        .iter()
+        .filter(|c| {
+            ["Your October statement", "Card payment of 42.00"]
+                .iter()
+                .any(|s| c["thread"]["subject"] == *s)
+        })
+        .count();
+    assert_eq!(n, 1);
+}
+
+#[rstest]
+fn archiving_a_conversation_card_archives_its_three_threads(merged: World) {
+    merged.archive_merged();
+    assert_eq!(merged.merged_in("archive"), 3);
+}
+
+#[rstest]
+fn undo_restores_the_three_threads(merged: World) {
+    let before = merged.archive_merged();
+    merged.ok("threads.restore", json!({ "threads": before }));
+    assert_eq!(merged.merged_in("unread"), 3);
+}
+
+#[rstest]
+fn undo_brings_the_conversation_card_back(merged: World) {
+    let before = merged.archive_merged();
+    merged.ok("threads.restore", json!({ "threads": before }));
+    assert_eq!(merged.merged_cards().len(), 1);
+}
+
+#[rstest]
+fn putting_a_conversation_card_off_puts_off_its_three_threads(merged: World) {
+    let id = merged.merged_cards()[0]["thread"]["id"].clone();
+    let until = mermoz_core::model::now_ms() + 86_400_000;
+    let v = merged.ok("feed.snooze", json!({ "ids": [id], "until": until }));
+    assert_eq!(v["snoozed"], 3);
+}
+
+#[rstest]
+fn an_unread_older_thread_keeps_the_card_in_unread(merged: World) {
+    let newest = merged.thread_by_subject(MERGED[2])["id"].clone();
+    // Reading the conversation reads all three; then the oldest is marked unread.
+    merged.ok("threads.mark_read", json!({ "id": newest }));
+    let oldest = merged.thread_by_subject(MERGED[0])["id"].clone();
+    merged.ok("threads.mark_read", json!({ "id": oldest, "read": false }));
+    assert_eq!(merged.merged_cards()[0]["section"], "unread");
+}
+
+#[rstest]
+fn a_deadline_in_an_older_thread_is_kept(merged: World) {
+    let w = merged.judged();
+    assert!(w.merged_cards()[0]["due"].is_string());
+}
+
+#[rstest]
+fn only_the_newest_thread_of_a_conversation_is_judged(merged: World) {
+    let w = merged.judged();
+    let judged = w.mailbox.lock().unwrap().jev_feed_subjects.clone();
+    let merged_calls: Vec<&String> = judged
+        .iter()
+        .filter(|s| MERGED.contains(&s.as_str()))
+        .collect();
+    assert_eq!(merged_calls, vec![MERGED[2]]);
 }
 
 #[rstest]

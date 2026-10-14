@@ -491,9 +491,14 @@ next step one key away. Design mockup: `docs/design/feed-cards.html`.
 
 **What feeds it.** Unread, To do, In progress and Waiting. Backlog appears only
 when a date it mentions is within two days, tagged "Back from Backlog". Snoozed
-threads (Later) stay out until their time or new mail. The feed works on Gmail
-threads through a unit that can hold several threads, so person-and-topic
-conversations can plug in later. It respects the sidebar selection: a project's
+threads (Later) stay out until their time or new mail. One card per
+conversation (see Conversations), keyed by the conversation id and shown as its
+newest thread: kind, dates and status come from it, judgments from its newest
+judgment, a deadline from any of its threads counts, and it is Unread while any of
+its threads is. Jev judges only a conversation's newest thread, reading the whole
+conversation's latest messages. Actions on a card (status keys, the suggestion chip,
+Later) move all of its open threads; undo puts each back as it was. The "Automatic
+mail" batch counts conversations. It respects the sidebar selection: a project's
 feed is that project's work.
 
 **Card types.** Every card shares one anatomy: kind label, person and project,

@@ -558,6 +558,9 @@ pub struct SortUndo {
     pub thread: ThreadState,
     /// Answers recorded from this time on are forgotten.
     pub since: i64,
+    /// The other open threads of its conversation, which followed the answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub siblings: Vec<ThreadState>,
 }
 
 /// Something suggestions learned from the user's answers.
@@ -2419,8 +2422,23 @@ impl Store {
         .ok_or_else(|| Error::NotFound(format!("attachment {id}")))
     }
 
-    /// Applies an issue edit locally right away and queues the Gmail label push.
+    /// Applies an issue edit locally right away and queues the Gmail label push. The
+    /// other open threads of each conversation follow (one status per conversation).
     pub fn update_threads(&self, ids: &[String], patch: &ThreadPatch) -> Result<usize> {
+        self.patch_threads(ids, patch, true)
+    }
+
+    /// The threads touched by [`Self::update_threads`] on `ids`, as they are now: what
+    /// `threads.restore` takes to undo it exactly.
+    pub fn states_before_update(&self, ids: &[String]) -> Result<Vec<ThreadState>> {
+        self.with_open_siblings(ids)?
+            .iter()
+            .map(|t| Ok(ThreadState::from(&self.thread(t)?)))
+            .collect()
+    }
+
+    /// `follow`: the open siblings of each thread take the same patch.
+    fn patch_threads(&self, ids: &[String], patch: &ThreadPatch, follow: bool) -> Result<usize> {
         let mut w = self.w.lock().unwrap();
         let tx = w.transaction()?;
         if let Some(s) = &patch.status {
@@ -2455,7 +2473,12 @@ impl Store {
             if !all.contains(id) {
                 all.push(id.clone());
             }
-            for sib in conversations::open_siblings(&tx, id).unwrap_or_default() {
+            let siblings = if follow {
+                conversations::open_siblings(&tx, id).unwrap_or_default()
+            } else {
+                vec![]
+            };
+            for sib in siblings {
                 if !all.contains(&sib) {
                     all.push(sib);
                 }
@@ -3175,11 +3198,35 @@ impl Store {
     /// What the router tells Jev about a thread: the last three messages without quoted
     /// history, and where earlier threads with the same people were filed.
     pub fn route_input(&self, thread_id: &str) -> Result<crate::jev::RouteInput> {
+        Ok(self.route_input_over(thread_id, false)?.0)
+    }
+
+    /// The Feed's Jev input for a conversation's newest thread: its messages are the
+    /// latest of the whole conversation, so a date written in an earlier thread counts.
+    /// Comes with the date each of those messages was written (Unix ms).
+    pub fn feed_input(&self, thread_id: &str) -> Result<(crate::jev::RouteInput, Vec<i64>)> {
+        self.route_input_over(thread_id, true)
+    }
+
+    fn route_input_over(
+        &self,
+        thread_id: &str,
+        conversation: bool,
+    ) -> Result<(crate::jev::RouteInput, Vec<i64>)> {
         let r = self.bg.lock().unwrap();
-        let rows: Vec<(String, String, bool, i64, String, String)> = {
-            let mut st = r.prepare_cached(
-                "SELECT from_name, from_email, is_from_me, date, subject, body_text FROM messages WHERE thread_id = ?1 ORDER BY date",
-            )?;
+        let scope = if conversation {
+            "thread_id IN (SELECT id FROM threads WHERE conversation_id = \
+               (SELECT COALESCE(conversation_id, id) FROM threads WHERE id = ?1))"
+        } else {
+            "thread_id = ?1"
+        };
+        // (from name, from email, mine, date, subject, body), oldest first.
+        type Row = (String, String, bool, i64, String, String);
+        let rows: Vec<Row> = {
+            let mut st = r.prepare_cached(&format!(
+                "SELECT from_name, from_email, is_from_me, date, subject, body_text \
+                 FROM messages WHERE {scope} ORDER BY date"
+            ))?;
             st.query_map([thread_id], |r| {
                 Ok((
                     r.get(0)?,
@@ -3192,6 +3239,14 @@ impl Store {
             })?
             .collect::<rusqlite::Result<_>>()?
         };
+        // The subject is the thread's own, never an earlier thread's.
+        let subject: String = r
+            .prepare_cached(
+                "SELECT subject FROM messages WHERE thread_id = ?1 AND subject != '' ORDER BY date LIMIT 1",
+            )?
+            .query_row([thread_id], |r| r.get(0))
+            .optional()?
+            .unwrap_or_default();
         let now = now_ms();
         let recent = rows[rows.len().saturating_sub(3)..]
             .iter()
@@ -3258,18 +3313,16 @@ impl Store {
                 Ok((format!("{verdict}: {}", to.join(" · ")), r.get(3)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let age = |r: Option<&(String, String, bool, i64, String, String)>| {
-            r.map_or(0, |r| crate::jev::days_ago(r.3, now))
-        };
-        Ok(crate::jev::RouteInput {
+        let age = |r: Option<&Row>| r.map_or(0, |r| crate::jev::days_ago(r.3, now));
+        let written = rows[rows.len().saturating_sub(3)..]
+            .iter()
+            .map(|r| r.3)
+            .collect();
+        let input = crate::jev::RouteInput {
             today: chrono::Local::now().format("%Y-%m-%d").to_string(),
             last_activity_days_ago: age(rows.last()),
             thread_started_days_ago: age(rows.first()),
-            subject: rows
-                .iter()
-                .map(|r| r.4.clone())
-                .find(|s| !s.is_empty())
-                .unwrap_or_default(),
+            subject,
             messages_in_thread: rows.len() as i64,
             last_message_from_me: rows.last().map(|r| r.2).unwrap_or(false),
             recent_messages: recent,
@@ -3277,7 +3330,8 @@ impl Store {
             peer_threads,
             unfiled_peers: peer_threads - filed_peers,
             earlier_answers,
-        })
+        };
+        Ok((input, written))
     }
 
     /// Every project with a description built from the mail filed in it: its four most
@@ -3566,13 +3620,27 @@ impl Store {
 
     /// Records a yes/no answer to a card and applies it; returns how to undo it.
     pub fn answer_sort(&self, thread_id: &str, answer: &SortAnswer) -> Result<SortUndo> {
+        let siblings = self.open_siblings(thread_id)?;
         let undo = SortUndo {
             thread: ThreadState::from(&self.thread(thread_id)?),
             since: now_ms(),
+            siblings: siblings
+                .iter()
+                .map(|t| Ok(ThreadState::from(&self.thread(t)?)))
+                .collect::<Result<_>>()?,
         };
         match answer {
             SortAnswer::Yes => {
                 self.accept_suggestions(&[thread_id.to_string()])?;
+                // One status per conversation: its other open threads go where it went.
+                let status = self.thread(thread_id)?.status;
+                if status != undo.thread.status && !siblings.is_empty() {
+                    let patch = ThreadPatch {
+                        status: Some(status),
+                        ..Default::default()
+                    };
+                    self.patch_threads(&siblings, &patch, false)?;
+                }
             }
             SortAnswer::No => {
                 self.reject_suggestions(&[thread_id.to_string()])?;
@@ -3603,7 +3671,9 @@ impl Store {
     /// Takes an answer back: the thread returns as it was, the answer is forgotten and
     /// its card is pending again.
     pub fn undo_sort(&self, undo: &SortUndo) -> Result<()> {
-        self.restore_threads(std::slice::from_ref(&undo.thread))?;
+        let mut before = vec![undo.thread.clone()];
+        before.extend(undo.siblings.iter().cloned());
+        self.restore_threads(&before)?;
         let w = self.w.lock().unwrap();
         w.execute(
             "DELETE FROM sort_feedback WHERE thread_id = ?1 AND created >= ?2",
@@ -3839,8 +3909,9 @@ impl Store {
                 .push(t.id.clone());
         }
         let mut n = 0;
+        // Each thread gets its own state back: siblings never follow a restore.
         for ((status, priority, projects, due), ids) in same {
-            n += self.update_threads(
+            n += self.patch_threads(
                 &ids,
                 &ThreadPatch {
                     status: Some(status),
@@ -3849,6 +3920,7 @@ impl Store {
                     due: Some(due),
                     ..Default::default()
                 },
+                false,
             )?;
         }
         Ok(n)
@@ -8075,6 +8147,42 @@ mod tests {
         let undo = env.store.answer_sort(&tid, &SortAnswer::Yes).unwrap();
         env.store.undo_sort(&undo).unwrap();
         assert!(env.store.thread(&tid).unwrap().projects.is_empty());
+    }
+
+    /// Two threads from Ana read as one conversation (older, newer); the newer one
+    /// carries a suggestion to archive.
+    fn archive_suggested_in_a_conversation(env: &Env) -> (String, String) {
+        let old = from_sender(env, "1", "ana@travel.example");
+        let new = from_sender(env, "2", "ana@travel.example");
+        env.store
+            .merge_threads(&[old.clone(), new.clone()])
+            .unwrap();
+        classify(
+            env,
+            &new,
+            &Suggestion {
+                status: Some("archive".into()),
+                status_confidence: Some(0.95),
+                ..Default::default()
+            },
+        );
+        (old, new)
+    }
+
+    #[rstest]
+    fn accepting_a_suggestion_moves_the_whole_conversation(env: Env) {
+        let (old, new) = archive_suggested_in_a_conversation(&env);
+        env.store.answer_sort(&new, &SortAnswer::Yes).unwrap();
+        assert_eq!(env.store.thread(&old).unwrap().status, "archive");
+    }
+
+    #[rstest]
+    fn undoing_an_answer_brings_the_whole_conversation_back(env: Env) {
+        let (old, new) = archive_suggested_in_a_conversation(&env);
+        let was = env.store.thread(&old).unwrap().status;
+        let undo = env.store.answer_sort(&new, &SortAnswer::Yes).unwrap();
+        env.store.undo_sort(&undo).unwrap();
+        assert_eq!(env.store.thread(&old).unwrap().status, was);
     }
 
     #[rstest]

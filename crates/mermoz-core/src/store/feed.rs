@@ -81,28 +81,45 @@ pub fn median_days(mut gaps_ms: Vec<i64>) -> Option<f64> {
 impl Store {
     /// Open threads without a judgment for their latest message, newest first, then
     /// recent Backlog threads not checked today. Backlog threads are only judged when
-    /// they mention a close date (see [`feed::backlog_worth_judging`]).
+    /// they mention a close date (see [`feed::backlog_worth_judging`]). Only the newest
+    /// thread of a conversation is judged: its card reads the whole conversation.
     pub fn threads_to_judge(&self, today: &str, limit: i64) -> Result<Vec<ToJudge>> {
         let r = self.bg.lock().unwrap();
         let marks = vec!["?"; FEED_STATUSES.len()].join(",");
+        let newest = |statuses: &str| {
+            format!(
+                "NOT EXISTS (SELECT 1 FROM threads s WHERE s.conversation_id = t.conversation_id
+                   AND s.id != t.id AND s.last_date > t.last_date AND s.status IN ({statuses}))"
+            )
+        };
         let mut st = r.prepare_cached(&format!(
             "SELECT t.id, t.last_date FROM threads t LEFT JOIN feed_judgments j ON j.thread_id = t.id
              WHERE t.status IN ({marks}) AND (j.thread_id IS NULL OR j.for_date < t.last_date OR j.judged = 0)
-             ORDER BY t.last_date DESC LIMIT {limit}"
+               AND {}
+             ORDER BY t.last_date DESC LIMIT {limit}",
+            newest(&marks)
         ))?;
         let mut out: Vec<ToJudge> = st
-            .query_map(params_from_iter(FEED_STATUSES.iter()), |r| {
-                Ok((r.get(0)?, r.get(1)?, false))
-            })?
+            .query_map(
+                params_from_iter(FEED_STATUSES.iter().chain(FEED_STATUSES.iter())),
+                |r| Ok((r.get(0)?, r.get(1)?, false)),
+            )?
             .collect::<rusqlite::Result<_>>()?;
         let left = limit - out.len() as i64;
         if left > 0 {
-            let mut st = r.prepare_cached(
+            let quoted: Vec<String> = FEED_STATUSES
+                .iter()
+                .chain(&["backlog"])
+                .map(|s| format!("'{s}'"))
+                .collect();
+            let mut st = r.prepare_cached(&format!(
                 "SELECT t.id, t.last_date FROM threads t LEFT JOIN feed_judgments j ON j.thread_id = t.id
                  WHERE t.status = 'backlog' AND t.last_date >= ?1
                    AND (j.thread_id IS NULL OR j.for_date < t.last_date OR (j.judged = 0 AND j.checked_day < ?2))
+                   AND {}
                  ORDER BY t.last_date DESC LIMIT ?3",
-            )?;
+                newest(&quoted.join(","))
+            ))?;
             out.extend(
                 st.query_map(params![now_ms() - BACKLOG_WINDOW_MS, today, left], |r| {
                     Ok((r.get(0)?, r.get(1)?, true))
@@ -218,8 +235,9 @@ impl Store {
         Ok(())
     }
 
-    /// The open work, as feed units: every thread in a feed status, plus Backlog threads
-    /// whose date is close; snoozed threads stay out until their time or new mail.
+    /// The open work, as feed units, one per conversation: every thread in a feed status,
+    /// plus Backlog threads whose date is close; snoozed threads stay out until their
+    /// time or new mail.
     pub fn feed_units(
         &self,
         scope: &ColumnScope,
@@ -318,7 +336,7 @@ impl Store {
             .map(|r| r.0.id.clone())
             .collect();
         let noise = self.learned_noise(&automated)?;
-        Ok(rows
+        let units = rows
             .drain(..)
             .map(|(t, judgment, texts, my_last, sender, back)| {
                 let waiting_days = (t.status == "waiting")
@@ -335,7 +353,8 @@ impl Store {
                     waiting_days,
                 }
             })
-            .collect())
+            .collect();
+        Ok(feed::fold(units, today))
     }
 
     /// Threads whose sender the user taught to archive: the learned rule
@@ -465,12 +484,28 @@ impl Store {
         })
     }
 
-    /// Hides threads from the feed until `until`, or until new mail arrives in them.
-    /// `label` is how the user put it ("Friday evening"), for the hint when it comes back.
+    /// The threads and the other open threads of their conversations, each once: a
+    /// conversation is put off and brought back as a whole.
+    pub(super) fn with_open_siblings(&self, ids: &[String]) -> Result<Vec<String>> {
+        let mut all: Vec<String> = vec![];
+        for id in ids {
+            for t in std::iter::once(id.clone()).chain(self.open_siblings(id)?) {
+                if !all.contains(&t) {
+                    all.push(t);
+                }
+            }
+        }
+        Ok(all)
+    }
+
+    /// Hides threads, with their conversations, from the feed until `until`, or until
+    /// new mail arrives in them. `label` is how the user put it ("Friday evening"), for
+    /// the hint when it comes back. Returns how many threads were put off.
     pub fn snooze(&self, ids: &[String], until: i64, label: Option<&str>) -> Result<usize> {
+        let ids = self.with_open_siblings(ids)?;
         let w = self.w.lock().unwrap();
         let mut n = 0;
-        for id in ids {
+        for id in &ids {
             n += w.execute(
                 "INSERT INTO feed_snoozes (thread_id, until, for_date, label, woke)
                  SELECT id, ?2, last_date, ?3, 0 FROM threads WHERE id = ?1
@@ -511,9 +546,10 @@ impl Store {
     }
 
     pub fn unsnooze(&self, ids: &[String]) -> Result<usize> {
+        let ids = self.with_open_siblings(ids)?;
         let w = self.w.lock().unwrap();
         let mut n = 0;
-        for id in ids {
+        for id in &ids {
             n += w.execute("DELETE FROM feed_snoozes WHERE thread_id = ?1", [id])?;
         }
         Ok(n)

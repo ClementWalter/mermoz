@@ -307,6 +307,21 @@ pub fn candidates(text: &str, written: NaiveDate) -> Vec<DateCandidate> {
     out
 }
 
+/// The dates written across several mails, each resolved against the day it was
+/// written, in order, one per date.
+pub fn candidates_in(parts: &[(&str, NaiveDate)]) -> Vec<DateCandidate> {
+    let mut out: Vec<DateCandidate> = vec![];
+    for c in parts.iter().flat_map(|(text, day)| candidates(text, *day)) {
+        if out.len() == MAX_CANDIDATES {
+            break;
+        }
+        if !out.iter().any(|o| o.date == c.date) {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +415,18 @@ mod tests {
     #[case::sunday(Weekday::Sun, "2026-10-18")]
     fn next_weekday_is_strictly_after(#[case] day: Weekday, #[case] want: &str) {
         assert_eq!(next_weekday(day, monday()).to_string(), want);
+    }
+
+    #[rstest]
+    fn each_mail_resolves_its_dates_against_its_own_day() {
+        let week_before = monday() - Duration::days(7);
+        let found = candidates_in(&[("rien", monday()), ("avant vendredi", week_before)]);
+        assert_eq!(found[0].date.to_string(), "2026-10-09");
+    }
+
+    #[rstest]
+    fn a_date_written_in_two_mails_is_offered_once() {
+        let found = candidates_in(&[("le 16 octobre", monday()), ("le 16/10", monday())]);
+        assert_eq!(found.len(), 1);
     }
 }

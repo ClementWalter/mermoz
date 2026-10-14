@@ -293,6 +293,13 @@ private func suggester(_ stub: StubDaemon) async throws -> (FeedSuggester, Daemo
     #expect(Set(obj?.keys.map { $0 } ?? []) == ["thread", "since"])
 }
 
+@Test func undoTokenSendsBackTheConversationsOtherThreads() throws {
+    let reply = #"{"thread":{"id":"a","unread":false,"status":"todo","priority":0,"projects":[],"due":null},"since":5,"siblings":[{"id":"b","unread":true,"status":"unread","priority":0,"projects":[],"due":null}]}"#
+    let token = try RPCCoding.decoder().decode(SuggestionUndo.self, from: Data(reply.utf8))
+    let back = try RPCCoding.decoder().decode(SuggestionUndo.self, from: RPCCoding.encoder().encode(token))
+    #expect(back.siblings?.map(\.id) == ["b"])
+}
+
 @Test func targetReadsInPlainWords() {
     #expect(SuggestionText.target(status: "archive", projects: ["Travel/Voyage"], statusName: { names[$0] ?? $0 }) == "Archive · Voyage")
 }

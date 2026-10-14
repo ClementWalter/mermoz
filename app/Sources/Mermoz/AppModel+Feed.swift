@@ -50,8 +50,9 @@ extension AppModel {
                 }
             }
             if next != feed { feed = next }
-            let ids = next.cards.map(\.id)
-            if feedFocus == nil || !ids.contains(feedFocus!) { feedFocus = ids.first }
+            var nav = FeedNavigator(focus: feedFocus, pane: selectedThreadId)
+            nav.refocus(in: next)
+            if nav.focus != feedFocus { feedFocus = nav.focus }
             totalThreads = f.open
             feedSuggester.sync(with: next)
             requestVisibleTexts()
@@ -307,16 +308,22 @@ extension AppModel {
         Task { try? await client.learnArchive([card.thread.id]) }
     }
 
-    /// One undoable change for every thread of a card, then the card folds away.
+    /// One undoable change for every conversation of a card (mermozd moves each one's
+    /// open threads together), then the card folds away. Undo puts back every thread
+    /// mermozd reports it changed.
     private func setStatus(of card: FeedCard, ids: [String], to status: String) {
         guard let client, !ids.isEmpty else { return }
         let before = ids.compactMap(feedThread)
         let name = statuses.first { $0.key == status }?.name ?? status
-        undoStack.append(UndoEntry(label: "Move to \(name)", before: before))
+        let entry = UndoEntry(label: "Move to \(name)", before: before)
+        undoStack.append(entry)
         leave(card, label: ids.count > 1 ? "\(name) · \(ids.count) mails" : name)
         Task {
             do {
-                try await client.updateThreads(ids: ids, status: status)
+                let reached = try await client.updateThreads(ids: ids, status: status)
+                if !reached.isEmpty, let i = undoStack.firstIndex(where: { $0.token == entry.token }) {
+                    undoStack[i].restore = reached
+                }
                 refreshCounts()
             } catch {
                 report(error)

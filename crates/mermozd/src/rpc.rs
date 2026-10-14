@@ -383,14 +383,18 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 remove_projects: str_list(p, "remove_projects")?.unwrap_or_default(),
                 due: nullable_s(p, "due"),
             };
+            // Every thread the change reaches, as it was: `threads.restore` undoes it exactly.
+            let before = st.states_before_update(&ids)?;
             let n = st.update_threads(&ids, &patch)?;
-            let _ = svc.events.send(Event::ThreadsChanged(ids.clone()));
+            let _ = svc.events.send(Event::ThreadsChanged(
+                before.iter().map(|t| t.id.clone()).collect(),
+            ));
             for id in &ids {
                 if let Ok((acc, _)) = st.provider_thread_id(id) {
                     svc.kick(&acc);
                 }
             }
-            Ok(json!({ "updated": n }))
+            Ok(json!({ "updated": n, "before": before }))
         }
         "threads.accept_suggestions" => {
             let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;

@@ -24,6 +24,8 @@ public struct ThreadState: Codable, Sendable, Equatable {
 public struct SuggestionUndo: Codable, Sendable, Equatable {
     public var thread: ThreadState
     public var since: Int
+    /// The other open threads of its conversation, which followed the answer.
+    public var siblings: [ThreadState]?
 }
 
 /// One thread's confident suggestion, and the evidence behind it.
