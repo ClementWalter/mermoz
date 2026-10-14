@@ -130,6 +130,16 @@ fn threads_by_ids_keeps_the_order_given(mailbox: Box) {
 }
 
 #[rstest]
+fn threads_by_ids_skips_hidden_accounts(mailbox: Box) {
+    let a = mailbox.mail("a", 0, "Nora", 1_000, "x");
+    mailbox
+        .store
+        .set_account_hidden(&mailbox.acc, true)
+        .unwrap();
+    assert!(mailbox.store.threads_by_ids(&[a]).unwrap().is_empty());
+}
+
+#[rstest]
 fn threads_by_ids_skips_unknown_ids(mailbox: Box) {
     let a = mailbox.mail("a", 0, "Nora", 1_000, "x");
     assert_eq!(

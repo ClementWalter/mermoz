@@ -79,15 +79,17 @@ impl super::Store {
         Ok(out)
     }
 
-    /// The threads with these ids, in the order given; unknown ids are left out.
+    /// The threads with these ids, in the order given; unknown ids and hidden
+    /// accounts' threads are left out.
     pub fn threads_by_ids(&self, ids: &[String]) -> Result<Vec<ThreadSummary>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
+        let visible = self.visible();
         let r = self.r.lock().unwrap();
         let marks = vec!["?"; ids.len()].join(",");
         let mut st = r.prepare(&format!(
-            "SELECT {THREAD_COLS} FROM threads t WHERE t.id IN ({marks})"
+            "SELECT {THREAD_COLS} FROM threads t WHERE t.id IN ({marks}){visible}"
         ))?;
         let mut rows = st
             .query_map(params_from_iter(ids.iter()), thread_row)?

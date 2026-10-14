@@ -356,12 +356,14 @@ impl Store {
             return Ok(());
         }
         let marks = vec!["?"; thread_ids.len()].join(",");
+        let (visible, visible_m) = (self.visible(), self.visible_m());
         let (senders, subjects): (Vec<CandidateSender>, Vec<String>) = {
             let r = self.r.lock().unwrap();
             let mut st = r.prepare(&format!(
                 "SELECT lower(m.from_email), max(m.from_name), count(DISTINCT m.thread_id) AS n
                  FROM messages m WHERE m.thread_id IN ({marks}) AND m.is_from_me = 0
-                   AND m.from_email != '' GROUP BY lower(m.from_email) ORDER BY n DESC LIMIT 5"
+                   AND m.from_email != ''{visible_m}
+                 GROUP BY lower(m.from_email) ORDER BY n DESC LIMIT 5"
             ))?;
             let senders = st
                 .query_map(params_from_iter(thread_ids.iter()), |r| {
@@ -374,7 +376,7 @@ impl Store {
                 })?
                 .collect::<rusqlite::Result<_>>()?;
             let mut st = r.prepare(&format!(
-                "SELECT subject FROM threads WHERE id IN ({marks}) AND status != 'deleted'"
+                "SELECT t.subject FROM threads t WHERE t.id IN ({marks}) AND t.status != 'deleted'{visible}"
             ))?;
             let subjects = st
                 .query_map(params_from_iter(thread_ids.iter()), |r| r.get(0))?
