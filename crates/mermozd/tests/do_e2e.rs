@@ -144,7 +144,7 @@ impl World {
     }
 
     fn thread(&self, subject: &str) -> Value {
-        let v = self.ok("threads.list", json!({ "limit": 100 }));
+        let v = self.ok("threads.list", json!({ "limit": 2000 }));
         v["threads"]
             .as_array()
             .unwrap()
@@ -602,6 +602,90 @@ fn a_run_is_undone_only_once(with_ai: World) {
     with_ai.ok("do.run", json!({ "id": id }));
     with_ai.ok("do.undo", json!({ "id": id }));
     assert!(with_ai.call("do.undo", json!({ "id": id })).is_err());
+}
+
+// ---- a big run's write-back
+
+/// 1,500 old newsletters on top of the base mailbox: a run bigger than one Gmail batch.
+fn add_crowd(m: &mut stub_gmail::Mailbox, t: i64) {
+    for i in 0..1500 {
+        m.add_message(
+            &format!("b{i}"),
+            &format!("tb{i}"),
+            &["INBOX"],
+            &raw(
+                "Weekly <digest@bulk.example>",
+                &format!("Digest {i}"),
+                &format!("b{i}"),
+            ),
+            t - (200 + i as i64 % 50) * DAY,
+        );
+    }
+}
+
+/// The 1,500 newsletters and the archive plan, ready to run.
+#[fixture]
+fn crowd() -> World {
+    let w = start_mail(add_crowd, 1500);
+    w.enable_ai();
+    w.ai_answers(vec![archive_plan()]);
+    w
+}
+
+/// Runs the archive plan and waits until Gmail shows every match archived.
+fn run_to_gmail(w: &World) {
+    let id = ask(w)["id"].clone();
+    w.ok("do.run", json!({ "id": id }));
+    w.wait_until("every match archived in gmail", |w| {
+        let m = w.mailbox.lock().unwrap();
+        (0..1500).all(|i| !m.thread_label_names(&format!("tb{i}")).contains("INBOX"))
+    });
+}
+
+#[rstest]
+fn a_big_run_reaches_gmail_in_a_few_dozen_calls(crowd: World) {
+    run_to_gmail(&crowd);
+    // Batches go out as the run applies them (200 threads each), up to 1,000 messages
+    // per call: far fewer calls than the 1,500 threads.
+    assert!(crowd.mailbox.lock().unwrap().batch_modify_calls < 30);
+}
+
+#[rstest]
+fn a_big_run_sends_no_call_per_thread(crowd: World) {
+    let before = crowd.mailbox.lock().unwrap().thread_modify_calls;
+    run_to_gmail(&crowd);
+    assert_eq!(crowd.mailbox.lock().unwrap().thread_modify_calls, before);
+}
+
+#[rstest]
+fn the_echo_of_a_big_run_fetches_no_message(crowd: World) {
+    run_to_gmail(&crowd);
+    // Two more rounds read the history the push left behind.
+    for _ in 0..2 {
+        crowd.ok("sync.now", json!({}));
+        std::thread::sleep(Duration::from_millis(1200));
+    }
+    assert_eq!(crowd.mailbox.lock().unwrap().minimal_gets, 0);
+}
+
+#[rstest]
+fn the_users_edit_reaches_gmail_before_the_rest_of_a_big_run(crowd: World) {
+    crowd.mailbox.lock().unwrap().batch_modify_delay_ms = 300;
+    let id = ask(&crowd)["id"].clone();
+    crowd.ok("do.run", json!({ "id": id }));
+    crowd.set_status("Garden quote", "done");
+    run_to_gmail(&crowd);
+    let m = crowd.mailbox.lock().unwrap();
+    // Where each message's INBOX removal sits in Gmail's history.
+    let removed_at = |msg: &str| {
+        m.history.iter().position(|(_, r)| {
+            r["labelsRemoved"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|e| e["message"]["id"] == msg))
+        })
+    };
+    let last_bulk = (0..1500).filter_map(|i| removed_at(&format!("b{i}"))).max();
+    assert!(removed_at("m4") < last_bulk);
 }
 
 // ---- delete

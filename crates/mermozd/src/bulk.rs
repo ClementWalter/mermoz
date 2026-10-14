@@ -404,8 +404,12 @@ fn apply(svc: &Service, action: &Action, ids: &[String]) -> Result<()> {
     }
 }
 
-/// Tells the app and Gmail sync that these threads changed.
+/// Tells the app and Gmail sync that these threads changed. Their write-backs wait
+/// behind the user's own edits.
 fn changed(svc: &Service, ids: Vec<String>) {
+    if let Err(e) = svc.store.mark_ops_bulk(&ids) {
+        tracing::warn!("bulk write-backs keep their place in the queue: {e}");
+    }
     let mut accounts: BTreeSet<String> = BTreeSet::new();
     for id in &ids {
         if let Ok((acc, _)) = svc.store.provider_thread_id(id) {

@@ -471,6 +471,12 @@ AI plans it.
 - **Run and undo.** Batches of 200 through the same store changes as the RPCs, so Gmail
   labels follow; progress shows in the palette, then a toast and one ⌘Z for the whole
   run. Every thread's state before the run is logged, so undo works after a restart.
+- **Gmail write-back.** Label and read changes that come to the same edit go out
+  together, up to 1,000 messages per `messages.batchModify` call (25,000 threads in a
+  few dozen calls, not 25,000). A run's write-backs queue behind the user's own edits,
+  so an archive made during a big push reaches Gmail with the next call. History
+  entries that only echo our own pushes are recognised from their labels and fetch
+  nothing; they neither route nor judge mail again.
 - **Without AI** the row says to connect one in Settings › Agents and opens Settings.
 - **Typing stays free.** No AI or daemon call per keystroke (search waits 80 ms of
   quiet); intent is a pure word check; the "Go to …" targets are folded once, not per

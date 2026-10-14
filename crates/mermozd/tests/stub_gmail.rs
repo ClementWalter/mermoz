@@ -80,6 +80,14 @@ pub struct Mailbox {
     pub do_plans: Vec<Value>,
     /// Bodies of the "Ask Mermoz to do" requests the stub AI received.
     pub do_asks: Vec<Value>,
+    /// `threads.modify` calls, one thread each.
+    pub thread_modify_calls: usize,
+    /// `messages.batchModify` calls, up to 1,000 messages each.
+    pub batch_modify_calls: usize,
+    /// Messages fetched with `format=minimal` (labels only).
+    pub minimal_gets: usize,
+    /// How long each `messages.batchModify` call takes.
+    pub batch_modify_delay_ms: u64,
     next_label: u64,
 }
 
@@ -132,23 +140,41 @@ impl Mailbox {
             .filter(|m| m.thread_id == thread_id)
             .map(|m| m.id.clone())
             .collect();
-        for id in &ids {
-            let m = self.messages.get_mut(id).unwrap();
+        let add: Vec<String> = add.iter().map(|a| a.to_string()).collect();
+        let remove: Vec<String> = remove.iter().map(|r| r.to_string()).collect();
+        self.relabel(&ids, &add, &remove);
+    }
+
+    /// Like Gmail: changes these messages' labels and records it in history, with the
+    /// labels each change added or removed.
+    pub fn relabel(&mut self, ids: &[String], add: &[String], remove: &[String]) {
+        let mut refs = vec![];
+        for id in ids {
+            let Some(m) = self.messages.get_mut(id) else {
+                continue;
+            };
             for a in add {
-                m.labels.insert(a.to_string());
+                m.labels.insert(a.clone());
             }
             for r in remove {
-                m.labels.remove(*r);
+                m.labels.remove(r);
             }
+            refs.push(json!({ "id": m.id, "threadId": m.thread_id }));
         }
         self.history_id += 1;
         let h = self.history_id;
-        let refs: Vec<Value> = ids
-            .iter()
-            .map(|id| json!({ "message": { "id": id, "threadId": thread_id } }))
-            .collect();
-        self.history
-            .push((h, json!({ "id": h.to_string(), "labelsAdded": refs })));
+        let entries = |labels: &[String]| -> Vec<Value> {
+            if labels.is_empty() {
+                return vec![];
+            }
+            refs.iter()
+                .map(|r| json!({ "message": r, "labelIds": labels }))
+                .collect()
+        };
+        self.history.push((
+            h,
+            json!({ "id": h.to_string(), "labelsAdded": entries(add), "labelsRemoved": entries(remove) }),
+        ));
     }
 
     pub fn label_id_for(&mut self, name: &str) -> String {
@@ -231,6 +257,9 @@ async fn get_message(
     if m.fail_once.remove(&id) {
         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
+    if q.get("format").map(|f| f.as_str()) == Some("minimal") {
+        m.minimal_gets += 1;
+    }
     let msg = m
         .messages
         .get(&id)
@@ -300,34 +329,46 @@ async fn modify_thread(
     Json(body): Json<Value>,
 ) -> Json<Value> {
     let mut m = s.lock().unwrap();
-    let add: Vec<String> = body["addLabelIds"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str().map(String::from))
+    m.thread_modify_calls += 1;
+    let ids: Vec<String> = m
+        .messages
+        .values()
+        .filter(|x| x.thread_id == tid)
+        .map(|x| x.id.clone())
         .collect();
-    let remove: Vec<String> = body["removeLabelIds"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
-    let mut refs = vec![];
-    for msg in m.messages.values_mut().filter(|x| x.thread_id == tid) {
-        for a in &add {
-            msg.labels.insert(a.clone());
-        }
-        for r in &remove {
-            msg.labels.remove(r);
-        }
-        refs.push(json!({ "message": { "id": msg.id, "threadId": tid } }));
-    }
     // Like Gmail, our own modifications echo back through history.
-    m.history_id += 1;
-    let h = m.history_id;
-    m.history
-        .push((h, json!({ "id": h.to_string(), "labelsAdded": refs })));
+    m.relabel(
+        &ids,
+        &strings(&body["addLabelIds"]),
+        &strings(&body["removeLabelIds"]),
+    );
     Json(json!({ "id": tid }))
+}
+
+/// `messages.batchModify`: up to 1,000 ids per call, as Gmail allows.
+async fn batch_modify(State(s): State<Shared>, Json(body): Json<Value>) -> axum::http::StatusCode {
+    let delay = s.lock().unwrap().batch_modify_delay_ms;
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    let mut m = s.lock().unwrap();
+    let ids = strings(&body["ids"]);
+    if ids.is_empty() || ids.len() > 1000 {
+        return axum::http::StatusCode::BAD_REQUEST;
+    }
+    m.batch_modify_calls += 1;
+    m.relabel(
+        &ids,
+        &strings(&body["addLabelIds"]),
+        &strings(&body["removeLabelIds"]),
+    );
+    axum::http::StatusCode::NO_CONTENT
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect()
 }
 
 /// Stub Jev: files everything under "Receipts" when that folder is offered, to archive (or `jev_status`).
@@ -886,6 +927,7 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/gmail/history", get(history))
                 .route("/gmail/labels", get(labels).post(create_label))
                 .route("/gmail/threads/{id}/modify", post(modify_thread))
+                .route("/gmail/messages/batchModify", post(batch_modify))
                 .route("/gmail/threads/{id}/trash", post(trash_thread))
                 .route("/jev/v1/systemone", post(jev_systemone))
                 .route("/subq/v1/systemone", post(subq_systemone))

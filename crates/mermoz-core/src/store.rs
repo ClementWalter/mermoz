@@ -21,6 +21,7 @@ pub use conversations::{
 mod feed;
 mod images;
 mod plan;
+mod push;
 mod reactions;
 mod readings;
 pub use feed::FEED_STATUSES;
@@ -133,6 +134,7 @@ const MIGRATIONS: &[&str] = &[
     readings::MIGRATION,
     plan::MIGRATION,
     images::MIGRATION,
+    push::MIGRATION,
 ];
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
@@ -4982,10 +4984,11 @@ impl Store {
         key: &str,
         payload: &serde_json::Value,
     ) -> Result<()> {
-        // One pending op per (kind, key): a newer edit supersedes an unsent one.
+        // One pending op per (kind, key): a newer edit supersedes an unsent one and,
+        // being the user's own, no longer waits behind a bulk run.
         tx.execute(
             "INSERT INTO ops (account_id, kind, key, payload, created) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(kind, key) DO UPDATE SET payload = excluded.payload, seq = seq + 1, attempts = 0, last_error = NULL",
+             ON CONFLICT(kind, key) DO UPDATE SET payload = excluded.payload, seq = seq + 1, attempts = 0, last_error = NULL, bulk = 0",
             params![account_id, kind, key, payload.to_string(), now_ms()],
         )?;
         Ok(())

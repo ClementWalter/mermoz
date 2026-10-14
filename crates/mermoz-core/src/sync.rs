@@ -7,10 +7,12 @@ use crate::gmail::{Gmail, decode_raw};
 use crate::mime;
 use crate::model::Draft;
 use crate::store::{IncomingMessage, LABEL_PREFIX, Store, SyncMode, ThreadPatch};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
+
+mod push;
 
 /// Notifications fanned out to subscribed clients.
 #[derive(Debug, Clone)]
@@ -246,14 +248,16 @@ impl AccountSync {
         Ok(())
     }
 
-    /// Applies everything that changed since the last history id.
-    pub async fn incremental(&self) -> Result<()> {
+    /// Applies everything that changed since the last history id; returns how many
+    /// threads changed. Label changes the store already shows (the echo of our own
+    /// pushes) are skipped without asking Gmail for the message.
+    pub async fn incremental(&self) -> Result<usize> {
         let Some(start) = self.store.history_id(&self.account_id)? else {
-            return Ok(());
+            return Ok(0);
         };
         let mut page_token: Option<String> = None;
         let mut added: Vec<(String, String)> = vec![];
-        let mut relabeled: BTreeSet<String> = BTreeSet::new();
+        let mut relabeled: BTreeMap<String, LabelEdits> = BTreeMap::new();
         let mut latest = start.clone();
         loop {
             let Some(page) = self.gmail.history(&start, page_token.as_deref()).await? else {
@@ -264,14 +268,22 @@ impl AccountSync {
                 self.store.set_cursor(&self.account_id, None)?;
                 self.store
                     .set_sync(&self.account_id, "initial", None, None, None)?;
-                return Ok(());
+                return Ok(0);
             };
             for rec in &page.history {
                 for m in &rec.messages_added {
                     added.push((m.message.id.clone(), m.message.thread_id.clone()));
                 }
-                for m in rec.labels_added.iter().chain(rec.labels_removed.iter()) {
-                    relabeled.insert(m.message.id.clone());
+                for (m, on) in rec
+                    .labels_added
+                    .iter()
+                    .map(|m| (m, true))
+                    .chain(rec.labels_removed.iter().map(|m| (m, false)))
+                {
+                    relabeled
+                        .entry(m.message.id.clone())
+                        .or_default()
+                        .record(&m.label_ids, on);
                 }
             }
             if let Some(h) = page.history_id {
@@ -287,6 +299,19 @@ impl AccountSync {
             .into_iter()
             .filter(|(id, _)| !self.store.has_message(&self.account_id, id).unwrap_or(true))
             .collect();
+        let mut relabeled_ids = vec![];
+        let mut echoes = 0usize;
+        for (id, edits) in relabeled {
+            match self.store.message_label_ids(&self.account_id, &id)? {
+                None => {}
+                Some(stored) if edits.shown_by(&stored) => echoes += 1,
+                Some(_) => relabeled_ids.push(id),
+            }
+        }
+        if echoes > 0 {
+            debug!(account = %self.email, echoes, "label changes already applied");
+        }
+        let relabeled = relabeled_ids;
         if !new.is_empty() || !relabeled.is_empty() {
             // Labels created on another device must be known before ingesting.
             self.refresh_labels().await?;
@@ -301,9 +326,6 @@ impl AccountSync {
             )?);
         }
         for id in relabeled {
-            if !self.store.has_message(&self.account_id, &id)? {
-                continue;
-            }
             match self.gmail.get_minimal(&id).await {
                 Ok(m) => {
                     let inc = IncomingMessage {
@@ -325,10 +347,12 @@ impl AccountSync {
             }
         }
         self.store.set_history_id(&self.account_id, &latest)?;
-        if !changed.is_empty() {
-            let _ = self.events.send(Event::ThreadsChanged(dedup(changed)));
+        let changed = dedup(changed);
+        let n = changed.len();
+        if n > 0 {
+            let _ = self.events.send(Event::ThreadsChanged(changed));
         }
-        Ok(())
+        Ok(n)
     }
 
     async fn label_ids(&self, names: &BTreeSet<String>) -> Result<Vec<String>> {
@@ -386,41 +410,7 @@ impl AccountSync {
         Ok(n)
     }
 
-    /// Pushes queued local edits to Gmail; failures stay queued for the next round.
-    pub async fn push_ops(&self) -> Result<usize> {
-        let ops = self.store.pending_ops(200)?;
-        let mut done = 0;
-        for op in ops.into_iter().filter(|o| o.account_id == self.account_id) {
-            let res = match op.kind.as_str() {
-                "labels" => self.push_labels(&op.key).await,
-                "projects" => self.push_projects(&op.key, &op.payload).await,
-                "label_rename" => self.push_label_rename(&op.payload).await,
-                "label_delete" => self.push_label_delete(&op.payload).await,
-                "read" => {
-                    let read = op.payload["read"].as_bool().unwrap_or(true);
-                    self.push_read(&op.key, read).await
-                }
-                other => Err(Error::other(format!("unknown op {other}"))),
-            };
-            match res {
-                Ok(()) => {
-                    self.store.op_done(&op)?;
-                    done += 1;
-                }
-                Err(Error::NotFound(_)) => self.store.op_done(&op)?,
-                Err(e) => {
-                    warn!(op = op.id, "push failed: {e}");
-                    self.store.op_failed(&op, &e.to_string())?;
-                    if matches!(e, Error::Http(_)) {
-                        // Offline: stop this round, everything stays queued.
-                        break;
-                    }
-                }
-            }
-        }
-        Ok(done)
-    }
-
+    /// A thread's labels with calls of its own: trash or untrash, then its label diff.
     async fn push_labels(&self, thread_id: &str) -> Result<()> {
         let (_, provider_thread) = self.store.provider_thread_id(thread_id)?;
         let trashed = self.store.thread_trashed(&self.account_id, thread_id)?;
@@ -460,37 +450,6 @@ impl AccountSync {
             .apply_label_delta(thread_id, &add_ids, &remove_ids)
     }
 
-    /// Pushes explicit project adds/removes; labels missing on the server are created.
-    async fn push_projects(&self, thread_id: &str, payload: &serde_json::Value) -> Result<()> {
-        let names = |k: &str| -> BTreeSet<String> {
-            payload[k]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let (add, remove) = (names("add"), names("remove"));
-        let (_, provider_thread) = self.store.provider_thread_id(thread_id)?;
-        let add_ids = self.label_ids(&add).await?;
-        let mut remove_ids = vec![];
-        for n in &remove {
-            if let Some(id) = self.store.label_id(&self.account_id, n)? {
-                remove_ids.push(id);
-            }
-        }
-        if add_ids.is_empty() && remove_ids.is_empty() {
-            return Ok(());
-        }
-        self.gmail
-            .modify_thread(&provider_thread, &add_ids, &remove_ids)
-            .await?;
-        self.store
-            .apply_label_delta(thread_id, &add_ids, &remove_ids)
-    }
-
     async fn push_label_rename(&self, payload: &serde_json::Value) -> Result<()> {
         let (from, to) = (
             payload["from"].as_str().unwrap_or_default(),
@@ -518,22 +477,6 @@ impl AccountSync {
                 self.store.remove_label(&self.account_id, &id)
             }
             Err(e) => Err(e),
-        }
-    }
-
-    async fn push_read(&self, thread_id: &str, read: bool) -> Result<()> {
-        let (_, provider_thread) = self.store.provider_thread_id(thread_id)?;
-        let unread = vec!["UNREAD".to_string()];
-        if read {
-            self.gmail
-                .modify_thread(&provider_thread, &[], &unread)
-                .await?;
-            self.store.apply_label_delta(thread_id, &[], &unread)
-        } else {
-            self.gmail
-                .modify_thread(&provider_thread, &unread, &[])
-                .await?;
-            self.store.apply_label_delta(thread_id, &unread, &[])
         }
     }
 
@@ -613,6 +556,29 @@ impl AccountSync {
     }
 }
 
+/// One message's label changes in a history window: the last word on each label.
+#[derive(Default)]
+struct LabelEdits {
+    last: BTreeMap<String, bool>,
+    /// A change Gmail sent without its labels: the message must be fetched.
+    unknown: bool,
+}
+
+impl LabelEdits {
+    fn record(&mut self, labels: &[String], on: bool) {
+        self.unknown |= labels.is_empty();
+        for l in labels {
+            self.last.insert(l.clone(), on);
+        }
+    }
+
+    /// The stored labels already show every change: an echo of our own push, or of a
+    /// change made here before Gmail reported it.
+    fn shown_by(&self, stored: &BTreeSet<String>) -> bool {
+        !self.unknown && self.last.iter().all(|(l, on)| stored.contains(l) == *on)
+    }
+}
+
 fn dedup(mut v: Vec<String>) -> Vec<String> {
     v.sort();
     v.dedup();
@@ -629,4 +595,39 @@ fn to_incoming(m: crate::gmail::RawMessage) -> Option<IncomingMessage> {
         internal_date: m.internal_date.and_then(|d| d.parse().ok()).unwrap_or(0),
         parsed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    fn set(labels: &[&str]) -> BTreeSet<String> {
+        labels.iter().map(|l| l.to_string()).collect()
+    }
+
+    /// History of one message: (labels, added) in order.
+    fn edits(changes: &[(Vec<&str>, bool)]) -> LabelEdits {
+        let mut e = LabelEdits::default();
+        for (labels, on) in changes {
+            let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
+            e.record(&labels, *on);
+        }
+        e
+    }
+
+    #[rstest]
+    #[case::our_archive_echoed(vec![(vec!["INBOX"], false)], &["UNREAD"], true)]
+    #[case::our_label_echoed(vec![(vec!["Label_1"], true)], &["INBOX", "Label_1"], true)]
+    #[case::archived_elsewhere(vec![(vec!["INBOX"], false)], &["INBOX"], false)]
+    #[case::labelled_elsewhere(vec![(vec!["Label_1"], true)], &["INBOX"], false)]
+    #[case::last_change_wins(vec![(vec!["INBOX"], false), (vec!["INBOX"], true)], &["INBOX"], true)]
+    #[case::labels_not_sent(vec![(vec![], true)], &["INBOX"], false)]
+    fn a_label_change_already_stored_is_an_echo(
+        #[case] changes: Vec<(Vec<&str>, bool)>,
+        #[case] stored: &[&str],
+        #[case] echo: bool,
+    ) {
+        assert_eq!(edits(&changes).shown_by(&set(stored)), echo);
+    }
 }

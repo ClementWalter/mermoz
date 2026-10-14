@@ -21,6 +21,9 @@ pub struct Profile {
     pub history_id: String,
 }
 
+/// Gmail's limit on message ids per `messages.batchModify` call.
+pub const BATCH_MODIFY_MAX: usize = 1000;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageRef {
@@ -51,6 +54,9 @@ pub struct RawMessage {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryMessage {
     pub message: MessageRef,
+    /// For `labelsAdded` / `labelsRemoved`: the labels this change added or removed.
+    #[serde(default)]
+    pub label_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,6 +394,24 @@ impl Gmail {
         self.call(
             reqwest::Method::POST,
             &format!("/threads/{thread_id}/modify"),
+            &[],
+            Some(body),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Adds and removes labels on up to [`BATCH_MODIFY_MAX`] messages in one call.
+    pub async fn batch_modify(
+        &self,
+        ids: &[String],
+        add: &[String],
+        remove: &[String],
+    ) -> Result<()> {
+        let body = json!({ "ids": ids, "addLabelIds": add, "removeLabelIds": remove });
+        self.call(
+            reqwest::Method::POST,
+            "/messages/batchModify",
             &[],
             Some(body),
         )

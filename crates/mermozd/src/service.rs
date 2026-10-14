@@ -655,11 +655,16 @@ async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
             return;
         }
         ensure_import(&svc, &w);
-        if let Err(e) = w.sync.incremental().await {
-            warn!(account = %w.sync.email, "incremental: {e}");
+        match w.sync.incremental().await {
+            // Only mail that changed is routed or judged again; echoes of our own
+            // pushes change nothing.
+            Ok(n) if n > 0 => {
+                svc.router_kick.notify_one();
+                svc.feed_kick.notify_one();
+            }
+            Ok(_) => {}
+            Err(e) => warn!(account = %w.sync.email, "incremental: {e}"),
         }
-        svc.router_kick.notify_one();
-        svc.feed_kick.notify_one();
         match w.sync.push_ops().await {
             Ok(n) if n > 0 => info!(account = %w.sync.email, pushed = n, "pushed local changes"),
             Ok(_) => {}
