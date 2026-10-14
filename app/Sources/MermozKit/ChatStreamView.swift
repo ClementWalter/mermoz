@@ -964,29 +964,42 @@ final class FadeView: NSView {
 final class HostedRowView: NSView {
     var key = ""
     let controller: NSHostingController<AnyView>
-    private var watch: NSKeyValueObservation?
+    /// The content's own height, as it last reported it.
+    private(set) var reported: CGFloat = 0
+    /// Where the content's height reports go; set once the row exists.
+    private let relay = HeightRelayBox()
 
     override var isFlipped: Bool { true }
 
     init(rootView: AnyView) {
-        controller = NSHostingController(rootView: rootView)
-        // The controller publishes its ideal size; a change means this row grew or shrank.
-        controller.sizingOptions = [.preferredContentSize]
+        controller = NSHostingController(rootView: Self.watched(rootView, relay))
         super.init(frame: .zero)
         let v = controller.view
         v.autoresizingMask = [.width, .height]
         v.frame = bounds
         addSubview(v)
-        watch = controller.observe(\.preferredContentSize) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.superview?.needsLayout = true }
-        }
+        relay.changed = { [weak self] h in self?.contentHeight(h) }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     var rootView: AnyView {
         get { controller.rootView }
-        set { controller.rootView = newValue }
+        set { controller.rootView = Self.watched(newValue, relay) }
+    }
+
+    /// The content at its own height, reporting every change of it (an email's HTML or
+    /// images loading, a section unfolding), whatever frame the row has at the moment.
+    private static func watched(_ view: AnyView, _ relay: HeightRelayBox) -> AnyView {
+        AnyView(view.fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { h in relay.changed(h) })
+    }
+
+    /// The content grew or shrank: the stream lays its rows out again, now.
+    private func contentHeight(_ h: CGFloat) {
+        guard abs(h - reported) > 0.5 else { return }
+        reported = h
+        if abs(h - bounds.height) > 0.5 { superview?.needsLayout = true }
     }
 
     /// The row's height at `width`, asked of SwiftUI: the content's true height, not the
@@ -994,6 +1007,12 @@ final class HostedRowView: NSView {
     func height(at width: CGFloat) -> CGFloat {
         ceil(controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
     }
+}
+
+/// Carries a hosted row's height reports from its SwiftUI content to the row.
+@MainActor
+final class HeightRelayBox {
+    var changed: (CGFloat) -> Void = { _ in }
 }
 
 // MARK: stream
