@@ -38,6 +38,21 @@ func anythingElseDoesNot(typed: String) {
     #expect(!AskIntent.confirms(typed, total: 1842))
 }
 
+@Test func theStatusLineSaysWhereThreadsAreNow() {
+    #expect(AskIntent.currentLine([DoStatusCount(status: "archive", name: "Archive", count: 26)]) == "Currently: Archive 26")
+}
+
+@Test func theStatusLineListsEachCurrentStatus() {
+    let counts = [DoStatusCount(status: "todo", name: "To do", count: 3), DoStatusCount(status: "archive", name: "Archive", count: 1200)]
+    #expect(AskIntent.currentLine(counts) == "Currently: To do 3 · Archive 1,200")
+}
+
+@Test func aTargetListDecodesWithDates() throws {
+    let json = #"{"threads":[{"id":"t1","number":"M-1","status":"archive","subject":"Notes: sync","last_from":"Gemini","last_date":1791849600000}]}"#
+    let t = try RPCCoding.decoder().decode(DoTargets.self, from: Data(json.utf8))
+    #expect(t.threads.first?.lastDate == 1_791_849_600_000)
+}
+
 @Test func countsHaveThousandsSeparators() {
     #expect(AskIntent.count(1842) == "1,842")
 }

@@ -3,7 +3,7 @@
   "name": "io.github.ClementWalter/mermoz",
   "title": "Mermoz",
   "description": "Your local Gmail mailbox on macOS: search, read, sort and draft mail. Sends need approval.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "websiteUrl": "https://mermoz.xyz/docs/mcp/",
   "repository": {
     "url": "https://github.com/ClementWalter/mermoz",

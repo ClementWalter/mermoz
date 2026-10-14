@@ -144,11 +144,46 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 
 // Message (thread_id: its Gmail thread, inside a conversation of several)
 {&quot;id&quot;: &quot;msg_…&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;from&quot;: {&quot;name&quot;: &quot;Marc Petit&quot;, &quot;email&quot;: &quot;marc@…&quot;},
- &quot;to&quot;: [{&quot;name&quot;: &quot;&quot;, &quot;email&quot;: &quot;…&quot;}], &quot;cc&quot;: [], &quot;date&quot;: 1791700000000,
+ &quot;to&quot;: [{&quot;name&quot;: &quot;&quot;, &quot;email&quot;: &quot;…&quot;}], &quot;cc&quot;: [], &quot;reply_to&quot;: [{&quot;name&quot;: &quot;Franck Adam&quot;, &quot;email&quot;: &quot;franck@…&quot;}],
+ &quot;date&quot;: 1791700000000,
  &quot;subject&quot;: &quot;…&quot;, &quot;body_text&quot;: &quot;… full text …&quot;, &quot;body_new&quot;: &quot;… what the bubble shows …&quot;,
  &quot;has_quoted&quot;: true, &quot;has_signature&quot;: true, &quot;forwarded&quot;: false, &quot;forwarded_from&quot;: &quot;Bank&quot; | null, &quot;quoted_only&quot;: false,
  &quot;body_clean&quot;: &quot;… agent's reading version …&quot; | null, &quot;has_html&quot;: true, &quot;is_from_me&quot;: false,
- &quot;attachments&quot;: [{&quot;id&quot;: &quot;att_…&quot;, &quot;filename&quot;: &quot;report.pdf&quot;, &quot;mime&quot;: &quot;application/pdf&quot;, &quot;size&quot;: 2400000}]}
+ &quot;reaction&quot;: {&quot;emoji&quot;: &quot;❤️&quot;, &quot;target_message_id&quot;: &quot;msg_…&quot; | null} | null,
+ &quot;is_bounce&quot;: false, &quot;is_auto_reply&quot;: false,
+ &quot;delivery_failure&quot;: {&quot;recipient&quot;: &quot;no-reply@…&quot;, &quot;status&quot;: &quot;5.1.1&quot;, &quot;reason&quot;: &quot;address doesn't exist&quot;,
+                      &quot;bounce_message_id&quot;: &quot;msg_…&quot;} | null,
+ &quot;duplicate_of&quot;: &quot;msg_…&quot; | null, &quot;copies&quot;: 1,
+ &quot;attachments&quot;: [{&quot;id&quot;: &quot;att_…&quot;, &quot;filename&quot;: &quot;report.pdf&quot;, &quot;mime&quot;: &quot;application/pdf&quot;, &quot;size&quot;: 2400000,
+                  &quot;inline&quot;: false, &quot;decorative&quot;: false}]}
+
+// reply_to: the `Reply-To` header (empty when replies go to `from`). Mail stored before
+// it was kept learns it when its thread is opened (one metadata call per message,
+// then a threads_changed event).
+
+// is_bounce: a delivery failure report from the mail system (mailer-daemon, postmaster,
+// or multipart/report; report-type=delivery-status). is_auto_reply: an automatic answer
+// (Auto-Submitted other than &quot;no&quot;, X-Autoreply, X-Autorespond, or an &quot;Out of office&quot; /
+// &quot;Automatic reply&quot; / &quot;Réponse automatique&quot; subject). delivery_failure: on the user's
+// message a bounce reports on (matched by the Message-ID in the bounce, else the
+// user's latest earlier message to that recipient): who it missed, the RFC 3463
+// status, why in plain words, and the bounce message. A client shows it on that
+// message rather than the bounce as a bubble. Older mail learns its kind and report
+// when its thread is opened, like reply_to.
+
+// ReplyAddressing (threads.get &quot;reply&quot;): the reply-all a conversation starts with,
+// answering message_id (in Gmail thread thread_id): the latest message from a real
+// correspondent, i.e. not the user, not a bounce or auto-reply, and not a no-reply
+// sender without a Reply-To that reaches someone; else the user's latest message
+// (its recipients are kept); else the latest that isn't a bounce or auto-reply.
+// Addressing follows RFC 5322: on a received message To is its Reply-To (else From) plus its To,
+// Cc its Cc; on the user's own message, its recipients again, a sender that asked for
+// replies elsewhere swapped for that address. The user's address is never included.
+// no_reply lists To addresses nobody reads (no-reply, noreply, do-not-reply,
+// donotreply, ne-pas-repondre, notifications@, mailer-daemon); suggestion is a
+// person's address found in the mail, offered in their place, or null.
+{&quot;message_id&quot;: &quot;msg_…&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;to&quot;: [Address], &quot;cc&quot;: [Address], &quot;no_reply&quot;: [&quot;no-reply@…&quot;],
+ &quot;suggestion&quot;: {&quot;name&quot;: &quot;Franck Adam&quot;, &quot;email&quot;: &quot;franck@…&quot;} | null}
 
 // Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
 // body_new    only what the sender newly wrote: greeting, body, sign-off name. LF line
@@ -162,6 +197,16 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 //             the forwarded text (its header block removed); forwarded_from names its
 //             author
 // quoted_only the message adds no words of its own; body_new is the text it quotes
+// reaction    an Outlook/Teams reaction (&quot;[heart] Nora reacted to your message&quot;) to
+//             target_message_id (found by In-Reply-To, else by the words it quotes);
+//             body_new is then its emoji
+// copies      how many times this email was received (a forwarding address, a double
+//             import); threads hide the other deliveries and show the kept one with
+//             copies &gt;= 2. duplicate_of names the kept copy on a hidden one. Gmail keeps
+//             every copy: thread actions apply to all, none is deleted on its own.
+// attachments[].decorative  a signature logo, social icon, banner or tracking pixel:
+//             never shown as a photo nor counted in Photos (conversation files leave
+//             them out)
 
 // Status
 {&quot;key&quot;: &quot;todo&quot;, &quot;name&quot;: &quot;Todo&quot;, &quot;order&quot;: 2, &quot;color&quot;: &quot;#5A7386&quot;}
@@ -177,7 +222,12 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 {&quot;id&quot;: &quot;dft_…&quot;, &quot;account_id&quot;: &quot;acc_1&quot;, &quot;thread_id&quot;: &quot;thr_…&quot; | null,
  &quot;to&quot;: [&quot;a@b.c&quot;], &quot;cc&quot;: [], &quot;subject&quot;: &quot;…&quot;, &quot;body&quot;: &quot;…&quot;,
  &quot;state&quot;: &quot;draft|review|sent|rejected&quot;, &quot;origin&quot;: &quot;app|agent&quot;,
- &quot;created&quot;: 1791700000000, &quot;updated&quot;: 1791700000000}
+ &quot;created&quot;: 1791700000000, &quot;updated&quot;: 1791700000000,
+ &quot;reply_to_message_id&quot;: &quot;msg_…&quot; | null}
+// reply_to_message_id: the message the reply answers: it carries that message's
+// In-Reply-To/References and ends with it quoted (&quot;On …, Name &lt;addr&gt; wrote:&quot; then
+// &quot;&gt; &quot; lines). Without it, a reply answers the thread's ReplyAddressing message and
+// adds no quote.
 
 // ChatMessage: one turn of &quot;Chat about this&quot;. Actions are proposals; nothing is applied.
 {&quot;id&quot;: &quot;cht_…&quot;, &quot;thread_id&quot;: &quot;thr_…&quot;, &quot;role&quot;: &quot;user|assistant&quot;, &quot;text&quot;: &quot;light Markdown&quot;,
@@ -290,8 +340,13 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 <td><code>DoPreview</code></td>
 </tr>
 <tr>
+<td><code>do.targets</code></td>
+<td><code>{"id"}</code> — every thread a planned preview would change (all steps, once each), newest first, with its current status: the preview's full list</td>
+<td><code>{"threads": [{"id", "number", "status", "subject", "last_from", "last_date"}]}</code></td>
+</tr>
+<tr>
 <td><code>do.run</code></td>
-<td><code>{"id", "confirm"?}</code> — runs a planned preview once, 200 threads per write through the same store changes as <code>threads.update</code> / <code>threads.mark_read</code> / <code>feed.snooze</code> (Gmail write-back included), logging each thread's state first; emits <code>do_progress</code>. A plan that deletes needs <code>confirm</code> equal to its <code>total</code></td>
+<td><code>{"id", "confirm"?, "exclude"?: [id]}</code> — <code>exclude</code>: threads unticked in the list, left alone (the count to confirm a delete is then the ticked ones). Runs a planned preview once, 200 threads per write through the same store changes as <code>threads.update</code> / <code>threads.mark_read</code> / <code>feed.snooze</code> (Gmail write-back included), logging each thread's state first; emits <code>do_progress</code>. A plan that deletes needs <code>confirm</code> equal to its <code>total</code></td>
 <td><code>{"id", "done", "total", "undo_label"}</code></td>
 </tr>
 <tr>
@@ -409,7 +464,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 <tr>
 <td><code>threads.get</code></td>
 <td><code>{"id", "conversation"?: false, "latest"?: n}</code> — with <code>conversation</code>, every message of the thread's conversation; with <code>latest</code> too, only its last n (people, files and links still cover all of it)</td>
-<td><code>{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n}</code> (<code>earlier</code>: messages left out by <code>latest</code>)</td>
+<td><code>{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing | null}</code> (<code>earlier</code>: messages left out by <code>latest</code>)</td>
 </tr>
 <tr>
 <td><code>conversations.split</code></td>
@@ -418,8 +473,13 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>conversations.merge</code></td>
-<td><code>{"ids": [id]}</code> — joins the threads' conversations into the latest one's</td>
-<td><code>{"conversation_id", "threads": n}</code></td>
+<td><code>{"ids": [id]}</code> — joins the threads' conversations into the latest one's; a manual join the grouping learns from</td>
+<td><code>{"conversation_id", "threads": n, "members": [id], "undo"}</code></td>
+</tr>
+<tr>
+<td><code>conversations.unmerge</code></td>
+<td><code>{"undo"}</code> — the <code>undo</code> a merge returned: each thread back in its conversation, the join unlearned</td>
+<td><code>{"threads": n}</code></td>
 </tr>
 <tr>
 <td><code>conversations.progress</code></td>
@@ -434,7 +494,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 <tr>
 <td><code>threads.update</code></td>
 <td>the other open threads of each conversation follow · <code>{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}</code></td>
-<td><code>{"updated": n}</code></td>
+<td><code>{"updated": n, "before": [ThreadState]}</code> (every thread reached, siblings included, for <code>threads.restore</code>)</td>
 </tr>
 <tr>
 <td><code>threads.accept_suggestions</code></td>
@@ -473,12 +533,12 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>sort.answer</code></td>
-<td><code>{"id", "answer": "yes" | "no" | "change", "status"?, "projects"?}</code> — answers a suggestion shown on a Feed card: yes accepts, no refuses (never offered again for that sender), change refuses and files where given; three consistent yes for a sender make a rule</td>
-<td><code>{"undo": {"thread", "since"}, "learned": "Learned: mail from X goes to Y" | null}</code></td>
+<td><code>{"id", "answer": "yes" | "no" | "change", "status"?, "projects"?}</code> — answers a suggestion shown on a Feed card: yes accepts, no refuses (never offered again for that sender), change refuses and files where given; three consistent yes for a sender make a rule; a status it sets moves the conversation's other open threads too</td>
+<td><code>{"undo": {"thread", "since", "siblings"?}, "learned": "Learned: mail from X goes to Y" | null}</code></td>
 </tr>
 <tr>
 <td><code>sort.undo</code></td>
-<td><code>{"undo"}</code> from <code>sort.answer</code> — the thread returns as it was, the answer is forgotten</td>
+<td><code>{"undo"}</code> from <code>sort.answer</code> — the thread (and its conversation's other threads) return as they were, the answer is forgotten</td>
 <td><code>{}</code></td>
 </tr>
 <tr>
@@ -498,7 +558,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>threads.restore</code></td>
-<td><code>{"threads": [{"id", "unread", "status", "priority", "projects", "due"}]}</code> — puts threads back as in the snapshots (a <code>ThreadSummary</code> works too)</td>
+<td><code>{"threads": [{"id", "unread", "status", "priority", "projects", "due"}]}</code> — puts each thread back as in its snapshot (conversation siblings do not follow) (a <code>ThreadSummary</code> works too)</td>
 <td><code>{"restored": n}</code></td>
 </tr>
 <tr>
@@ -543,7 +603,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>drafts.create</code></td>
-<td><code>{"account_id"?, "thread_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}</code> — with <code>thread_id</code>, it is a reply: recipients/subject default from the thread. All attachments are added or none (the draft is not created)</td>
+<td><code>{"account_id"?, "thread_id"?, "reply_to_message_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}</code> — with <code>thread_id</code>, it is a reply: recipients/subject default from the thread's reply target; with <code>reply_to_message_id</code>, a reply to that message (its thread; recipients by the ReplyAddressing rules from it, "Re: " its subject). All attachments are added or none (the draft is not created)</td>
 <td><code>Draft</code></td>
 </tr>
 <tr>
@@ -568,7 +628,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>drafts.send</code></td>
-<td><code>{"id"}</code></td>
+<td><code>{"id", "allow_no_reply"?: false}</code></td>
 <td><code>{"sent": true}</code> or error <code>approval_required</code></td>
 </tr>
 <tr>
@@ -648,7 +708,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>feed.list</code></td>
-<td><code>{"project"?, "account_id"?}</code> — the Feed: open threads as cards, in sections</td>
+<td><code>{"project"?, "account_id"?}</code> — the Feed: open conversations as cards (card <code>id</code> is the conversation id, <code>thread</code> its newest thread), in sections</td>
 <td><code>Feed</code></td>
 </tr>
 <tr>
@@ -658,7 +718,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>feed.snooze</code></td>
-<td><code>{"ids": [id], "until": ms, "label"?}</code> — Later: the threads leave the feed and their status columns until <code>until</code> (or new mail), then come back Unread and first in the feed with "You set this for <label>"</td>
+<td><code>{"ids": [id], "until": ms, "label"?}</code> — Later: the threads, with the other open threads of their conversations, leave the feed and their status columns until <code>until</code> (or new mail), then come back Unread and first in the feed with "You set this for <label>"</td>
 <td><code>{"snoozed": n}</code></td>
 </tr>
 <tr>
@@ -678,7 +738,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>feed.unsnooze</code></td>
-<td><code>{"ids": [id]}</code></td>
+<td><code>{"ids": [id]}</code> — with the other open threads of their conversations</td>
 <td><code>{"unsnoozed": n}</code></td>
 </tr>
 <tr>
@@ -818,6 +878,13 @@ thread to status <code>review</code>, and the call fails with <code>approval_req
 <pre><code class="language-json">{&quot;code&quot;: -32010, &quot;message&quot;: &quot;approval_required: draft dft_8f2c is waiting for the user to approve it in Mermoz. Tell the user; do not retry.&quot;,
  &quot;data&quot;: {&quot;draft&quot;: &quot;dft_8f2c&quot;, &quot;thread&quot;: &quot;M-1262&quot;}}
 </code></pre>
+<p>A send answers as soon as Gmail has the message; the sent copy is pulled into its
+thread for up to 3 s, and the regular sync brings it otherwise. It never waits on
+the label write-back queue. A Gmail refusal is the <code>upstream</code> error; a network
+failure an error whose message says so (connection failures are retried first).</p>
+<p>An agent's send to a To address that doesn't accept replies (see ReplyAddressing)
+fails with <code>invalid_params</code> (<code>no_reply: … doesn't accept replies …</code>) unless it
+passes <code>allow_no_reply: true</code>. Mermoz.app warns in the composer instead.</p>
 <p>The caller is Mermoz.app when the peer process's executable (from the socket's
 peer pid) lives inside a bundle named <code>Mermoz.app</code>. <code>review.*</code> and
 <code>settings.set</code> are refused with <code>app_only</code> for any other caller.</p>

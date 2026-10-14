@@ -424,7 +424,12 @@ fn changed(svc: &Service, ids: Vec<String>) {
 
 /// Runs a planned operation in batches. A delete needs `confirm` equal to the count
 /// shown in its preview.
-pub async fn run(svc: &Arc<Service>, id: &str, confirm: Option<i64>) -> Result<Value> {
+pub async fn run(
+    svc: &Arc<Service>,
+    id: &str,
+    confirm: Option<i64>,
+    exclude: &BTreeSet<String>,
+) -> Result<Value> {
     let st = &svc.store;
     let op = st.bulk_op(id)?;
     if op.state != "planned" {
@@ -435,16 +440,25 @@ pub async fn run(svc: &Arc<Service>, id: &str, confirm: Option<i64>) -> Result<V
     }
     let p: Plan = serde_json::from_value(op.plan.clone())
         .map_err(|e| Error::other(format!("stored plan unreadable: {e}")))?;
-    if p.deletes() && confirm != Some(op.total) {
+    // The user unticked some threads in the preview: the run changes exactly the rest.
+    let ticked = st
+        .bulk_op_threads(id)?
+        .iter()
+        .filter(|t| !exclude.contains(&t.id))
+        .count() as i64;
+    if ticked == 0 {
+        return Err(Error::InvalidParams("No thread is ticked.".into()));
+    }
+    if p.deletes() && confirm != Some(ticked) {
         return Err(Error::InvalidParams(format!(
             "This moves {} threads to the Trash. Type {} to confirm.",
-            plan::count(op.total as usize),
-            op.total
+            plan::count(ticked as usize),
+            ticked
         )));
     }
     st.set_bulk_op_state(id, "running", 0, None)?;
     let mut done: BTreeSet<String> = BTreeSet::new();
-    let total = op.total;
+    let total = ticked;
     let progress = |n: usize| {
         let _ = st.set_bulk_op_state(id, "running", n as i64, None);
         let _ = svc.events.send(Event::DoProgress {
@@ -460,10 +474,10 @@ pub async fn run(svc: &Arc<Service>, id: &str, confirm: Option<i64>) -> Result<V
             Action::MarkRead | Action::MarkUnread | Action::Later { .. }
         );
         for chunk in targets.chunks(BATCH) {
-            // Threads gone since the preview (deleted elsewhere) are skipped.
+            // Unticked threads, and threads gone since the preview, are skipped.
             let live: Vec<String> = chunk
                 .iter()
-                .filter(|t| st.thread(t).is_ok())
+                .filter(|t| !exclude.contains(*t) && st.thread(t).is_ok())
                 .cloned()
                 .collect();
             let outcome = snapshot(svc, &live, follows)

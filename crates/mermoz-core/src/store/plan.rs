@@ -402,6 +402,29 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Every thread a planned run would change (all steps, once each), newest first,
+    /// with its current status: the preview's full list.
+    pub fn bulk_op_threads(&self, id: &str) -> Result<Vec<PlanMatch>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT t.id, t.number, t.status, t.subject, t.last_from, t.last_date FROM threads t
+             WHERE t.id IN (SELECT thread_id FROM bulk_op_targets WHERE op_id = ?1)
+             ORDER BY t.last_date DESC",
+        )?;
+        Ok(st
+            .query_map([id], |r| {
+                Ok(PlanMatch {
+                    id: r.get(0)?,
+                    number: format!("M-{}", r.get::<_, i64>(1)?),
+                    status: r.get(2)?,
+                    subject: r.get(3)?,
+                    last_from: r.get(4)?,
+                    last_date: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Moves a run to `state`; `done` counts threads changed so far.
     pub fn set_bulk_op_state(
         &self,

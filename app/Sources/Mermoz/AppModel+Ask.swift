@@ -23,6 +23,20 @@ extension AppModel {
         return askFlow.pick(c, backend: b)
     }
 
+    /// "and N more": the plan's full list, to review and untick.
+    @discardableResult
+    func expandAsk(backend: AskBackend? = nil) -> Task<Void, Never>? {
+        guard let b = backend ?? client else { return nil }
+        return askFlow.expand(backend: b)
+    }
+
+    /// Space or ⌘↩ on a row: the thread opens in the reading pane behind the palette;
+    /// the plan, its list and the ticks stay as they are.
+    func openAskRow() {
+        guard let t = askFlow.cursorRow else { return }
+        open(t.id)
+    }
+
     /// Enter on a previewed plan: runs it, then offers one Undo for all of it.
     @discardableResult
     func confirmAsk(backend: AskBackend? = nil) -> Task<Void, Never>? {

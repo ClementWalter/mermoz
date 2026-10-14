@@ -1099,3 +1099,83 @@ fn a_question_offers_the_google_gemini_first(gemini: World) {
     let v = gemini.ok("do.ask", json!({ "text": TYPO }));
     assert_eq!(v["choices"][0]["pick"], json!({ "from": GEMINI }));
 }
+
+// ---- reviewing the list: every thread, and unticked ones left alone
+
+/// The club delete planned; returns its id and the full list.
+fn club_delete(w: &World) -> (Value, Vec<Value>) {
+    w.ai_answers(vec![delete_from("esrin gourmet club")]);
+    let id = ask(w)["id"].clone();
+    let list = w.ok("do.targets", json!({ "id": id }))["threads"]
+        .as_array()
+        .unwrap()
+        .clone();
+    (id, list)
+}
+
+#[rstest]
+fn the_full_list_holds_every_thread(with_ai: World) {
+    assert_eq!(club_delete(&with_ai).1.len(), 3);
+}
+
+#[rstest]
+fn the_full_list_says_each_current_status(with_ai: World) {
+    let (_, list) = club_delete(&with_ai);
+    assert!(
+        list.iter()
+            .all(|t| t["status"].is_string() && t["last_date"].is_i64())
+    );
+}
+
+#[rstest]
+fn an_unticked_thread_changes_the_count_to_type(with_ai: World) {
+    let (id, list) = club_delete(&with_ai);
+    let err = with_ai
+        .call(
+            "do.run",
+            json!({ "id": id, "confirm": 3, "exclude": [list[0]["id"]] }),
+        )
+        .unwrap_err();
+    assert_eq!(
+        err["message"],
+        "This moves 2 threads to the Trash. Type 2 to confirm."
+    );
+}
+
+#[rstest]
+fn the_run_changes_exactly_the_ticked_threads(with_ai: World) {
+    let (id, list) = club_delete(&with_ai);
+    with_ai.ok(
+        "do.run",
+        json!({ "id": id, "confirm": 2, "exclude": [list[0]["id"]] }),
+    );
+    let statuses: Vec<String> = list
+        .iter()
+        .map(|t| with_ai.status_of(t["subject"].as_str().unwrap()))
+        .collect();
+    assert_eq!(statuses[1..], ["deleted", "deleted"]);
+}
+
+#[rstest]
+fn an_unticked_thread_is_left_alone(with_ai: World) {
+    let (id, list) = club_delete(&with_ai);
+    with_ai.ok(
+        "do.run",
+        json!({ "id": id, "confirm": 2, "exclude": [list[0]["id"]] }),
+    );
+    assert_ne!(
+        with_ai.status_of(list[0]["subject"].as_str().unwrap()),
+        "deleted"
+    );
+}
+
+#[rstest]
+fn nothing_ticked_runs_nothing(with_ai: World) {
+    let (id, list) = club_delete(&with_ai);
+    let all: Vec<Value> = list.iter().map(|t| t["id"].clone()).collect();
+    assert!(
+        with_ai
+            .call("do.run", json!({ "id": id, "exclude": all }))
+            .is_err()
+    );
+}

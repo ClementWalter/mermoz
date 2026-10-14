@@ -38,8 +38,18 @@ private final class StubBackend: AskBackend, @unchecked Sendable {
         lock.withLock { _replans.append((id, pick)) }
         return next()
     }
-    func doRun(_ id: String, confirm: Int?) async throws -> DoRunResult {
-        lock.withLock { _runs.append((id, confirm)) }
+    /// The plan's full list `do.targets` returns.
+    var targets: [DoSample] = []
+    private var _excluded: [[String]] = []
+    /// What each run was told to leave alone.
+    var excludedPerRun: [[String]] { lock.withLock { _excluded } }
+
+    func doTargets(_ id: String) async throws -> [DoSample] { targets }
+    func doRun(_ id: String, confirm: Int?, exclude: [String]) async throws -> DoRunResult {
+        lock.withLock {
+            _runs.append((id, confirm))
+            _excluded.append(exclude)
+        }
         return DoRunResult(id: id, done: 2, total: 2, undoLabel: "Archive")
     }
     func doGet(_ id: String) async throws -> DoOperation { DoOperation(id: id, state: "running", done: 0, total: 2) }
@@ -257,6 +267,128 @@ private func previewed(_ p: DoPreview = plan()) async -> (AppModel, StubBackend)
     let data = Params().with("pick", DoPick(subjectPrefix: "Notes:")).data()
     let json = try JSONSerialization.jsonObject(with: data) as? [String: [String: String]]
     #expect(json?["pick"] == ["subject_prefix": "Notes:"])
+}
+
+// MARK: reviewing the list
+
+/// 26 fictional notes, the Gemini case's shape: a delete plan showing 5, "and 21 more".
+private func notesList() -> [DoSample] {
+    (0..<26).map {
+        DoSample(id: "g\($0)", number: "M-\($0)", status: "archive", subject: "Notes: sync \($0)",
+                 lastFrom: "Gemini", lastDate: 1_791_849_600_000 - Int64($0) * 86_400_000)
+    }
+}
+
+/// A 26-thread delete previewed, its full list opened.
+@MainActor
+private func reviewing() async -> (AppModel, StubBackend) {
+    let rows = notesList()
+    let p = DoPreview(kind: "plan", id: "bop_1", summary: "Delete 26 threads from Gemini (to Gmail Trash)",
+                      steps: [DoStep(summary: "Delete 26 threads from Gemini (to Gmail Trash)", interpretation: "from gemini",
+                                     action: "Delete", count: 26,
+                                     byStatus: [DoStatusCount(status: "archive", name: "Archive", count: 26)],
+                                     sample: Array(rows.prefix(5)))],
+                      total: 26, deletes: true, confirm: "type_count")
+    let stub = StubBackend(p)
+    stub.targets = rows
+    let model = await asked(stub)
+    await model.expandAsk(backend: stub)?.value
+    return (model, stub)
+}
+
+@MainActor @Test func andMoreOpensTheFullList() async {
+    let (model, _) = await reviewing()
+    #expect(model.askFlow.rows?.count == 26)
+}
+
+@MainActor @Test func everyRowIsTickedAtFirst() async {
+    let (model, _) = await reviewing()
+    #expect(model.askFlow.selectedCount == 26)
+}
+
+@MainActor @Test func arrowsMoveThroughTheList() async {
+    let (model, _) = await reviewing()
+    model.askFlow.moveRow(1)
+    model.askFlow.moveRow(1)
+    #expect(model.askFlow.cursorRow?.id == "g2")
+}
+
+@MainActor @Test func theCursorStopsAtTheLastRow() async {
+    let (model, _) = await reviewing()
+    model.askFlow.moveRow(100)
+    #expect(model.askFlow.cursorRow?.id == "g25")
+}
+
+@MainActor @Test func untickingLowersTheCount() async {
+    let (model, _) = await reviewing()
+    model.askFlow.toggle("g3")
+    #expect(model.askFlow.selectedCount == 25)
+}
+
+@MainActor @Test func tickingAgainRestoresIt() async {
+    let (model, _) = await reviewing()
+    model.askFlow.toggle("g3")
+    model.askFlow.toggle("g3")
+    #expect(model.askFlow.selectedCount == 26)
+}
+
+@MainActor @Test func theOldCountNoLongerConfirmsTheDelete() async {
+    let (model, _) = await reviewing()
+    model.askFlow.toggle("g3")
+    model.askFlow.typed = "26"
+    #expect(!model.askFlow.canConfirm)
+}
+
+@MainActor @Test func theNewCountConfirmsTheDelete() async {
+    let (model, _) = await reviewing()
+    model.askFlow.toggle("g3")
+    model.askFlow.typed = "25"
+    #expect(model.askFlow.canConfirm)
+}
+
+@MainActor @Test func theRunLeavesOutExactlyTheUntickedRows() async {
+    let (model, stub) = await reviewing()
+    model.askFlow.toggle("g3")
+    model.askFlow.toggle("g7")
+    model.askFlow.typed = "24"
+    await model.confirmAsk(backend: stub)?.value
+    #expect(stub.excludedPerRun == [["g3", "g7"]])
+}
+
+@MainActor @Test func theRunIsConfirmedWithTheTickedCount() async {
+    let (model, stub) = await reviewing()
+    model.askFlow.toggle("g3")
+    model.askFlow.typed = "25"
+    await model.confirmAsk(backend: stub)?.value
+    #expect(stub.runs.first?.1 == 25)
+}
+
+@MainActor @Test func nothingTickedCannotRun() async {
+    let (model, _) = await reviewing()
+    for t in notesList() { model.askFlow.toggle(t.id) }
+    model.askFlow.typed = "0"
+    #expect(!model.askFlow.canConfirm)
+}
+
+@MainActor @Test func openingARowShowsItBehindThePalette() async {
+    let (model, _) = await reviewing()
+    model.askFlow.moveRow(4)
+    model.openAskRow()
+    #expect(model.selectedThreadId == "g4")
+}
+
+@MainActor @Test func openingARowKeepsThePlanAndItsTicks() async {
+    let (model, _) = await reviewing()
+    model.askFlow.toggle("g3")
+    model.openAskRow()
+    #expect(model.askFlow.preview?.id == "bop_1" && model.askFlow.selectedCount == 25)
+}
+
+@MainActor @Test func aNewPlanStartsWithEveryRowTicked() async {
+    let (model, stub) = await reviewing()
+    model.askFlow.toggle("g3")
+    await model.askFlow.start(sentence, backend: stub).value
+    #expect(model.askFlow.excluded.isEmpty && model.askFlow.rows == nil)
 }
 
 // MARK: keystroke cost

@@ -33,6 +33,12 @@ final class AskFlow {
     var typed = ""
     /// The highlighted choice (↑/↓), picked by Enter when the field is empty.
     var choiceCursor = 0
+    /// The preview's full list, once "and N more" is opened; nil while only the sample shows.
+    var rows: [DoSample]?
+    /// Threads unticked in the list: the run leaves them alone.
+    var excluded: Set<String> = []
+    /// The highlighted row of the full list (↑/↓).
+    var rowCursor = 0
     /// The instruction being planned and the questions answered so far.
     private(set) var sentence = ""
     private(set) var rounds: [DoRound] = []
@@ -62,10 +68,42 @@ final class AskFlow {
         return (q.canAnswer ?? true) && rounds.count < Self.maxRounds
     }
 
-    /// Enter runs the plan: something matches, and a delete has its count typed.
+    /// Threads the run will change: the plan's, less the unticked ones.
+    var selectedCount: Int {
+        max(0, (preview?.total ?? 0) - excluded.count)
+    }
+
+    /// Enter runs the plan: something is ticked, and a delete has that count typed.
     var canConfirm: Bool {
-        guard let p = preview, p.isPlan, let total = p.total, total > 0 else { return false }
-        return !p.needsTypedCount || AskIntent.confirms(typed, total: total)
+        guard let p = preview, p.isPlan, selectedCount > 0 else { return false }
+        return !p.needsTypedCount || AskIntent.confirms(typed, total: selectedCount)
+    }
+
+    /// "and N more": loads every thread of the plan into the preview.
+    @discardableResult
+    func expand(backend: AskBackend) -> Task<Void, Never>? {
+        guard rows == nil, let id = preview?.id else { return nil }
+        return Task {
+            guard let all = try? await backend.doTargets(id), preview?.id == id else { return }
+            rows = all
+            rowCursor = 0
+        }
+    }
+
+    /// Ticks or unticks a thread of the list.
+    func toggle(_ id: String) {
+        if excluded.contains(id) { excluded.remove(id) } else { excluded.insert(id) }
+    }
+
+    func moveRow(_ by: Int) {
+        guard let rows, !rows.isEmpty else { return }
+        rowCursor = max(0, min(rows.count - 1, rowCursor + by))
+    }
+
+    /// The highlighted thread of the full list.
+    var cursorRow: DoSample? {
+        guard let rows, rows.indices.contains(rowCursor) else { return nil }
+        return rows[rowCursor]
     }
 
     func refreshAvailability(_ backend: AskBackend?) async {
@@ -128,6 +166,9 @@ final class AskFlow {
     private func ask(label: String, _ call: @escaping @MainActor () async throws -> DoPreview) -> Task<Void, Never> {
         typed = ""
         choiceCursor = 0
+        rows = nil
+        excluded = []
+        rowCursor = 0
         let mark = Phase.thinking(label)
         phase = mark
         return Task {
@@ -154,8 +195,10 @@ final class AskFlow {
     /// result over (for the Undo entry); nil when it could not run.
     @discardableResult
     func confirm(backend: AskBackend, onDone: @escaping @MainActor (DoRunResult?) -> Void) -> Task<Void, Never>? {
-        guard canConfirm, let p = preview, let id = p.id, let total = p.total else { return nil }
+        guard canConfirm, let p = preview, let id = p.id else { return nil }
+        let total = selectedCount
         let confirm = p.needsTypedCount ? total : nil
+        let exclude = excluded.sorted()
         phase = .running(done: 0, total: total)
         // Progress comes from the run's log while the run call is out.
         let poll = Task {
@@ -168,7 +211,7 @@ final class AskFlow {
         return Task {
             defer { poll.cancel() }
             do {
-                let r = try await backend.doRun(id, confirm: confirm)
+                let r = try await backend.doRun(id, confirm: confirm, exclude: exclude)
                 phase = .idle
                 typed = ""
                 onDone(r)
@@ -194,6 +237,8 @@ final class AskFlow {
         if phase != .idle { phase = .idle }
         if !typed.isEmpty { typed = "" }
         rounds = []
+        if rows != nil { rows = nil }
+        if !excluded.isEmpty { excluded = [] }
     }
 }
 
@@ -204,6 +249,7 @@ struct AskPanel: View {
     @Environment(AppModel.self) private var model
     let flow: AskFlow
     @FocusState private var countFocused: Bool
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -274,30 +320,35 @@ struct AskPanel: View {
                 Text("Matched \(r)").font(.system(size: 12)).foregroundStyle(Theme.text2)
             }
             if !step.byStatus.isEmpty {
-                HStack(spacing: 12) {
-                    ForEach(step.byStatus, id: \.status) { c in
-                        HStack(spacing: 4) {
-                            StatusIcon(key: c.status, color: Color(hex: model.color(forStatus: c.status)))
-                            Text("\(c.name) \(AskIntent.count(c.count))")
+                // Where the threads are now, before the plan: never the action itself.
+                Text(AskIntent.currentLine(step.byStatus))
+                    .font(.system(size: 12)).foregroundStyle(Theme.text2)
+            }
+            if flow.rows == nil {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(step.sample) { t in
+                        HStack(spacing: 8) {
+                            Text(t.subject.isEmpty ? "(no subject)" : t.subject).lineLimit(1)
+                            Spacer()
+                            Text(t.lastFrom).foregroundStyle(Theme.text3).lineLimit(1)
                         }
+                        .font(.system(size: 12.5))
                     }
                 }
-                .font(.system(size: 12)).foregroundStyle(Theme.text2)
             }
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(step.sample) { t in
-                    HStack(spacing: 8) {
-                        Text(t.subject.isEmpty ? "(no subject)" : t.subject).lineLimit(1)
-                        Spacer()
-                        Text(t.lastFrom).foregroundStyle(Theme.text3).lineLimit(1)
-                    }
-                    .font(.system(size: 12.5))
-                }
-                if step.count > step.sample.count {
-                    Text("and \(AskIntent.count(step.count - step.sample.count)) more")
-                        .font(.system(size: 12)).foregroundStyle(Theme.text3)
-                }
+        }
+        if let rows = flow.rows {
+            fullList(rows)
+        } else if (p.total ?? 0) > sampleCount(p) {
+            Button { model.expandAsk() } label: {
+                Text("and \(AskIntent.count((p.total ?? 0) - sampleCount(p))) more · review the list")
+                    .font(.system(size: 12)).foregroundStyle(Theme.accent)
             }
+            .buttonStyle(.plain)
+        }
+        if !flow.excluded.isEmpty, let total = p.total {
+            Text("\(AskIntent.count(flow.selectedCount)) of \(AskIntent.count(total)) ticked")
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text2)
         }
         if let w = p.warning {
             Label(w, systemImage: "exclamationmark.triangle").font(.system(size: 12.5)).foregroundStyle(Theme.text2)
@@ -306,14 +357,103 @@ struct AskPanel: View {
             Text("Did you mean:").font(.system(size: 12)).foregroundStyle(Theme.text3)
             choicesView
         }
-        if p.needsTypedCount, let total = p.total, total > 0 {
+        if p.needsTypedCount, flow.selectedCount > 0 {
             @Bindable var flow = flow
-            TextField("Type \(AskIntent.count(total)) to delete", text: $flow.typed)
+            TextField("Type \(AskIntent.count(flow.selectedCount)) to delete", text: $flow.typed)
                 .textFieldStyle(.roundedBorder)
                 .focused($countFocused)
                 .onSubmit { model.confirmAsk() }
                 .onKeyPress(.escape) { flow.cancel(); return .handled }
-                .task { countFocused = true }
+                // The list takes the keys while it is open; the count is typed after.
+                .task { if flow.rows == nil { countFocused = true } }
         }
+    }
+
+    /// Threads shown under the steps before "and N more" (each step's sample, once each).
+    private func sampleCount(_ p: DoPreview) -> Int {
+        Set((p.steps ?? []).flatMap { $0.sample.map(\.id) }).count
+    }
+
+    /// Every thread of the plan: tick or untick each, ↑/↓ to move, Space or ⌘↩ to open
+    /// one in the reading pane, x or ⌫ to untick, ↩ to run.
+    private func fullList(_ rows: [DoSample]) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
+                        AskRow(thread: t, ticked: !flow.excluded.contains(t.id), highlighted: i == flow.rowCursor,
+                               statusName: model.statuses.first { $0.key == t.status }?.name ?? t.status,
+                               statusColor: Color(hex: model.color(forStatus: t.status))) {
+                            flow.toggle(t.id)
+                        }
+                        .id(t.id)
+                        .onTapGesture { flow.rowCursor = i; model.openAskRow() }
+                    }
+                }
+            }
+            .frame(maxHeight: 240)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($listFocused)
+            .onKeyPress(.downArrow) { flow.moveRow(1); return .handled }
+            .onKeyPress(.upArrow) { flow.moveRow(-1); return .handled }
+            .onKeyPress(.space) { model.openAskRow(); return .handled }
+            .onKeyPress(.delete) { if let r = flow.cursorRow { flow.toggle(r.id) }; return .handled }
+            .onKeyPress(characters: .init(charactersIn: "xX")) { _ in
+                if let r = flow.cursorRow { flow.toggle(r.id) }
+                return .handled
+            }
+            .onKeyPress(keys: [.return]) { press in
+                if press.modifiers.contains(.command) { model.openAskRow() } else { model.enterAsk() }
+                return .handled
+            }
+            .onKeyPress(.escape) { flow.cancel(); return .handled }
+            .onChange(of: flow.rowCursor) { _, c in
+                if rows.indices.contains(c) { proxy.scrollTo(rows[c].id) }
+            }
+            .task { listFocused = true }
+        }
+    }
+}
+
+/// One thread of the plan's full list: tick box, subject, sender, date, current status.
+private struct AskRow: View {
+    let thread: DoSample
+    let ticked: Bool
+    let highlighted: Bool
+    let statusName: String
+    let statusColor: Color
+    let toggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(get: { ticked }, set: { _ in toggle() }))
+                .toggleStyle(.checkbox).labelsHidden()
+            Text(thread.subject.isEmpty ? "(no subject)" : thread.subject).lineLimit(1)
+                .foregroundStyle(ticked ? Theme.text : Theme.text3)
+            Spacer(minLength: 8)
+            Text(thread.lastFrom).foregroundStyle(Theme.text3).lineLimit(1).frame(maxWidth: 140, alignment: .trailing)
+            Text(AskRow.day(thread.lastDate)).foregroundStyle(Theme.text3).frame(width: 74, alignment: .trailing)
+            HStack(spacing: 3) {
+                StatusIcon(key: thread.status, color: statusColor)
+                Text(statusName).lineLimit(1)
+            }
+            .foregroundStyle(Theme.text3).frame(width: 90, alignment: .leading)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 6).frame(height: 26)
+        .background(highlighted ? Theme.accent.opacity(0.11) : .clear)
+        .contentShape(Rectangle())
+    }
+
+    private static let format: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "d MMM yyyy"
+        return f
+    }()
+
+    static func day(_ ms: Int64?) -> String {
+        guard let ms else { return "" }
+        return format.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
     }
 }

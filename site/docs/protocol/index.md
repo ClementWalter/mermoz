@@ -81,11 +81,46 @@ app, the CLI and the MCP server are clients of this protocol.
 
 // Message (thread_id: its Gmail thread, inside a conversation of several)
 {"id": "msg_…", "thread_id": "thr_…", "from": {"name": "Marc Petit", "email": "marc@…"},
- "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
+ "to": [{"name": "", "email": "…"}], "cc": [], "reply_to": [{"name": "Franck Adam", "email": "franck@…"}],
+ "date": 1791700000000,
  "subject": "…", "body_text": "… full text …", "body_new": "… what the bubble shows …",
  "has_quoted": true, "has_signature": true, "forwarded": false, "forwarded_from": "Bank" | null, "quoted_only": false,
  "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
- "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000}]}
+ "reaction": {"emoji": "❤️", "target_message_id": "msg_…" | null} | null,
+ "is_bounce": false, "is_auto_reply": false,
+ "delivery_failure": {"recipient": "no-reply@…", "status": "5.1.1", "reason": "address doesn't exist",
+                      "bounce_message_id": "msg_…"} | null,
+ "duplicate_of": "msg_…" | null, "copies": 1,
+ "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000,
+                  "inline": false, "decorative": false}]}
+
+// reply_to: the `Reply-To` header (empty when replies go to `from`). Mail stored before
+// it was kept learns it when its thread is opened (one metadata call per message,
+// then a threads_changed event).
+
+// is_bounce: a delivery failure report from the mail system (mailer-daemon, postmaster,
+// or multipart/report; report-type=delivery-status). is_auto_reply: an automatic answer
+// (Auto-Submitted other than "no", X-Autoreply, X-Autorespond, or an "Out of office" /
+// "Automatic reply" / "Réponse automatique" subject). delivery_failure: on the user's
+// message a bounce reports on (matched by the Message-ID in the bounce, else the
+// user's latest earlier message to that recipient): who it missed, the RFC 3463
+// status, why in plain words, and the bounce message. A client shows it on that
+// message rather than the bounce as a bubble. Older mail learns its kind and report
+// when its thread is opened, like reply_to.
+
+// ReplyAddressing (threads.get "reply"): the reply-all a conversation starts with,
+// answering message_id (in Gmail thread thread_id): the latest message from a real
+// correspondent, i.e. not the user, not a bounce or auto-reply, and not a no-reply
+// sender without a Reply-To that reaches someone; else the user's latest message
+// (its recipients are kept); else the latest that isn't a bounce or auto-reply.
+// Addressing follows RFC 5322: on a received message To is its Reply-To (else From) plus its To,
+// Cc its Cc; on the user's own message, its recipients again, a sender that asked for
+// replies elsewhere swapped for that address. The user's address is never included.
+// no_reply lists To addresses nobody reads (no-reply, noreply, do-not-reply,
+// donotreply, ne-pas-repondre, notifications@, mailer-daemon); suggestion is a
+// person's address found in the mail, offered in their place, or null.
+{"message_id": "msg_…", "thread_id": "thr_…", "to": [Address], "cc": [Address], "no_reply": ["no-reply@…"],
+ "suggestion": {"name": "Franck Adam", "email": "franck@…"} | null}
 
 // Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
 // body_new    only what the sender newly wrote: greeting, body, sign-off name. LF line
@@ -99,6 +134,16 @@ app, the CLI and the MCP server are clients of this protocol.
 //             the forwarded text (its header block removed); forwarded_from names its
 //             author
 // quoted_only the message adds no words of its own; body_new is the text it quotes
+// reaction    an Outlook/Teams reaction ("[heart] Nora reacted to your message") to
+//             target_message_id (found by In-Reply-To, else by the words it quotes);
+//             body_new is then its emoji
+// copies      how many times this email was received (a forwarding address, a double
+//             import); threads hide the other deliveries and show the kept one with
+//             copies >= 2. duplicate_of names the kept copy on a hidden one. Gmail keeps
+//             every copy: thread actions apply to all, none is deleted on its own.
+// attachments[].decorative  a signature logo, social icon, banner or tracking pixel:
+//             never shown as a photo nor counted in Photos (conversation files leave
+//             them out)
 
 // Status
 {"key": "todo", "name": "Todo", "order": 2, "color": "#5A7386"}
@@ -114,7 +159,12 @@ app, the CLI and the MCP server are clients of this protocol.
 {"id": "dft_…", "account_id": "acc_1", "thread_id": "thr_…" | null,
  "to": ["a@b.c"], "cc": [], "subject": "…", "body": "…",
  "state": "draft|review|sent|rejected", "origin": "app|agent",
- "created": 1791700000000, "updated": 1791700000000}
+ "created": 1791700000000, "updated": 1791700000000,
+ "reply_to_message_id": "msg_…" | null}
+// reply_to_message_id: the message the reply answers: it carries that message's
+// In-Reply-To/References and ends with it quoted ("On …, Name <addr> wrote:" then
+// "> " lines). Without it, a reply answers the thread's ReplyAddressing message and
+// adds no quote.
 
 // ChatMessage: one turn of "Chat about this". Actions are proposals; nothing is applied.
 {"id": "cht_…", "thread_id": "thr_…", "role": "user|assistant", "text": "light Markdown",
@@ -209,7 +259,8 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `do.ask` | `{"text", "rounds"?: [{"question", "answer"}], "pick"?: {"from"} \| {"subject_prefix"}}` — the AI plans from the sentence, the answers so far (at most 2) and the candidates, the daemon previews; nothing changes. A `pick` replaces the plan's sender, words and subject in every step; when the AI still asks, the sentence's verb (delete, archive, mark read…) plans with the pick alone | `DoPreview` |
 | `do.replan` | `{"id", "pick"}` — a planned preview again with the picked filter (no AI) | `DoPreview` |
 | `do.preview` | `{"plan", "text"?}` — a plan given as JSON, checked and previewed without the AI | `DoPreview` |
-| `do.run` | `{"id", "confirm"?}` — runs a planned preview once, 200 threads per write through the same store changes as `threads.update` / `threads.mark_read` / `feed.snooze` (Gmail write-back included), logging each thread's state first; emits `do_progress`. A plan that deletes needs `confirm` equal to its `total` | `{"id", "done", "total", "undo_label"}` |
+| `do.targets` | `{"id"}` — every thread a planned preview would change (all steps, once each), newest first, with its current status: the preview's full list | `{"threads": [{"id", "number", "status", "subject", "last_from", "last_date"}]}` |
+| `do.run` | `{"id", "confirm"?, "exclude"?: [id]}` — `exclude`: threads unticked in the list, left alone (the count to confirm a delete is then the ticked ones). Runs a planned preview once, 200 threads per write through the same store changes as `threads.update` / `threads.mark_read` / `feed.snooze` (Gmail write-back included), logging each thread's state first; emits `do_progress`. A plan that deletes needs `confirm` equal to its `total` | `{"id", "done", "total", "undo_label"}` |
 | `do.undo` | `{"id"}` — puts every thread the run changed back as it was (Later is lifted) | `{"id", "restored"}` |
 | `do.get` | `{"id"}` | `DoOperation` |
 | `do.list` | `{"limit"?: 20}` — runs, newest first | `[DoOperation]` |
@@ -235,12 +286,13 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `search`             | `{"query", "limit"?: 50, "typing"?: false}` — every word must match as a whole word (accents and case aside); with `typing`, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each | `{"threads": [ThreadSummary]}` |
 | `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every account, for mail Mermoz doesn't hold | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
 | `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
-| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n}` (`earlier`: messages left out by `latest`) |
+| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null}` (`earlier`: messages left out by `latest`) |
 | `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
-| `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's                | `{"conversation_id", "threads": n}`      |
+| `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's; a manual join the grouping learns from | `{"conversation_id", "threads": n, "members": [id], "undo"}` |
+| `conversations.unmerge` | `{"undo"}` — the `undo` a merge returned: each thread back in its conversation, the join unlearned | `{"threads": n}` |
 | `conversations.progress` | `{}` — background grouping                                                           | `{"pending": n, "waiting_for_ai": n}`    |
 | `files.list`         | `{"query"?, "limit"?: 200}` — files shared anywhere, newest first                        | `[SharedFile]`                           |
-| `threads.update`     | the other open threads of each conversation follow · `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n}` |
+| `threads.update`     | the other open threads of each conversation follow · `{"ids": [id], "status"?, "priority"?, "add_projects"?: [name], "remove_projects"?: [name], "projects"?: [name] (replaces), "project"? (one name or null: replaces), "due"? (null clears)}` | `{"updated": n, "before": [ThreadState]}` (every thread reached, siblings included, for `threads.restore`) |
 | `threads.accept_suggestions` | `{"ids": [id]}` — applies each pending suggestion and marks the thread read     | `{"accepted": n}`                        |
 | `suggestions.summary` | `{"statuses": [key], "project"?, "account_id"?}` — pending suggestions per column, grouped by target | `{"columns": [{"status", "pending": n, "groups": [{"status": key \| null, "projects": [name], "count": n}]}], "paused": "credits" \| "unavailable" \| null, "calls_today": n, "daily_cap": n}` |
 | `suggestions.resort` | `{"stop": true}` — ends a whole-mailbox sort left by an older version and clears what it suggested (as `suggestions.clear`); starting one is refused | `{"stopped": true, "cleared": n}` |
@@ -248,12 +300,12 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `threads.suggest`    | `{"ids": [id]}` — the Feed's cards on screen and the next few (at most 6): each read thread in an open column gets its suggestion just in time (stored, a learned sender rule, else one AI call); while sorting is held (`paused`: "credits", "unavailable", "off" = daily limit 0, "limit" = today's limit used up) only stored and learned ones come back. Only confident suggestions that would change something are returned | `{"suggestions": [{"id", "suggestion": Suggestion, "why": "…" \| null}], "paused": … \| null, "provider_name": "TypeSafe", "offer": {"provider", "name", "message"} \| null}` |
 | `learned.list`       | `{}` — what the answers taught, newest first | `{"learned": [{"sender", "name", "status", "projects", "kind": "rule" \| "avoid", "count"}]}` |
 | `learned.forget`     | `{"item"}` (one of `learned.list`) — forgets that rule's yes answers, or that refusal's no answers | `{"forgotten": n}` |
-| `sort.answer`        | `{"id", "answer": "yes" \| "no" \| "change", "status"?, "projects"?}` — answers a suggestion shown on a Feed card: yes accepts, no refuses (never offered again for that sender), change refuses and files where given; three consistent yes for a sender make a rule | `{"undo": {"thread", "since"}, "learned": "Learned: mail from X goes to Y" \| null}` |
-| `sort.undo`          | `{"undo"}` from `sort.answer` — the thread returns as it was, the answer is forgotten | `{}` |
+| `sort.answer`        | `{"id", "answer": "yes" \| "no" \| "change", "status"?, "projects"?}` — answers a suggestion shown on a Feed card: yes accepts, no refuses (never offered again for that sender), change refuses and files where given; three consistent yes for a sender make a rule; a status it sets moves the conversation's other open threads too | `{"undo": {"thread", "since", "siblings"?}, "learned": "Learned: mail from X goes to Y" \| null}` |
+| `sort.undo`          | `{"undo"}` from `sort.answer` — the thread (and its conversation's other threads) return as they were, the answer is forgotten | `{}` |
 | `suggestions.accept` | `{"status", "project"?, "account_id"?, "target"?: {"status": key \| null, "projects": [name]}}` — accepts the column's pending suggestions, or one group | `{"accepted": n, "before": [ThreadSummary]}` (snapshots for `threads.restore`) |
 | `threads.reject_suggestions` | `{"ids": [id]}` — turns the pending suggestions down; the threads stay put and are not suggested again until new mail | `{"rejected": n}` |
 | `threads.reopen_suggestions` | `{"ids": [id]}` — undoes a rejection: the suggestions are pending again | `{"reopened": n}` |
-| `threads.restore`    | `{"threads": [{"id", "unread", "status", "priority", "projects", "due"}]}` — puts threads back as in the snapshots (a `ThreadSummary` works too) | `{"restored": n}` |
+| `threads.restore`    | `{"threads": [{"id", "unread", "status", "priority", "projects", "due"}]}` — puts each thread back as in its snapshot (conversation siblings do not follow) (a `ThreadSummary` works too) | `{"restored": n}` |
 | `router.get`         | `{}` — instant routing with a System One provider (Settings › Developer); top-level fields describe the picked one | `{"provider": "typesafe" \| "subq", "provider_name": "TypeSafe", "configured": bool, "error": "…" \| null, "model": "jev-latest" \| "subq-snap-preview", "daily_cap": n, "calls_today": n, "paused": "credits" \| "unavailable" \| null, "providers": [{"id", "name", "model", "configured", "error", "paused", "calls_today"}], "offer": {"provider", "name", "message"} \| null}` |
 | `router.set`         | `{"provider"?: "typesafe" \| "subq", "api_key"?: "…" \| null, "key_provider"?: id, "daily_cap"?: n}` — app only; `provider` picks where mail is sent; `api_key` is stored for `key_provider`, else `provider`, else the picked one (null removes it); `daily_cap` bounds background sorting calls per day (default 20,000) | same as `router.get`                     |
 | `router.test`        | `{"api_key"?, "provider"?}` — one tiny call with the given or stored key of the provider (default: the picked one) | `{"ok": true, "ms": n}`                  |
@@ -262,12 +314,12 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `attachments.get`    | `{"id"}`                                                                                 | `{"path": "/abs/path", "filename", "mime", "size"}` |
 | `drafts.list`        | `{"state"?: "review"}`                                                                   | `[Draft]`                                |
 | `drafts.get`         | `{"id"}`                                                                                 | `Draft`                                  |
-| `drafts.create`      | `{"account_id"?, "thread_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}` — with `thread_id`, it is a reply: recipients/subject default from the thread. All attachments are added or none (the draft is not created) | `Draft` |
+| `drafts.create`      | `{"account_id"?, "thread_id"?, "reply_to_message_id"?, "to"?, "cc"?, "subject"?, "body", "attachments"?: [Attach]}` — with `thread_id`, it is a reply: recipients/subject default from the thread's reply target; with `reply_to_message_id`, a reply to that message (its thread; recipients by the ReplyAddressing rules from it, "Re: " its subject). All attachments are added or none (the draft is not created) | `Draft` |
 | `drafts.attach`      | `{"id", "attachments": [Attach]}` or `{"id", ...Attach}`                                 | `Draft`                                  |
 | `drafts.detach`      | `{"id", "attachment_id"}` (an id from `Draft.attachments`)                               | `Draft`                                  |
 | `drafts.update`      | `{"id", "to"?, "cc"?, "subject"?, "body"?}`                                              | `Draft`                                  |
 | `drafts.delete`      | `{"id"}`                                                                                 | `{}`                                     |
-| `drafts.send`        | `{"id"}`                                                                                 | `{"sent": true}` or error `approval_required` |
+| `drafts.send`        | `{"id", "allow_no_reply"?: false}`                                                       | `{"sent": true}` or error `approval_required` |
 | `review.approve`     | `{"id"}` — app only                                                                      | `{"sent": true}`                         |
 | `review.reject`      | `{"id"}` — app only                                                                      | `{}`                                     |
 | `providers.list`     | `{}`                                                                                     | `[{"id","name","kind","base_url","model","has_key"}]` (keys never leave the daemon) |
@@ -283,13 +335,13 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `chat.get`           | `{"thread_id"}`                                                                          | `{"messages": [ChatMessage], "research_available": bool}` |
 | `chat.send`          | `{"thread_id", "text", "research"?: true}` — asks the account's allowed AI; streams `chat_delta` | `ChatMessage` (the answer)       |
 | `chat.clear`         | `{"thread_id"}`                                                                          | `{"deleted": n}`                         |
-| `feed.list`          | `{"project"?, "account_id"?}` — the Feed: open threads as cards, in sections            | `Feed`                                   |
+| `feed.list`          | `{"project"?, "account_id"?}` — the Feed: open conversations as cards (card `id` is the conversation id, `thread` its newest thread), in sections | `Feed`                                   |
 | `feed.texts`         | `{"ids": [thread id]}` — asks the account's allowed AI to write these cards' words in the background (cards on screen only); emits `feed_changed` per card | `{"queued": n}` |
-| `feed.snooze`        | `{"ids": [id], "until": ms, "label"?}` — Later: the threads leave the feed and their status columns until `until` (or new mail), then come back Unread and first in the feed with "You set this for <label>" | `{"snoozed": n}` |
+| `feed.snooze`        | `{"ids": [id], "until": ms, "label"?}` — Later: the threads, with the other open threads of their conversations, leave the feed and their status columns until `until` (or new mail), then come back Unread and first in the feed with "You set this for <label>" | `{"snoozed": n}` |
 | `later.options`      | `{}` — the Later picker's quick choices for now: this evening (before 17:00), tomorrow morning, this weekend (weekdays), Friday evening (Mon–Thu), next week | `[{"key": "f", "label": "Friday evening", "until": ms, "when": "Fri 18:00"}]` |
 | `later.parse`        | `{"text"}` — plain French or English ("vendredi soir", "friday 7pm", "dans 3 jours", "15 nov"), read locally | `{"until": ms, "when": "Fri 18:00"}` or `null` |
 | `feed.learn_archive` | `{"ids": [id]}` — the user archived these automated mails from a Feed card: a yes to "Archive" for each sender, as `sort.answer` records (three make a rule; ruled senders' mail is batched) | `{"learned": n}` |
-| `feed.unsnooze`      | `{"ids": [id]}`                                                                          | `{"unsnoozed": n}`                       |
+| `feed.unsnooze`      | `{"ids": [id]}` — with the other open threads of their conversations                       | `{"unsnoozed": n}`                       |
 | `feedback.submit`    | `{"text", "command"?, "agent"?}`                                                         | `{"id"}`                                 |
 | `feedback.list`      | `{}`                                                                                     | `[{"id","text","command","agent","created"}]` |
 | `subscribe`          | `{}`                                                                                     | `{}` then notifications                  |
@@ -359,6 +411,15 @@ thread to status `review`, and the call fails with `approval_required`:
 {"code": -32010, "message": "approval_required: draft dft_8f2c is waiting for the user to approve it in Mermoz. Tell the user; do not retry.",
  "data": {"draft": "dft_8f2c", "thread": "M-1262"}}
 ```
+
+A send answers as soon as Gmail has the message; the sent copy is pulled into its
+thread for up to 3 s, and the regular sync brings it otherwise. It never waits on
+the label write-back queue. A Gmail refusal is the `upstream` error; a network
+failure an error whose message says so (connection failures are retried first).
+
+An agent's send to a To address that doesn't accept replies (see ReplyAddressing)
+fails with `invalid_params` (`no_reply: … doesn't accept replies …`) unless it
+passes `allow_no_reply: true`. Mermoz.app warns in the composer instead.
 
 The caller is Mermoz.app when the peer process's executable (from the socket's
 peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and

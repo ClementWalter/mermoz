@@ -1203,7 +1203,16 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "do.run" => {
             let id = s(p, "id")?;
             let confirm = p.get("confirm").and_then(|v| v.as_i64());
-            Ok(crate::bulk::run(svc, &id, confirm).await?)
+            let exclude: std::collections::BTreeSet<String> = str_list(p, "exclude")?
+                .unwrap_or_default()
+                .iter()
+                .map(|i| st.resolve_thread_id(i))
+                .collect::<Result<_, _>>()?;
+            Ok(crate::bulk::run(svc, &id, confirm, &exclude).await?)
+        }
+        "do.targets" => {
+            let id = s(p, "id")?;
+            Ok(json!({ "threads": st.bulk_op_threads(&id)? }))
         }
         "do.replan" => {
             let origin = if caller.is_app { "app" } else { "agent" };

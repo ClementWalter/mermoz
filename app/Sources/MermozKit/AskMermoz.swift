@@ -22,14 +22,22 @@ public struct DoSample: Codable, Sendable, Equatable, Identifiable {
     public var status: String
     public var subject: String
     public var lastFrom: String
+    /// Latest mail, Unix ms.
+    public var lastDate: Int64?
 
-    public init(id: String, number: String, status: String, subject: String, lastFrom: String) {
+    public init(id: String, number: String, status: String, subject: String, lastFrom: String, lastDate: Int64? = nil) {
         self.id = id
         self.number = number
         self.status = status
         self.subject = subject
         self.lastFrom = lastFrom
+        self.lastDate = lastDate
     }
+}
+
+/// `do.targets`: every thread a planned run would change.
+public struct DoTargets: Codable, Sendable, Equatable {
+    public var threads: [DoSample]
 }
 
 public struct DoStatusCount: Codable, Sendable, Equatable {
@@ -184,7 +192,9 @@ public protocol AskBackend: Sendable {
     func doStatus() async throws -> DoAvailability
     func doAsk(_ text: String, rounds: [DoRound], pick: DoPick?) async throws -> DoPreview
     func doReplan(_ id: String, pick: DoPick) async throws -> DoPreview
-    func doRun(_ id: String, confirm: Int?) async throws -> DoRunResult
+    func doTargets(_ id: String) async throws -> [DoSample]
+    /// Runs the plan on every thread but `exclude` (the ones unticked in the list).
+    func doRun(_ id: String, confirm: Int?, exclude: [String]) async throws -> DoRunResult
     func doGet(_ id: String) async throws -> DoOperation
     func doUndo(_ id: String) async throws
 }
@@ -206,8 +216,14 @@ extension DaemonClient: AskBackend {
         return try RPCCoding.decoder().decode(DoPreview.self, from: data)
     }
 
-    public func doRun(_ id: String, confirm: Int?) async throws -> DoRunResult {
-        let data = try await connection.call("do.run", params: Params().with("id", id).with("confirm", confirm).data())
+    public func doTargets(_ id: String) async throws -> [DoSample] {
+        let data = try await connection.call("do.targets", params: Params().with("id", id).data())
+        return try RPCCoding.decoder().decode(DoTargets.self, from: data).threads
+    }
+
+    public func doRun(_ id: String, confirm: Int?, exclude: [String]) async throws -> DoRunResult {
+        let p = Params().with("id", id).with("confirm", confirm).with("exclude", exclude.isEmpty ? nil : exclude)
+        let data = try await connection.call("do.run", params: p.data())
         return try RPCCoding.decoder().decode(DoRunResult.self, from: data)
     }
 
@@ -243,6 +259,12 @@ public enum AskIntent {
     public static func confirms(_ typed: String, total: Int) -> Bool {
         let digits = typed.filter(\.isNumber)
         return !digits.isEmpty && Int(digits) == total
+    }
+
+    /// The threads' statuses before the plan, said so it can't be read as the action:
+    /// "Currently: Archive 26 · To do 3".
+    public static func currentLine(_ counts: [DoStatusCount]) -> String {
+        "Currently: " + counts.map { "\($0.name) \(count($0.count))" }.joined(separator: " · ")
     }
 
     /// 1842 → "1,842", as the daemon writes counts.

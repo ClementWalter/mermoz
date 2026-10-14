@@ -1,7 +1,7 @@
 {
   "name": "Mermoz",
   "description": "MCP server for the user's local Mermoz mailbox (Gmail on macOS): search, read, sort and draft mail. Sending always waits for the user's approval in the app.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "protocolVersion": "2025-06-18",
   "transport": "stdio",
   "remotes": [],

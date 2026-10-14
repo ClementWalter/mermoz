@@ -39,11 +39,11 @@ struct CommandPalette: View {
                         // While a plan shows, Enter confirms it; the hidden list never runs.
                         .onSubmit { if askFlow.isActive { model.enterAsk() } else { runSelected(items) } }
                         .onKeyPress(.downArrow) {
-                            if askFlow.isActive { askFlow.moveChoice(1) } else { cursor = min(cursor + 1, max(items.count - 1, 0)) }
+                            if askFlow.rows != nil { askFlow.moveRow(1) } else if askFlow.isActive { askFlow.moveChoice(1) } else { cursor = min(cursor + 1, max(items.count - 1, 0)) }
                             return .handled
                         }
                         .onKeyPress(.upArrow) {
-                            if askFlow.isActive { askFlow.moveChoice(-1) } else { cursor = max(cursor - 1, 0) }
+                            if askFlow.rows != nil { askFlow.moveRow(-1) } else if askFlow.isActive { askFlow.moveChoice(-1) } else { cursor = max(cursor - 1, 0) }
                             return .handled
                         }
                         // Esc drops a plan first, then closes the palette.

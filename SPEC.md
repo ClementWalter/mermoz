@@ -468,6 +468,13 @@ AI plans it.
   and the first five subjects. Enter runs it, Esc drops it. A delete asks to type the
   count first. Nothing matching says so, with the interpretation. The Trash is never
   matched unless the sentence asks for it.
+- **Review before confirming.** "and N more · review the list" opens every thread of the
+  plan in the preview, scrollable: tick box, subject, sender, date and current status
+  per row. ↑/↓ move, x or ⌫ unticks, Space or ⌘↩ opens the thread in the reading pane
+  behind the palette (the plan and its ticks stay). The count ("21 of 26 ticked") and
+  "Type N to delete" follow the ticks, and the run changes exactly the ticked threads.
+  The status line reads "Currently: Archive 26": where the threads are now, never the
+  action.
 - **Run and undo.** Batches of 200 through the same store changes as the RPCs, so Gmail
   labels follow; progress shows in the palette, then a toast and one ⌘Z for the whole
   run. Every thread's state before the run is logged, so undo works after a restart.

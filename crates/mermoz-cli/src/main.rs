@@ -429,7 +429,7 @@ fn print_plan(out: &Out, v: &Value) {
             .map(|c| format!("{} {}", c["name"].as_str().unwrap_or(""), c["count"]))
             .collect();
         if !counts.is_empty() {
-            out.line(format!("  {}", counts.join(" · ")));
+            out.line(format!("  currently: {}", counts.join(" · ")));
         }
         for t in st["sample"].as_array().into_iter().flatten() {
             out.line(format!(
