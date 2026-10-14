@@ -7,3 +7,8 @@ __pycache__/
 .pytest_cache/
 .wrangler/
 node_modules/
+
+# Editor swap files and Claude Code worktrees
+*.swp
+*.swo
+.claude/worktrees/
