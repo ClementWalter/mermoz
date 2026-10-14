@@ -249,7 +249,7 @@ struct ComposeView: View {
     }
 
     /// Writes a pasted image to a PNG in the temporary folder, off the main thread.
-    private static func savePastedImage(_ data: Data) async -> URL? {
+    static func savePastedImage(_ data: Data) async -> URL? {
         await Task.detached(priority: .userInitiated) { () -> URL? in
             guard let png = NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:]) else { return nil }
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Mermoz Pasted", isDirectory: true)

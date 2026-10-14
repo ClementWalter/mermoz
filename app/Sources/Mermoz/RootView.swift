@@ -40,7 +40,8 @@ struct RootView: View {
         .background {
             // Window-level Esc: closes the palette, then the open message. Compose owns Esc
             // (discard) while it is open, so this one steps aside to avoid a shortcut clash.
-            if model.compose == nil {
+            // The inline reply owns Esc too: it leaves the reply, the draft kept.
+            if model.compose == nil, !model.replyFocused {
                 Button("Close") { model.escape() }
                     .keyboardShortcut(.cancelAction)
                     .opacity(0).frame(width: 0, height: 0)

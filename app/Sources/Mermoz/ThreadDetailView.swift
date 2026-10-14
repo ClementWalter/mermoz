@@ -22,7 +22,7 @@ struct ThreadDetailView: View {
             switch model.conversationTab {
             case .messages:
                 ChatStream(detail: detail, conversation: conversation)
-                ReplyBar(target: model.replyTarget(detail).subject, threads: conversation.threads.count)
+                ReplyBar(detail: detail, target: model.replyTarget(detail).subject, threads: conversation.threads.count)
             case .people:
                 ConversationPeopleTab(people: conversation.people)
             case .docs:
@@ -955,30 +955,160 @@ struct AttachmentChip: View {
     }
 }
 
+/// The reply composer under the chat, chat style: r puts the keyboard here, the field
+/// grows with the text up to six lines, ⌘↩ sends, Esc leaves it with the draft kept.
+/// The recipients line and ⤢ open the full compose window with the draft.
 struct ReplyBar: View {
     @Environment(AppModel.self) private var model
+    let detail: ThreadDetail
     /// Subject of the Gmail thread the reply goes to, named when there are several.
     var target = ""
     var threads = 1
+    @FocusState private var focused: Bool
+    /// The field is shown: on r or a click, until the keyboard leaves an empty reply.
+    @State private var editing = false
+    @State private var dropTargeted = false
+    @State private var pasteMonitor: Any?
 
     var body: some View {
-        Button { model.startReply() } label: {
+        let draft = model.inlineReply(detail)
+        let text = Binding(get: { model.inlineReply(detail).body }, set: { v in
+            var c = model.inlineReply(detail)
+            c.body = v
+            model.setInlineReply(c, for: detail)
+        })
+        let empty = draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.attachments.items.isEmpty
+        Group {
+            if editing || !empty {
+                composer(draft, text: text, empty: empty)
+            } else {
+                // Idle and empty: a plain line, cheap to redraw as conversations go by.
+                HStack(spacing: 8) {
+                    Text("Reply…").foregroundStyle(Theme.text3)
+                    KeyHint("R")
+                    Spacer()
+                    if threads > 1, !target.isEmpty {
+                        Text("Replies to “\(target)”").font(.system(size: 11.5)).foregroundStyle(Theme.text3).lineLimit(1)
+                    }
+                }
+                .frame(minHeight: 22)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel("Reply")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(dropTargeted ? Theme.accent : (focused ? Theme.accent.opacity(0.5) : Theme.line)))
+        .contentShape(Rectangle())
+        .onTapGesture { editing = true; focused = true }
+        .padding(.horizontal, 26).padding(.bottom, 18).padding(.top, 6)
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            for p in providers {
+                _ = p.loadDataRepresentation(for: .fileURL) { data, _ in
+                    guard let data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                    Task { @MainActor in await model.attachInline([url], to: detail) }
+                }
+            }
+            return !providers.isEmpty
+        }
+        .onChange(of: model.replyFocusRequest) { editing = true; focused = true }
+        .onChange(of: focused) { _, on in
+            model.replyFocused = on
+            if !on { editing = false }
+        }
+        .onAppear { installPasteMonitor() }
+        .onDisappear {
+            if let m = pasteMonitor { NSEvent.removeMonitor(m) }
+            pasteMonitor = nil
+            model.replyFocused = false
+        }
+    }
+
+    /// The composer in use: recipients, files, the growing field, ⤢ and send.
+    private func composer(_ draft: ComposeContext, text: Binding<String>, empty: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("Reply…").foregroundStyle(Theme.text3)
-                KeyHint("R")
+                Button { model.expandInlineReply() } label: {
+                    Text(RecipientLine.compact(to: draft.to, cc: draft.cc, names: model.knownNames(detail)))
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.text2).lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help("Edit the recipients in the full window")
+                .accessibilityLabel("Recipients: \(draft.to.joined(separator: ", ")). Opens the full window")
                 Spacer()
                 if threads > 1, !target.isEmpty {
                     Text("Replies to “\(target)”").font(.system(size: 11.5)).foregroundStyle(Theme.text3).lineLimit(1)
                 }
             }
-            .padding(.horizontal, 14)
-            .frame(height: 42)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.line))
-            .contentShape(Rectangle())
+            if !draft.attachments.items.isEmpty {
+                FlowRow {
+                    ForEach(draft.attachments.items) { a in
+                        AttachmentChip(filename: a.name, size: a.size) {
+                            var c = model.inlineReply(detail)
+                            c.attachments.remove(id: a.id)
+                            model.setInlineReply(c, for: detail)
+                        }
+                    }
+                }
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Reply…", text: text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...6)
+                    .focused($focused)
+                    .onExitCommand { focused = false }
+                    // The field appears on r or a click: the keyboard goes straight to it.
+                    .onAppear { if editing { focused = true } }
+                    .accessibilityLabel("Reply")
+                Button { model.expandInlineReply() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                    .buttonStyle(.plain).foregroundStyle(Theme.text3)
+                    .help("Open in the full window").accessibilityLabel("Open in the full window")
+                Button { send() } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 18)) }
+                    .buttonStyle(.plain).foregroundStyle(empty ? Theme.text3 : Theme.accent)
+                    .disabled(empty)
+                    .help("Send (⌘↩)").accessibilityLabel("Send")
+            }
+            .background {
+                // ⌘↩ sends while the reply has the keyboard (the full window has its own).
+                if focused {
+                    Button("Send") { send() }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .opacity(0).frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 26).padding(.bottom, 18).padding(.top, 6)
+    }
+
+    private func send() {
+        Task { await model.sendInlineReply() }
+    }
+
+    /// ⌘V in the reply with files or an image (and no text) on the clipboard attaches them.
+    private func installPasteMonitor() {
+        guard pasteMonitor == nil else { return }
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers == "v" else { return event }
+            nonisolated(unsafe) let e = event
+            let attached: Bool = MainActor.assumeIsolated {
+                guard model.replyFocused, let d = model.detail else { return false }
+                let pb = NSPasteboard.general
+                let files = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+                if !files.isEmpty {
+                    Task { await model.attachInline(files, to: d) }
+                    return true
+                }
+                guard pb.availableType(from: [.string]) == nil, let type = pb.availableType(from: [.png, .tiff]),
+                      let data = pb.data(forType: type) else { return false }
+                Task {
+                    if let url = await ComposeView.savePastedImage(data) { await model.attachInline([url], inline: true, to: d) }
+                }
+                return true
+            }
+            return attached ? nil : e
+        }
     }
 }
 

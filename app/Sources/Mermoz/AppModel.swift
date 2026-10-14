@@ -141,6 +141,15 @@ final class AppModel {
     var detailCache = DetailCache()
     var prefetchTask: Task<Void, Never>?
     var compose: ComposeContext?
+    /// Replies being written in the chat's inline composer, by conversation (the open
+    /// thread's id); each conversation keeps its own until sent or expanded.
+    var inlineReplies: [String: ComposeContext] = [:]
+    /// Bumped to put the keyboard in the inline composer (r).
+    var replyFocusRequest = 0
+    /// The inline composer has the keyboard: Esc is its own (leaves it, draft kept).
+    var replyFocused = false
+    /// Sends a composed message; tests put a stub here.
+    @ObservationIgnored var sendOverride: ((ComposeContext) async -> Bool)?
     /// The reading pane's tab; back to Messages when another conversation opens.
     var conversationTab: ConversationTab = .messages
     /// Messages opened as the whole email; the rest read as chat bubbles.
@@ -1143,8 +1152,14 @@ final class AppModel {
 
     // MARK: compose
 
+    /// The full compose window on a reply to the open conversation.
     func startReply() {
         guard let d = detail else { return }
+        compose = replyContext(d)
+    }
+
+    /// A reply-all to the conversation's latest message, in the Gmail thread it continues.
+    func replyContext(_ d: ThreadDetail) -> ComposeContext {
         let last = d.messages.last
         let myAccount = accounts.first { $0.id == d.thread.accountId }?.email.lowercased()
         var to: [String] = []
@@ -1161,7 +1176,7 @@ final class AppModel {
         // In a conversation the reply goes to the Gmail thread of its latest message.
         let target = replyTarget(d)
         let subj = target.subject.lowercased().hasPrefix("re:") ? target.subject : "Re: \(target.subject)"
-        compose = ComposeContext(threadId: target.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj)
+        return ComposeContext(threadId: target.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj)
     }
 
     func startNew() {
