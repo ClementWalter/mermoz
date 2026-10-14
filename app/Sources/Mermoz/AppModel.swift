@@ -70,6 +70,12 @@ struct ComposeContext: Equatable, Identifiable {
     /// The message the reply answers, when pinned to one (slide to reply); nil: the
     /// conversation's own default.
     var replyToMessageId: String? = nil
+    /// The message a reply answers when none is pinned: the daemon's default target
+    /// (bounces and auto-replies skipped).
+    var defaultReplyToMessageId: String? = nil
+
+    /// The message this draft answers, sent with it so it threads onto that message.
+    var answering: String? { replyToMessageId ?? defaultReplyToMessageId }
 
     /// Set while `to` has an address that doesn't accept replies.
     var noReplyWarning: NoReplyWarning? { NoReplyWarning(to: to, suggestion: suggestion) }
@@ -1232,11 +1238,15 @@ final class AppModel {
                 cc = (last.to + last.cc).map(\.email).filter { $0.lowercased() != myAccount && $0.lowercased() != last.from.email.lowercased() }
             }
         }
-        // In a conversation the reply goes to the Gmail thread of its latest message.
-        let target = replyTarget(d)
+        // The reply continues the thread of the message it answers: the daemon's choice
+        // (a bounce or an auto-reply is never it), else the latest message's thread.
+        let latest = replyTarget(d)
+        let thread = d.reply?.threadId.flatMap { t in d.conversation?.threads.first { $0.id == t } }
+        let target: (id: String, subject: String) = thread.map { (id: $0.id, subject: $0.subject) }
+            ?? d.reply?.threadId.map { (id: $0, subject: latest.subject) } ?? latest
         let subj = target.subject.lowercased().hasPrefix("re:") ? target.subject : "Re: \(target.subject)"
         return ComposeContext(threadId: target.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj,
-                              suggestion: d.reply?.suggestion)
+                              suggestion: d.reply?.suggestion, defaultReplyToMessageId: d.reply?.messageId)
     }
 
     func startNew() {
@@ -1278,7 +1288,7 @@ final class AppModel {
             } else {
                 draft = try await client.createDraft(accountId: c.accountId, threadId: c.threadId, to: c.to,
                                                      cc: c.cc, subject: c.subject, body: c.body,
-                                                     attachments: c.attachments.newSpecs)
+                                                     attachments: c.attachments.newSpecs, replyToMessageId: c.answering)
             }
         } catch {
             return failed(SendErrorText.describe(error), c)

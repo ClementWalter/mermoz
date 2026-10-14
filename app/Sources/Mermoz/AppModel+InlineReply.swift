@@ -79,6 +79,16 @@ extension AppModel {
         return ComposeContext(threadId: thread.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj)
     }
 
+    /// "Fix address" under a message that didn't arrive: it opens in the full window with
+    /// its recipients, subject and text, to send again once the address is right.
+    func fixAddress(_ messageId: String) {
+        guard let d = detail, let m = d.messages.first(where: { $0.id == messageId }) else { return }
+        compose = ComposeContext(threadId: m.threadId ?? d.thread.id, accountId: d.thread.accountId,
+                                 to: m.to.map(\.email), cc: m.cc.map(\.email), subject: m.subject,
+                                 body: m.bodyNew ?? m.bodyText)
+        if let f = m.deliveryFailure { toast = "Correct \(f.recipient), then send again" }
+    }
+
     /// The pinned message, if the reply is pinned to one still in the conversation.
     func pinnedMessage(_ d: ThreadDetail) -> Message? {
         guard let id = inlineReply(d).replyToMessageId else { return nil }

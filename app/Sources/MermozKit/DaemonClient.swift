@@ -279,10 +279,12 @@ public final class DaemonClient: Sendable {
     public func draft(_ id: String) async throws -> Draft { try await call("drafts.get", Params().with("id", id)) }
 
     /// With attachments, the draft is created with all of them or not at all.
+    /// `replyToMessageId`: the message the reply answers; the draft continues its thread.
     public func createDraft(accountId: String?, threadId: String?, to: [String], cc: [String],
-                            subject: String?, body: String, attachments: [AttachSpec] = []) async throws -> Draft {
+                            subject: String?, body: String, attachments: [AttachSpec] = [],
+                            replyToMessageId: String? = nil) async throws -> Draft {
         try await call("drafts.create", Params()
-            .with("account_id", accountId).with("thread_id", threadId)
+            .with("account_id", accountId).with("thread_id", threadId).with("reply_to_message_id", replyToMessageId)
             .with("to", to).with("cc", cc).with("subject", subject).with("body", body)
             .with("attachments", attachments.isEmpty ? nil : attachments))
     }

@@ -127,6 +127,24 @@ public enum BubbleCaption {
     }
 }
 
+/// A sent message that didn't reach someone: said under its bubble, in red.
+public struct DeliveryNote: Equatable, Sendable {
+    public var recipient: String
+    public var reason: String
+
+    public init(recipient: String, reason: String) { self.recipient = recipient; self.reason = reason }
+
+    /// "Not delivered to nora@x.com: address doesn't exist".
+    public var line: String { reason.isEmpty ? "Not delivered to \(recipient)" : "Not delivered to \(recipient): \(reason)" }
+
+    /// A bounce whose failed message isn't in the conversation, in one line.
+    public static func systemLine(_ bounce: Message) -> String {
+        let text = BubbleParts.compact(bounce).text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let short = text.count > 70 ? String(text.prefix(70)) + "…" : text
+        return short.isEmpty ? "A message wasn't delivered" : "A message wasn't delivered · \(short)"
+    }
+}
+
 /// A row the app draws in SwiftUI.
 public enum HostedRow: Sendable {
     case summary
@@ -155,7 +173,12 @@ public enum ChatRows {
             badges[target, default: []].append(ReactionBadge(emoji: r.emoji, by: Self.reactor(m, names: names)))
             badged.insert(m.id)
         }
-        let items = items.filter { if case let .message(m) = $0 { !badged.contains(m.id) } else { true } }
+        // A bounce whose failed message is in the conversation is said on that message
+        // ("Not delivered to …"), not as a bubble of its own.
+        let reported = Set(all.compactMap { $0.deliveryFailure?.bounceMessageId })
+        let items = items.filter {
+            if case let .message(m) = $0 { !badged.contains(m.id) && !reported.contains(m.id) } else { true }
+        }
         let runs = ChatRuns.startsRun(items)
         var rows: [ChatRowSpec] = []
         var hosted: [String: HostedRow] = [:]
@@ -172,6 +195,10 @@ public enum ChatRows {
             case let .marker(threadId, subject, date, joined):
                 rows.append(.marker(MarkerSpec(threadId: threadId, line: "\(time(date)) · \(subject.isEmpty ? "(no subject)" : subject)",
                                                joined: joined)))
+                previous = nil
+            case let .message(m) where m.isBounce == true:
+                // A bounce for a message not in view: one quiet line, not a bubble.
+                rows.append(.marker(MarkerSpec(threadId: "", line: DeliveryNote.systemLine(m), joined: false)))
                 previous = nil
             case let .message(m) where m.reaction != nil:
                 // "❤️ Nora reacted": the message reacted to is not a bubble here.
@@ -202,7 +229,8 @@ public enum ChatRows {
                         time: time(m.date), focused: focused == m.id,
                         files: max(0, MessageBody.chips(m).filter { $0.decorative != true }.count - photos.count), note: note,
                         thumbnails: parts.thumbnails.map(\.id), photos: photos, caption: BubbleCaption.of(m),
-                        quoted: m.quotedOnly == true, reactions: badges[m.id] ?? [])))
+                        quoted: m.quotedOnly == true, reactions: badges[m.id] ?? [],
+                        failure: m.deliveryFailure.map { DeliveryNote(recipient: $0.recipient, reason: $0.reason) })))
                 }
                 previous = (m, parts.text)
             }

@@ -113,6 +113,7 @@ struct ChatStreamHost: NSViewRepresentable, Equatable {
         actions.showEarlier = { model.chatShowsAll = true }
         actions.split = { model.splitThread($0) }
         actions.replyTo = { model.pinReply(to: $0) }
+        actions.fixAddress = { model.fixAddress($0) }
         actions.file = { id in (try? await model.client?.attachment(id)).map { URL(fileURLWithPath: $0.path) } }
         actions.moveFocus = moveFocus
         actions.activate = { if let id = model.focusedMessageId { model.toggleMessage(id) } }

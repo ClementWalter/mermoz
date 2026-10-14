@@ -35,10 +35,13 @@ public struct BubbleSpec: Equatable, Sendable {
     public var quoted: Bool
     /// Reactions to this message, drawn as a badge on the bubble's bottom edge.
     public var reactions: [ReactionBadge]
+    /// The message didn't reach someone: a red line under the bubble, with "Fix address".
+    public var failure: DeliveryNote?
 
     public init(id: String, content: BubbleContent, mine: Bool, firstOfRun: Bool, sender: String, senderKey: String? = nil,
                 time: String, focused: Bool, files: Int = 0, note: String? = nil, thumbnails: [String] = [],
-                photos: [Attachment] = [], caption: String? = nil, quoted: Bool = false, reactions: [ReactionBadge] = []) {
+                photos: [Attachment] = [], caption: String? = nil, quoted: Bool = false, reactions: [ReactionBadge] = [],
+                failure: DeliveryNote? = nil) {
         self.id = id; self.content = content; self.mine = mine; self.firstOfRun = firstOfRun
         self.sender = sender; self.senderKey = senderKey ?? sender.lowercased(); self.time = time; self.focused = focused; self.files = files; self.note = note
         self.thumbnails = thumbnails
@@ -46,6 +49,7 @@ public struct BubbleSpec: Equatable, Sendable {
         self.caption = caption
         self.quoted = quoted
         self.reactions = reactions
+        self.failure = failure
     }
 }
 
@@ -136,6 +140,8 @@ public struct ChatActions {
     public var previewPhotos: (([URL], Int) -> Void)?
     /// Pins the reply to a message (slide to reply, ↩ on a bubble).
     public var replyTo: (String) -> Void = { _ in }
+    /// "Fix address" under a message that was not delivered.
+    public var fixAddress: (String) -> Void = { _ in }
 
     public init() {}
 }
@@ -172,8 +178,13 @@ public enum ChatMetrics {
     public static let reactionDrop: CGFloat = 12
     static var reactionFont: NSFont { .systemFont(ofSize: 12) }
 
-    /// Room a row keeps under its bubble for the reaction badge.
-    public static func below(_ spec: BubbleSpec) -> CGFloat { spec.reactions.isEmpty ? 0 : reactionDrop }
+    /// The "Not delivered to …" line under a bubble.
+    public static let failureLine: CGFloat = 22
+
+    /// Room a row keeps under its bubble: the reaction badge, the delivery failure line.
+    public static func below(_ spec: BubbleSpec) -> CGFloat {
+        (spec.reactions.isEmpty ? 0 : reactionDrop) + (spec.failure == nil ? 0 : failureLine)
+    }
     /// How strongly a quote-only bubble's text shows.
     public static let quotedAlpha: CGFloat = 0.6
     static var captionFont: NSFont { .systemFont(ofSize: 11, weight: .medium) }
@@ -514,7 +525,8 @@ final class BubbleRowView: NSView {
             + (spec.photos.isEmpty ? "" : ", \(spec.photos.count) photo\(spec.photos.count == 1 ? "" : "s")")
             + (spec.caption.map { ". \($0)" } ?? "") + (spec.quoted ? ". Quotes an earlier message" : "")
             + (spec.note.map { ". \($0)" } ?? "")
-            + (spec.reactions.isEmpty ? "" : ". Reactions: " + ReactionBadge.tooltip(spec.reactions)))
+            + (spec.reactions.isEmpty ? "" : ". Reactions: " + ReactionBadge.tooltip(spec.reactions))
+            + (spec.failure.map { ". \($0.line)" } ?? ""))
         setAccessibilityHelp("Opens the whole email")
         // The tooltip covers the bubble alone and is set again with it: a row moved to
         // another place or another message never keeps an old one.
@@ -522,6 +534,7 @@ final class BubbleRowView: NSView {
         addToolTip(bubbleRect, owner: self, userData: nil)
         badgeRect = spec.reactions.isEmpty ? .zero : Self.badge(for: spec, bubble: bubbleRect, width: width)
         if !spec.reactions.isEmpty { addToolTip(badgeRect, owner: self, userData: nil) }
+        layoutFailure(spec)
         needsDisplay = true
     }
 
@@ -553,6 +566,55 @@ final class BubbleRowView: NSView {
     override func mouseExited(with event: NSEvent) { showReplyButton(false) }
 
     // MARK: reply to this message
+
+    // MARK: not delivered
+
+    /// "Fix address" under a message that didn't reach someone.
+    var onFixAddress: (() -> Void)?
+    /// The "Not delivered to …" line, in this view (empty when delivered).
+    private(set) var failureRect: CGRect = .zero
+    /// "Fix address", made the first time this row shows a failure.
+    private(set) var fixButton: NSButton?
+
+    private static var failureFont: NSFont { .systemFont(ofSize: 11.5, weight: .medium) }
+
+    /// Places the red line under the bubble (below a reaction badge) and its button.
+    private func layoutFailure(_ spec: BubbleSpec) {
+        guard let failure = spec.failure else {
+            failureRect = .zero
+            fixButton?.isHidden = true
+            return
+        }
+        let y = bubbleRect.maxY + (spec.reactions.isEmpty ? 0 : ChatMetrics.reactionDrop) + 3
+        let b = fixButton ?? {
+            let b = NSButton(title: "", target: self, action: #selector(fixPressed))
+            b.isBordered = false
+            b.attributedTitle = NSAttributedString(string: "Fix address", attributes: [
+                .font: Self.failureFont, .foregroundColor: NSColor.systemRed, .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ])
+            b.sizeToFit()
+            b.setAccessibilityLabel("Fix address")
+            addSubview(b)
+            fixButton = b
+            return b
+        }()
+        b.isHidden = false
+        let textWidth = ceil(("⚠︎ " + failure.line as NSString).size(withAttributes: [.font: Self.failureFont]).width)
+        let w = min(textWidth, max(0, bounds.width - 2 * ChatMetrics.sidePadding - b.frame.width - 8))
+        let total = w + 8 + b.frame.width
+        let x = spec.mine ? max(0, bubbleRect.maxX - total) : bubbleRect.minX
+        failureRect = CGRect(x: x, y: y, width: w, height: 16)
+        b.frame.origin = CGPoint(x: failureRect.maxX + 8, y: y - 1)
+    }
+
+    @objc private func fixPressed() { onFixAddress?() }
+
+    /// The red "Not delivered to …" line with a warning sign.
+    private func drawFailure(_ failure: DeliveryNote) {
+        NSAttributedString(string: "⚠︎ " + failure.line, attributes: [
+            .font: Self.failureFont, .foregroundColor: NSColor.systemRed,
+        ]).draw(with: failureRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
 
     /// Pins the reply to this message.
     var onReply: (() -> Void)?
@@ -662,6 +724,7 @@ final class BubbleRowView: NSView {
             drawPhotos(spec.photos)
             if !spec.reactions.isEmpty { drawBadge(spec.reactions) }
             drawSwipeHint()
+            if let failure = spec.failure { drawFailure(failure) }
         }
         let shape = NSBezierPath(roundedRect: bubbleRect.insetBy(dx: 0.5, dy: 0.5), xRadius: ChatMetrics.radius, yRadius: ChatMetrics.radius)
         (spec.mine ? colors.mineBackground : colors.theirsBackground).setFill()
@@ -1140,6 +1203,7 @@ public final class ChatStreamView: NSScrollView {
                 (v as? BubbleRowView)?.file = actions.file
                 (v as? BubbleRowView)?.onPhoto = { [weak self] i in self?.openPhotos(spec.photos, at: i) }
                 (v as? BubbleRowView)?.onReply = { [weak self] in self?.actions.replyTo(spec.id) }
+                (v as? BubbleRowView)?.onFixAddress = { [weak self] in self?.actions.fixAddress(spec.id) }
                 y += h
             case let .marker(m):
                 let h = ChatMetrics.marker(m)

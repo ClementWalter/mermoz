@@ -113,3 +113,42 @@ private func model() -> AppModel {
     m.expandInlineReply()
     #expect(m.compose?.replyToMessageId == "m1")
 }
+
+// MARK: what the draft answers
+
+@MainActor @Test func withNoPinTheReplyAnswersTheDaemonsTarget() {
+    let m = model()
+    var d = conversation
+    d.reply = ReplyAddressing(messageId: "m1", threadId: "t1", to: [adam], cc: [])
+    m.detail = d
+    #expect(m.inlineReply(d).answering == "m1")
+}
+
+@MainActor @Test func aPinOverridesTheDaemonsTarget() {
+    let m = model()
+    var d = conversation
+    d.reply = ReplyAddressing(messageId: "m1", threadId: "t1", to: [adam], cc: [])
+    m.detail = d
+    m.pinReply(to: "m2")
+    #expect(m.inlineReply(d).answering == "m2")
+}
+
+@MainActor @Test func theSentReplyCarriesWhatItAnswers() async {
+    let m = model()
+    var sent: ComposeContext?
+    m.sendOverride = { sent = $0; return true }
+    m.pinReply(to: "m1")
+    var c = m.inlineReply(conversation)
+    c.body = "Yes."
+    m.setInlineReply(c, for: conversation)
+    await m.sendInlineReply()
+    #expect(sent?.answering == "m1")
+}
+
+// MARK: fix address
+
+@MainActor @Test func fixAddressOpensTheMessageInTheFullWindow() {
+    let m = model()
+    m.fixAddress("m2")
+    #expect(m.compose?.to == ["me@x.com"] && m.compose?.body == "Message m2")
+}

@@ -191,6 +191,21 @@ public struct Attachment: Codable, Sendable, Identifiable, Equatable, Hashable {
     }
 }
 
+/// A recipient a sent message didn't reach, as a bounce reported it.
+public struct DeliveryFailure: Codable, Sendable, Equatable, Hashable {
+    public var recipient: String
+    /// RFC 3463 status code, e.g. "5.1.1".
+    public var status: String
+    /// Why, in plain words ("address doesn't exist").
+    public var reason: String
+    /// The bounce message that reported it.
+    public var bounceMessageId: String
+
+    public init(recipient: String, status: String, reason: String, bounceMessageId: String) {
+        self.recipient = recipient; self.status = status; self.reason = reason; self.bounceMessageId = bounceMessageId
+    }
+}
+
 /// A reaction (Outlook/Teams "[heart] Nora reacted to your message") to another message.
 public struct Reaction: Codable, Sendable, Equatable, Hashable {
     /// "❤️", "👍", "😆", "😮", "😢", "🎉" or "😠".
@@ -241,6 +256,12 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var duplicateOf: String? = nil
     /// How many times this email was received; 2 or more means "received twice".
     public var copies: Int? = nil
+    /// A delivery failure report (bounce) from the mail system, not a person.
+    public var isBounce: Bool? = nil
+    /// An automatic answer (out of office, auto-acknowledgement).
+    public var isAutoReply: Bool? = nil
+    /// This message didn't reach someone, as a bounce in the conversation says.
+    public var deliveryFailure: DeliveryFailure? = nil
     /// Reading version written by the built-in agent.
     public var bodyClean: String?
     public var hasHtml: Bool
@@ -269,6 +290,10 @@ public struct ThreadDetail: Codable, Sendable, Equatable {
 
 /// The recipients a reply starts with, and whether any of them reads nothing.
 public struct ReplyAddressing: Codable, Sendable, Equatable {
+    /// The message a reply answers by default (bounces and auto-replies skipped).
+    public var messageId: String?
+    /// Its Gmail thread, which the reply continues.
+    public var threadId: String?
     public var to: [Address]
     public var cc: [Address]
     /// Addresses in `to` that don't accept replies.
@@ -276,7 +301,9 @@ public struct ReplyAddressing: Codable, Sendable, Equatable {
     /// A person's address found in the mail, offered instead of a no-reply one.
     public var suggestion: Address?
 
-    public init(to: [Address], cc: [Address], noReply: [String] = [], suggestion: Address? = nil) {
+    public init(messageId: String? = nil, threadId: String? = nil, to: [Address], cc: [Address], noReply: [String] = [],
+                suggestion: Address? = nil) {
+        self.messageId = messageId; self.threadId = threadId
         self.to = to; self.cc = cc; self.noReply = noReply; self.suggestion = suggestion
     }
 }
@@ -505,6 +532,8 @@ public struct Draft: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var created: Int64
     public var updated: Int64
     public var attachments: [DraftAttachment]
+    /// The message the draft answers, when it answers one.
+    public var replyToMessageId: String? = nil
 }
 
 public struct AppSettings: Codable, Sendable, Equatable {
