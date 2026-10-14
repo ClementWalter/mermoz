@@ -8,8 +8,12 @@ struct MermozApp: App {
 
     init() {
         // SwiftPM executables launch as background tools unless promoted to a regular app;
-        // the perf harness stays a background app so it never takes the user's focus.
-        NSApplication.shared.setActivationPolicy(PerfHarness.enabled ? .accessory : .regular)
+        // the perf harness never shows a window or takes the user's focus.
+        if PerfHarness.enabled {
+            PerfStealth.install()
+        } else {
+            NSApplication.shared.setActivationPolicy(.regular)
+        }
     }
 
     var body: some Scene {

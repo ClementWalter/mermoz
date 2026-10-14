@@ -1,7 +1,8 @@
 /// In-process timing of keyboard stepping, for profiling on a copied mailbox.
 ///
-/// With `MERMOZ_PERF_STEPS=n` the app stays in the background (never activates, so it
-/// takes no focus), waits for the list, then steps down it n times as `j` does. Each step
+/// With `MERMOZ_PERF_STEPS=n` the app never shows a window, activates or takes focus
+/// (see PerfStealth); its windows lay out and draw off screen. It waits for the list,
+/// opens `MERMOZ_PERF_VIEW` (a status key) when set, then steps n times as `j` does. Each step
 /// is charged the main thread's CPU time until the next step, minus the median of idle
 /// windows of the same length. Results go to the log and, with `MERMOZ_PERF_OUT`, to a
 /// JSON file; the app then quits.
@@ -54,9 +55,14 @@ enum PerfHarness {
         return Double(counts.0) / 1e6
     }
 
-    /// Lays out and draws every window now, even one another app covers.
+    /// The main window: never on screen, so found by size rather than visibility.
+    static func mainWindow() -> NSWindow? {
+        NSApp.windows.first { $0.contentView != nil && $0.frame.height > 300 }
+    }
+
+    /// Lays out and draws every window now; none is ever on screen.
     private static func flush() {
-        for w in NSApp.windows where w.isVisible {
+        for w in NSApp.windows where w.contentView != nil {
             w.contentView?.layoutSubtreeIfNeeded()
             w.displayIfNeeded()
         }
@@ -106,7 +112,7 @@ enum PerfHarness {
     /// Renders the main window's layer tree (what SwiftUI drew) to a PNG, without capturing
     /// the screen: works while another app is in front or the screen is locked.
     private static func snapshotWindow(to path: String) {
-        guard let view = NSApp.windows.first(where: { $0.isVisible && $0.frame.height > 300 })?.contentView,
+        guard let view = mainWindow()?.contentView,
               let layer = view.layer else { return }
         let scale: CGFloat = 2
         let size = view.bounds.size
@@ -131,7 +137,7 @@ enum PerfHarness {
             for s in v.subviews { if let t = find(s) { return t } }
             return nil
         }
-        guard let root = NSApp.windows.first(where: { $0.isVisible && $0.frame.height > 300 })?.contentView,
+        guard let root = mainWindow()?.contentView,
               let table = find(root), let c = table.delegate as? ThreadTable.Coordinator,
               let id = c.model.selectedThreadId, let row = ListItems.row(of: id, in: c.items),
               let clip = table.enclosingScrollView?.contentView else { return true }
@@ -145,7 +151,7 @@ enum PerfHarness {
 
     /// `MERMOZ_PERF_SCENARIO`: what one step does. `jk` (default) steps down the List,
     /// `board` down a Board column, `feed` to the next Feed card, `palette` opens or closes
-    /// ⌘K, `resize` widens or narrows the window.
+    /// ⌘K, `resize` widens or narrows the window; more in PerfScenarios.
     private static func scenario(_ model: AppModel) async -> () -> Void {
         switch ProcessInfo.processInfo.environment["MERMOZ_PERF_SCENARIO"] ?? "jk" {
         case "board":
@@ -172,13 +178,15 @@ enum PerfHarness {
         case "resize":
             var wider = true
             return {
-                guard let w = NSApp.windows.first(where: { $0.isVisible && $0.frame.height > 300 }) else { return }
+                guard let w = mainWindow() else { return }
                 var f = w.frame
                 f.size.width += wider ? 60 : -60
                 wider.toggle()
                 w.setFrame(f, display: true)
             }
-        default:
+        case let name:
+            if let s = await PerfScenarios.step(name, model) { return s }
+            model.layout = .list
             return { model.moveSelection(1) }
         }
     }
@@ -190,7 +198,18 @@ enum PerfHarness {
         defer { ProcessInfo.processInfo.endActivity(activity) }
         let gapMs = ProcessInfo.processInfo.environment["MERMOZ_PERF_GAP_MS"].flatMap(Int.init) ?? 400
         let gap = Duration.milliseconds(gapMs)
+        // A fixed size off every display, whatever frame a former run saved.
+        mainWindow()?.setFrame(CGRect(x: -20_000, y: -20_000, width: 1440, height: 900), display: false)
+        if PerfStealth.onScreenWindows() > 0 {
+            log.error("perf: a window is on screen; stopping")
+            NSApp.terminate(nil)
+            return
+        }
         for _ in 0..<100 where model.threads.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
+        if let v = ProcessInfo.processInfo.environment["MERMOZ_PERF_VIEW"] {
+            model.select(.status(v))
+            try? await Task.sleep(for: .milliseconds(300))
+        }
         let step = await scenario(model)
         try? await Task.sleep(for: .seconds(2))
         var idle: [Double] = []
@@ -231,6 +250,7 @@ enum PerfHarness {
             "bubble_size_hits": Double(BubbleTextCache.shared.sizeHits), "bubble_size_misses": Double(BubbleTextCache.shared.sizeMisses),
             "bubble_main_misses": Double(BubbleTextCache.shared.mainMisses),
             "visible_cards": Double(model.feedFullyVisible.count), "selection_hidden_steps": Double(hidden),
+            "onscreen_windows": Double(PerfStealth.onScreenWindows()),
         ]
         log.info("perf: \(result.description, privacy: .public)")
         if let out = ProcessInfo.processInfo.environment["MERMOZ_PERF_OUT"],
