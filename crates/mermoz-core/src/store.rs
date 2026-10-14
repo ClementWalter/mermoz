@@ -135,7 +135,11 @@ const MIGRATIONS: &[&str] = &[
     plan::MIGRATION,
     images::MIGRATION,
     push::MIGRATION,
+    REPLY_TO,
 ];
+
+/// `Reply-To` per message; null until known (older mail learns it when its thread opens).
+const REPLY_TO: &str = "ALTER TABLE messages ADD COLUMN reply_to_json TEXT;";
 
 /// Which parts are images placed in the body (`cid:` links), so they render there and
 /// not as attachment chips. Older mail learns its Content-IDs when first shown.
@@ -1076,7 +1080,7 @@ fn messages_where(
            {}, is_from_me,
            (SELECT d.clean_body FROM digests d WHERE d.message_id = m.id AND d.status = 'ok'), auth, bcc_json,
            m.list_id IS NOT NULL, r.text, r.flags, r.forwarded_from, r.reaction, r.reaction_quote,
-           m.message_id_header, m.references_json
+           m.message_id_header, m.references_json, m.reply_to_json
          FROM messages m {}{}
          WHERE {filter} ORDER BY date, m.rowid",
         bodies::HAS_HTML_OF_M,
@@ -1115,6 +1119,10 @@ fn messages_where(
                     to: serde_json::from_str(&to).unwrap_or_default(),
                     cc: serde_json::from_str(&cc).unwrap_or_default(),
                     bcc: serde_json::from_str(&r.get::<_, String>(13)?).unwrap_or_default(),
+                    reply_to: r
+                        .get::<_, Option<String>>(22)?
+                        .and_then(|j| serde_json::from_str(&j).ok())
+                        .unwrap_or_default(),
                     date: r.get(6)?,
                     subject: r.get(7)?,
                     body_new: String::new(),
@@ -1835,8 +1843,8 @@ impl Store {
         let mid = new_id("msg");
         tx.execute(
             "INSERT INTO messages (id, account_id, provider_id, thread_id, from_name, from_email, to_json, cc_json, date, subject,
-               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth, bcc_json, list_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+               body_text, body_html, labels_json, is_from_me, unread, message_id_header, references_json, auth, bcc_json, list_id, reply_to_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 mid,
                 account_id,
@@ -1858,6 +1866,7 @@ impl Store {
                 if is_from_me { "self" } else { crate::auth::verdict(&p.auth_results, &from.email) },
                 serde_json::to_string(&p.bcc)?,
                 p.list_id,
+                serde_json::to_string(&p.reply_to)?,
             ],
         )?;
         let msg_rowid = tx.last_insert_rowid();
@@ -3995,6 +4004,29 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// (message id, provider id) of a thread's received messages whose `Reply-To` is not
+    /// known yet (stored before it was kept), newest first: the ones a reply reads.
+    pub fn missing_reply_to(&self, thread_id: &str) -> Result<Vec<(String, String)>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT id, provider_id FROM messages
+             WHERE thread_id = ?1 AND reply_to_json IS NULL AND is_from_me = 0
+             ORDER BY date DESC LIMIT 20",
+        )?;
+        Ok(st
+            .query_map([thread_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_reply_to(&self, message_id: &str, reply_to: &[Address]) -> Result<()> {
+        let w = self.w.lock().unwrap();
+        w.execute(
+            "UPDATE messages SET reply_to_json = ?2 WHERE id = ?1",
+            params![message_id, serde_json::to_string(reply_to)?],
+        )?;
+        Ok(())
+    }
+
     pub fn set_sender_auth(&self, message_id: &str, verdict: &str) -> Result<()> {
         let w = self.w.lock().unwrap();
         w.execute(
@@ -4348,7 +4380,7 @@ impl Store {
         Ok((mid, refs))
     }
 
-    /// Defaults for a reply: everyone on the last message except me.
+    /// Defaults for a reply-all to the latest received message ([`crate::reply`] rules).
     pub fn reply_defaults(
         &self,
         thread_id: &str,
@@ -4364,24 +4396,9 @@ impl Store {
         let Some(last) = msgs.iter().rev().find(|m| !m.is_from_me).or(msgs.last()) else {
             return Ok((vec![], vec![], subject));
         };
-        let not_me = |a: &Address| !a.email.eq_ignore_ascii_case(me);
-        let mut to: Vec<String> = if last.is_from_me {
-            last.to
-                .iter()
-                .filter(|a| not_me(a))
-                .map(|a| a.email.clone())
-                .collect()
-        } else {
-            vec![last.from.email.clone()]
-        };
-        to.dedup();
-        let cc: Vec<String> = last
-            .to
-            .iter()
-            .chain(last.cc.iter())
-            .filter(|a| not_me(a) && !to.contains(&a.email))
-            .map(|a| a.email.clone())
-            .collect();
+        let (to, cc) = crate::reply::reply_all(last, &[me.to_string()], &msgs);
+        let emails = |v: Vec<Address>| v.into_iter().map(|a| a.email).collect::<Vec<_>>();
+        let (to, cc) = (emails(to), emails(cc));
         Ok((to, cc, subject))
     }
 

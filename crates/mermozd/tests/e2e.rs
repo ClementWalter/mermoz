@@ -4629,3 +4629,172 @@ fn used_up_limit_is_said(synced: World) {
     suggest_todo(&synced);
     assert_eq!(suggest_todo(&synced)["paused"], "limit");
 }
+
+// ---- replies: Reply-To, no-reply senders, prompt sends ----------------------------
+
+/// An invoice a platform sends from a no-reply address on behalf of a craftsman.
+fn add_invoice(w: &World) {
+    w.mailbox.lock().unwrap().add_message(
+        "m4",
+        "t4",
+        &["INBOX", "UNREAD"],
+        "From: \"Franck ADAM (via Invoices)\" <no-reply@invoices.example>\r\nReply-To: Franck ADAM <franck@plomberie.example>\r\nTo: Me <me@example.com>\r\nSubject: Votre facture\r\nMessage-ID: <m4@example.com>\r\nDate: Sun, 11 Oct 2026 09:00:00 +0000\r\n\r\nVotre facture est jointe.\r\n",
+        NOW - 500,
+    );
+}
+
+#[fixture]
+fn with_invoice(world: World) -> World {
+    add_invoice(&world);
+    sign_in(&world);
+    world.wait_until("initial import", |w| {
+        w.ok("threads.list", json!({}))["total"] == 4
+    });
+    world
+}
+
+fn reply_of(w: &World, subject: &str) -> Value {
+    let t = w.thread_by_subject(subject);
+    w.ok(
+        "threads.get",
+        json!({ "id": t["id"], "conversation": true }),
+    )["reply"]
+        .clone()
+}
+
+#[rstest]
+fn reply_goes_to_the_reply_to_address(with_invoice: World) {
+    assert_eq!(
+        reply_of(&with_invoice, "Votre facture")["to"][0]["email"],
+        "franck@plomberie.example"
+    );
+}
+
+#[rstest]
+fn message_json_carries_reply_to(with_invoice: World) {
+    let t = with_invoice.thread_by_subject("Votre facture");
+    let v = with_invoice.ok("threads.get", json!({ "id": t["id"] }));
+    assert_eq!(
+        v["messages"][0]["reply_to"][0]["email"],
+        "franck@plomberie.example"
+    );
+}
+
+#[rstest]
+fn reply_to_a_no_reply_sender_carries_the_warning(synced: World) {
+    assert_eq!(
+        reply_of(&synced, "Your statement")["no_reply"][0],
+        "noreply@bank.example"
+    );
+}
+
+#[rstest]
+fn reply_to_a_person_has_no_warning(synced: World) {
+    assert_eq!(reply_of(&synced, "Audit report v2")["no_reply"], json!([]));
+}
+
+#[rstest]
+fn agent_send_to_a_no_reply_address_is_refused(synced: World) {
+    let t = synced.thread_by_subject("Your statement");
+    let d = synced.cli(&[
+        "--json",
+        "draft",
+        "reply",
+        t["number"].as_str().unwrap(),
+        "--body",
+        "Thanks",
+    ]);
+    let draft: Value = serde_json::from_slice(&d.stdout).unwrap();
+    let out = synced.cli(&["send", draft["id"].as_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("doesn't accept replies"));
+}
+
+/// A bulk relabel of every stored message in Gmail: a history walk of hundreds of
+/// slow label-only fetches, as while a big archive is pushed.
+fn relabel_storm(w: &World) {
+    let mut m = w.mailbox.lock().unwrap();
+    m.minimal_delay_ms = 50;
+    m.relabel_thread("tbulk", &["Label_bulk"], &["INBOX"]);
+}
+
+#[fixture]
+fn with_bulk(world: World) -> World {
+    {
+        let mut m = world.mailbox.lock().unwrap();
+        for i in 0..300 {
+            let id = format!("b{i}");
+            m.add_message(
+                &id,
+                "tbulk",
+                &["INBOX"],
+                &raw("Shop <shop@example.com>", "Bulk", "Promo", &id),
+                NOW - 10_000 - i,
+            );
+        }
+    }
+    sign_in(&world);
+    world.wait_until("initial import", |w| {
+        w.ok("threads.list", json!({}))["total"] == 4
+    });
+    world
+}
+
+fn app_reply(w: &World, subject: &str) -> Value {
+    let t = w.thread_by_subject(subject);
+    w.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "Signed off." }),
+    )
+}
+
+#[rstest]
+fn send_during_a_bulk_relabel_answers_promptly(with_bulk: World) {
+    let d = app_reply(&with_bulk, "Audit report v2");
+    relabel_storm(&with_bulk);
+    let started = Instant::now();
+    with_bulk.ok("drafts.send", json!({ "id": d["id"] }));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "send took {:?}",
+        started.elapsed()
+    );
+}
+
+#[rstest]
+fn send_during_a_bulk_relabel_reaches_gmail(with_bulk: World) {
+    let d = app_reply(&with_bulk, "Audit report v2");
+    relabel_storm(&with_bulk);
+    with_bulk.ok("drafts.send", json!({ "id": d["id"] }));
+    assert_eq!(with_bulk.mailbox.lock().unwrap().sent.len(), 1);
+}
+
+#[rstest]
+fn sent_copy_shows_in_the_thread_right_away(synced: World) {
+    let d = app_reply(&synced, "Audit report v2");
+    synced.ok("drafts.send", json!({ "id": d["id"] }));
+    let t = synced.thread_by_subject("Audit report v2");
+    let v = synced.ok("threads.get", json!({ "id": t["id"] }));
+    assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+}
+
+#[rstest]
+fn send_failure_reaches_the_client(synced: World) {
+    let d = app_reply(&synced, "Audit report v2");
+    synced.mailbox.lock().unwrap().send_status = Some(400);
+    assert!(
+        synced
+            .call("drafts.send", json!({ "id": d["id"] }))
+            .is_err()
+    );
+}
+
+#[rstest]
+fn failed_send_keeps_the_draft(synced: World) {
+    let d = app_reply(&synced, "Audit report v2");
+    synced.mailbox.lock().unwrap().send_status = Some(400);
+    let _ = synced.call("drafts.send", json!({ "id": d["id"] }));
+    assert_eq!(
+        synced.ok("drafts.get", json!({ "id": d["id"] }))["state"],
+        "draft"
+    );
+}

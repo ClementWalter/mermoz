@@ -37,9 +37,20 @@ extension AppModel {
         guard let d = detail else { return false }
         let c = inlineReply(d)
         guard !c.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !c.attachments.items.isEmpty else { return false }
-        guard await sendCompose(c) else { return false }
-        inlineReplies[d.thread.id] = nil
-        return true
+        // Never sent silently to an address nobody reads: the full window asks first.
+        if c.noReplyWarning != nil {
+            expandInlineReply()
+            return false
+        }
+        switch await sendCompose(c) {
+        case .sent, .stillSending:
+            inlineReplies[d.thread.id] = nil
+            return true
+        case let .failed(again):
+            // Kept with its error and draft: the bar says why, ⌘↩ retries.
+            inlineReplies[d.thread.id] = again
+            return false
+        }
     }
 
     /// Files dropped or pasted on the inline composer join its draft (sizes read off the
@@ -72,8 +83,8 @@ extension AppModel {
     }
 
     /// Sends a composed message, or hands it to the test stub.
-    func sendCompose(_ c: ComposeContext) async -> Bool {
-        if let sendOverride { return await sendOverride(c) }
+    func sendCompose(_ c: ComposeContext) async -> SendOutcome {
+        if let sendOverride { return await sendOverride(c) ? .sent : .failed(c) }
         return await send(c, thenWaiting: false)
     }
 }

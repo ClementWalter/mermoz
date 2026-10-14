@@ -193,7 +193,17 @@ impl Gmail {
                         .body(data.to_vec())
                 }
             }
-            let resp = req.send().await?;
+            let resp = match req.send().await {
+                Ok(r) => r,
+                // A failed connect never reached Google, so even a send is safe to repeat.
+                Err(e) if e.is_connect() && attempt < 5 => {
+                    tracing::warn!("gmail: connect failed, retrying: {e}");
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
             let status = resp.status().as_u16();
             if resp.status().is_success() {
                 return Ok(resp);

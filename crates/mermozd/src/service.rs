@@ -94,12 +94,16 @@ impl Service {
     }
 
     /// Checks, in the background, the senders of a thread's older messages (imported
-    /// before verification existed); the thread refreshes when done.
+    /// before verification existed) and learns their `Reply-To`; the thread refreshes
+    /// when done.
     pub fn verify_thread_senders(self: &Arc<Self>, thread_id: &str) {
         let Ok(items) = self.store.unverified_senders(thread_id) else {
             return;
         };
-        if items.is_empty() || !self.verifying.lock().unwrap().insert(thread_id.to_string()) {
+        let replies = self.store.missing_reply_to(thread_id).unwrap_or_default();
+        if (items.is_empty() && replies.is_empty())
+            || !self.verifying.lock().unwrap().insert(thread_id.to_string())
+        {
             return;
         }
         let Ok((account, _)) = self.store.provider_thread_id(thread_id) else {
@@ -111,12 +115,14 @@ impl Service {
         };
         let (svc, tid) = (self.clone(), thread_id.to_string());
         tokio::spawn(async move {
-            match w.sync.verify_senders(&items).await {
-                Ok(_) => {
-                    let _ = svc.events.send(Event::ThreadsChanged(vec![tid.clone()]));
-                }
-                Err(e) => warn!(thread = %tid, "sender check failed: {e}"),
+            // Reply-To first: the reply composer reads it.
+            if let Err(e) = w.sync.backfill_reply_to(&replies).await {
+                warn!(thread = %tid, "reply-to backfill failed: {e}");
             }
+            if let Err(e) = w.sync.verify_senders(&items).await {
+                warn!(thread = %tid, "sender check failed: {e}");
+            }
+            let _ = svc.events.send(Event::ThreadsChanged(vec![tid.clone()]));
             svc.verifying.lock().unwrap().remove(&tid);
         });
     }

@@ -176,6 +176,7 @@ mod tests {
             to: vec![],
             cc: vec![],
             bcc: vec![],
+            reply_to: vec![],
             date: 1_791_700_000_000,
             subject: "Offsite".into(),
             body_text: body.into(),

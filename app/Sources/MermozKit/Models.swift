@@ -218,6 +218,8 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var cc: [Address]
     /// Blind copies, known only on messages the user sent.
     public var bcc: [Address]?
+    /// Where the sender wants replies (`Reply-To`), when not at `from`.
+    public var replyTo: [Address]? = nil
     public var date: Int64
     public var subject: String
     public var bodyText: String
@@ -257,6 +259,22 @@ public struct ThreadDetail: Codable, Sendable, Equatable {
     public var conversation: Conversation?
     /// Earlier messages of the conversation left out (asked for its latest ones only).
     public var earlier: Int? = nil
+    /// Who a reply-all goes to, as the daemon worked it out (Reply-To honoured).
+    public var reply: ReplyAddressing? = nil
+}
+
+/// The recipients a reply starts with, and whether any of them reads nothing.
+public struct ReplyAddressing: Codable, Sendable, Equatable {
+    public var to: [Address]
+    public var cc: [Address]
+    /// Addresses in `to` that don't accept replies.
+    public var noReply: [String]
+    /// A person's address found in the mail, offered instead of a no-reply one.
+    public var suggestion: Address?
+
+    public init(to: [Address], cc: [Address], noReply: [String] = [], suggestion: Address? = nil) {
+        self.to = to; self.cc = cc; self.noReply = noReply; self.suggestion = suggestion
+    }
 }
 
 extension ThreadDetail {

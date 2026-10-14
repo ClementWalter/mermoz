@@ -306,8 +306,16 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         "threads.get" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;
             svc.verify_thread_senders(&id);
+            let me: Vec<String> = st
+                .account(&st.thread(&id)?.account_id)
+                .map(|a| vec![a.email])
+                .unwrap_or_default();
             if !flag(p, "conversation") {
-                return Ok(json!({ "thread": st.thread(&id)?, "messages": st.messages(&id)? }));
+                let messages = st.messages(&id)?;
+                let reply = mermoz_core::reply::addressing(&messages, &me);
+                return Ok(
+                    json!({ "thread": st.thread(&id)?, "messages": messages, "reply": reply }),
+                );
             }
             // `latest`: the app opens on the newest messages and asks for the rest
             // only when the reader scrolls back (a 992-thread conversation was 14 MB).
@@ -319,10 +327,11 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 }
             }
             let conversation = st.conversation(&id, &messages)?;
+            let reply = mermoz_core::reply::addressing(&messages, &me);
             let earlier = latest.map_or(0, |n| messages.len().saturating_sub(n));
             messages.drain(..earlier);
             Ok(json!({ "thread": st.thread(&id)?, "messages": messages,
-                "conversation": conversation, "earlier": earlier }))
+                "conversation": conversation, "earlier": earlier, "reply": reply }))
         }
         "conversations.split" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;
@@ -616,6 +625,20 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 return Err(RpcError::invalid(format!(
                     "draft {} was already sent",
                     d.id
+                )));
+            }
+            // The app warns in the composer; an agent must say it means it.
+            let dead: Vec<&String> =
+                d.to.iter()
+                    .filter(|e| mermoz_core::reply::is_no_reply(e))
+                    .collect();
+            if !caller.is_app && !dead.is_empty() && !flag(p, "allow_no_reply") {
+                return Err(RpcError::invalid(format!(
+                    "no_reply: {} doesn't accept replies, so nobody would read this. Ask the user for the right address, or pass allow_no_reply.",
+                    dead.iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )));
             }
             let agents_may_send = st.setting("agents_may_send")?.as_deref() == Some("true");

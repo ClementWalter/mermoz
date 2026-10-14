@@ -56,6 +56,10 @@ pub struct AccountSync {
     pub events: broadcast::Sender<Event>,
 }
 
+/// How long a send waits for its sent copy before answering; the sync loop brings it
+/// otherwise.
+const SENT_COPY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Fetch fan-out per batch; keeps us under Gmail's per-user quota (250 units/s, 5 per get).
 const FETCH_CONCURRENCY: usize = 25;
 
@@ -410,6 +414,28 @@ impl AccountSync {
         Ok(n)
     }
 
+    /// Reads the `Reply-To` of messages stored before it was kept (one metadata call
+    /// each); returns how many were filled.
+    pub async fn backfill_reply_to(&self, items: &[(String, String)]) -> Result<usize> {
+        let mut n = 0;
+        for (id, provider_id) in items {
+            let headers = match self.gmail.headers(provider_id, &["Reply-To"]).await {
+                Ok(h) => h,
+                // Gone from Gmail: nothing to learn, and nothing to ask again.
+                Err(Error::Upstream { status: 404, .. }) => vec![],
+                Err(e) => return Err(e),
+            };
+            let reply_to: Vec<_> = headers
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("reply-to"))
+                .flat_map(|(_, v)| mime::header_addresses(v))
+                .collect();
+            self.store.set_reply_to(id, &reply_to)?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     /// A thread's labels with calls of its own: trash or untrash, then its label diff.
     async fn push_labels(&self, thread_id: &str) -> Result<()> {
         let (_, provider_thread) = self.store.provider_thread_id(thread_id)?;
@@ -530,7 +556,7 @@ impl AccountSync {
             parts: &parts,
             links: &links,
         })?;
-        self.gmail.send(&raw, provider_thread.as_deref()).await?;
+        let sent = self.gmail.send(&raw, provider_thread.as_deref()).await?;
         self.store.set_draft_state(&draft.id, "sent")?;
         // The sent copy syncs back with its own attachments; these copies are spent.
         if let Err(e) = self.store.purge_draft_files(&draft.id) {
@@ -548,9 +574,13 @@ impl AccountSync {
             let _ = self.events.send(Event::ThreadsChanged(vec![t.clone()]));
         }
         let _ = self.events.send(Event::DraftsChanged);
-        // Pull the sent copy so the thread shows it immediately.
-        if let Err(e) = self.incremental().await {
-            debug!("post-send sync failed: {e}");
+        // Only the sent copy, briefly: a full history pull can take minutes while a
+        // bulk relabel is being pushed, and the sender waits on this call.
+        match tokio::time::timeout(SENT_COPY_WAIT, self.pull(std::slice::from_ref(&sent.id))).await
+        {
+            Ok(Err(e)) => debug!("sent copy not pulled: {e}"),
+            Err(_) => debug!("sent copy not pulled in time; the next sync brings it"),
+            Ok(Ok(_)) => {}
         }
         Ok(())
     }

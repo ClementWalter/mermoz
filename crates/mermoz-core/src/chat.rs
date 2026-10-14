@@ -878,6 +878,7 @@ mod tests {
                 email: "lea@acme.example".into(),
             }],
             bcc: vec![],
+            reply_to: vec![],
             date: 1_791_700_000_000,
             subject: "Audit report v2".into(),
             body_text: body.into(),

@@ -129,6 +129,9 @@ pub struct Message {
     pub cc: Vec<Address>,
     /// Blind copies: only known on messages the user sent.
     pub bcc: Vec<Address>,
+    /// Where the sender wants replies (`Reply-To`); empty when they want them at `from`.
+    #[serde(default)]
+    pub reply_to: Vec<Address>,
     pub date: i64,
     pub subject: String,
     pub body_text: String,

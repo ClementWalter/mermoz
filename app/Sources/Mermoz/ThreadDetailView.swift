@@ -1041,6 +1041,19 @@ struct ReplyBar: View {
                     Text("Replies to “\(target)”").font(.system(size: 11.5)).foregroundStyle(Theme.text3).lineLimit(1)
                 }
             }
+            if let w = draft.noReplyWarning {
+                NoReplyBanner(warning: w) {
+                    var c = model.inlineReply(detail)
+                    c.to = w.applied(to: c.to)
+                    model.setInlineReply(c, for: detail)
+                }
+            }
+            if let why = draft.sendError {
+                Label(why, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Not sent. \(why)")
+            }
             if !draft.attachments.items.isEmpty {
                 FlowRow {
                     ForEach(draft.attachments.items) { a in

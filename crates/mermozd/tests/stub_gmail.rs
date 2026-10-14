@@ -36,6 +36,11 @@ pub struct Mailbox {
     pub responses_auth: Vec<String>,
     /// API keys seen by the stub Anthropic endpoint.
     pub llm_keys: Vec<String>,
+    /// How long each label-only (`format=minimal`) fetch takes, to make a history full
+    /// of relabels slow to walk, as during a bulk archive.
+    pub minimal_delay_ms: u64,
+    /// Gmail answers sends with this status while set (e.g. 400 for a refused message).
+    pub send_status: Option<u16>,
     /// Message ids whose next fetch fails with 503, to exercise retries.
     pub fail_once: BTreeSet<String>,
     /// Authorization headers seen by the stub TypeSafe endpoint.
@@ -253,6 +258,10 @@ async fn get_message(
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, axum::http::StatusCode> {
+    let delay = s.lock().unwrap().minimal_delay_ms;
+    if delay > 0 && q.get("format").map(|f| f.as_str()) == Some("minimal") {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
     let mut m = s.lock().unwrap();
     if m.fail_once.remove(&id) {
         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
@@ -572,12 +581,19 @@ async fn delete_label(State(s): State<Shared>, Path(id): Path<String>) -> Json<V
     Json(json!({}))
 }
 
-async fn send(State(s): State<Shared>, Json(body): Json<Value>) -> Json<Value> {
+async fn send(
+    State(s): State<Shared>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, (axum::http::StatusCode, &'static str)> {
+    if let Some(code) = s.lock().unwrap().send_status {
+        let status = axum::http::StatusCode::from_u16(code).unwrap();
+        return Err((status, "{\"error\":{\"message\":\"Invalid To header\"}}"));
+    }
     let raw = base64::engine::general_purpose::URL_SAFE
         .decode(body["raw"].as_str().unwrap_or(""))
         .unwrap_or_default();
     let tid = body["threadId"].as_str().map(String::from);
-    Json(record_send(&s, raw, tid, "json"))
+    Ok(Json(record_send(&s, raw, tid, "json")))
 }
 
 /// Gmail's upload endpoint: `multipart/related` with JSON metadata, then the message.

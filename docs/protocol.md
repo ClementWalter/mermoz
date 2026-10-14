@@ -77,13 +77,28 @@ app, the CLI and the MCP server are clients of this protocol.
 
 // Message (thread_id: its Gmail thread, inside a conversation of several)
 {"id": "msg_…", "thread_id": "thr_…", "from": {"name": "Marc Petit", "email": "marc@…"},
- "to": [{"name": "", "email": "…"}], "cc": [], "date": 1791700000000,
+ "to": [{"name": "", "email": "…"}], "cc": [], "reply_to": [{"name": "Franck Adam", "email": "franck@…"}],
+ "date": 1791700000000,
  "subject": "…", "body_text": "… full text …", "body_new": "… what the bubble shows …",
  "has_quoted": true, "has_signature": true, "forwarded": false, "forwarded_from": "Bank" | null, "quoted_only": false,
  "body_clean": "… agent's reading version …" | null, "has_html": true, "is_from_me": false,
  "reaction": {"emoji": "❤️", "target_message_id": "msg_…" | null} | null,
  "attachments": [{"id": "att_…", "filename": "report.pdf", "mime": "application/pdf", "size": 2400000,
                   "inline": false, "decorative": false}]}
+
+// reply_to: the `Reply-To` header (empty when replies go to `from`). Mail stored before
+// it was kept learns it when its thread is opened (one metadata call per message,
+// then a threads_changed event).
+
+// ReplyAddressing (threads.get "reply"): the reply-all a conversation starts with,
+// after RFC 5322: on a received message To is its Reply-To (else From) plus its To,
+// Cc its Cc; on the user's own message, its recipients again, a sender that asked for
+// replies elsewhere swapped for that address. The user's address is never included.
+// no_reply lists To addresses nobody reads (no-reply, noreply, do-not-reply,
+// donotreply, ne-pas-repondre, notifications@, mailer-daemon); suggestion is a
+// person's address found in the mail, offered in their place, or null.
+{"to": [Address], "cc": [Address], "no_reply": ["no-reply@…"],
+ "suggestion": {"name": "Franck Adam", "email": "franck@…"} | null}
 
 // Message reading (crates/mermoz-core/src/reading.rs), worked out at ingest and kept:
 // body_new    only what the sender newly wrote: greeting, body, sign-off name. LF line
@@ -239,7 +254,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `search`             | `{"query", "limit"?: 50, "typing"?: false}` — every word must match as a whole word (accents and case aside); with `typing`, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each | `{"threads": [ThreadSummary]}` |
 | `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every account, for mail Mermoz doesn't hold | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
 | `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
-| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n}` (`earlier`: messages left out by `latest`) |
+| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null}` (`earlier`: messages left out by `latest`) |
 | `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
 | `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's; a manual join the grouping learns from | `{"conversation_id", "threads": n, "members": [id], "undo"}` |
 | `conversations.unmerge` | `{"undo"}` — the `undo` a merge returned: each thread back in its conversation, the join unlearned | `{"threads": n}` |
@@ -272,7 +287,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `drafts.detach`      | `{"id", "attachment_id"}` (an id from `Draft.attachments`)                               | `Draft`                                  |
 | `drafts.update`      | `{"id", "to"?, "cc"?, "subject"?, "body"?}`                                              | `Draft`                                  |
 | `drafts.delete`      | `{"id"}`                                                                                 | `{}`                                     |
-| `drafts.send`        | `{"id"}`                                                                                 | `{"sent": true}` or error `approval_required` |
+| `drafts.send`        | `{"id", "allow_no_reply"?: false}`                                                       | `{"sent": true}` or error `approval_required` |
 | `review.approve`     | `{"id"}` — app only                                                                      | `{"sent": true}`                         |
 | `review.reject`      | `{"id"}` — app only                                                                      | `{}`                                     |
 | `providers.list`     | `{}`                                                                                     | `[{"id","name","kind","base_url","model","has_key"}]` (keys never leave the daemon) |
@@ -364,6 +379,15 @@ thread to status `review`, and the call fails with `approval_required`:
 {"code": -32010, "message": "approval_required: draft dft_8f2c is waiting for the user to approve it in Mermoz. Tell the user; do not retry.",
  "data": {"draft": "dft_8f2c", "thread": "M-1262"}}
 ```
+
+A send answers as soon as Gmail has the message; the sent copy is pulled into its
+thread for up to 3 s, and the regular sync brings it otherwise. It never waits on
+the label write-back queue. A Gmail refusal is the `upstream` error; a network
+failure an error whose message says so (connection failures are retried first).
+
+An agent's send to a To address that doesn't accept replies (see ReplyAddressing)
+fails with `invalid_params` (`no_reply: … doesn't accept replies …`) unless it
+passes `allow_no_reply: true`. Mermoz.app warns in the composer instead.
 
 The caller is Mermoz.app when the peer process's executable (from the socket's
 peer pid) lives inside a bundle named `Mermoz.app`. `review.*` and

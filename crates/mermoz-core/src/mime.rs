@@ -21,6 +21,8 @@ pub struct ParsedMessage {
     pub cc: Vec<Address>,
     /// Only present on the sender's own copy of a message.
     pub bcc: Vec<Address>,
+    /// Where replies go (`Reply-To`), e.g. the person behind a no-reply sender.
+    pub reply_to: Vec<Address>,
     pub subject: String,
     pub date: Option<i64>,
     pub body_text: String,
@@ -116,6 +118,7 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
         to: addrs(msg.to()),
         cc: addrs(msg.cc()),
         bcc: addrs(msg.bcc()),
+        reply_to: addrs(msg.reply_to()),
         subject: msg.subject().unwrap_or("").to_string(),
         date: msg.date().map(|d| d.to_timestamp() * 1000),
         body_text: msg.body_text(0).map(|s| s.into_owned()).unwrap_or_default(),
@@ -126,6 +129,15 @@ pub fn parse(raw: &[u8]) -> Option<ParsedMessage> {
         auth_results: crate::auth::results_from_raw(raw),
         list_id: msg.header_raw("List-Id").and_then(list_id),
     })
+}
+
+/// Addresses in one address-list header value, e.g. a `Reply-To` read on its own.
+pub fn header_addresses(value: &str) -> Vec<Address> {
+    let raw = format!("Reply-To: {}\r\n\r\n", value.trim());
+    MessageParser::default()
+        .parse(raw.as_bytes())
+        .map(|m| addrs(m.reply_to()))
+        .unwrap_or_default()
 }
 
 /// "Runners <runners.club.example>" → "runners.club.example".
@@ -191,6 +203,28 @@ mod tests {
     #[rstest]
     fn attachment_bytes_are_decoded(multipart: ParsedMessage) {
         assert_eq!(multipart.attachments[0].data, b"%PDF-");
+    }
+
+    #[rstest]
+    fn reply_to_is_read() {
+        let raw = b"From: Franck ADAM <no-reply@invoices.example>\r\nReply-To: Franck ADAM <franck@plomberie.example>\r\nTo: me@example.com\r\nSubject: s\r\n\r\nhi\r\n";
+        assert_eq!(
+            parse(raw).unwrap().reply_to[0].email,
+            "franck@plomberie.example"
+        );
+    }
+
+    #[rstest]
+    fn header_value_yields_its_address() {
+        assert_eq!(
+            header_addresses("\"Franck ADAM\" <franck@plomberie.example>")[0].email,
+            "franck@plomberie.example"
+        );
+    }
+
+    #[rstest]
+    fn missing_reply_to_is_empty(simple: ParsedMessage) {
+        assert!(simple.reply_to.is_empty());
     }
 
     #[rstest]

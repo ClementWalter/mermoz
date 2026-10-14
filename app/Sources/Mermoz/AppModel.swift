@@ -60,9 +60,27 @@ struct ComposeContext: Equatable, Identifiable {
     var cc: [String]
     var subject: String
     var body: String = ""
-    /// Existing draft being edited (Review → Edit).
+    /// Existing draft being edited (Review → Edit), or kept after a failed send so Retry reuses it.
     var draftId: String?
     var attachments = AttachmentList()
+    /// A person's address to offer when `to` doesn't accept replies.
+    var suggestion: Address? = nil
+    /// Why the last send failed; the composer shows it with Retry.
+    var sendError: String? = nil
+
+    /// Set while `to` has an address that doesn't accept replies.
+    var noReplyWarning: NoReplyWarning? { NoReplyWarning(to: to, suggestion: suggestion) }
+}
+
+/// How a send ended, or stood when the composer stopped waiting.
+enum SendOutcome: Equatable {
+    case sent
+    /// Still going after `AppModel.sendDeadline`; the result arrives as a toast (or the
+    /// composer reopens with the error).
+    case stillSending
+    /// The composer to show again: its `sendError` says why, its `draftId` keeps the
+    /// draft for Retry.
+    case failed(ComposeContext)
 }
 
 enum PaletteMode: Equatable {
@@ -150,6 +168,8 @@ final class AppModel {
     var replyFocused = false
     /// Sends a composed message; tests put a stub here.
     @ObservationIgnored var sendOverride: ((ComposeContext) async -> Bool)?
+    /// How long Send waits before the message goes on in the background.
+    @ObservationIgnored var sendDeadline: Duration = .seconds(8)
     /// The reading pane's tab; back to Messages when another conversation opens.
     var conversationTab: ConversationTab = .messages
     /// Messages opened as the whole email; the rest read as chat bubbles.
@@ -1190,13 +1210,17 @@ final class AppModel {
         compose = replyContext(d)
     }
 
-    /// A reply-all to the conversation's latest message, in the Gmail thread it continues.
+    /// A reply-all to the conversation's latest message, in the Gmail thread it continues:
+    /// the daemon's addressing (Reply-To honoured), else From and the other recipients.
     func replyContext(_ d: ThreadDetail) -> ComposeContext {
         let last = d.messages.last
         let myAccount = accounts.first { $0.id == d.thread.accountId }?.email.lowercased()
         var to: [String] = []
         var cc: [String] = []
-        if let last {
+        if let r = d.reply {
+            to = r.to.map(\.email)
+            cc = r.cc.map(\.email)
+        } else if let last {
             if last.isFromMe {
                 to = last.to.map(\.email)
                 cc = last.cc.map(\.email)
@@ -1208,7 +1232,8 @@ final class AppModel {
         // In a conversation the reply goes to the Gmail thread of its latest message.
         let target = replyTarget(d)
         let subj = target.subject.lowercased().hasPrefix("re:") ? target.subject : "Re: \(target.subject)"
-        return ComposeContext(threadId: target.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj)
+        return ComposeContext(threadId: target.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj,
+                              suggestion: d.reply?.suggestion)
     }
 
     func startNew() {
@@ -1223,15 +1248,22 @@ final class AppModel {
                                  attachments: AttachmentList(stored: d.attachments))
     }
 
-    /// Creates (or updates) the draft and sends it; the app is a trusted caller so it sends directly.
-    func send(_ c: ComposeContext, thenWaiting: Bool) async -> Bool {
-        guard let client else { return false }
+    /// Creates (or updates) the draft and sends it; the app is a trusted caller so it sends
+    /// directly. Answers within `sendDeadline`: past it the send goes on in the background,
+    /// ending in a "Sent" toast or the composer reopened on the error.
+    func send(_ c: ComposeContext, thenWaiting: Bool) async -> SendOutcome {
+        func failed(_ why: String, _ ctx: ComposeContext) -> SendOutcome {
+            var ctx = ctx
+            ctx.sendError = why
+            return .failed(ctx)
+        }
+        guard let client else { return failed("Mermoz isn't connected yet. Retry in a moment.", c) }
         if let tooBig = c.attachments.limitMessage {
             toast = tooBig
-            return false
+            return failed(tooBig, c)
         }
+        var draft: Draft
         do {
-            var draft: Draft
             if let id = c.draftId {
                 draft = try await client.updateDraft(id, to: c.to, cc: c.cc, subject: c.subject, body: c.body)
                 for removed in c.attachments.removedStored {
@@ -1245,21 +1277,51 @@ final class AppModel {
                                                      cc: c.cc, subject: c.subject, body: c.body,
                                                      attachments: c.attachments.newSpecs)
             }
-            if c.draftId != nil, isReview {
-                _ = try await client.approve(draft.id)
-            } else {
-                _ = try await client.sendDraft(draft.id)
-            }
-            if thenWaiting, let tid = c.threadId { update([tid], status: "waiting") }
-            compose = nil
-            toast = "Sent"
-            if let tid = c.threadId, selectedThreadId == tid { open(tid) }
-            refreshCounts()
-            return true
         } catch {
-            report(error)
-            return false
+            return failed(SendErrorText.describe(error), c)
         }
+        // Retry reuses this draft (its files are already attached).
+        var kept = c
+        kept.sendError = nil
+        kept.draftId = draft.id
+        kept.attachments = AttachmentList(stored: draft.attachments)
+        let id = draft.id
+        let review = draft.state == "review"
+        let call = Task { @MainActor () throws -> Void in
+            if review { _ = try await client.approve(id) } else { _ = try await client.sendDraft(id) }
+        }
+        switch await waitAtMost(sendDeadline, for: call) {
+        case .done:
+            finishSent(kept, thenWaiting: thenWaiting)
+            return .sent
+        case let .failed(error):
+            log.error("send failed: \(error.localizedDescription)")
+            return failed(SendErrorText.describe(error), kept)
+        case .late:
+            if compose?.id == c.id { compose = nil }
+            toast = "Still sending in the background…"
+            Task { @MainActor in
+                do {
+                    try await call.value
+                    finishSent(kept, thenWaiting: thenWaiting)
+                } catch {
+                    log.error("send failed: \(error.localizedDescription)")
+                    var again = kept
+                    again.sendError = SendErrorText.describe(error)
+                    compose = again
+                }
+            }
+            return .stillSending
+        }
+    }
+
+    /// After Gmail took the message: the composer closes and the conversation shows it.
+    private func finishSent(_ c: ComposeContext, thenWaiting: Bool) {
+        if thenWaiting, let tid = c.threadId { update([tid], status: "waiting") }
+        if compose?.id == c.id { compose = nil }
+        toast = "Sent"
+        if let tid = c.threadId, selectedThreadId == tid { open(tid) }
+        refreshCounts()
     }
 
     // MARK: review

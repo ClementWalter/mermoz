@@ -11,6 +11,7 @@ struct ComposeView: View {
     @State private var thenWaiting = false
     @State private var sending = false
     @State private var confirmSuspicious = false
+    @State private var confirmNoReply = false
     @State private var dropTargeted = false
     @State private var picking = false
     @State private var pasteMonitor: Any?
@@ -44,6 +45,7 @@ struct ComposeView: View {
                     }
                 }
                 field("To") { RecipientField(addresses: $context.to) }
+                if let w = context.noReplyWarning { NoReplyBanner(warning: w) { context.to = w.applied(to: context.to) } }
                 field("Cc") { RecipientField(addresses: $context.cc) }
                 field("Subject") {
                     TextField("", text: $context.subject).textFieldStyle(.plain).font(.system(size: 13))
@@ -61,13 +63,22 @@ struct ComposeView: View {
 
             if !context.attachments.isEmpty { attachmentTray }
 
+            if let why = context.sendError {
+                Label(why, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12.5)).foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 22).padding(.top, 12)
+                    .accessibilityLabel("Not sent. \(why)")
+            }
+
             HStack(spacing: 10) {
                 Button {
                     trySend()
                 } label: {
                     HStack(spacing: 6) {
                         if sending { ProgressView().controlSize(.mini) }
-                        Text(context.draftId != nil && model.isReview ? "Approve & send" : "Send")
+                        Text(context.sendError != nil ? "Retry" : context.draftId != nil && model.isReview ? "Approve & send" : "Send")
                     }
                     .padding(.horizontal, 6)
                 }
@@ -107,6 +118,15 @@ struct ComposeView: View {
         .onDisappear {
             if let m = pasteMonitor { NSEvent.removeMonitor(m) }
             pasteMonitor = nil
+        }
+        .confirmationDialog(NoReplyWarning.title, isPresented: $confirmNoReply) {
+            if let w = context.noReplyWarning, let s = w.suggestion {
+                Button("Send to \(s.email)") { context.to = w.applied(to: context.to); trySend() }
+            }
+            Button("Send anyway", role: .destructive) { checkSuspiciousThenSend() }
+            Button("Review recipients", role: .cancel) {}
+        } message: {
+            Text(context.noReplyWarning.map { [$0.detail, $0.question].compactMap { $0 }.joined(separator: " ") } ?? "")
         }
         .confirmationDialog("Some recipients look suspicious", isPresented: $confirmSuspicious) {
             Button("Send anyway", role: .destructive) { askShareThenSend() }
@@ -157,14 +177,20 @@ struct ComposeView: View {
         }
     }
 
+    /// A no-reply recipient is never sent to without the user saying so.
     private func trySend() {
+        if context.noReplyWarning != nil { confirmNoReply = true } else { checkSuspiciousThenSend() }
+    }
+
+    private func checkSuspiciousThenSend() {
         if suspicious.isEmpty { askShareThenSend() } else { confirmSuspicious = true }
     }
 
     private func doSend() {
         sending = true
+        context.sendError = nil
         Task {
-            _ = await model.send(context, thenWaiting: thenWaiting)
+            if case let .failed(again) = await model.send(context, thenWaiting: thenWaiting) { context = again }
             sending = false
         }
     }
@@ -360,5 +386,31 @@ struct RecipientPill: View {
             Image(systemName: "exclamationmark.circle").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.danger)
                 .accessibilityLabel("Suspicious address")
         }
+    }
+}
+
+/// Under a To line that has an address nobody reads: says so, and offers the person
+/// named in the mail when there is one.
+struct NoReplyBanner: View {
+    let warning: NoReplyWarning
+    /// Swaps the no-reply addresses for the suggestion.
+    var useSuggestion: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.danger)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(NoReplyWarning.title).font(.system(size: 12.5, weight: .semibold))
+                Text(warning.detail).font(.system(size: 12)).foregroundStyle(Theme.text2)
+            }
+            Spacer(minLength: 8)
+            if let q = warning.question {
+                Button(q, action: useSuggestion)
+                    .buttonStyle(.link).font(.system(size: 12))
+                    .help("Write to this address instead")
+            }
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
     }
 }
