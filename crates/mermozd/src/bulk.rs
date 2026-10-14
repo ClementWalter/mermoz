@@ -341,32 +341,47 @@ fn preview(svc: &Arc<Service>, sentence: &str, p: Plan, origin: &str) -> Result<
     }))
 }
 
-/// The thread states a batch is about to change: the targets, plus the open threads
-/// of their conversations when the action follows the conversation.
-fn snapshot(svc: &Service, ids: &[String], follows: bool) -> Result<Vec<ThreadState>> {
-    let st = &svc.store;
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut out = vec![];
-    for id in ids {
-        let mut group = vec![id.clone()];
-        if follows {
-            group.extend(st.open_siblings(id).unwrap_or_default());
-        }
-        for t in group {
-            if seen.insert(t.clone())
-                && let Ok(ts) = st.thread(&t)
-            {
-                out.push(ThreadState::from(&ts));
+/// A step's targets, each with the open threads of its conversation when the action
+/// follows the conversation, as they are when the run starts.
+fn with_siblings(svc: &Service, targets: &[String], follows: bool) -> Vec<(String, Vec<String>)> {
+    targets
+        .iter()
+        .map(|t| {
+            let sib = if follows {
+                svc.store.open_siblings(t).unwrap_or_default()
+            } else {
+                vec![]
+            };
+            (t.clone(), sib)
+        })
+        .collect()
+}
+
+/// Splits a step into writes of `size` targets; each write takes its targets and their
+/// siblings, every thread once per step.
+fn writes(step: &[(String, Vec<String>)], size: usize) -> Vec<(Vec<String>, Vec<String>)> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    step.chunks(size)
+        .map(|chunk| {
+            let mut ids = vec![];
+            for (t, sib) in chunk {
+                for id in std::iter::once(t).chain(sib) {
+                    if seen.insert(id) {
+                        ids.push(id.clone());
+                    }
+                }
             }
-        }
-    }
-    Ok(out)
+            (chunk.iter().map(|(t, _)| t.clone()).collect(), ids)
+        })
+        .collect()
 }
 
 /// Applies one action to a batch through the store, as the matching RPCs do.
 fn apply(svc: &Service, action: &Action, ids: &[String]) -> Result<()> {
     let st = &svc.store;
-    let patch = |p: ThreadPatch| st.update_threads(ids, &p).map(|_| ());
+    // Exactly the run's snapshot: a thread that joined a conversation since is not
+    // pulled along.
+    let patch = |p: ThreadPatch| st.update_threads_exactly(ids, &p).map(|_| ());
     match action {
         Action::SetStatus { status } => patch(ThreadPatch {
             status: Some(status.clone()),
@@ -457,6 +472,37 @@ pub async fn run(
         )));
     }
     st.set_bulk_op_state(id, "running", 0, None)?;
+    // One snapshot before any change: the threads each step acts on and their state.
+    // The run changes exactly these, so its undo restores every one of them.
+    let mut steps: Vec<Vec<(String, Vec<String>)>> = vec![];
+    for (i, step) in p.steps.iter().enumerate() {
+        // Unticked threads, and threads gone since the preview, are skipped.
+        let live: Vec<String> = st
+            .bulk_op_targets(id, i)?
+            .into_iter()
+            .filter(|t| !exclude.contains(t) && st.thread(t).is_ok())
+            .collect();
+        let follows = !matches!(
+            step.action,
+            Action::MarkRead | Action::MarkUnread | Action::Later { .. }
+        );
+        steps.push(with_siblings(svc, &live, follows));
+    }
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut before: Vec<ThreadState> = vec![];
+    for (t, sib) in steps.iter().flatten() {
+        for tid in std::iter::once(t).chain(sib) {
+            if seen.insert(tid)
+                && let Ok(ts) = st.thread(tid)
+            {
+                before.push(ThreadState::from(&ts));
+            }
+        }
+    }
+    if let Err(e) = st.save_bulk_before(id, &before) {
+        st.set_bulk_op_state(id, "failed", 0, Some(&e.to_string()))?;
+        return Err(e);
+    }
     let mut done: BTreeSet<String> = BTreeSet::new();
     let total = ticked;
     let progress = |n: usize| {
@@ -467,28 +513,14 @@ pub async fn run(
             total,
         });
     };
-    for (i, step) in p.steps.iter().enumerate() {
-        let targets = st.bulk_op_targets(id, i)?;
-        let follows = !matches!(
-            step.action,
-            Action::MarkRead | Action::MarkUnread | Action::Later { .. }
-        );
-        for chunk in targets.chunks(BATCH) {
-            // Unticked threads, and threads gone since the preview, are skipped.
-            let live: Vec<String> = chunk
-                .iter()
-                .filter(|t| !exclude.contains(*t) && st.thread(t).is_ok())
-                .cloned()
-                .collect();
-            let outcome = snapshot(svc, &live, follows)
-                .and_then(|before| st.save_bulk_before(id, &before))
-                .and_then(|_| apply(svc, &step.action, &live));
-            if let Err(e) = outcome {
+    for (step, threads) in p.steps.iter().zip(&steps) {
+        for (targets, ids) in writes(threads, BATCH) {
+            if let Err(e) = apply(svc, &step.action, &ids) {
                 st.set_bulk_op_state(id, "failed", done.len() as i64, Some(&e.to_string()))?;
                 return Err(e);
             }
-            done.extend(live.iter().cloned());
-            changed(svc, live);
+            done.extend(targets);
+            changed(svc, ids);
             progress(done.len());
             tokio::task::yield_now().await;
         }
@@ -548,3 +580,6 @@ pub fn undo(svc: &Arc<Service>, id: &str) -> Result<Value> {
     let _ = svc.events.send(Event::SuggestionsChanged);
     Ok(json!({ "id": id, "restored": restored }))
 }
+
+#[cfg(test)]
+mod tests;

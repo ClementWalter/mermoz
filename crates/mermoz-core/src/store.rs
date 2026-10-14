@@ -2561,6 +2561,12 @@ impl Store {
         self.patch_threads(ids, patch, true)
     }
 
+    /// [`Self::update_threads`] on exactly these threads: their conversations' other
+    /// threads stay as they are.
+    pub fn update_threads_exactly(&self, ids: &[String], patch: &ThreadPatch) -> Result<usize> {
+        self.patch_threads(ids, patch, false)
+    }
+
     /// The threads touched by [`Self::update_threads`] on `ids`, as they are now: what
     /// `threads.restore` takes to undo it exactly.
     pub fn states_before_update(&self, ids: &[String]) -> Result<Vec<ThreadState>> {

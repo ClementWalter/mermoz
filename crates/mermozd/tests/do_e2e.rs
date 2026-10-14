@@ -696,28 +696,10 @@ fn bulk_delete_plan() -> Value {
         "action": { "kind": "delete" } }] })
 }
 
-/// 1,500 newsletters as `add_crowd`, each from its own sender: no feed stream gathers
-/// them while the run goes.
-fn add_lone_crowd(m: &mut stub_gmail::Mailbox, t: i64) {
-    for i in 0..1500 {
-        m.add_message(
-            &format!("b{i}"),
-            &format!("tb{i}"),
-            &["INBOX"],
-            &raw(
-                &format!("Weekly {i} <digest{i}@bulk.example>"),
-                &format!("Digest {i}"),
-                &format!("b{i}"),
-            ),
-            t - (200 + i as i64 % 50) * DAY,
-        );
-    }
-}
-
 /// The 1,500 newsletters and a plan moving them all to the Trash.
 #[fixture]
 fn crowd_to_delete() -> World {
-    let w = start_mail(add_lone_crowd, 1500);
+    let w = start_mail(add_crowd, 1500);
     w.enable_ai();
     w.ai_answers(vec![bulk_delete_plan()]);
     w
@@ -745,6 +727,51 @@ fn undo_to_gmail(w: &World) {
     w.wait_until("every match out of the gmail trash", |w| {
         crowd_trashed(w, false)
     });
+}
+
+/// Every thread's status, by id.
+fn all_statuses(w: &World) -> std::collections::BTreeMap<String, String> {
+    w.ok("threads.list", json!({ "limit": 5000 }))["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["id"].as_str().unwrap().to_string(),
+                t["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[rstest]
+#[case::r01(1)]
+#[case::r02(2)]
+#[case::r03(3)]
+#[case::r04(4)]
+#[case::r05(5)]
+#[case::r06(6)]
+#[case::r07(7)]
+#[case::r08(8)]
+#[case::r09(9)]
+#[case::r10(10)]
+// The newsletters share a sender: the grouping worker gathers them into one feed
+// stream while the run goes. Ten rounds, as a join can land between any two writes.
+fn undo_restores_every_thread_while_grouping_gathers_them(
+    crowd_to_delete: World,
+    #[case] _round: u32,
+) {
+    let w = crowd_to_delete;
+    let before = all_statuses(&w);
+    let id = ask(&w)["id"].clone();
+    w.ok("do.run", json!({ "id": id, "confirm": 1500 }));
+    w.ok("do.undo", json!({ "id": id }));
+    let after = all_statuses(&w);
+    let changed = before
+        .iter()
+        .filter(|(t, s)| after.get(*t) != Some(*s))
+        .count();
+    assert_eq!(changed, 0);
 }
 
 /// `messages.batchModify` calls that add or remove TRASH.
