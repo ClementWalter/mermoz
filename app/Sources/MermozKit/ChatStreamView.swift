@@ -150,25 +150,54 @@ public enum ChatMetrics {
     public static let photosShown = 4
 
     /// The photo grid's tiles from its top left, as a messaging app lays them out: one
-    /// wide photo, two side by side, one tall beside two, or four in a square.
-    public static func photoTiles(_ count: Int) -> [CGRect] {
+    /// wide photo, two side by side, one tall beside two, or four in a square. In less
+    /// room than `photoGrid` (`width`) the whole grid scales down.
+    public static func photoTiles(_ count: Int, width: CGFloat = photoGrid) -> [CGRect] {
         let w = photoGrid, g = photoGap, half = (photoGrid - photoGap) / 2, small: CGFloat = 82
-        switch count {
-        case 0: return []
-        case 1: return [CGRect(x: 0, y: 0, width: w, height: 168)]
-        case 2: return [CGRect(x: 0, y: 0, width: half, height: 140), CGRect(x: half + g, y: 0, width: half, height: 140)]
-        case 3: return [CGRect(x: 0, y: 0, width: half, height: 2 * small + g),
-                        CGRect(x: half + g, y: 0, width: half, height: small),
-                        CGRect(x: half + g, y: small + g, width: half, height: small)]
-        default: return [CGRect(x: 0, y: 0, width: half, height: small), CGRect(x: half + g, y: 0, width: half, height: small),
-                         CGRect(x: 0, y: small + g, width: half, height: small),
-                         CGRect(x: half + g, y: small + g, width: half, height: small)]
+        let tiles: [CGRect] = switch count {
+        case 0: []
+        case 1: [CGRect(x: 0, y: 0, width: w, height: 168)]
+        case 2: [CGRect(x: 0, y: 0, width: half, height: 140), CGRect(x: half + g, y: 0, width: half, height: 140)]
+        case 3: [CGRect(x: 0, y: 0, width: half, height: 2 * small + g),
+                 CGRect(x: half + g, y: 0, width: half, height: small),
+                 CGRect(x: half + g, y: small + g, width: half, height: small)]
+        default: [CGRect(x: 0, y: 0, width: half, height: small), CGRect(x: half + g, y: 0, width: half, height: small),
+                  CGRect(x: 0, y: small + g, width: half, height: small),
+                  CGRect(x: half + g, y: small + g, width: half, height: small)]
         }
+        let s = min(1, max(width, 1) / photoGrid)
+        return s == 1 ? tiles : tiles.map { CGRect(x: $0.minX * s, y: $0.minY * s, width: $0.width * s, height: $0.height * s) }
     }
 
     /// Height the photo grid takes, its gap above included.
-    public static func photosHeight(_ count: Int) -> CGFloat {
-        count == 0 ? 0 : thumbGap + (photoTiles(count).map(\.maxY).max() ?? 0)
+    public static func photosHeight(_ count: Int, width: CGFloat = photoGrid) -> CGFloat {
+        count == 0 ? 0 : thumbGap + (photoTiles(count, width: width).map(\.maxY).max() ?? 0)
+    }
+
+    /// Pasted images' tiles from the strip's top left, wrapping onto more rows when the
+    /// bubble is narrow (a tile narrower than the room shrinks to it).
+    public static func thumbTiles(_ count: Int, width: CGFloat) -> [CGRect] {
+        let w = min(thumb.width, max(width, 1)), h = thumb.height * w / thumb.width
+        let perRow = max(1, Int((width + thumbGap) / (w + thumbGap)))
+        return (0..<count).map { i in
+            CGRect(x: CGFloat(i % perRow) * (w + thumbGap), y: CGFloat(i / perRow) * (h + thumbGap), width: w, height: h)
+        }
+    }
+
+    /// Height the pasted images take, their gap above included.
+    public static func thumbsHeight(_ count: Int, width: CGFloat) -> CGFloat {
+        count == 0 ? 0 : thumbGap + (thumbTiles(count, width: width).map(\.maxY).max() ?? 0)
+    }
+
+    /// The width a bubble's content takes (its text, grid, strip, caption): what it needs,
+    /// never more than the chat leaves it.
+    public static func innerWidth(_ spec: BubbleSpec, text: CGSize, chatWidth: CGFloat) -> CGFloat {
+        let room = textWidth(chatWidth, mine: spec.mine)
+        // Wide enough for "Show more" and the file count under short text.
+        let thumbs = CGFloat(spec.thumbnails.count) * (thumb.width + thumbGap) - thumbGap
+        let floor = max(spec.content.clamped || spec.files > 0 ? 80 : 0, spec.thumbnails.isEmpty ? 0 : thumbs,
+                        spec.photos.isEmpty ? 0 : photoGrid, spec.caption.map(captionWidth) ?? 0)
+        return min(max(text.width, floor), room)
     }
 
     /// Widest the text of a bubble can be in a chat `width` wide.
@@ -182,10 +211,11 @@ public enum ChatMetrics {
         (spec.firstOfRun ? runGap + header + headerGap : 0) + (spec.note == nil ? 0 : note)
     }
 
-    /// The bubble's own height with its text taking `text`.
-    public static func bubble(text: CGSize, _ spec: BubbleSpec) -> CGFloat {
+    /// The bubble's own height with its text taking `text` and its content `inner` wide.
+    public static func bubble(text: CGSize, _ spec: BubbleSpec, inner: CGFloat = .greatestFiniteMagnitude) -> CGFloat {
         text.height + 2 * inset.height + (spec.content.clamped ? showMore : 0) + (spec.files > 0 ? files : 0)
-            + (spec.thumbnails.isEmpty ? 0 : thumbGap + thumb.height) + photosHeight(spec.photos.count)
+            + thumbsHeight(spec.thumbnails.count, width: min(inner, .greatestFiniteMagnitude))
+            + photosHeight(spec.photos.count, width: min(inner, photoGrid))
             + (spec.caption == nil ? 0 : caption)
     }
 
@@ -346,6 +376,8 @@ final class BubbleRowView: NSView {
     private var laid: BubbleTextLayout.Laid?
     /// The photo tiles, in this view.
     private(set) var photoRects: [CGRect] = []
+    /// The pasted images' tiles, in this view.
+    private(set) var thumbRects: [CGRect] = []
     /// Opens the photos from the one at the index.
     var onPhoto: ((Int) -> Void)?
     /// The photo tile a press started on, and where: a drag takes the file out, a click opens it.
@@ -370,7 +402,6 @@ final class BubbleRowView: NSView {
         addSubview(fade)
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        toolTip = "Open the whole email"
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -410,13 +441,9 @@ final class BubbleRowView: NSView {
         }
         setAccessibilityValue(laid.drawn.string)
         let top = ChatMetrics.top(spec)
-        // Wide enough for "Show more" and the file count under short text.
-        let thumbs = CGFloat(spec.thumbnails.count) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap) - ChatMetrics.thumbGap
-        let floor: CGFloat = max(spec.content.clamped || spec.files > 0 ? 80 : 0, spec.thumbnails.isEmpty ? 0 : thumbs,
-                                 spec.photos.isEmpty ? 0 : ChatMetrics.photoGrid,
-                                 spec.caption.map { min(ChatMetrics.captionWidth($0), ChatMetrics.textWidth(width, mine: spec.mine)) } ?? 0)
-        let bubbleSize = CGSize(width: max(laid.size.width, floor) + 2 * ChatMetrics.inset.width,
-                                height: ChatMetrics.bubble(text: laid.size, spec))
+        let inner = ChatMetrics.innerWidth(spec, text: laid.size, chatWidth: width)
+        let bubbleSize = CGSize(width: inner + 2 * ChatMetrics.inset.width,
+                                height: ChatMetrics.bubble(text: laid.size, spec, inner: inner))
         let x = spec.mine
             ? width - ChatMetrics.sidePadding - bubbleSize.width
             : ChatMetrics.sidePadding + ChatMetrics.avatar + ChatMetrics.avatarGap
@@ -425,9 +452,11 @@ final class BubbleRowView: NSView {
         text.frame = CGRect(x: x + ChatMetrics.inset.width, y: top + ChatMetrics.inset.height + captioned,
                             width: laid.size.width, height: laid.size.height)
         text.alphaValue = spec.quoted ? ChatMetrics.quotedAlpha : 1
+        let stripTop = text.frame.maxY + (spec.content.clamped ? ChatMetrics.showMore : 0) + ChatMetrics.thumbGap
+        thumbRects = ChatMetrics.thumbTiles(spec.thumbnails.count, width: inner).map { $0.offsetBy(dx: text.frame.minX, dy: stripTop) }
         let gridTop = text.frame.maxY + (spec.content.clamped ? ChatMetrics.showMore : 0)
-            + (spec.thumbnails.isEmpty ? 0 : ChatMetrics.thumbGap + ChatMetrics.thumb.height) + ChatMetrics.thumbGap
-        photoRects = ChatMetrics.photoTiles(min(spec.photos.count, ChatMetrics.photosShown))
+            + ChatMetrics.thumbsHeight(spec.thumbnails.count, width: inner) + ChatMetrics.thumbGap
+        photoRects = ChatMetrics.photoTiles(min(spec.photos.count, ChatMetrics.photosShown), width: min(inner, ChatMetrics.photoGrid))
             .map { $0.offsetBy(dx: text.frame.minX, dy: gridTop) }
         fade.isHidden = !spec.content.clamped
         more?.isHidden = !spec.content.clamped
@@ -443,6 +472,10 @@ final class BubbleRowView: NSView {
             + (spec.caption.map { ". \($0)" } ?? "") + (spec.quoted ? ". Quotes an earlier message" : "")
             + (spec.note.map { ". \($0)" } ?? ""))
         setAccessibilityHelp("Opens the whole email")
+        // The tooltip covers the bubble alone and is set again with it: a row moved to
+        // another place or another message never keeps an old one.
+        removeAllToolTips()
+        addToolTip(bubbleRect, owner: self, userData: nil)
         needsDisplay = true
     }
 
@@ -585,12 +618,7 @@ final class BubbleRowView: NSView {
 
     /// Pasted images as thumbnails under the text, decoded small and off the main thread.
     private func drawThumbnails(_ ids: [String]) {
-        guard !ids.isEmpty else { return }
-        let y = text.frame.maxY + (spec?.content.clamped == true ? ChatMetrics.showMore : 0) + ChatMetrics.thumbGap
-        for (i, id) in ids.enumerated() {
-            drawTile(id, in: CGRect(x: text.frame.minX + CGFloat(i) * (ChatMetrics.thumb.width + ChatMetrics.thumbGap), y: y,
-                                    width: ChatMetrics.thumb.width, height: ChatMetrics.thumb.height))
-        }
+        for (id, r) in zip(ids, thumbRects) { drawTile(id, in: r) }
     }
 
     /// "📎 n" at the bottom of the bubble: the files are in the whole email.
@@ -631,6 +659,19 @@ final class BubbleRowView: NSView {
         } else {
             super.mouseDown(with: event)
         }
+    }
+}
+
+extension BubbleRowView: NSViewToolTipOwner {
+    /// The bubble's tooltip, only where the bubble shows: never over the header or tabs a
+    /// scrolled chat slides under, never on a hidden spare row.
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
+              userData data: UnsafeMutableRawPointer?) -> String {
+        Self.tooltip(at: point, bubble: bubbleRect, visible: isHiddenOrHasHiddenAncestor ? .zero : visibleRect)
+    }
+
+    static func tooltip(at point: CGPoint, bubble: CGRect, visible: CGRect) -> String {
+        bubble.contains(point) && visible.contains(point) ? "Open the whole email" : ""
     }
 }
 
@@ -864,7 +905,13 @@ public final class ChatStreamView: NSScrollView {
         }
         let used = Set(next.map(ObjectIdentifier.init))
         for v in views where !used.contains(ObjectIdentifier(v)) {
-            if v is BubbleRowView || v is MarkerRowView { v.isHidden = true } else { v.removeFromSuperview() }
+            if v is BubbleRowView || v is MarkerRowView {
+                v.isHidden = true
+                // A spare row shows no tooltip until it shows a message again.
+                v.removeAllToolTips()
+            } else {
+                v.removeFromSuperview()
+            }
         }
         for v in next {
             if v.superview !== document { document.addSubview(v) }
@@ -923,7 +970,7 @@ public final class ChatStreamView: NSScrollView {
                 let laid = BubbleTextCache.shared.layout(id: spec.id, text: spec.content.text, style: style,
                                                          width: ChatMetrics.textWidth(width, mine: spec.mine),
                                                          maxLines: spec.content.maxLines)
-                let h = ChatMetrics.top(spec) + ChatMetrics.bubble(text: laid.size, spec)
+                let h = ChatMetrics.top(spec) + ChatMetrics.bubble(text: laid.size, spec, inner: ChatMetrics.innerWidth(spec, text: laid.size, chatWidth: width))
                 v.frame = CGRect(x: 0, y: y, width: width, height: h)
                 (v as? BubbleRowView)?.configure(spec, laid: laid, width: width, colors: colors) { [weak self] in
                     self?.actions.toggle(spec.id)
