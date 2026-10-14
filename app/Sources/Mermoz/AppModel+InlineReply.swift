@@ -22,6 +22,69 @@ extension AppModel {
         replyFocusRequest += 1
     }
 
+    /// r: replies to the message in focus (↑/↓) when there is one, else to the conversation.
+    func replyFromKeyboard() {
+        if let id = focusedMessageId, detail?.messages.contains(where: { $0.id == id }) == true {
+            pinReply(to: id)
+        } else {
+            focusReply()
+        }
+    }
+
+    /// Slide to reply, ↩ on a bubble, or r on one in focus: the reply answers that
+    /// message, addressed as a reply to it, and the keyboard goes to the composer. What
+    /// was typed stays.
+    func pinReply(to messageId: String) {
+        guard let d = detail, let m = d.messages.first(where: { $0.id == messageId }) else { return }
+        var c = inlineReply(d)
+        let base = replyContext(d, answering: m)
+        c.to = base.to
+        c.cc = base.cc
+        c.threadId = base.threadId
+        c.subject = base.subject
+        c.replyToMessageId = m.id
+        setInlineReply(c, for: d)
+        focusReply()
+    }
+
+    /// × on the pinned preview: the reply goes back to the conversation's own default.
+    func unpinReply() {
+        guard let d = detail else { return }
+        var c = inlineReply(d)
+        let base = replyContext(d)
+        c.to = base.to
+        c.cc = base.cc
+        c.threadId = base.threadId
+        c.subject = base.subject
+        c.replyToMessageId = nil
+        setInlineReply(c, for: d)
+    }
+
+    /// A reply to one message: to its Reply-To (else its sender), the others in copy; to
+    /// what it was sent to when it is the user's own. In that message's Gmail thread.
+    func replyContext(_ d: ThreadDetail, answering m: Message) -> ComposeContext {
+        let me = accounts.first { $0.id == d.thread.accountId }?.email.lowercased()
+        let to: [String], cc: [String]
+        if m.isFromMe {
+            to = m.to.map(\.email)
+            cc = m.cc.map(\.email)
+        } else {
+            let sender = (m.replyTo?.isEmpty == false ? m.replyTo! : [m.from]).map(\.email)
+            to = sender
+            let skip = Set(sender.map { $0.lowercased() } + [m.from.email.lowercased(), me ?? ""])
+            cc = (m.to + m.cc).map(\.email).filter { !skip.contains($0.lowercased()) }
+        }
+        let thread = m.threadId.flatMap { t in d.conversation?.threads.first { $0.id == t } } ?? d.thread
+        let subj = thread.subject.lowercased().hasPrefix("re:") ? thread.subject : "Re: \(thread.subject)"
+        return ComposeContext(threadId: thread.id, accountId: d.thread.accountId, to: to, cc: cc, subject: subj)
+    }
+
+    /// The pinned message, if the reply is pinned to one still in the conversation.
+    func pinnedMessage(_ d: ThreadDetail) -> Message? {
+        guard let id = inlineReply(d).replyToMessageId else { return nil }
+        return d.messages.first { $0.id == id }
+    }
+
     /// The full compose window, with what the inline composer held.
     func expandInlineReply() {
         guard let d = detail else { return }

@@ -112,6 +112,7 @@ struct ChatStreamHost: NSViewRepresentable, Equatable {
         actions.showMore = { model.shownInFull.insert($0) }
         actions.showEarlier = { model.chatShowsAll = true }
         actions.split = { model.splitThread($0) }
+        actions.replyTo = { model.pinReply(to: $0) }
         actions.file = { id in (try? await model.client?.attachment(id)).map { URL(fileURLWithPath: $0.path) } }
         actions.moveFocus = moveFocus
         actions.activate = { if let id = model.focusedMessageId { model.toggleMessage(id) } }
@@ -979,7 +980,7 @@ struct ReplyBar: View {
         })
         let empty = draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.attachments.items.isEmpty
         Group {
-            if editing || !empty {
+            if editing || !empty || draft.replyToMessageId != nil {
                 composer(draft, text: text, empty: empty)
             } else {
                 // Idle and empty: a plain line, cheap to redraw as conversations go by.
@@ -1028,6 +1029,23 @@ struct ReplyBar: View {
     /// The composer in use: recipients, files, the growing field, ⤢ and send.
     private func composer(_ draft: ComposeContext, text: Binding<String>, empty: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let pinned = model.pinnedMessage(detail) {
+                // What the reply answers; × goes back to replying to the conversation.
+                HStack(spacing: 6) {
+                    Image(systemName: "arrowshape.turn.up.left").font(.system(size: 10, weight: .semibold))
+                    Text(ReplyQuote.preview(pinned, sender: model.knownNames(detail)[pinned.from.email.lowercased()]
+                            ?? pinned.from.display))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button { model.unpinReply() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                        .buttonStyle(.plain)
+                        .help("Reply to the conversation instead").accessibilityLabel("Stop replying to this message")
+                }
+                .font(.system(size: 11.5)).foregroundStyle(Theme.text2)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Theme.accentSoft.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
+                .overlay(alignment: .leading) { Rectangle().fill(Theme.accent).frame(width: 2.5) }
+            }
             HStack(spacing: 8) {
                 Button { model.expandInlineReply() } label: {
                     Text(RecipientLine.compact(to: draft.to, cc: draft.cc, names: model.knownNames(detail)))

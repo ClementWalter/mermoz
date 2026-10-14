@@ -134,6 +134,8 @@ public struct ChatActions {
     public var file: (String) async -> URL? = { _ in nil }
     /// Shows photo files from the one at the index; nil: Quick Look.
     public var previewPhotos: (([URL], Int) -> Void)?
+    /// Pins the reply to a message (slide to reply, ↩ on a bubble).
+    public var replyTo: (String) -> Void = { _ in }
 
     public init() {}
 }
@@ -468,6 +470,11 @@ final class BubbleRowView: NSView {
     private var moreAccent: NSColor?
 
     func configure(_ spec: BubbleSpec, laid: BubbleTextLayout.Laid, width: CGFloat, colors: ChatColors, onClick: @escaping () -> Void) {
+        if spec.id != self.spec?.id {
+            // Another message: no ↩ left from the last one, no swipe in progress.
+            replyButton?.isHidden = true
+            if swipeOffset > 0 { _ = swipe.end(); swipeOffset = 0; setBoundsOrigin(.zero) }
+        }
         self.spec = spec
         self.colors = colors
         text.onClick = onClick
@@ -538,7 +545,88 @@ final class BubbleRowView: NSView {
     }
 
     /// The pointer over the bubble: the text becomes selectable, its links clickable.
-    override func mouseEntered(with event: NSEvent) { liveText(true) }
+    override func mouseEntered(with event: NSEvent) {
+        liveText(true)
+        showReplyButton(true)
+    }
+
+    override func mouseExited(with event: NSEvent) { showReplyButton(false) }
+
+    // MARK: reply to this message
+
+    /// Pins the reply to this message.
+    var onReply: (() -> Void)?
+    /// "↩ Reply" beside the bubble while the pointer is over the row; made on first hover.
+    private(set) var replyButton: NSButton?
+    private var swipe = SwipeToReply()
+    /// How far the bubble is drawn aside by a swipe in progress.
+    private(set) var swipeOffset: CGFloat = 0
+
+    /// Shows or hides "↩ Reply", on the bubble's outer side (right of theirs, left of mine).
+    func showReplyButton(_ on: Bool) {
+        guard let spec else { return }
+        if on, replyButton == nil {
+            let b = NSButton(image: NSImage(systemSymbolName: "arrowshape.turn.up.left", accessibilityDescription: "Reply")!,
+                             target: self, action: #selector(replyPressed))
+            b.isBordered = false
+            b.contentTintColor = .secondaryLabelColor
+            b.toolTip = "Reply to this message"
+            b.setAccessibilityLabel("Reply to this message")
+            addSubview(b)
+            replyButton = b
+        }
+        guard let b = replyButton else { return }
+        b.isHidden = !on
+        let size = CGSize(width: 22, height: 22)
+        let x = spec.mine ? bubbleRect.minX - size.width - 6 : bubbleRect.maxX + 6
+        b.frame = CGRect(x: min(max(0, x), max(0, bounds.width - size.width)), y: bubbleRect.midY - size.height / 2,
+                         width: size.width, height: size.height)
+    }
+
+    @objc private func replyPressed() { onReply?() }
+
+    /// A two-finger sideways swipe draws the bubble aside with a ↩ hint; far enough, and
+    /// the reply is pinned to this message when the fingers lift. Up and down scrolls go
+    /// on to the chat.
+    override func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty,
+              swipe.takes(dx: event.scrollingDeltaX, dy: event.scrollingDeltaY) else {
+            // The glide after a swipe goes nowhere; anything else is the chat's.
+            if swipe.active || !event.momentumPhase.isEmpty && abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) { return }
+            return super.scrollWheel(with: event)
+        }
+        swipeStep(dx: event.scrollingDeltaX, ended: event.phase.contains(.ended) || event.phase.contains(.cancelled))
+    }
+
+    /// One step of a sideways swipe (the fingers moved `dx`, or lifted).
+    func swipeStep(dx: CGFloat, ended: Bool) {
+        if ended {
+            let pinned = swipe.end()
+            swipeOffset = 0
+            setBoundsOrigin(.zero)
+            needsDisplay = true
+            if pinned { onReply?() }
+            return
+        }
+        swipeOffset = swipe.move(dx)
+        // The bubble follows the fingers; the ↩ hint shows in the room it leaves.
+        setBoundsOrigin(CGPoint(x: (swipe.travel >= 0 ? -1 : 1) * swipeOffset, y: 0))
+        needsDisplay = true
+    }
+
+    /// The ↩ hint beside a bubble being swiped, stronger as the swipe nears pinning.
+    private func drawSwipeHint() {
+        guard swipeOffset > 0, let arrow = NSImage(systemSymbolName: "arrowshape.turn.up.left", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold)) else { return }
+        let size: CGFloat = 26
+        let x = swipe.travel >= 0 ? bubbleRect.minX - size - 6 : bubbleRect.maxX + 6
+        let r = CGRect(x: x, y: bubbleRect.midY - size / 2, width: size, height: size)
+        colors.accent.withAlphaComponent(0.15 * swipe.progress + 0.05).setFill()
+        NSBezierPath(ovalIn: r).fill()
+        colors.accent.set()
+        arrow.draw(in: r.insetBy(dx: 6, dy: 6), from: .zero, operation: .sourceOver, fraction: swipe.progress,
+                   respectFlipped: true, hints: nil)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let spec else { return }
@@ -573,6 +661,7 @@ final class BubbleRowView: NSView {
             drawThumbnails(spec.thumbnails)
             drawPhotos(spec.photos)
             if !spec.reactions.isEmpty { drawBadge(spec.reactions) }
+            drawSwipeHint()
         }
         let shape = NSBezierPath(roundedRect: bubbleRect.insetBy(dx: 0.5, dy: 0.5), xRadius: ChatMetrics.radius, yRadius: ChatMetrics.radius)
         (spec.mine ? colors.mineBackground : colors.theirsBackground).setFill()
@@ -1050,6 +1139,7 @@ public final class ChatStreamView: NSScrollView {
                 (v as? BubbleRowView)?.onShowMore = { [weak self] in self?.actions.showMore(spec.id) }
                 (v as? BubbleRowView)?.file = actions.file
                 (v as? BubbleRowView)?.onPhoto = { [weak self] i in self?.openPhotos(spec.photos, at: i) }
+                (v as? BubbleRowView)?.onReply = { [weak self] in self?.actions.replyTo(spec.id) }
                 y += h
             case let .marker(m):
                 let h = ChatMetrics.marker(m)

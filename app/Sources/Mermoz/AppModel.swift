@@ -67,6 +67,9 @@ struct ComposeContext: Equatable, Identifiable {
     var suggestion: Address? = nil
     /// Why the last send failed; the composer shows it with Retry.
     var sendError: String? = nil
+    /// The message the reply answers, when pinned to one (slide to reply); nil: the
+    /// conversation's own default.
+    var replyToMessageId: String? = nil
 
     /// Set while `to` has an address that doesn't accept replies.
     var noReplyWarning: NoReplyWarning? { NoReplyWarning(to: to, suggestion: suggestion) }

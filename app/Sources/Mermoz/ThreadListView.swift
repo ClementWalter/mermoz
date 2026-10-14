@@ -120,7 +120,7 @@ enum ThreadKeys {
         case "p": if model.selectedThreadId != nil { model.paletteMode = .priority }
         case "m": if model.selectedThreadId != nil { model.paletteMode = .project }
         case "M": model.mergeSelected()
-        case "r": model.focusReply()
+        case "r": model.replyFromKeyboard()
         case "c": model.startNew()
         case "t": if model.selectedThreadId != nil { model.toggleChat() }
         // Later: l on the quick choices, ⇧L straight to typing when.

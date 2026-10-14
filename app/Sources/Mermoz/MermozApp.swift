@@ -60,7 +60,7 @@ struct MermozApp: App {
             }
             CommandMenu("Thread") {
                 Button("Search or Ask…") { model.paletteMode = .search }.keyboardShortcut("k")
-                Button("Reply") { model.focusReply() }.keyboardShortcut("r", modifiers: [.command])
+                Button("Reply") { model.replyFromKeyboard() }.keyboardShortcut("r", modifiers: [.command])
                 Button("Mark Done") { model.markDoneSelected() }.keyboardShortcut("e", modifiers: [.command])
                 // Disabled while writing or searching, so ⌘⌫ keeps deleting text in fields.
                 Button("Delete") { model.moveSelected(to: "deleted") }
