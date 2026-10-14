@@ -16,6 +16,8 @@ struct CommandPalette: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @State private var results: [ThreadSummary] = []
+    /// No result holds the typed words (some may be related by meaning).
+    @State private var noWordMatch = true
     /// Gmail's own results for this query, once asked.
     @State private var gmail: [GmailHit]?
     @State private var cursor = 0
@@ -131,7 +133,9 @@ struct CommandPalette: View {
             // Debounce keystrokes so the daemon only sees settled queries.
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled else { return }
-            results = await model.search(query)
+            let found = await model.search(query)
+            results = found.threads
+            noWordMatch = found.noWordMatch
             cursor = 0
         }
     }
@@ -174,15 +178,18 @@ struct CommandPalette: View {
                 }
             }
             if q.isEmpty { return commands(sel).filter { !$0.navigation }.map(\.item) }
-            // Nothing here: Gmail's own search, for mail Mermoz doesn't hold.
+            // No mail holds the words: Gmail's own search, for mail Mermoz doesn't hold.
             let typed = query
-            let fallback: [PaletteItem] = !results.isEmpty ? [] : gmail.map { hits in
+            let offer = results.isEmpty
+                ? "No matches in Mermoz. Search all of Gmail for “\(typed)”"
+                : "Search all of Gmail for “\(typed)”"
+            let fallback: [PaletteItem] = !noWordMatch ? [] : gmail.map { hits in
                 hits.map { h in
                     PaletteItem(id: "g-\(h.id)", title: h.subject.isEmpty ? "(no subject)" : h.subject,
                                 detail: h.inMermoz ? h.from : "\(h.from) · on Gmail",
                                 icon: AnyView(Image(systemName: "envelope"))) { model.pullFromGmail(h) }
                 }
-            } ?? [PaletteItem(id: "g-search", title: "No matches in Mermoz. Search all of Gmail for “\(typed)”",
+            } ?? [PaletteItem(id: "g-search", title: offer,
                               icon: AnyView(Image(systemName: "magnifyingglass")), keepsOpen: true) {
                 Task { gmail = await model.searchGmail(typed) }
             }]

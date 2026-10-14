@@ -502,6 +502,41 @@ public struct ThreadPage: Codable, Sendable {
 
 public struct SearchResult: Codable, Sendable {
     public var threads: [ThreadSummary]
+    /// How many of `threads` hold the words; the others are related by meaning.
+    public var wordMatches: Int?
+
+    public init(threads: [ThreadSummary], wordMatches: Int? = nil) {
+        self.threads = threads
+        self.wordMatches = wordMatches
+    }
+
+    /// No thread holds the words typed: Gmail's own search is worth offering.
+    public var noWordMatch: Bool { (wordMatches ?? threads.count) == 0 }
+}
+
+/// Search by meaning: whether it is on and how far its first pass has come.
+public struct SmartSearchStatus: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    /// "off", "starting", "downloading", "indexing", "ready" or "error".
+    public var phase: String
+    /// 0–100 over the whole first pass.
+    public var progress: Int
+
+    public init(enabled: Bool, phase: String, progress: Int) {
+        self.enabled = enabled
+        self.phase = phase
+        self.progress = progress
+    }
+
+    /// The quiet line under the setting while search is still getting better; nil once done.
+    public var line: String? {
+        guard enabled else { return nil }
+        switch phase {
+        case "starting", "downloading", "indexing": return "Improving search… \(progress)%"
+        case "error": return "Improving search is paused. Mermoz will try again later."
+        default: return nil
+        }
+    }
 }
 
 /// A message Gmail's own search found, for mail Mermoz doesn't hold.

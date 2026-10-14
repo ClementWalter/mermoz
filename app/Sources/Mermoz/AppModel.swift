@@ -1587,9 +1587,9 @@ final class AppModel {
         do { feedback = try await client.feedback() } catch { report(error) }
     }
 
-    func search(_ q: String) async -> [ThreadSummary] {
-        guard let client, !q.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
-        return (try? await client.search(q, limit: 30, typing: true)) ?? []
+    func search(_ q: String) async -> SearchResult {
+        guard let client, !q.trimmingCharacters(in: .whitespaces).isEmpty else { return SearchResult(threads: []) }
+        return (try? await client.searchResult(q, limit: 30, typing: true)) ?? SearchResult(threads: [])
     }
 
     /// The fallback when nothing local matches: Gmail's own search.

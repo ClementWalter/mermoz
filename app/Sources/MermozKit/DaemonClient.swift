@@ -261,8 +261,22 @@ public final class DaemonClient: Sendable {
 
     /// `typing`: the query is still being typed, so its last word also matches as a prefix.
     public func search(_ query: String, limit: Int = 50, typing: Bool = false) async throws -> [ThreadSummary] {
+        try await searchResult(query, limit: limit, typing: typing).threads
+    }
+
+    /// The search with how many hits hold the words (the rest are related by meaning).
+    public func searchResult(_ query: String, limit: Int = 50, typing: Bool = false) async throws -> SearchResult {
         try await call("search", Params().with("query", query).with("limit", limit).with("typing", typing),
-                       as: SearchResult.self).threads
+                       as: SearchResult.self)
+    }
+
+    public func smartSearchStatus() async throws -> SmartSearchStatus {
+        try await call("smart_search.status", Params(), as: SmartSearchStatus.self)
+    }
+
+    /// Turns search by meaning on or off; returns the new status.
+    public func setSmartSearch(_ enabled: Bool) async throws -> SmartSearchStatus {
+        try await call("smart_search.set", Params().with("enabled", enabled), as: SmartSearchStatus.self)
     }
 
     /// Gmail's own search, for mail Mermoz doesn't hold.

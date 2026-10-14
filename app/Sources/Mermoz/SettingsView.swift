@@ -102,6 +102,40 @@ struct GeneralPane: View {
         SettingsCard(title: "Storage", subtitle: "All your mail and attachments are kept on this Mac so Mermoz works offline.") {
             Button("Show in Finder") { NSWorkspace.shared.open(DaemonPaths.home) }.buttonStyle(.glass)
         }
+        SmartSearchCard()
+    }
+}
+
+/// Search by meaning: an on/off switch and, while it is still getting ready, one quiet progress line.
+struct SmartSearchCard: View {
+    @Environment(AppModel.self) private var model
+    @State private var status: SmartSearchStatus?
+
+    var body: some View {
+        SettingsCard(title: "Search") {
+            Toggle(isOn: Binding(get: { status?.enabled ?? true }, set: { on in
+                Task { if let s = try? await model.client?.setSmartSearch(on) { status = s } }
+            })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Smarter search").font(.system(size: 13, weight: .semibold))
+                    Text("Also finds mail by what it’s about, not only the exact words. Works on this Mac; nothing is sent anywhere.")
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                }
+                // Label takes the row so the switch sits on the right edge.
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .toggleStyle(.switch)
+            if let line = status?.line {
+                Text(line).font(.system(size: 12)).foregroundStyle(Theme.text3)
+            }
+        }
+        // Refreshed while the pane is open; the line goes away once search is ready.
+        .task {
+            while !Task.isCancelled {
+                if let s = try? await model.client?.smartSearchStatus() { status = s }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 }
 
