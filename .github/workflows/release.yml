@@ -42,8 +42,15 @@ jobs:
           fi
 
       # Anthropic's ant CLI ships inside the app ("Sign in with Anthropic").
+      # The runner's Apache Ant formula owns /opt/homebrew/bin/ant and would block the
+      # cask's link, so it goes first.
       - name: Install ant
-        run: brew install --cask anthropics/tap/ant
+        run: |
+          brew uninstall --ignore-dependencies --formula ant || true
+          brew install --cask anthropics/tap/ant
+
+      - name: Verify ant is Anthropic's
+        run: uv run scripts/build_app.py --check-ant
 
       - name: Signing keychain from secrets
         env:
