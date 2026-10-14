@@ -4,7 +4,6 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @State private var keyMonitor: Any?
 
     var body: some View {
         @Bindable var model = model
@@ -49,8 +48,8 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.12), value: model.showShortcuts)
-        .onAppear { if keyMonitor == nil { keyMonitor = ThreadKeys.install(model: model) } }
-        .onDisappear { if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil } }
+        // Once for the app: the monitor outlives every view.
+        .onAppear { ThreadKeys.install(model: model) }
     }
 }
 

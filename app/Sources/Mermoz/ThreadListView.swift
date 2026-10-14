@@ -1,5 +1,6 @@
 /// Middle pane in list mode: threads grouped and ordered per the Display menu, keyboard-driven.
 import MermozKit
+import os
 import SwiftUI
 
 struct ThreadListView: View {
@@ -52,25 +53,54 @@ struct ThreadListView: View {
 /// Single-key shortcuts, handled for the whole main window (see `install`) so they
 /// work wherever the focus is: list, board or a message being read.
 enum ThreadKeys {
-    static let characters = "jkeay#usmMprct?/x"
+    static let characters = "jkeady#usmMprct?/xl"
 
-    /// Routes key presses to the shortcuts unless the user is typing in a field, a
-    /// draft is open, or another window (Settings) is in front.
+    /// What became of a key press: run by the Feed's shortcuts, by the List and Board's,
+    /// or left to the focused view (and why).
+    enum Routed: Equatable {
+        case feed(String)
+        case list(String)
+        case skipped(String)
+    }
+
+    /// The app's one key monitor. It lives as long as the app, so no view appearing or
+    /// disappearing (an inspector, a layout switch) can take the shortcuts away.
+    @MainActor private static var monitor: Any?
+
     @MainActor
-    static func install(model: AppModel) -> Any? {
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let f = event.modifierFlags
-            guard let window = event.window, window.title != "Mermoz Settings",
-                  !(window.firstResponder?.isTyping ?? false),
-                  model.compose == nil, model.paletteMode == nil, model.later == nil,
-                  let c = ShortcutKey.normalize(event.characters ?? "", command: f.contains(.command),
-                                                control: f.contains(.control), option: f.contains(.option),
-                                                known: characters + FeedKeys.characters),
-                  FeedKeys.handle(c, shift: f.contains(.shift), model: model)
-                    || handle(c, shift: f.contains(.shift), model: model)
-            else { return event }
-            return nil
+    static func install(model: AppModel) {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // AppKit calls monitors on the main thread, with an event it does not share.
+            nonisolated(unsafe) let e = event
+            let routed = MainActor.assumeIsolated { route(e, model: model) }
+            guard case let .skipped(why) = routed else { return nil }
+            keyLog.debug("key \(e.charactersIgnoringModifiers ?? "", privacy: .public) left to the view: \(why, privacy: .public)")
+            return event
         }
+    }
+
+    /// Runs a key press as a shortcut unless the user is typing in a field shown on
+    /// screen, a draft, ⌘K or the Later picker is open, or Settings is in front.
+    @MainActor
+    static func route(_ event: NSEvent, model: AppModel) -> Routed {
+        let f = event.modifierFlags
+        guard let window = event.window else { return .skipped("no window") }
+        if window.title == "Mermoz Settings" { return .skipped("Settings") }
+        if window.firstResponder?.isTyping ?? false { return .skipped("typing") }
+        if model.compose != nil { return .skipped("compose") }
+        if model.paletteMode != nil { return .skipped("palette") }
+        // A Feed card's Later picker is a popover on the card: gone with the Feed.
+        if let r = model.later, r.cardId != nil, !model.showsFeed { model.later = nil }
+        if model.later != nil { return .skipped("later") }
+        guard let c = ShortcutKey.normalize(event.characters ?? "", command: f.contains(.command),
+                                            control: f.contains(.control), option: f.contains(.option),
+                                            known: characters + FeedKeys.characters)
+        else { return .skipped("not a shortcut") }
+        let shift = f.contains(.shift)
+        if FeedKeys.handle(c, shift: shift, model: model) { return .feed(c) }
+        if handle(c, shift: shift, model: model) { return .list(c) }
+        return .skipped("no action for \(c) here")
     }
 
     @MainActor
@@ -81,7 +111,8 @@ enum ThreadKeys {
         case "e": model.markDoneSelected()
         case "a": model.moveSelected(to: "archive")
         // Typed character, so it is Shift+3 on QWERTY and a plain key on AZERTY alike.
-        case "#": model.moveSelected(to: "deleted")
+        // d deletes too, as on a Feed card.
+        case "#", "d": model.moveSelected(to: "deleted")
         case "y": model.acceptSelected()
         case "x": model.rejectSelected()
         case "u": model.markUnreadSelected()
@@ -384,9 +415,18 @@ struct ConversationMenu: View {
 }
 
 extension NSResponder {
-    /// Text is being typed here: a field or the composer, not a read-only bubble.
-    var isTyping: Bool { (self as? NSText)?.isEditable ?? false }
+    /// Text is being typed here: a field or the composer on screen, not a read-only bubble
+    /// nor a field editor left behind by a field that has closed (⌘K, a popover).
+    var isTyping: Bool {
+        guard let text = self as? NSText, text.isEditable else { return false }
+        // A field editor types for its field: it counts while that field is shown.
+        let shown = (text as? NSTextView)?.isFieldEditor == true ? (text.delegate as? NSView) : text
+        guard let shown, shown.window != nil else { return false }
+        return !shown.isHiddenOrHasHiddenAncestor
+    }
 }
+
+private let keyLog = Logger(subsystem: "ai.mermoz.app", category: "keys")
 
 /// List / Board / Feed. Words when there is room; icons with a tooltip each when the
 /// list is narrow.
