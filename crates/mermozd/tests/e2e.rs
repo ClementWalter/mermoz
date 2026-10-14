@@ -290,6 +290,8 @@ fn spawn_daemon(home: &std::path::Path, port: u16, extra_env: &[(&str, &str)]) -
         .env("MERMOZ_JEV_BASE", format!("http://127.0.0.1:{port}/jev"))
         .env("MERMOZ_SUBQ_BASE", format!("http://127.0.0.1:{port}/subq"))
         .env("MERMOZ_TRUSTED_EXE", std::env::current_exe().unwrap())
+        // Search by meaning on a word-hashing stand-in: no model download.
+        .env("MERMOZ_EMBEDDER", "stub")
         .envs(extra_env.iter().copied())
         .env(
             "RUST_LOG",
@@ -834,6 +836,59 @@ fn archived_mail_is_archive(synced: World) {
     assert_eq!(
         synced.thread_by_subject("Your statement")["status"],
         "archive"
+    );
+}
+
+/// The synced mailbox once every thread has its vector (stub model).
+#[fixture]
+fn indexed(synced: World) -> World {
+    synced.wait_until("search vectors", |w| {
+        w.ok("smart_search.status", json!({}))["phase"] == "ready"
+    });
+    synced
+}
+
+/// Not every word is in the mail, so full-text search alone finds nothing.
+const LOOSE: &str = "audit remediation timeline later";
+
+#[rstest]
+fn smart_search_indexes_every_thread(indexed: World) {
+    assert_eq!(indexed.ok("smart_search.status", json!({}))["indexed"], 3);
+}
+
+#[rstest]
+fn search_finds_by_meaning_when_words_miss(indexed: World) {
+    assert_eq!(
+        indexed.ok("search", json!({ "query": LOOSE }))["threads"][0]["subject"],
+        "Audit report v2"
+    );
+}
+
+#[rstest]
+fn search_by_meaning_counts_no_word_match(indexed: World) {
+    assert_eq!(
+        indexed.ok("search", json!({ "query": LOOSE }))["word_matches"],
+        0
+    );
+}
+
+#[rstest]
+fn search_counts_word_matches(indexed: World) {
+    assert_eq!(
+        indexed.ok("search", json!({ "query": "remediation" }))["word_matches"],
+        1
+    );
+}
+
+#[rstest]
+fn smart_search_off_searches_words_only(indexed: World) {
+    indexed.ok("smart_search.set", json!({ "enabled": false }));
+    indexed.wait_until("smart search off", |w| {
+        w.ok("smart_search.status", json!({}))["phase"] == "off"
+    });
+    assert_eq!(
+        indexed.ok("search", json!({ "query": LOOSE }))["threads"],
+        json!([])
     );
 }
 

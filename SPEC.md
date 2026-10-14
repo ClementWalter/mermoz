@@ -83,6 +83,23 @@ Local full-text index owned by mermozd. SQLite FTS5 and Tantivy are both
 benchmarked against the 50 ms / 500k-message budget; the faster one that meets
 it wins (Tantivy if FTS5 can't, e.g. for fuzzy/prefix queries).
 
+**Search by meaning (decided 2026-10-14).** Search also finds mail by what it is
+about, on the Mac, with nothing sent anywhere:
+
+- **Model:** EmbeddingGemma 300M (Q8_0 GGUF, 334 MB) run in mermozd by llama.cpp
+  on Metal (`llama-cpp-2` binding). Not in the app or DMG: fetched on first use from
+  a pinned URL (a mirror after it), resumed if cut, kept only if its SHA-256
+  matches. It loads on demand (~0.3 s) and is freed after 2 minutes unused.
+- **Index:** one vector per thread (subject, writers, the first two messages' text),
+  768 dimensions as int8, in `search.sqlite` beside the mail database and in memory;
+  a query scans them all (~1 ms per 10k threads). New and changed threads are
+  embedded as they sync, then the backlog newest first, at background priority.
+- **Ranking:** the full-text hits and the 20 nearest threads (cosine ≥ 0.30) fused
+  by Reciprocal Rank Fusion; "Ask Mermoz to do" grounds its plans on the same
+  nearest threads. Until the model and vectors are ready, search is words only.
+- **Settings › General › Search:** "Smarter search" on/off, and "Improving search…
+  N%" while it gets ready.
+
 ### Rendering & compose
 
 - HTML: sanitized, single reused pre-warmed `WKWebView`; remote images blocked

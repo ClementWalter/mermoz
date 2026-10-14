@@ -306,6 +306,7 @@ fn spawn_daemon(home: &std::path::Path, port: u16, dport: u16, trusted: bool) ->
     Command::new(env!("CARGO_BIN_EXE_mermozd"))
         .env("MERMOZ_HOME", home)
         .env("MERMOZ_TOKEN_STORE", "file")
+        .env("MERMOZ_EMBEDDER", "off")
         .env(
             "MERMOZ_GMAIL_BASE",
             format!("http://127.0.0.1:{port}/gmail"),

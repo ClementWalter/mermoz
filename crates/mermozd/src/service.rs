@@ -59,6 +59,8 @@ pub struct Service {
     pub later_kick: Arc<Notify>,
     /// Threads whose card words are being written, so a re-render doesn't ask twice.
     pub feed_inflight: Mutex<std::collections::HashSet<String>>,
+    /// Search by meaning: the model, the vectors and their indexing.
+    pub semantic: Arc<crate::semantic::Semantic>,
 }
 
 pub(crate) fn poll_interval() -> Duration {
@@ -90,6 +92,7 @@ impl Service {
             feed_kick: Arc::new(Notify::new()),
             later_kick: Arc::new(Notify::new()),
             feed_inflight: Mutex::new(Default::default()),
+            semantic: Default::default(),
         })
     }
 

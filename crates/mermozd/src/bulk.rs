@@ -126,11 +126,22 @@ pub async fn ask(
     let vocab = vocab(svc)?;
     let today = plan::today();
     let system = plan::system_prompt(&vocab, today);
+    // The same retrieval as search: the sentence's words, then the threads nearest
+    // to it in meaning.
+    let related = svc
+        .semantic
+        .nearest(sentence, 20, true)
+        .await
+        .unwrap_or_default();
     let candidates = {
         let (st, s) = (svc.store.clone(), sentence.to_string());
-        tokio::task::spawn_blocking(move || st.candidates(&s))
-            .await
-            .map_err(|e| Error::other(e.to_string()))??
+        tokio::task::spawn_blocking(move || {
+            let mut c = st.candidates(&s)?;
+            st.add_related(&mut c, &related)?;
+            Ok::<_, Error>(c)
+        })
+        .await
+        .map_err(|e| Error::other(e.to_string()))??
     };
     let pairs: Vec<(String, String)> = rounds
         .iter()

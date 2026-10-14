@@ -536,3 +536,47 @@ fn a_run_that_logged_no_put_off_state_restores_none(mailbox: Mailbox) {
     s.save_bulk_op(&op("op1"), &[]).unwrap();
     assert_eq!(s.restore_bulk_snoozes("op1").unwrap(), None);
 }
+
+/// The ids of the clubs mailbox's two Gemini notes threads.
+fn notes_ids(clubs: &Mailbox) -> Vec<String> {
+    clubs
+        .store
+        .semantic_sigs()
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .filter(|id| {
+            clubs
+                .store
+                .thread(id)
+                .unwrap()
+                .subject
+                .starts_with("Notes:")
+        })
+        .collect()
+}
+
+#[rstest]
+fn related_threads_add_their_sender(clubs: Mailbox) {
+    let mut c = Candidates::default();
+    clubs.store.add_related(&mut c, &notes_ids(&clubs)).unwrap();
+    assert_eq!(c.senders[0].email, "gemini-notes@meet.example");
+}
+
+#[rstest]
+fn related_threads_add_their_shared_subject_beginning(clubs: Mailbox) {
+    let mut c = Candidates::default();
+    clubs.store.add_related(&mut c, &notes_ids(&clubs)).unwrap();
+    assert_eq!(c.subjects[0].prefix, "Notes:");
+}
+
+#[rstest]
+fn related_threads_never_repeat_a_sender(clubs: Mailbox) {
+    let mut c = clubs
+        .store
+        .candidates("delete all the messages like notes from gemini")
+        .unwrap();
+    let before = c.senders.len();
+    clubs.store.add_related(&mut c, &notes_ids(&clubs)).unwrap();
+    assert_eq!(c.senders.len(), before);
+}

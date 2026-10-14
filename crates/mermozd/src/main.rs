@@ -8,6 +8,7 @@ mod feed;
 mod grouping;
 mod peer;
 mod rpc;
+mod semantic;
 mod service;
 
 use mermoz_core::paths;
@@ -263,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
     info!("mermozd listening on {}", sock.display());
     // The feed only reads the store and Jev, so it also runs on demo data.
     feed::start(&svc);
+    semantic::start(&svc);
     tokio::spawn(move_html(svc.store.clone()));
     tokio::spawn(checkpoints(svc.store.clone()));
     // MERMOZ_NO_SYNC serves the local store only (demo data, offline UI work).
@@ -289,6 +291,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let _ = std::fs::remove_file(&sock);
+    // Metal aborts the process at exit if the search model still holds GPU buffers.
+    svc.semantic.unload();
     info!("mermozd stopped");
     Ok(())
 }

@@ -348,6 +348,71 @@ impl Store {
         })
     }
 
+    /// Adds what threads found by meaning hold to `c`: their most frequent senders and
+    /// the subject beginnings two or more of them share, within the usual 5 senders
+    /// and 4 subjects. Aggregates only, like [`Self::candidates`].
+    pub fn add_related(&self, c: &mut Candidates, thread_ids: &[String]) -> Result<()> {
+        if thread_ids.is_empty() {
+            return Ok(());
+        }
+        let marks = vec!["?"; thread_ids.len()].join(",");
+        let (senders, subjects): (Vec<CandidateSender>, Vec<String>) = {
+            let r = self.r.lock().unwrap();
+            let mut st = r.prepare(&format!(
+                "SELECT lower(m.from_email), max(m.from_name), count(DISTINCT m.thread_id) AS n
+                 FROM messages m WHERE m.thread_id IN ({marks}) AND m.is_from_me = 0
+                   AND m.from_email != '' GROUP BY lower(m.from_email) ORDER BY n DESC LIMIT 5"
+            ))?;
+            let senders = st
+                .query_map(params_from_iter(thread_ids.iter()), |r| {
+                    Ok(CandidateSender {
+                        email: r.get(0)?,
+                        name: r.get(1)?,
+                        threads: r.get(2)?,
+                        subjects: vec![],
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut st = r.prepare(&format!(
+                "SELECT subject FROM threads WHERE id IN ({marks}) AND status != 'deleted'"
+            ))?;
+            let subjects = st
+                .query_map(params_from_iter(thread_ids.iter()), |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            (senders, subjects)
+        };
+        for mut s in senders {
+            if c.senders.len() < 5 && !c.senders.iter().any(|f| f.email == s.email) {
+                s.subjects = self.sender_subjects(&s.email)?;
+                c.senders.push(s);
+            }
+        }
+        let mut counts: Vec<(String, i64)> = vec![];
+        for s in subjects {
+            let p = subject_pattern(&s);
+            if p.is_empty() {
+                continue;
+            }
+            match counts.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&p)) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((p, 1)),
+            }
+        }
+        counts.retain(|(_, n)| *n >= 2);
+        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        for (prefix, threads) in counts {
+            if c.subjects.len() < 4
+                && !c
+                    .subjects
+                    .iter()
+                    .any(|s| s.prefix.eq_ignore_ascii_case(&prefix))
+            {
+                c.subjects.push(CandidateSubject { prefix, threads });
+            }
+        }
+        Ok(())
+    }
+
     /// Logs a planned run with the threads each step will change.
     pub fn save_bulk_op(&self, op: &BulkOp, targets: &[Vec<String>]) -> Result<()> {
         let mut w = self.w.lock().unwrap();

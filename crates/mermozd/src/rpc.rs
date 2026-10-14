@@ -513,7 +513,23 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .unwrap_or(50)
                 .clamp(1, 500);
             // `typing`: the app's live search, where the last word may still be growing.
-            Ok(json!({ "threads": st.search(&s(p, "query")?, limit, flag(p, "typing"))? }))
+            let q = s(p, "query")?;
+            let words = st.search(&q, limit, flag(p, "typing"))?;
+            // How many hits hold the words: the rest are related by meaning only.
+            let word_matches = words.len();
+            let threads = svc.semantic.hybrid(st, &q, words, limit as usize).await?;
+            Ok(json!({ "threads": threads, "word_matches": word_matches }))
+        }
+        "smart_search.status" => to_value(svc.semantic.status()),
+        "smart_search.set" => {
+            app_only(caller, method)?;
+            let on = p
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| RpcError::invalid("missing bool 'enabled'"))?;
+            st.set_setting(crate::semantic::SETTING, if on { "on" } else { "off" })?;
+            svc.semantic.kick.notify_one();
+            to_value(svc.semantic.status())
         }
         "search.gmail" => {
             // The fallback when local search finds nothing: Gmail's own search, on every
