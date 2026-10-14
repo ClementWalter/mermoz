@@ -346,11 +346,13 @@ impl Store {
         wait_for_router: bool,
     ) -> Result<Vec<String>> {
         let r = self.bg.lock().unwrap();
-        let mut st = r.prepare_cached(
+        let mut st = r.prepare_cached(&format!(
             "SELECT t.id FROM threads t WHERE t.conv_state = ?1 AND t.status != 'deleted'
                AND NOT (?3 AND t.status = 'unread' AND NOT EXISTS (SELECT 1 FROM suggestions s WHERE s.thread_id = t.id))
+               AND {}
              ORDER BY t.last_date DESC LIMIT ?2",
-        )?;
+            super::visibility::NOT_DEMO_T
+        ))?;
         Ok(st
             .query_map(params![state, limit, wait_for_router], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?)

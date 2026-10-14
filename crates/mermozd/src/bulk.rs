@@ -35,6 +35,7 @@ pub fn vocab(svc: &Service) -> Result<Vocab> {
         accounts: st
             .accounts()?
             .into_iter()
+            .filter(|a| !a.hidden)
             .map(|a| (a.id, a.email))
             .collect(),
     })

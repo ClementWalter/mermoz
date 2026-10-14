@@ -137,6 +137,18 @@ impl Service {
             Err(e) => return warn!("cannot list accounts: {e}"),
         };
         for acc in accounts {
+            // The demo account is local: nothing to sync, its mail is generated.
+            if mermoz_core::demo_account::is_demo(&acc) {
+                match mermoz_core::demo_account::refresh_if_stale(
+                    &self.store,
+                    mermoz_core::model::now_ms(),
+                ) {
+                    Ok(true) => info!("demo mailbox generated again"),
+                    Ok(false) => {}
+                    Err(e) => warn!("demo mailbox: {e}"),
+                }
+                continue;
+            }
             if let Err(e) = self.start_account(&acc.id, &acc.email) {
                 warn!(account = %acc.email, "not starting: {e}");
                 let _ = self.store.set_sync(

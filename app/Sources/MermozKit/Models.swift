@@ -26,6 +26,8 @@ public struct Account: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var hidden: Bool?
 
     public var isHidden: Bool { hidden ?? false }
+    /// The made-up mailbox for demos: local only, never synced, never sent to an AI.
+    public var isDemo: Bool { provider == "demo" }
 
     public static func == (a: Account, b: Account) -> Bool {
         a.id == b.id && a.sync == b.sync && a.email == b.email && a.needsReconnect == b.needsReconnect

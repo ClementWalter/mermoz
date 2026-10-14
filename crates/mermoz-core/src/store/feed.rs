@@ -1,6 +1,7 @@
 //! The feed's storage: Jev's judgments, the AI's card words and snoozes, all kept per
 //! thread until new mail arrives in it, and the open work read back as feed units.
 
+use super::visibility::NOT_DEMO_T;
 use super::{ColumnScope, Store, THREAD_COLS, attach, is_automated, thread_row};
 use crate::error::Result;
 use crate::feed::{self, FeedUnit, Judgment, Kind, Texts};
@@ -95,7 +96,7 @@ impl Store {
         let mut st = r.prepare_cached(&format!(
             "SELECT t.id, t.last_date FROM threads t LEFT JOIN feed_judgments j ON j.thread_id = t.id
              WHERE t.status IN ({marks}) AND (j.thread_id IS NULL OR j.for_date < t.last_date OR j.judged = 0)
-               AND {}
+               AND {} AND {NOT_DEMO_T}
              ORDER BY t.last_date DESC LIMIT {limit}",
             newest(&marks)
         ))?;
@@ -116,7 +117,7 @@ impl Store {
                 "SELECT t.id, t.last_date FROM threads t LEFT JOIN feed_judgments j ON j.thread_id = t.id
                  WHERE t.status = 'backlog' AND t.last_date >= ?1
                    AND (j.thread_id IS NULL OR j.for_date < t.last_date OR (j.judged = 0 AND j.checked_day < ?2))
-                   AND {}
+                   AND {} AND {NOT_DEMO_T}
                  ORDER BY t.last_date DESC LIMIT ?3",
                 newest(&quoted.join(","))
             ))?;
@@ -438,7 +439,8 @@ impl Store {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare(&format!(
             "SELECT t.id, t.last_date FROM threads t LEFT JOIN feed_texts x ON x.thread_id = t.id
-             WHERE t.id IN ({marks}) AND (x.thread_id IS NULL OR x.for_date < t.last_date)"
+             WHERE t.id IN ({marks}) AND (x.thread_id IS NULL OR x.for_date < t.last_date)
+               AND {NOT_DEMO_T}"
         ))?;
         Ok(st
             .query_map(params_from_iter(ids.iter()), |r| Ok((r.get(0)?, r.get(1)?)))?

@@ -97,6 +97,9 @@ public final class DaemonClient: Sendable {
         try await call("accounts.reconnect", Params().with("account_id", id))
     }
     public func removeAccount(_ id: String) async throws { try await callVoid("accounts.remove", Params().with("id", id)) }
+    /// Adds the made-up demo mailbox (or returns it when it is already there).
+    @discardableResult
+    public func addDemoAccount() async throws -> Account { try await call("accounts.add_demo") }
     public func setAccountHidden(_ id: String, _ hidden: Bool) async throws {
         try await callVoid("accounts.set_hidden", Params().with("id", id).with("hidden", hidden))
     }

@@ -156,7 +156,10 @@ struct AccountsPane: View {
                     HStack(spacing: 10) {
                         Circle().fill(Theme.accountColor(a.id, among: model.accounts)).frame(width: 9, height: 9)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(a.email).font(.system(size: 13, weight: .semibold))
+                            HStack(spacing: 6) {
+                                Text(a.email).font(.system(size: 13, weight: .semibold))
+                                if a.isDemo { DemoTag() }
+                            }
                             Text(syncText(a)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
                         }
                         Spacer()
@@ -172,6 +175,14 @@ struct AccountsPane: View {
             Text("Mermoz opens your browser so you can sign in with Google.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
             GmailSignInStatusView()
+            if !model.accounts.contains(where: \.isDemo) {
+                Divider().padding(.vertical, 2)
+                Button { model.addDemoAccount() } label: { Label("Add demo account", systemImage: "sparkles") }
+                    .buttonStyle(.glass)
+                Text(DemoTag.explanation)
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .task { await model.loadSignInStatus() }
     }
@@ -193,6 +204,7 @@ struct AccountsPane: View {
     }
 
     private func syncText(_ a: Account) -> String {
+        if a.isDemo { return "Made-up mail, kept on this Mac only" }
         switch a.sync.state {
         case "error": return a.sync.error ?? "Can't sync right now"
         case "initial", "syncing":
@@ -203,6 +215,19 @@ struct AccountsPane: View {
     }
 }
 
+/// Marks the made-up demo mailbox wherever accounts are listed.
+struct DemoTag: View {
+    static let explanation = "A made-up mailbox with fictional people, to try Mermoz or show it without your own mail. Nothing in it is real, and nothing you send from it leaves this Mac."
+
+    var body: some View {
+        Text("Demo")
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 6).padding(.vertical, 1.5)
+            .background(Theme.accent.opacity(0.12), in: Capsule())
+    }
+}
+
 struct AgentsPane: View {
     @Environment(AppModel.self) private var model
 
@@ -210,7 +235,8 @@ struct AgentsPane: View {
         ProvidersCard()
         if !model.providers.isEmpty {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], alignment: .leading, spacing: 14) {
-                ForEach(model.accounts) { a in AccountAgentCard(account: a) }
+                // The demo's AI answers come with it; its mail never goes to an AI.
+                ForEach(model.accounts.filter { !$0.isDemo }) { a in AccountAgentCard(account: a) }
             }
         }
         SettingsCard(title: "Sending") {

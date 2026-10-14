@@ -253,6 +253,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let _ = svc.events.send(Event::AccountsChanged);
             Ok(json!({}))
         }
+        "accounts.add_demo" => {
+            // A made-up mailbox for demos: local only, nothing to sign in to.
+            let acc = mermoz_core::demo_account::add(st)?;
+            let _ = svc.events.send(Event::AccountsChanged);
+            let _ = svc.events.send(Event::ThreadsChanged(vec![]));
+            let _ = svc.events.send(Event::FeedChanged);
+            to_value(acc)
+        }
         "accounts.set_hidden" => {
             // Hiding is for screenshots and demos: the mail keeps syncing, the app stops showing it.
             let id = s(p, "id")?;
@@ -692,10 +700,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             }
             let agents_may_send = st.setting("agents_may_send")?.as_deref() == Some("true");
             if caller.is_app || agents_may_send {
-                svc.worker(&d.account_id)?
-                    .sync
-                    .send_draft(&d, opt_s(p, "after_status").as_deref())
-                    .await?;
+                send(svc, &d, opt_s(p, "after_status").as_deref()).await?;
                 return Ok(json!({ "sent": true }));
             }
             let d = st.move_to_review(&d.id)?;
@@ -726,10 +731,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                     d.id
                 )));
             }
-            svc.worker(&d.account_id)?
-                .sync
-                .send_draft(&d, opt_s(p, "after_status").as_deref())
-                .await?;
+            send(svc, &d, opt_s(p, "after_status").as_deref()).await?;
             Ok(json!({ "sent": true }))
         }
         "review.reject" => {
@@ -1328,6 +1330,22 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
         m if m.starts_with("drive.") => crate::drive::dispatch(svc, caller, m, p).await,
         _ => Err(RpcError::new(-32601, format!("method not found: {method}"))),
     }
+}
+
+/// Sends a draft through its account: Gmail, or for the demo account its own Sent.
+async fn send(svc: &Arc<Service>, d: &Draft, after_status: Option<&str>) -> Result<(), RpcError> {
+    let acc = svc.store.account(&d.account_id)?;
+    if mermoz_core::demo_account::is_demo(&acc) {
+        let tid = mermoz_core::demo_account::deliver(&svc.store, &acc, d, after_status)?;
+        let _ = svc.events.send(Event::ThreadsChanged(vec![tid]));
+        let _ = svc.events.send(Event::DraftsChanged);
+        return Ok(());
+    }
+    svc.worker(&d.account_id)?
+        .sync
+        .send_draft(d, after_status)
+        .await?;
+    Ok(())
 }
 
 /// `suggested`: true for any pending suggestion, or `{"status", "projects"}` for one destination.

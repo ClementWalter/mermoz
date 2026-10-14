@@ -497,65 +497,7 @@ impl AccountSync {
 
     /// Sends a draft now; the thread then waits on the other side.
     pub async fn send_draft(&self, draft: &Draft, after_status: Option<&str>) -> Result<()> {
-        // The message answered: the one the draft names, else the thread's reply target.
-        let answered = match (&draft.reply_to_message_id, &draft.thread_id) {
-            (Some(id), _) => Some(self.store.message(id)?),
-            (None, Some(t)) => crate::reply::target(&self.store.messages(t)?).cloned(),
-            (None, None) => None,
-        };
-        let (in_reply_to, references) = match &answered {
-            Some(m) => self.store.reply_headers(&m.id)?,
-            None => (None, vec![]),
-        };
-        let provider_thread = match &draft.thread_id {
-            Some(t) => Some(self.store.provider_thread_id(t)?.1),
-            None => None,
-        };
-        // A reply pinned to a message quotes it.
-        let body = match (&draft.reply_to_message_id, &answered) {
-            (Some(_), Some(m)) => compose::with_quote(&draft.body, m),
-            _ => draft.body.clone(),
-        };
-        let mut files = Vec::new();
-        let mut links = Vec::new();
-        for a in &draft.attachments {
-            match (a.kind, &a.path, &a.url) {
-                (crate::model::AttachmentKind::File, Some(p), _) => {
-                    let bytes = std::fs::read(p).map_err(|_| {
-                        Error::InvalidParams(format!(
-                            "{} is no longer available. Remove it and attach it again.",
-                            a.filename
-                        ))
-                    })?;
-                    files.push((a, bytes));
-                }
-                (crate::model::AttachmentKind::Link, _, Some(u)) => links.push(compose::Link {
-                    title: &a.filename,
-                    url: u,
-                }),
-                _ => {}
-            }
-        }
-        let parts: Vec<compose::Part> = files
-            .iter()
-            .map(|(a, bytes)| compose::Part {
-                filename: &a.filename,
-                mime: &a.mime,
-                bytes,
-                inline: a.inline,
-            })
-            .collect();
-        let raw = compose::build(&Outgoing {
-            from: &self.email,
-            to: &draft.to,
-            cc: &draft.cc,
-            subject: &draft.subject,
-            body: &body,
-            in_reply_to: in_reply_to.as_deref(),
-            references: &references,
-            parts: &parts,
-            links: &links,
-        })?;
+        let (raw, provider_thread) = draft_message(&self.store, &self.email, draft)?;
         let sent = self.gmail.send(&raw, provider_thread.as_deref()).await?;
         self.store.set_draft_state(&draft.id, "sent")?;
         // The sent copy syncs back with its own attachments; these copies are spent.
@@ -584,6 +526,75 @@ impl AccountSync {
         }
         Ok(())
     }
+}
+
+/// A draft as the RFC 822 message that goes out (threaded, quoting, with its files and
+/// links), and the provider thread it continues.
+pub fn draft_message(
+    store: &Store,
+    from: &str,
+    draft: &Draft,
+) -> Result<(Vec<u8>, Option<String>)> {
+    // The message answered: the one the draft names, else the thread's reply target.
+    let answered = match (&draft.reply_to_message_id, &draft.thread_id) {
+        (Some(id), _) => Some(store.message(id)?),
+        (None, Some(t)) => crate::reply::target(&store.messages(t)?).cloned(),
+        (None, None) => None,
+    };
+    let (in_reply_to, references) = match &answered {
+        Some(m) => store.reply_headers(&m.id)?,
+        None => (None, vec![]),
+    };
+    let provider_thread = match &draft.thread_id {
+        Some(t) => Some(store.provider_thread_id(t)?.1),
+        None => None,
+    };
+    // A reply pinned to a message quotes it.
+    let body = match (&draft.reply_to_message_id, &answered) {
+        (Some(_), Some(m)) => compose::with_quote(&draft.body, m),
+        _ => draft.body.clone(),
+    };
+    let mut files = Vec::new();
+    let mut links = Vec::new();
+    for a in &draft.attachments {
+        match (a.kind, &a.path, &a.url) {
+            (crate::model::AttachmentKind::File, Some(p), _) => {
+                let bytes = std::fs::read(p).map_err(|_| {
+                    Error::InvalidParams(format!(
+                        "{} is no longer available. Remove it and attach it again.",
+                        a.filename
+                    ))
+                })?;
+                files.push((a, bytes));
+            }
+            (crate::model::AttachmentKind::Link, _, Some(u)) => links.push(compose::Link {
+                title: &a.filename,
+                url: u,
+            }),
+            _ => {}
+        }
+    }
+    let parts: Vec<compose::Part> = files
+        .iter()
+        .map(|(a, bytes)| compose::Part {
+            filename: &a.filename,
+            mime: &a.mime,
+            bytes,
+            inline: a.inline,
+        })
+        .collect();
+    let raw = compose::build(&Outgoing {
+        from,
+        to: &draft.to,
+        cc: &draft.cc,
+        subject: &draft.subject,
+        body: &body,
+        in_reply_to: in_reply_to.as_deref(),
+        references: &references,
+        parts: &parts,
+        links: &links,
+    })?;
+    Ok((raw, provider_thread))
 }
 
 /// One message's label changes in a history window: the last word on each label.

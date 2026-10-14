@@ -76,6 +76,18 @@ tracked as issues (Linear-style), not as a pile in an inbox.
   flag on the account in the store, so it survives relaunch; the daemon's read
   queries leave hidden accounts out (no extra condition while none is hidden). The
   hidden row stays in the sidebar, dimmed, with its eye to show it again.
+- **Demo account** (Settings › Accounts › "Add demo account", or "Try it with a
+  demo mailbox" on the welcome screen): a made-up mailbox, provider `demo`, with no
+  Google sign-in. Maya Laurent, co-founder of a small design studio in Lyon, with
+  clients, candidates, family, newsletters, receipts, trips, invitations, a failed
+  delivery, folders, Later and starred mail (~160 threads, English and some
+  French). All people, companies and brands are fictional, every address is on
+  `.example`, and pictures, PDFs and invitations are generated in code
+  (`mermoz_core::demo_account`), so nothing is fetched. It is fully local: never
+  synced, nothing sent to the network (a send files the message in its own Sent),
+  and its mail never goes to an AI; Feed cards, ✦ chips and summaries come
+  pre-written with it. Dates count back from when it is generated; mail older than
+  three days is generated again at the next daemon start. Removable like any account.
 
 ### Search
 

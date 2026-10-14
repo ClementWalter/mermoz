@@ -198,7 +198,7 @@ struct DriveSettingsCard: View {
     var body: some View {
         SettingsCard(title: "Google Drive",
                      subtitle: "Optional, per account. Mermoz asks Google separately, so your mail works the same whether you connect Drive or not.") {
-            ForEach(model.accounts) { a in
+            ForEach(model.accounts.filter { !$0.isDemo }) { a in
                 let s = model.drive.statuses[a.id]
                 HStack(spacing: 10) {
                     Image(systemName: s?.connected == true ? "checkmark.icloud" : "icloud")

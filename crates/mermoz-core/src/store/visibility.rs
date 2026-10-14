@@ -14,23 +14,26 @@ pub(super) const MIGRATION: &str =
 /// Condition on a threads alias `t`: its account is not hidden.
 const VISIBLE_T: &str = "t.account_id NOT IN (SELECT id FROM accounts WHERE hidden = 1)";
 
-/// Condition on a messages alias `m`: its account is not hidden.
-const VISIBLE_M: &str = "m.account_id NOT IN (SELECT id FROM accounts WHERE hidden = 1)";
+/// Condition on a threads alias `t`: its account is not the local demo account, whose
+/// mail never goes to an AI (its cards, chips and summaries come with the demo).
+pub(super) const NOT_DEMO_T: &str =
+    "t.account_id NOT IN (SELECT id FROM accounts WHERE provider = 'demo')";
 
 impl Store {
     /// `" AND <threads t of visible accounts>"` while an account is hidden, else `""`.
     pub(super) fn visible(&self) -> String {
-        if self.any_hidden.load(Ordering::Relaxed) {
-            format!(" AND {VISIBLE_T}")
-        } else {
-            String::new()
-        }
+        self.visible_on("t")
     }
 
     /// The same for a messages alias `m`.
     pub(super) fn visible_m(&self) -> String {
+        self.visible_on("m")
+    }
+
+    /// The same for any alias with an `account_id` column.
+    pub(super) fn visible_on(&self, alias: &str) -> String {
         if self.any_hidden.load(Ordering::Relaxed) {
-            format!(" AND {VISIBLE_M}")
+            format!(" AND {alias}.account_id NOT IN (SELECT id FROM accounts WHERE hidden = 1)")
         } else {
             String::new()
         }

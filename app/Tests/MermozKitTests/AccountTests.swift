@@ -25,6 +25,15 @@ private func account(_ extra: String) throws -> Account {
     #expect(try account("").isHidden == false)
 }
 
+@Test func demoAccountIsKnownByItsProvider() throws {
+    let s = #"{"id":"acc2","email":"maya@fernhill.example","provider":"demo","sync":{"state":"idle","synced":0,"total":0,"error":null}}"#
+    #expect(try RPCCoding.decoder().decode(Account.self, from: Data(s.utf8)).isDemo)
+}
+
+@Test func gmailAccountIsNoDemo() throws {
+    #expect(try account("").isDemo == false)
+}
+
 @Test func hidingChangesTheAccount() throws {
     #expect(try account(#","hidden":true"#) != account(""))
 }

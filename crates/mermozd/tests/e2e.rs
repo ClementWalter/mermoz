@@ -5159,3 +5159,114 @@ fn pinned_reply_goes_to_the_messages_reply_to(with_invoice: World) {
     );
     assert_eq!(d["to"], json!(["franck@plomberie.example"]));
 }
+
+// ---- demo account ---------------------------------------------------------------------
+
+/// A daemon with a sorting key set, and the demo account added from Settings.
+#[fixture]
+fn with_demo(world: World) -> World {
+    world.ok("router.set", json!({ "api_key": "jev-test" }));
+    world.ok("accounts.add_demo", json!({}));
+    world
+}
+
+impl World {
+    fn demo_thread(&self, subject: &str) -> Value {
+        let v = self.ok("threads.list", json!({ "limit": 1000 }));
+        v["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| {
+                t["subject"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with(subject))
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("no demo thread {subject}"))
+    }
+
+    /// Replies to Priya from the demo account; returns her thread's id.
+    fn reply_from_demo(&self) -> Value {
+        let t = self.demo_thread("Application: Senior");
+        let d = self.ok(
+            "drafts.create",
+            json!({ "thread_id": t["id"], "body": "Thursday 10am works, see you then!" }),
+        );
+        self.ok("drafts.send", json!({ "id": d["id"] }));
+        t["id"].clone()
+    }
+
+    fn demo_card_ids(&self) -> Vec<Value> {
+        self.cards()
+            .iter()
+            .map(|c| c["thread"]["id"].clone())
+            .collect()
+    }
+}
+
+#[rstest]
+fn the_demo_account_needs_no_sign_in(with_demo: World) {
+    let accounts = with_demo.ok("accounts.list", json!({}));
+    assert_eq!(accounts[0]["provider"], "demo");
+}
+
+#[rstest]
+fn the_demo_feed_shows_what_the_ai_said(with_demo: World) {
+    assert!(
+        with_demo
+            .cards()
+            .iter()
+            .any(|c| c["title"] == "Choose the navigation for Northbeam")
+    );
+}
+
+#[rstest]
+fn demo_chips_are_there_without_asking_the_ai(with_demo: World) {
+    let mut found = 0;
+    for chunk in with_demo.demo_card_ids().chunks(6) {
+        let r = with_demo.ok("threads.suggest", json!({ "ids": chunk }));
+        found += r["suggestions"].as_array().unwrap().len();
+    }
+    assert!(found > 0);
+}
+
+#[rstest]
+fn the_demo_never_calls_the_ai(with_demo: World) {
+    for chunk in with_demo.demo_card_ids().chunks(6) {
+        with_demo.ok("threads.suggest", json!({ "ids": chunk }));
+        with_demo.ok("feed.texts", json!({ "ids": chunk }));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    let m = with_demo.mailbox.lock().unwrap();
+    assert_eq!(m.jev_auth.len() + m.feed_text_calls, 0);
+}
+
+#[rstest]
+fn sending_from_the_demo_never_reaches_gmail(with_demo: World) {
+    with_demo.reply_from_demo();
+    assert!(with_demo.mailbox.lock().unwrap().sent.is_empty());
+}
+
+#[rstest]
+fn a_demo_reply_lands_in_its_conversation(with_demo: World) {
+    let id = with_demo.reply_from_demo();
+    let t = with_demo.ok("threads.get", json!({ "id": id }));
+    let last = t["messages"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["is_from_me"], true);
+}
+
+#[rstest]
+fn the_demo_account_can_be_removed(with_demo: World) {
+    let id = with_demo.ok("accounts.list", json!({}))[0]["id"].clone();
+    with_demo.ok("accounts.remove", json!({ "id": id }));
+    assert_eq!(with_demo.ok("threads.list", json!({}))["total"], 0);
+}
+
+#[rstest]
+fn the_demo_account_stays_quiet_after_a_restart(with_demo: World) {
+    let mut w = with_demo;
+    w.restart();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(w.ok("accounts.list", json!({}))[0]["sync"]["state"], "idle");
+}

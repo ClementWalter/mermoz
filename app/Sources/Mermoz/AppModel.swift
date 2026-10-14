@@ -1490,6 +1490,18 @@ final class AppModel {
         }
     }
 
+    /// Adds the made-up demo mailbox; nothing to sign in to.
+    func addDemoAccount() {
+        guard let client else { return }
+        Task {
+            do {
+                try await client.addDemoAccount()
+                await refreshAll()
+                await loadFeed()
+            } catch { report(error) }
+        }
+    }
+
     /// Accounts whose mail the window shows; hidden ones only appear in the sidebar and Settings.
     var visibleAccounts: [Account] { accounts.filter { !$0.isHidden } }
 

@@ -21,6 +21,7 @@ pub use conversations::{
 mod duplicates;
 mod feed;
 mod images;
+mod local;
 mod plan;
 mod push;
 mod reactions;
@@ -2154,9 +2155,10 @@ impl Store {
     pub fn user_labels(&self) -> Result<Vec<Label>> {
         let r = self.r.lock().unwrap();
         let mut st = r.prepare_cached(
-            "SELECT l.account_id, l.label_id, l.name, (SELECT COUNT(*) FROM thread_labels tl WHERE tl.account_id = l.account_id AND tl.label_id = l.label_id)
-             FROM labels l ORDER BY l.name COLLATE NOCASE",
-        )?;
+            &format!("SELECT l.account_id, l.label_id, l.name, (SELECT COUNT(*) FROM thread_labels tl WHERE tl.account_id = l.account_id AND tl.label_id = l.label_id)
+             FROM labels l WHERE 1{} ORDER BY l.name COLLATE NOCASE",
+            self.visible_on("l")
+        ))?;
         let rows = st
             .query_map([], |r| {
                 Ok(Label {
@@ -3128,16 +3130,26 @@ impl Store {
     pub fn projects(&self) -> Result<Vec<Project>> {
         let r = self.r.lock().unwrap();
         let mut names: BTreeSet<String> = BTreeSet::new();
-        let mut st = r.prepare_cached("SELECT label_id, name FROM labels")?;
+        let mut st = r.prepare_cached(&format!(
+            "SELECT label_id, name FROM labels l WHERE 1{}",
+            self.visible_on("l")
+        ))?;
         for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
             let (id, name) = row?;
             if is_user_label(&id, &name) {
                 names.insert(name);
             }
         }
-        let mut st = r.prepare_cached(
-            "SELECT name FROM project_colors UNION SELECT DISTINCT name FROM thread_projects",
-        )?;
+        // A hidden account's folders stay out too, unless the user colored them.
+        let filed = if self.visible().is_empty() {
+            "SELECT DISTINCT name FROM thread_projects".to_string()
+        } else {
+            format!(
+                "SELECT DISTINCT tp.name FROM thread_projects tp JOIN threads t ON t.id = tp.thread_id WHERE 1{}",
+                self.visible()
+            )
+        };
+        let mut st = r.prepare_cached(&format!("SELECT name FROM project_colors UNION {filed}"))?;
         for n in st.query_map([], |r| r.get::<_, String>(0))? {
             names.insert(n?);
         }
@@ -3336,11 +3348,13 @@ impl Store {
     /// Unread threads without a prediction for their latest message, newest first.
     pub fn threads_to_route(&self, limit: i64) -> Result<Vec<(String, i64)>> {
         let r = self.bg.lock().unwrap();
-        let mut st = r.prepare_cached(
+        let mut st = r.prepare_cached(&format!(
             "SELECT t.id, t.last_date FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
              WHERE t.status = 'unread' AND (s.thread_id IS NULL OR s.for_date < t.last_date)
+               AND {}
              ORDER BY t.last_date DESC LIMIT ?1",
-        )?;
+            visibility::NOT_DEMO_T
+        ))?;
         Ok(st
             .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?)
@@ -3642,7 +3656,9 @@ impl Store {
             "SELECT t.id, t.last_date, s.thread_id IS NOT NULL AND s.decision IS NULL AND s.for_date >= t.last_date
                     AND s.for_status IS t.status
              FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
-             WHERE t.status IN ({cols}) AND {SORT_DUE} AND t.id IN ({marks}) ORDER BY t.last_date DESC"
+             WHERE t.status IN ({cols}) AND {SORT_DUE} AND t.id IN ({marks}) AND {}
+             ORDER BY t.last_date DESC",
+            visibility::NOT_DEMO_T
         ))?;
         Ok(st
             .query_map(params_from_iter(args.iter()), |r| {
@@ -4648,6 +4664,13 @@ impl Store {
 
     /// The provider that will read this account's mail: the first allowed one, or none.
     pub fn provider_for_account(&self, account_id: &str) -> Result<Option<crate::agent::Provider>> {
+        // The demo account's mail never goes to an AI: its AI words come with the demo.
+        if self
+            .account(account_id)
+            .is_ok_and(|a| crate::demo_account::is_demo(&a))
+        {
+            return Ok(None);
+        }
         let allowed = self.account_providers(account_id)?;
         let all = self.providers()?;
         Ok(all

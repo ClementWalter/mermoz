@@ -204,6 +204,11 @@ struct WelcomeView: View {
             Text("Mermoz opens your browser so you can sign in with Google.")
                 .font(.system(size: 12)).foregroundStyle(Theme.text3)
             GmailSignInStatusView()
+            Button("Try it with a demo mailbox") { model.addDemoAccount() }
+                .buttonStyle(.plain)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(Theme.accent)
+                .help(DemoTag.explanation)
         }
         .padding(40)
         .frame(width: 440)
