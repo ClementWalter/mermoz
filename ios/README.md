@@ -18,6 +18,14 @@ attachment viewing, AI and the card-based Feed are future milestones. The deskto
 mailbox is independent of this store; Mermoz workflow metadata does not synchronize
 between devices except where represented by Gmail labels.
 
+## Install the beta
+
+Version 0.2.0 build 2 is available to the internal `Mermoz Beta` group in
+[TestFlight](https://appstoreconnect.apple.com/apps/6823699933/testflight/ios).
+Install Apple's TestFlight app on the iPhone, open the invitation sent to the
+account holder's Apple account email, and choose Install for Mermoz. This route
+does not require Developer Mode or a connected Mac.
+
 ## Build and run
 
 Requires Apple Silicon, Xcode with an iOS SDK and simulator runtime, Rust, uv and
