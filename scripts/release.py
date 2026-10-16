@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["click"]
+# dependencies = ["click", "pyjwt[crypto]"]
 # ///
 """Package Mermoz for download: a Developer ID signed, notarized and stapled build, a
 drag-to-Applications DMG, and a GitHub release whose `Mermoz.dmg` asset the website
@@ -44,6 +44,10 @@ import os
 import shutil
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import click
@@ -60,6 +64,111 @@ NOTARY_ZIP = REPO / "build" / "Mermoz-notarize.zip"
 DEFAULT_CLIENT = Path.home() / ".config" / "mermoz" / "google_oauth_client.json"
 DEFAULT_PROFILE = "mermoz-notary"
 NOTARY_ENV = ("MERMOZ_NOTARY_KEY_ID", "MERMOZ_NOTARY_ISSUER", "MERMOZ_NOTARY_KEY_PATH")
+IOS_BUNDLE = "ai.mermoz.iphone"
+
+
+class AppStoreAPI:
+    """Short-lived API authorization uses the existing Apple key without logging credentials."""
+
+    def __init__(self, key_id: str, issuer: str, key: str):
+        self.key_id, self.issuer, self.key = key_id, issuer, key
+
+    def request(self, path: str, *, method: str = "GET", data: dict | None = None) -> dict:
+        import jwt
+
+        now = int(time.time())
+        token = jwt.encode({"iss": self.issuer, "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
+                           self.key, algorithm="ES256", headers={"kid": self.key_id, "typ": "JWT"})
+        request = urllib.request.Request(f"https://api.appstoreconnect.apple.com/v1/{path}",
+                                         data=json.dumps(data).encode() if data is not None else None,
+                                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response) if response.status != 204 else {}
+        except urllib.error.HTTPError as error:
+            details = json.loads(error.read()).get("errors", [])
+            message = "; ".join(item.get("detail", item.get("title", "Apple request failed")) for item in details)
+            raise click.ClickException(f"App Store Connect refused {method} {path} ({error.code}): {message}") from error
+
+
+def ios_preflight(api: AppStoreAPI) -> str:
+    """Register the bundle if needed and require the website-created App Store app record."""
+    query = urllib.parse.urlencode({"filter[identifier]": IOS_BUNDLE})
+    bundles = api.request(f"bundleIds?{query}")["data"]
+    if not bundles:
+        api.request("bundleIds", method="POST", data={"data": {"type": "bundleIds", "attributes": {
+            "identifier": IOS_BUNDLE, "name": "Mermoz iPhone", "platform": "IOS",
+        }}})
+        log.info("Registered Apple bundle ID %s", IOS_BUNDLE)
+    query = urllib.parse.urlencode({"filter[bundleId]": IOS_BUNDLE})
+    apps = api.request(f"apps?{query}")["data"]
+    if not apps:
+        raise click.ClickException(
+            f"Apple bundle ID {IOS_BUNDLE} is ready. Create its iOS app record at "
+            "https://appstoreconnect.apple.com/apps (name: Mermoz, primary language: English UK, "
+            f"bundle ID: {IOS_BUNDLE}, SKU: mermoz-iphone). Apple's API cannot create this record."
+        )
+    return apps[0]["id"]
+
+
+def ios_export_options(team: str, publish: bool) -> dict:
+    """Automatic App Store signing produces an export or an internal TestFlight upload."""
+    return {"method": "app-store-connect", "destination": "upload" if publish else "export",
+            "teamID": team, "signingStyle": "automatic", "manageAppVersionAndBuildNumber": False,
+            "uploadSymbols": True, "testFlightInternalTestingOnly": True}
+
+
+def release_ios(run: signing.Runner, *, publish: bool, preflight: bool) -> None:
+    """Archive and upload only after Apple identifies an existing, accessible app record."""
+    import plistlib
+
+    key_id = os.environ.get("MERMOZ_NOTARY_KEY_ID", "").strip()
+    issuer = os.environ.get("MERMOZ_NOTARY_ISSUER", "").strip()
+    key = os.environ.get("MERMOZ_NOTARY_KEY_P8", "")
+    if not key and os.environ.get("MERMOZ_NOTARY_KEY_PATH"):
+        key = Path(os.environ["MERMOZ_NOTARY_KEY_PATH"]).read_text()
+    if not all((key_id, issuer, key)):
+        raise click.ClickException("Set MERMOZ_NOTARY_KEY_ID, MERMOZ_NOTARY_ISSUER and MERMOZ_NOTARY_KEY_P8 (or MERMOZ_NOTARY_KEY_PATH).")
+    if run.dry_run:
+        raise click.ClickException("iOS signing requires live Apple preflight; use --platform ios --preflight to check access without uploading.")
+    api = AppStoreAPI(key_id, issuer, key)
+    root = REPO / "build" / "ios-release"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        app_id = ios_preflight(api)
+    except click.ClickException as error:
+        (root / "status.json").write_text(json.dumps({"state": "blocked", "reason": error.format_message()}, indent=2))
+        raise
+    log.info("App Store Connect app %s is accessible", app_id)
+    if preflight:
+        (root / "status.json").write_text(json.dumps({"state": "ready", "app_id": app_id}, indent=2))
+        return
+    team = os.environ.get("MERMOZ_APPLE_TEAM_ID", "").strip()
+    if not team:
+        raise click.ClickException("Set MERMOZ_APPLE_TEAM_ID for iOS distribution signing.")
+    query = urllib.parse.urlencode({"filter[app]": app_id, "sort": "-uploadedDate", "limit": "1"})
+    builds = api.request(f"builds?{query}")["data"]
+    build_number = str(int(builds[0]["attributes"]["version"]) + 1) if builds else "1"
+    run([sys.executable, str(REPO / "scripts/build_app.py"), "--platform", "ios-device"], cwd=REPO, capture=False)
+    with tempfile.TemporaryDirectory(prefix="mermoz-apple-") as temporary:
+        key_file = Path(temporary) / f"AuthKey_{key_id}.p8"
+        key_file.write_text(key)
+        key_file.chmod(0o600)
+        auth = ["-allowProvisioningUpdates", "-authenticationKeyPath", str(key_file),
+                "-authenticationKeyID", key_id, "-authenticationKeyIssuerID", issuer]
+        archive = root / "Mermoz.xcarchive"
+        run(["xcodebuild", "-project", "ios/MermozMobile.xcodeproj", "-scheme", "MermozMobile",
+             "-configuration", "Release", "-destination", "generic/platform=iOS", "-archivePath", str(archive),
+             f"DEVELOPMENT_TEAM={team}", f"CURRENT_PROJECT_VERSION={build_number}", "CODE_SIGN_STYLE=Automatic",
+             "CODE_SIGNING_ALLOWED=YES", "CODE_SIGNING_REQUIRED=YES", *auth, "archive"], cwd=REPO, capture=False)
+        options = root / "ExportOptions.plist"
+        options.write_bytes(plistlib.dumps(ios_export_options(team, publish)))
+        run(["xcodebuild", "-exportArchive", "-archivePath", str(archive), "-exportPath", str(root / "export"),
+             "-exportOptionsPlist", str(options), *auth], cwd=REPO, capture=False)
+    status = {"state": "uploaded" if publish else "exported", "app_id": app_id, "build": build_number,
+              "url": f"https://appstoreconnect.apple.com/apps/{app_id}/testflight/ios"}
+    (root / "status.json").write_text(json.dumps(status, indent=2))
+    log.info("iPhone build %s %s: %s", build_number, status["state"], status["url"])
 
 
 def version() -> str:
@@ -216,6 +325,8 @@ def create_release(run: signing.Runner, tag: str, mode: str) -> None:
 
 
 @click.command()
+@click.option("--platform", type=click.Choice(["macos", "ios"]), default="macos", show_default=True)
+@click.option("--preflight", is_flag=True, help="Check Apple iOS app registration without archiving or uploading.")
 @click.option("--google-client", type=click.Path(path_type=Path), default=DEFAULT_CLIENT, show_default=True)
 @click.option("--publish/--no-publish", default=False, help="Create the GitHub release and upload the DMG.")
 @click.option("--skip-build", is_flag=True, help="Reuse build/Mermoz.app (already signed).")
@@ -235,6 +346,8 @@ def create_release(run: signing.Runner, tag: str, mode: str) -> None:
 @click.option("--notary-profile", default=DEFAULT_PROFILE, show_default=True, help="notarytool keychain profile.")
 @click.option("--dry-run", is_flag=True, help="Log every command without running it.")
 def main(
+    platform: str,
+    preflight: bool,
     google_client: Path,
     publish: bool,
     skip_build: bool,
@@ -246,6 +359,11 @@ def main(
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     run = signing.Runner(dry_run=dry_run)
     try:
+        if platform == "ios":
+            release_ios(run, publish=publish, preflight=preflight)
+            return
+        if preflight:
+            raise click.ClickException("--preflight requires --platform ios.")
         if publish and mode != signing.DEVELOPER_ID:
             raise click.ClickException("Releases are Developer ID signed: drop --sign adhoc to publish.")
         # Credentials first, so a missing one fails before a long build.

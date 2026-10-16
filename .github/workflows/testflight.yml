@@ -1,0 +1,43 @@
+name: TestFlight
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: Archive and upload after the local-store and iPhone UI tests pass
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+jobs:
+  iphone:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      MERMOZ_NOTARY_KEY_ID: ${{ secrets.MERMOZ_NOTARY_KEY_ID }}
+      MERMOZ_NOTARY_ISSUER: ${{ secrets.MERMOZ_NOTARY_ISSUER }}
+      MERMOZ_NOTARY_KEY_P8: ${{ secrets.MERMOZ_NOTARY_KEY_P8 }}
+      MERMOZ_APPLE_TEAM_ID: "6878QWQ83Y"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - name: Check Apple access and app registration
+        run: uv run scripts/release.py --platform ios --preflight
+      - run: brew install xcodegen
+        if: inputs.upload
+      - run: cargo test --release -p mermoz-mobile
+        if: inputs.upload
+      - run: uv run scripts/build_app.py --platform ios-simulator --test
+        if: inputs.upload
+      - name: Archive and upload to internal TestFlight
+        if: inputs.upload
+        run: uv run scripts/release.py --platform ios --publish
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-distribution-status
+          path: build/ios-release/status.json
