@@ -3,7 +3,9 @@
 # requires-python = ">=3.11"
 # dependencies = ["click", "pyjwt[crypto]"]
 # ///
-"""Package Mermoz for download: a Developer ID signed, notarized and stapled build, a
+"""Package Mermoz for macOS download or an internal iPhone TestFlight upload.
+
+The macOS path produces a Developer ID signed, notarized and stapled build, a
 drag-to-Applications DMG, and a GitHub release whose `Mermoz.dmg` asset the website
 links to directly.
 
@@ -328,7 +330,7 @@ def create_release(run: signing.Runner, tag: str, mode: str) -> None:
 @click.option("--platform", type=click.Choice(["macos", "ios"]), default="macos", show_default=True)
 @click.option("--preflight", is_flag=True, help="Check Apple iOS app registration without archiving or uploading.")
 @click.option("--google-client", type=click.Path(path_type=Path), default=DEFAULT_CLIENT, show_default=True)
-@click.option("--publish/--no-publish", default=False, help="Create the GitHub release and upload the DMG.")
+@click.option("--publish/--no-publish", default=False, help="Upload the macOS DMG to GitHub or the iPhone archive to internal TestFlight.")
 @click.option("--skip-build", is_flag=True, help="Reuse build/Mermoz.app (already signed).")
 @click.option(
     "--sign",

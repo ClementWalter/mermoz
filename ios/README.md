@@ -58,6 +58,11 @@ ID, iOS app record and distribution signing must be configured with an account
 that can manage Certificates, Identifiers & Profiles before an upload is possible.
 Apple's public API cannot create the App Store Connect app record.
 
+Xcode can access the local Apple development account, but a direct build targeting
+the paired iPhone currently stops because Developer Mode is disabled on that phone.
+That route requires enabling Settings > Privacy & Security > Developer Mode on the
+device before Xcode can register it and create the development provisioning profile.
+
 The Google iOS client is registered in the existing `mermoz-mail` project and its
 public identifier and callback scheme are in `project.yml`. Google's consent
 screen currently restricts access to the project's test users.
@@ -66,8 +71,8 @@ screen currently restricts access to the project's test users.
 
 `ios/Bridge/MermozMobile.h` defines handle and string ownership. The Swift actor
 serializes calls off the main actor and frees each response. The Rust boundary
-returns errors as JSON, contains unwinding panics, and exposes only local reads,
-search and status updates. An explicit sandbox path keeps mobile data independent
+returns errors as JSON, contains unwinding panics, and exposes mailbox operations,
+Google consent and explicit draft sending. An explicit sandbox path keeps mobile data independent
 of the desktop application's default paths. Existing Rust tests cover the store;
 mobile-specific tests cover persistence, invalid requests and ABI ownership.
 HTTP integration tests exercise authorization-code exchange, native token refresh,
