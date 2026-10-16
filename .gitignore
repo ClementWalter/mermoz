@@ -1,6 +1,7 @@
 /target
 /build
 /app/.build
+/ios/MermozMobile.xcodeproj/
 .DS_Store
 *.profraw
 __pycache__/

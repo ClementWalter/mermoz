@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["click"]
 # ///
-"""Build Mermoz.app: Rust daemon + CLI, SwiftUI app, bundled and signed.
+"""Build Mermoz for macOS or iPhone with release-mode Rust and Swift code.
 
 Steps:
   1. `cargo build --release` at the repo root (produces `mermozd` and `mermoz`).
@@ -27,6 +27,8 @@ Usage:
   scripts/build_app.py --sign developer-id      # release signing
   scripts/build_app.py --sign developer-id --dry-run   # log every command, run none
   scripts/build_app.py --check-ant              # print the verified Anthropic ant, build nothing
+  scripts/build_app.py --platform ios-simulator --test --open
+  scripts/build_app.py --platform ios-device    # unsigned device build
 
 Anthropic's `ant` is bundled only once verified: a Mach-O whose code signature is a valid
 Developer ID from Anthropic's team. The Homebrew cask's own copy is preferred over PATH,
@@ -35,6 +37,7 @@ where Apache Ant (also named `ant`) may shadow it. A release build fails without
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import plistlib
@@ -60,6 +63,68 @@ RUST_BINS = ("mermozd", "mermoz")
 ANTHROPIC_TEAM = "Q6L2SF6YDW"
 ANTHROPIC_REQUIREMENT = f'anchor apple generic and certificate leaf[subject.OU] = "{ANTHROPIC_TEAM}"'
 VERSION = "0.1.1"
+
+
+def simulator_id(devices: dict, requested: str | None = None) -> str:
+    """Prefer a running iPhone so build, tests and launch share one simulator."""
+    phones = [
+        device
+        for runtime in devices.get("devices", {}).values()
+        for device in runtime
+        if device.get("isAvailable") and device.get("name", "").startswith("iPhone")
+    ]
+    if requested:
+        phones = [device for device in phones if device["udid"] == requested]
+    if not phones:
+        raise click.ClickException("No matching iPhone simulator. Install an iOS runtime in Xcode Settings > Components.")
+    return next((device for device in phones if device["state"] == "Booted"), phones[0])["udid"]
+
+
+def build_ios(run: signing.Runner, platform: str, *, open_app: bool, test: bool, simulator: str | None) -> None:
+    """Compile the embedded engine and native app; simulator tests exercise real local storage."""
+    device = platform == "ios-device"
+    if device and (open_app or test or simulator):
+        raise click.ClickException("--open, --test and --simulator require --platform ios-simulator.")
+    if not shutil.which("xcodegen"):
+        raise click.ClickException("XcodeGen is required: brew install xcodegen")
+    target = "aarch64-apple-ios" if device else "aarch64-apple-ios-sim"
+    run(["rustup", "target", "add", target], cwd=REPO)
+    run(["cargo", "build", "--release", "-p", "mermoz-mobile", "--target", target], cwd=REPO)
+    run(["xcodegen", "--spec", "ios/project.yml"], cwd=REPO)
+    destination = "generic/platform=iOS" if device else "generic/platform=iOS Simulator"
+    udid = None
+    if open_app or test or simulator:
+        inventory = run(["xcrun", "simctl", "list", "devices", "available", "--json"], inspect=True)
+        devices = json.loads(inventory.stdout)
+        udid = simulator_id(devices, simulator)
+        booted = any(d["udid"] == udid and d["state"] == "Booted" for group in devices["devices"].values() for d in group)
+        if not booted:
+            run(["xcrun", "simctl", "boot", udid])
+        run(["xcrun", "simctl", "bootstatus", udid, "-b"])
+        destination = f"platform=iOS Simulator,id={udid}"
+    derived = REPO / "build" / ("ios-device" if device else "ios")
+    command = [
+        "xcodebuild", "-project", "ios/MermozMobile.xcodeproj", "-scheme", "MermozMobile",
+        "-configuration", "Release", "-sdk", "iphoneos" if device else "iphonesimulator",
+        "-destination", destination, "-derivedDataPath", str(derived),
+    ]
+    if test:
+        # Unit integration failures stop before the slower on-screen tests.
+        run([*command, "-parallel-testing-enabled", "NO", "-only-testing:MermozMobileTests", "test"], cwd=REPO)
+        run([*command, "-parallel-testing-enabled", "NO", "-only-testing:MermozMobileUITests", "test"], cwd=REPO)
+    else:
+        run([*command, "build"], cwd=REPO)
+    app = derived / "Build" / "Products" / ("Release-iphoneos" if device else "Release-iphonesimulator") / "MermozMobile.app"
+    log.info("built %s (Release, %s)", app, platform)
+    if open_app:
+        run(["xcrun", "simctl", "install", udid, str(app)])
+        run(["xcrun", "simctl", "launch", "--terminate-running-process", udid, "ai.mermoz.iphone"])
+        developer = Path(run(["xcode-select", "--print-path"], inspect=True).stdout.strip())
+        simulator_app = developer / "Applications" / "Simulator.app"
+        if simulator_app.exists():
+            run(["open", str(simulator_app)])
+        else:
+            log.warning("Simulator UI is not installed; Mermoz is running in the booted simulator.")
 
 
 def build_rust(run: signing.Runner, mode: str) -> None:
@@ -202,6 +267,9 @@ def sign(run: signing.Runner, mode: str, keychain: Path | None) -> None:
 
 
 @click.command()
+@click.option("--platform", type=click.Choice(["macos", "ios-simulator", "ios-device"]), default="macos", show_default=True)
+@click.option("--test", is_flag=True, help="Run iPhone unit and UI tests in Release mode.")
+@click.option("--simulator", help="iPhone simulator UDID; defaults to a running or available iPhone.")
 @click.option("--open", "open_app", is_flag=True, help="Launch the app after building.")
 @click.option("--skip-rust", is_flag=True, help="Reuse binaries already in target/release.")
 @click.option(
@@ -221,12 +289,23 @@ def sign(run: signing.Runner, mode: str, keychain: Path | None) -> None:
 @click.option("--dry-run", is_flag=True, help="Log every command without running it; build/Mermoz.app is left as is.")
 @click.option("--check-ant", is_flag=True, help="Find and verify Anthropic's ant CLI, then exit; build nothing.")
 def main(
-    open_app: bool, skip_rust: bool, mode: str, keychain: Path | None, sign_only: bool, dry_run: bool, check_ant: bool
+    open_app: bool, skip_rust: bool, mode: str, keychain: Path | None, sign_only: bool, dry_run: bool, check_ant: bool,
+    platform: str, test: bool, simulator: str | None,
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if sys.platform != "darwin":
         raise click.ClickException("Mermoz.app can only be built on macOS.")
     run = signing.Runner(dry_run=dry_run)
+    if platform != "macos":
+        if skip_rust or sign_only or check_ant or mode != signing.ADHOC or keychain:
+            raise click.ClickException("Desktop signing and --skip-rust options apply only to --platform macos.")
+        try:
+            build_ios(run, platform, open_app=open_app, test=test, simulator=simulator)
+        except signing.SigningError as error:
+            raise click.ClickException(str(error)) from error
+        return
+    if test or simulator:
+        raise click.ClickException("--test and --simulator require --platform ios-simulator.")
     if check_ant:
         # Strict, whatever --sign says: the caller asked for a verified ant.
         find_anthropic_ant(run, signing.DEVELOPER_ID)

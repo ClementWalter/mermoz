@@ -36,3 +36,14 @@ jobs:
       - run: uv run --with pytest --with click pytest scripts/tests -q
         env:
           MERMOZ_SIGNING_E2E: "1"
+
+  iphone:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - run: brew install xcodegen
+      - run: cargo test --release -p mermoz-mobile
+      - run: uv run scripts/build_app.py --platform ios-simulator --test

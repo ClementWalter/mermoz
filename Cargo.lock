@@ -1550,6 +1550,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mermoz-mobile"
+version = "0.1.0"
+dependencies = [
+ "mermoz-core",
+ "rstest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "mermozd"
 version = "0.1.0"
 dependencies = [

@@ -1,7 +1,6 @@
 //! Mermoz core: the local mail store, the Gmail sync engine and the issue model.
 //!
-//! Everything here runs inside `mermozd`; clients only see it through the
-//! JSON-RPC protocol described in `docs/protocol.md`.
+//! The desktop daemon and embedded mobile engine share these storage and workflow rules.
 
 pub mod agent;
 pub mod ant;

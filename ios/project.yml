@@ -1,0 +1,57 @@
+name: MermozMobile
+options:
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    ARCHS: arm64
+    ENABLE_TESTABILITY: YES
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGNING_ALLOWED: NO
+    "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(SRCROOT)/../target/aarch64-apple-ios-sim/release"
+    "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(SRCROOT)/../target/aarch64-apple-ios/release"
+targets:
+  MermozMobile:
+    type: application
+    platform: iOS
+    sources: [Sources, Bridge]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.mermoz.iphone
+        SWIFT_OBJC_BRIDGING_HEADER: Bridge/MermozMobile.h
+        OTHER_LDFLAGS: ["$(inherited)", "-lmermoz_mobile", "-framework", Security, "-framework", SystemConfiguration, "-framework", CoreFoundation, "-lz", "-liconv"]
+        INFOPLIST_KEY_CFBundleDisplayName: Mermoz
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+  MermozMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: MermozMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.mermoz.iphone.tests
+  MermozMobileUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: MermozMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.mermoz.iphone.uitests
+schemes:
+  MermozMobile:
+    build:
+      targets:
+        MermozMobile: all
+    run:
+      config: Release
+    test:
+      config: Release
+      targets: [MermozMobileTests, MermozMobileUITests]
