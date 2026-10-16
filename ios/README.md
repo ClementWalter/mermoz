@@ -51,12 +51,17 @@ The `TestFlight` workflow checks Apple access before an optional tested archive 
 internal upload. It uses the repository's Apple API-key secrets and produces a
 machine-readable distribution status artifact.
 
-The live Apple preflight currently fails with HTTP 403 when registering
-`ai.mermoz.iphone`: the existing API key cannot create bundle IDs. The Apple
-Developer and App Store Connect browser sessions also require sign-in. The bundle
-ID, iOS app record and distribution signing must be configured with an account
-that can manage Certificates, Identifiers & Profiles before an upload is possible.
-Apple's public API cannot create the App Store Connect app record.
+The registered bundle is `ai.mermoz.iphone`, and the App Store Connect app is
+`6823699933` on team `6878QWQ83Y`. Apple preflight verifies access to that record.
+The API key cannot create bundle IDs, so initial registration uses the account
+holder's Developer and App Store Connect sessions. Apple's public API cannot
+create the App Store Connect app record.
+
+The distribution certificate and `Mermoz iPhone App Store` provisioning profile
+support manual App Store signing without registering a physical phone. Keep the
+certificate's private key outside Git. The automatic-signing workflow still needs
+an archive and upload verification; the local release uses the signed-in Xcode
+account and the manual profile.
 
 Xcode can access the local Apple development account, but a direct build targeting
 the paired iPhone currently stops because Developer Mode is disabled on that phone.

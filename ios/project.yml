@@ -24,6 +24,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.mermoz.iphone
+        TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_ENTITLEMENTS: Mermoz.entitlements
         MARKETING_VERSION: "0.2.0"
         CURRENT_PROJECT_VERSION: "1"

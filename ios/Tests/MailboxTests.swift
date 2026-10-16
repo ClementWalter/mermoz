@@ -4,6 +4,10 @@ import Testing
 @testable import MermozMobile
 
 struct MailboxTests {
+    @Test func theBundleTargetsIPhone() {
+        #expect(Bundle.main.object(forInfoDictionaryKey: "UIDeviceFamily") as? [Int] == [1])
+    }
+
     private func directory() -> URL { URL.temporaryDirectory.appending(path: UUID().uuidString) }
 
     @Test func demoMailLoadsThroughTheBridge() async throws {
