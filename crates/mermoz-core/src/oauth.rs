@@ -462,15 +462,19 @@ impl TokenSource {
         {
             return Ok(t);
         }
+        let mut params = vec![
+            ("client_id", self.cfg.client_id.as_str()),
+            ("refresh_token", &self.refresh_token),
+            ("grant_type", "refresh_token"),
+        ];
+        // Native iOS clients authenticate with PKCE and have no client secret.
+        if !self.cfg.client_secret.is_empty() {
+            params.push(("client_secret", &self.cfg.client_secret));
+        }
         let resp = self
             .http
             .post(&self.cfg.token_url)
-            .form(&[
-                ("client_id", self.cfg.client_id.as_str()),
-                ("client_secret", &self.cfg.client_secret),
-                ("refresh_token", &self.refresh_token),
-                ("grant_type", "refresh_token"),
-            ])
+            .form(&params)
             .send()
             .await?;
         let status = resp.status();

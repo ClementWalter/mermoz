@@ -46,4 +46,36 @@ struct MailboxTests {
             let _: MailDetail = try await mailbox.call("threads.get", params: ["id": "missing"])
         }
     }
+
+    @Test func aReplyStaysLocalUntilSend() async throws {
+        let home = directory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let mailbox = Mailbox(directory: home)
+        let page: MailPage = try await mailbox.call("search", params: ["query": "Ride tracking screens"])
+        let before: MailDetail = try await mailbox.call("threads.get", params: ["id": page.threads[0].id])
+        let _: MailDraft = try await mailbox.call("drafts.reply", params: ["id": page.threads[0].id, "body": "Local draft test."])
+        let after: MailDetail = try await mailbox.call("threads.get", params: ["id": page.threads[0].id])
+        #expect(after.messages.count == before.messages.count)
+    }
+
+    @Test func aSavedReplySurvivesANewEngine() async throws {
+        let home = directory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let mailbox = Mailbox(directory: home)
+        let page: MailPage = try await mailbox.call("search", params: ["query": "Ride tracking screens"])
+        let draft: MailDraft = try await mailbox.call("drafts.reply", params: ["id": page.threads[0].id, "body": "Persistent draft test."])
+        let reopened = Mailbox(directory: home)
+        let drafts: [MailDraft] = try await reopened.call("drafts.list")
+        #expect(drafts.contains { $0.id == draft.id && $0.body == "Persistent draft test." })
+    }
+
+    @Test func aDemoReplyCanBeSentWithoutANetwork() async throws {
+        let home = directory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let mailbox = Mailbox(directory: home)
+        let page: MailPage = try await mailbox.call("search", params: ["query": "Ride tracking screens"])
+        let draft: MailDraft = try await mailbox.call("drafts.reply", params: ["id": page.threads[0].id, "body": "Offline demo reply."])
+        let sent: MailDraft = try await mailbox.call("drafts.send", params: ["id": draft.id])
+        #expect(sent.state == "sent")
+    }
 }

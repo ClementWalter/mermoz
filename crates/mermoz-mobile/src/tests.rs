@@ -1,6 +1,7 @@
 //! Mobile-store behavior and C ABI ownership exercised against real SQLite files.
 
 use super::*;
+use mermoz_core::store::ThreadFilter;
 use rstest::{fixture, rstest};
 use tempfile::TempDir;
 

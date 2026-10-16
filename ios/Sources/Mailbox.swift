@@ -4,6 +4,7 @@ import Observation
 
 struct MailThread: Decodable, Identifiable, Hashable, Sendable {
     let id: String
+    let accountId: String
     let subject: String
     let snippet: String
     let lastFrom: String
@@ -35,6 +36,7 @@ struct MailStatus: Decodable, Identifiable, Sendable {
 
 struct MailPage: Decodable, Sendable {
     let threads: [MailThread]
+    let total: Int?
 }
 
 struct MailDetail: Decodable, Sendable {
@@ -96,6 +98,14 @@ final class MailboxModel {
     var error: String?
     var loading = false
     var revision = 0
+    var accounts: [MailAccount] = []
+    var accountError: String?
+    var connecting = false
+    var total = 0
+    private let credentials = CredentialStore()
+    private let login = GoogleLogin()
+
+    var isDemo: Bool { !accounts.contains { $0.provider == "gmail" && !$0.hidden } }
 
     init(directory: URL) { mailbox = Mailbox(directory: directory) }
 
@@ -114,10 +124,86 @@ final class MailboxModel {
             }
             try Task.checkCancellation()
             threads = page.threads
+            total = page.total ?? page.threads.count
             error = nil
         } catch is CancellationError {
         } catch {
             if !Task.isCancelled { self.error = error.localizedDescription }
         }
+    }
+
+    func resume() async {
+        do {
+            let accounts: [MailAccount] = try await mailbox.call("accounts.list")
+            let known = Set(accounts.map(\.id))
+            for credential in try credentials.all() {
+                // Keychain entries can outlive an app uninstall and its mailbox database.
+                guard known.contains(credential.accountId) else {
+                    try credentials.delete(credential.accountId)
+                    continue
+                }
+                do {
+                    let _: EmptyResult = try await mailbox.call("accounts.resume", params: [
+                        "account_id": credential.accountId, "client_id": credential.clientId,
+                        "refresh_token": credential.refreshToken,
+                    ])
+                } catch { accountError = error.localizedDescription }
+            }
+            let _: EmptyResult = try await mailbox.call("sync.start")
+            await refreshAccounts()
+        } catch { accountError = error.localizedDescription }
+    }
+
+    func refreshAccounts() async {
+        do {
+            let fresh: [MailAccount] = try await mailbox.call("accounts.list")
+            if fresh != accounts { accounts = fresh; revision += 1 }
+        }
+        catch { accountError = error.localizedDescription }
+    }
+
+    func pause() async {
+        do { let _: EmptyResult = try await mailbox.call("sync.pause") }
+        catch { accountError = error.localizedDescription }
+    }
+
+    func connectGoogle() async {
+        guard let clientId = Bundle.main.object(forInfoDictionaryKey: "MERMOZGoogleClientID") as? String,
+              !clientId.isEmpty else {
+            accountError = "Google sign-in isn't configured in this build."
+            return
+        }
+        connecting = true
+        defer { connecting = false }
+        do {
+            let start: LoginStart = try await mailbox.call("auth.start", params: ["client_id": clientId])
+            let callback = try await login.authorize(start)
+            let result: LoginResult = try await mailbox.call("auth.finish", params: ["callback": callback])
+            // Credentials must survive relaunch before any mailbox import starts.
+            try credentials.save(result.credential)
+            accountError = nil
+            await resume()
+            revision += 1
+        } catch { accountError = error.localizedDescription }
+    }
+
+    func removeAccount(_ account: MailAccount) async {
+        do {
+            let _: EmptyResult = try await mailbox.call("accounts.remove", params: ["id": account.id])
+            try credentials.delete(account.id)
+            await refreshAccounts()
+            revision += 1
+        } catch { accountError = error.localizedDescription }
+    }
+
+    func loadMore(status: String?) async {
+        do {
+            var params = ["offset": String(threads.count)]
+            if let status { params["status"] = status }
+            let page: MailPage = try await mailbox.call("threads.list", params: params)
+            let existing = Set(threads.map(\.id))
+            threads += page.threads.filter { !existing.contains($0.id) }
+            total = page.total ?? threads.count
+        } catch { self.error = error.localizedDescription }
     }
 }

@@ -1,15 +1,22 @@
 # Mermoz for iPhone
 
 A standalone, local-first iPhone app. The SwiftUI interface calls the existing Rust
-mail store in-process through `mermoz-mobile`; no Mac, daemon, socket, server or
-network connection is needed for the demo mailbox.
+mail store in-process through `mermoz-mobile`; no Mac, daemon, socket or Mermoz
+server is needed. Gmail accounts sync directly with Google while the app is active.
 
-This first milestone includes Maya Laurent's fictional mailbox, conversation
-reading, workflow status filters, local full-text search and persistent status
-changes. The store lives in the app's Application Support directory. Gmail sign-in,
-sync, reply/compose, attachment viewing, notifications, AI and the card-based Feed
-are future milestones. The desktop mailbox is independent of this store; this
-prototype does not synchronize Mermoz workflow metadata between devices.
+The beta includes native Google consent with PKCE, resumable mailbox import,
+incremental sync, conversation reading, workflow status filters, local full-text
+search, pagination and replies. Replies are saved locally and require an explicit
+send confirmation. Unconfirmed deliveries remain visible in Drafts and cannot be
+silently sent again. Maya Laurent's fictional mailbox is available for an offline
+trial and is hidden when a real Gmail account connects.
+
+Mail lives in the app's Application Support directory. Refresh credentials live
+only in the iPhone Keychain. Foreground sync pauses when the app backgrounds and
+resumes on return; this build has no background notifications. New-message compose,
+attachment viewing, AI and the card-based Feed are future milestones. The desktop
+mailbox is independent of this store; Mermoz workflow metadata does not synchronize
+between devices except where represented by Gmail labels.
 
 ## Build and run
 
@@ -38,10 +45,22 @@ An unsigned device build uses:
 uv run scripts/build_app.py --platform ios-device
 ```
 
-Installing on a physical phone or distributing through TestFlight additionally
-requires Apple signing and provisioning; the device build does not install or
-publish anything. In Xcode, select a signing team and enable code signing for the
-app target before a device run.
+Installing on a physical phone or distributing through TestFlight requires Apple
+signing and provisioning; the device build does not install or publish anything.
+The `TestFlight` workflow checks Apple access before an optional tested archive and
+internal upload. It uses the repository's Apple API-key secrets and produces a
+machine-readable distribution status artifact.
+
+The live Apple preflight currently fails with HTTP 403 when registering
+`ai.mermoz.iphone`: the existing API key cannot create bundle IDs. The Apple
+Developer and App Store Connect browser sessions also require sign-in. The bundle
+ID, iOS app record and distribution signing must be configured with an account
+that can manage Certificates, Identifiers & Profiles before an upload is possible.
+Apple's public API cannot create the App Store Connect app record.
+
+The Google iOS client is registered in the existing `mermoz-mail` project and its
+public identifier and callback scheme are in `project.yml`. Google's consent
+screen currently restricts access to the project's test users.
 
 ## Engine boundary
 
@@ -51,3 +70,7 @@ returns errors as JSON, contains unwinding panics, and exposes only local reads,
 search and status updates. An explicit sandbox path keeps mobile data independent
 of the desktop application's default paths. Existing Rust tests cover the store;
 mobile-specific tests cover persistence, invalid requests and ABI ownership.
+HTTP integration tests exercise authorization-code exchange, native token refresh,
+mail import, sending and cancellation against a local Gmail stub. Simulator tests
+also exercise real Keychain storage and on-screen navigation, search, status
+persistence and reply drafting.

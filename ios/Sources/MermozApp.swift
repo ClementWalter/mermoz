@@ -1,4 +1,4 @@
-/// Standalone iPhone mailbox with an app-owned local demo store.
+/// Standalone iPhone mailbox with app-owned storage and independent Gmail sync.
 import SwiftUI
 
 @main
@@ -6,7 +6,7 @@ struct MermozApp: App {
     @State private var model: MailboxModel
 
     init() {
-        let support = URL.applicationSupportDirectory.appending(path: "Mermoz/Demo", directoryHint: .isDirectory)
+        let support = URL.applicationSupportDirectory.appending(path: "Mermoz/Mail", directoryHint: .isDirectory)
         _model = State(initialValue: MailboxModel(directory: support))
     }
 

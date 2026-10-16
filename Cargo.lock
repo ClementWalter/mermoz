@@ -1553,11 +1553,18 @@ dependencies = [
 name = "mermoz-mobile"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64 0.22.1",
  "mermoz-core",
+ "rand 0.9.5",
+ "reqwest",
  "rstest",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]

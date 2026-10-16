@@ -6,6 +6,8 @@ struct MailboxView: View {
     @State private var query = ""
     @State private var status: String?
     @State private var showingInfo = false
+    @State private var showingDrafts = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -26,9 +28,14 @@ struct MailboxView: View {
                 } else if model.loading && model.threads.isEmpty {
                     ProgressView("Opening your local mailbox…").frame(maxHeight: .infinity)
                 } else {
-                    List(model.threads) { thread in
-                        NavigationLink(value: thread) { ThreadRow(thread: thread) }
+                    List {
+                        ForEach(model.threads) { thread in
+                            NavigationLink(value: thread) { ThreadRow(thread: thread) }
                             .accessibilityIdentifier("thread-\(thread.id)")
+                        }
+                        if query.isEmpty && model.threads.count < model.total {
+                            Button("Load more mail") { Task { await model.loadMore(status: status) } }
+                        }
                     }
                     .listStyle(.plain)
                     .overlay {
@@ -36,18 +43,21 @@ struct MailboxView: View {
                             ContentUnavailableView(query.isEmpty ? "All clear" : "No matching mail", systemImage: "tray")
                         }
                     }
-                    .refreshable { await model.load(status: status, query: query) }
+                    .refreshable { await model.resume(); await model.load(status: status, query: query) }
                 }
             }
             .navigationTitle("Mermoz")
             .searchable(text: $query, prompt: "Search your mail")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Demo mailbox", systemImage: "info.circle") { showingInfo = true }
+                    Button("Accounts", systemImage: "person.crop.circle") { showingInfo = true }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Drafts", systemImage: "square.and.pencil") { showingDrafts = true }
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                Text("Demo mailbox · Stored on this iPhone")
+                Text(model.isDemo ? "Demo mailbox · Stored on this iPhone" : "Your mail · Stored on this iPhone")
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(10).frame(maxWidth: .infinity).background(.bar)
             }
@@ -58,18 +68,23 @@ struct MailboxView: View {
                 await model.load(status: status, query: query)
             }
             .sheet(isPresented: $showingInfo) {
-                NavigationStack {
-                    Form {
-                        Section("Your local mailbox") {
-                            Text("This first iPhone build contains fictional mail for Maya Laurent. Mail and status changes stay on this device and work offline.")
+                AccountsView(model: model)
+            }
+            .sheet(isPresented: $showingDrafts) { DraftsView(model: model) }
+            .task(id: scenePhase) {
+                if scenePhase == .active {
+                    await model.resume()
+                    var polls = 0
+                    while !Task.isCancelled {
+                        await model.refreshAccounts()
+                        polls += 1
+                        if polls % 20 == 0 {
+                            let _: EmptyResult? = try? await model.mailbox.call("sync.start")
                         }
-                        Section("Coming next") {
-                            Text("Gmail sign-in, replying, attachments and AI features aren't connected in this build.")
-                        }
+                        do { try await Task.sleep(for: .seconds(3)) }
+                        catch { break }
                     }
-                    .navigationTitle("Mermoz for iPhone")
-                    .toolbar { Button("Done") { showingInfo = false } }
-                }
+                } else if scenePhase == .background { await model.pause() }
             }
         }
         .tint(Color(red: 0.18, green: 0.36, blue: 0.29))
@@ -116,6 +131,7 @@ private struct ThreadView: View {
     @State private var detail: MailDetail?
     @State private var error: String?
     @State private var updating = false
+    @State private var showingReply = false
 
     var body: some View {
         ScrollView {
@@ -144,18 +160,30 @@ private struct ThreadView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .bottomBar) {
+                Button("Reply", systemImage: "arrowshape.turn.up.left") { showingReply = true }
+                    .disabled(detail == nil).accessibilityIdentifier("reply-button")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 ForEach(model.statuses) { status in
                     Button(status.name) { Task { await update(status.key) } }
+                        .accessibilityIdentifier("set-status-\(status.key)")
                 }
             } label: {
                 Label(detail?.thread.status.capitalized ?? thread.status.capitalized, systemImage: "tag")
             }
             .disabled(updating || detail == nil)
             .accessibilityIdentifier("thread-status")
+            }
         }
+        .sheet(isPresented: $showingReply) { ReplyView(model: model, thread: thread) }
         .task {
-            do { detail = try await model.mailbox.call("threads.get", params: ["id": thread.id]) }
+            do {
+                let _: EmptyResult = try await model.mailbox.call("threads.read", params: ["id": thread.id])
+                detail = try await model.mailbox.call("threads.get", params: ["id": thread.id])
+                model.revision += 1
+            }
             catch { self.error = error.localizedDescription }
         }
     }

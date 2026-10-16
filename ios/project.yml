@@ -11,22 +11,44 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     GENERATE_INFOPLIST_FILE: YES
     CODE_SIGNING_ALLOWED: NO
+    "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": YES
+    "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+    DEVELOPMENT_TEAM: "6878QWQ83Y"
     "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(SRCROOT)/../target/aarch64-apple-ios-sim/release"
     "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(SRCROOT)/../target/aarch64-apple-ios/release"
 targets:
   MermozMobile:
     type: application
     platform: iOS
-    sources: [Sources, Bridge]
+    sources: [Sources, Bridge, Resources]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.mermoz.iphone
+        CODE_SIGN_ENTITLEMENTS: Mermoz.entitlements
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        MERMOZ_GOOGLE_IOS_CLIENT_ID: "671467933259-lajeg027qo4eosf4h4hgaugb4kv4jadc.apps.googleusercontent.com"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: Bridge/MermozMobile.h
         OTHER_LDFLAGS: ["$(inherited)", "-lmermoz_mobile", "-framework", Security, "-framework", SystemConfiguration, "-framework", CoreFoundation, "-lz", "-liconv"]
         INFOPLIST_KEY_CFBundleDisplayName: Mermoz
+        INFOPLIST_KEY_MERMOZGoogleClientID: "$(MERMOZ_GOOGLE_IOS_CLIENT_ID)"
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        MERMOZGoogleClientID: "$(MERMOZ_GOOGLE_IOS_CLIENT_ID)"
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: ["com.googleusercontent.apps.671467933259-lajeg027qo4eosf4h4hgaugb4kv4jadc"]
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
   MermozMobileTests:
     type: bundle.unit-test
     platform: iOS

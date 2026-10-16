@@ -11,6 +11,7 @@ downsampled for clean edges, then packed with `iconutil` into the macOS icon for
 Usage:
   scripts/make_icon.py                 # writes app/Resources/AppIcon.icns
   scripts/make_icon.py --png out.png   # also keep the 1024px master
+  scripts/make_icon.py --ios-icon out.png  # opaque, full-bleed iPhone master
 """
 
 from __future__ import annotations
@@ -61,11 +62,12 @@ def vertical_gradient(size: int, top: tuple[int, int, int], bottom: tuple[int, i
     return img
 
 
-def render() -> Image.Image:
+def render(mobile: bool = False) -> Image.Image:
     s = SIZE * SS
     # macOS icon grid: the shape sits inside ~824px of the 1024 canvas.
-    inset = int(100 * SS)
-    mask = squircle_mask(s, inset)
+    inset = 0 if mobile else int(100 * SS)
+    # iOS applies its own corner mask and requires an opaque, full-bleed master.
+    mask = Image.new("L", (s, s), 255) if mobile else squircle_mask(s, inset)
     bg = vertical_gradient(s, (214, 234, 251), (110, 168, 228)).convert("RGBA")
     icon = Image.new("RGBA", (s, s), (0, 0, 0, 0))
 
@@ -102,9 +104,15 @@ def render() -> Image.Image:
 
 @click.command()
 @click.option("--png", type=click.Path(path_type=Path), help="Also save the 1024px master PNG here.")
-def main(png: Path | None) -> None:
+@click.option("--ios-icon", type=click.Path(path_type=Path), help="Write an opaque 1024px iOS icon instead of the macOS icon.")
+def main(png: Path | None, ios_icon: Path | None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    master = render()
+    master = render(mobile=ios_icon is not None)
+    if ios_icon:
+        ios_icon.parent.mkdir(parents=True, exist_ok=True)
+        master.convert("RGB").save(ios_icon)
+        log.info("wrote %s", ios_icon)
+        return
     if png:
         master.save(png)
     with tempfile.TemporaryDirectory() as tmp:

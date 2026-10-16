@@ -1,81 +1,16 @@
-//! In-process mobile access to the local demo mailbox through an owned C ABI.
+//! In-process mobile access to the local mailbox through an owned C ABI.
 //!
-//! Calls on a handle must be serialized; the app owns its sandbox path and never
-//! starts a daemon, a sync worker or an AI provider.
+//! Calls on a handle must be serialized; the app owns its sandbox path and
+//! foreground sync lifecycle. No daemon or Mac connection is required.
 
-use mermoz_core::store::{Store, ThreadFilter, ThreadPatch};
-use serde::Deserialize;
+mod engine;
+mod login;
+
+pub use engine::MobileEngine;
 use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-
-pub struct MobileEngine {
-    store: Store,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "method", content = "params")]
-enum Request {
-    #[serde(rename = "threads.list")]
-    Threads { status: Option<String> },
-    #[serde(rename = "threads.get")]
-    Thread { id: String },
-    #[serde(rename = "threads.update")]
-    Update { id: String, status: String },
-    #[serde(rename = "search")]
-    Search { query: String },
-    #[serde(rename = "statuses.list")]
-    Statuses {},
-}
-
-impl MobileEngine {
-    pub fn open(home: &Path) -> mermoz_core::Result<Self> {
-        std::fs::create_dir_all(home)?;
-        let store = Store::open(&home.join("mermoz.sqlite"), &home.join("blobs"))?;
-        mermoz_core::demo_account::add(&store)?;
-        Ok(Self { store })
-    }
-
-    fn dispatch(&self, request: &str) -> Result<Value, String> {
-        let request: Request = serde_json::from_str(request).map_err(|e| e.to_string())?;
-        self.execute(request).map_err(|e| e.to_string())
-    }
-
-    fn execute(&self, request: Request) -> mermoz_core::Result<Value> {
-        match request {
-            Request::Threads { status } => {
-                let (threads, total) = self.store.threads(&ThreadFilter {
-                    status: status.map(|s| vec![s]),
-                    limit: 200,
-                    conversations: true,
-                    ..Default::default()
-                })?;
-                Ok(json!({ "threads": threads, "total": total }))
-            }
-            Request::Thread { id } => Ok(json!({
-                "thread": self.store.thread(&id)?,
-                "messages": self.store.conversation_messages(&id)?
-            })),
-            Request::Update { id, status } => {
-                // Check existence so a stale selection cannot report a successful edit.
-                self.store.thread(&id)?;
-                self.store.update_threads(
-                    std::slice::from_ref(&id),
-                    &ThreadPatch {
-                        status: Some(status),
-                        ..Default::default()
-                    },
-                )?;
-                Ok(json!(self.store.thread(&id)?))
-            }
-            Request::Search { query } => Ok(json!({
-                "threads": self.store.search(&query, 200, true)?
-            })),
-            Request::Statuses {} => Ok(json!(self.store.statuses()?)),
-        }
-    }
-}
 
 fn owned_string(value: Value) -> *mut c_char {
     // JSON escapes embedded NULs, so the owned C string always has one terminator.
