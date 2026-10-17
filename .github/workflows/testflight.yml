@@ -2,6 +2,10 @@ name: TestFlight
 on:
   workflow_dispatch:
     inputs:
+      test:
+        description: Run release-mode iPhone tests without uploading a build
+        type: boolean
+        default: false
       upload:
         description: Archive and upload after the local-store and iPhone UI tests pass
         type: boolean
@@ -28,11 +32,11 @@ jobs:
       - name: Check Apple access and app registration
         run: uv run scripts/release.py --platform ios --preflight
       - run: brew install xcodegen
-        if: inputs.upload
+        if: inputs.upload || inputs.test
       - run: cargo test --release -p mermoz-mobile
-        if: inputs.upload
+        if: inputs.upload || inputs.test
       - run: uv run scripts/build_app.py --platform ios-simulator --test
-        if: inputs.upload
+        if: inputs.upload || inputs.test
       - name: Archive and upload to internal TestFlight
         if: inputs.upload
         run: uv run scripts/release.py --platform ios --publish

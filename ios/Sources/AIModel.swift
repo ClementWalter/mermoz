@@ -36,7 +36,7 @@ struct MobileFeedSection: Decodable, Identifiable, Sendable {
 
 struct MobileFeedCard: Decodable, Identifiable, Sendable {
     let id: String
-    let kind: String
+    let kind: FeedKind
     let thread: MailThread
     let members: [MailThread]
     let title: String
@@ -47,14 +47,10 @@ struct MobileFeedCard: Decodable, Identifiable, Sendable {
     let texts: CardTexts?
     let textsWanted: Bool
     var label: String {
-        ["reply": "Reply", "decision": "Decide", "sign": "Review & sign", "promise": "Follow through",
-         "event": "Upcoming", "payment": "To pay", "intro": "Introduction", "waiting": "Waiting",
-         "cleanup": "Clear the noise", "reading": "To read", "other": "Open conversation"][kind] ?? kind
+        kind.label
     }
     var symbol: String {
-        ["reply": "arrowshape.turn.up.left", "decision": "arrow.triangle.branch", "sign": "signature",
-         "promise": "checkmark.circle", "event": "calendar", "payment": "creditcard", "intro": "person.badge.plus",
-         "waiting": "clock", "cleanup": "tray", "reading": "book", "other": "envelope"][kind] ?? "envelope"
+        kind.symbol
     }
 }
 

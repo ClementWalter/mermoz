@@ -109,7 +109,7 @@ private struct FeedCardView: View {
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(spacing: 7) {
                         Label(card.label.uppercased(), systemImage: card.symbol)
-                            .font(.system(size: 10, weight: .semibold)).tracking(0.6).foregroundStyle(Theme.accent)
+                            .font(.system(size: 10, weight: .semibold)).tracking(0.6).foregroundStyle(Color(hex: card.kind.color))
                         Spacer(minLength: 4)
                         if let due = card.due { Text(due).font(.caption2.weight(.medium)).foregroundStyle(Color(hex: "#B8741C")) }
                     }
@@ -161,14 +161,25 @@ private struct FeedCardView: View {
             }
             Divider().overlay(Theme.line)
             HStack(spacing: 14) {
-                if card.members.isEmpty {
+                if [.reply, .promise, .intro, .waiting].contains(card.kind) {
                     Button { reply(card.texts?.draft ?? "") } label: {
                         Label(card.texts?.draft.isEmpty == false ? "Review reply" : "Reply", systemImage: "arrowshape.turn.up.left")
                     }.font(.subheadline.weight(.medium)).accessibilityIdentifier("card-reply-\(card.thread.id)")
+                } else if [.cleanup, .reading].contains(card.kind) {
+                    Button(card.members.count > 1 ? "Archive \(card.members.count)" : "Archive", action: archive)
+                        .font(.subheadline.weight(.medium))
+                    NavigationLink("Read", value: card.thread).font(.subheadline)
+                } else {
+                    NavigationLink(card.kind == .sign ? "Open to sign" : "Open conversation", value: card.thread)
+                        .font(.subheadline.weight(.medium))
+                }
+                if card.members.isEmpty {
                     Button(action: chat) { Image(systemName: "sparkles") }.accessibilityLabel("Chat about this")
                 }
                 Spacer(minLength: 0)
-                Button(action: archive) { Image(systemName: "archivebox") }.accessibilityLabel("Archive")
+                if ![.cleanup, .reading].contains(card.kind) {
+                    Button(action: archive) { Image(systemName: "archivebox") }.accessibilityLabel("Archive")
+                }
             }.foregroundStyle(Theme.accent)
         }.padding(16).paperPanel()
     }

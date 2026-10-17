@@ -20,14 +20,14 @@ targets:
   MermozMobile:
     type: application
     platform: iOS
-    sources: [Sources, Bridge, Resources, ../app/Sources/MermozKit/Palette.swift]
+    sources: [Sources, Bridge, Resources, ../app/Sources/MermozKit/Palette.swift, ../app/Sources/MermozKit/FeedKind.swift]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.mermoz.iphone
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_ENTITLEMENTS: Mermoz.entitlements
         MARKETING_VERSION: "0.3.0"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
         MERMOZ_GOOGLE_IOS_CLIENT_ID: "671467933259-lajeg027qo4eosf4h4hgaugb4kv4jadc.apps.googleusercontent.com"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: Bridge/MermozMobile.h
