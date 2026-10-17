@@ -102,6 +102,10 @@ final class MailboxModel {
     var accountError: String?
     var connecting = false
     var total = 0
+    var feed: MobileFeed?
+    var ai: AIProgress?
+    var aiError: String?
+    private var aiRestored = false
     private let credentials = CredentialStore()
     private let login = GoogleLogin()
 
@@ -151,6 +155,19 @@ final class MailboxModel {
             }
             let _: EmptyResult = try await mailbox.call("sync.start")
             await refreshAccounts()
+            if !aiRestored {
+                if let config = try AIKeychain().load() {
+                    // Removed mailboxes must not regain consent from an old Keychain entry.
+                    var current = config
+                    current.accounts = config.accounts.filter { known.contains($0) }
+                    if !current.accounts.isEmpty {
+                        let _: EmptyResult = try await mailbox.call("ai.configure", params: ["configuration": try current.engineJSON])
+                    }
+                }
+                aiRestored = true
+            }
+            ai = try await mailbox.call("ai.status")
+            await prepareFeed()
         } catch { accountError = error.localizedDescription }
     }
 
@@ -158,6 +175,9 @@ final class MailboxModel {
         do {
             let fresh: [MailAccount] = try await mailbox.call("accounts.list")
             if fresh != accounts { accounts = fresh; revision += 1 }
+            let wasRunning = ai?.running == true
+            ai = try await mailbox.call("ai.status")
+            if wasRunning || ai?.running == true || feed == nil { await loadFeed() }
         }
         catch { accountError = error.localizedDescription }
     }
@@ -205,5 +225,36 @@ final class MailboxModel {
             threads += page.threads.filter { !existing.contains($0.id) }
             total = page.total ?? threads.count
         } catch { self.error = error.localizedDescription }
+    }
+
+    func loadFeed() async {
+        do { feed = try await mailbox.call("feed.list") }
+        catch { aiError = error.localizedDescription }
+    }
+
+    func prepareFeed() async {
+        await loadFeed()
+        guard ai?.enabled == true, ai?.running != true, let feed else { return }
+        do {
+            let ids = Array(feed.cards.flatMap { [$0.thread.id] + $0.members.map(\.id) }.prefix(12))
+            let data = try JSONEncoder().encode(ids)
+            let _: EmptyResult = try await mailbox.call("feed.refresh", params: ["ids": String(decoding: data, as: UTF8.self)])
+            ai = try await mailbox.call("ai.status")
+        } catch { aiError = error.localizedDescription }
+    }
+
+    func configureAI(_ configuration: AIConfiguration?) async throws {
+        let _: EmptyResult = try await mailbox.call("ai.configure", params: ["configuration": try configuration?.engineJSON ?? "null"])
+        do {
+            if let configuration { try AIKeychain().save(configuration) }
+            else { try AIKeychain().remove() }
+        } catch {
+            let _: EmptyResult? = try? await mailbox.call("ai.configure", params: ["configuration": "null"])
+            throw error
+        }
+        aiRestored = true
+        ai = try await mailbox.call("ai.status")
+        aiError = nil
+        await prepareFeed()
     }
 }

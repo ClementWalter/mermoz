@@ -23,11 +23,24 @@ pub struct MobileEngine {
     tasks: Mutex<HashMap<String, JoinHandle<()>>>,
     gmail_base: String,
     token_url: String,
+    ai: crate::ai::MobileAI,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "method", content = "params")]
 enum Request {
+    #[serde(rename = "feed.list")]
+    Feed {},
+    #[serde(rename = "ai.configure")]
+    AIConfigure { configuration: String },
+    #[serde(rename = "ai.status")]
+    AIStatus {},
+    #[serde(rename = "feed.refresh")]
+    FeedRefresh { ids: String },
+    #[serde(rename = "chat.list")]
+    ChatList { id: String },
+    #[serde(rename = "chat.send")]
+    ChatSend { id: String, question: String },
     #[serde(rename = "threads.list")]
     Threads {
         status: Option<String>,
@@ -91,6 +104,7 @@ impl MobileEngine {
             tasks: Mutex::new(HashMap::new()),
             gmail_base: "https://gmail.googleapis.com/gmail/v1/users/me".into(),
             token_url: "https://oauth2.googleapis.com/token".into(),
+            ai: Default::default(),
         })
     }
 
@@ -101,6 +115,39 @@ impl MobileEngine {
 
     fn execute(&self, request: Request) -> Result<Value> {
         match request {
+            Request::Feed {} => {
+                let today = mermoz_core::feed::today();
+                let units = self
+                    .store
+                    .feed_units(&Default::default(), today, now_ms())?;
+                let mut feed =
+                    mermoz_core::feed::assemble(units, today, &self.store.ai_accounts()?);
+                self.store.complete_feed(&mut feed)?;
+                Ok(json!(feed))
+            }
+            Request::AIConfigure { configuration } => {
+                self.ai.configure(
+                    &self.store,
+                    &self.runtime,
+                    serde_json::from_str(&configuration)?,
+                )?;
+                Ok(json!({}))
+            }
+            Request::AIStatus {} => Ok(json!(self.ai.status())),
+            Request::FeedRefresh { ids } => {
+                self.ai.refresh(
+                    self.store.clone(),
+                    &self.runtime,
+                    serde_json::from_str(&ids)?,
+                )?;
+                Ok(json!({}))
+            }
+            Request::ChatList { id } => Ok(json!(self.store.chat_messages(&id)?)),
+            Request::ChatSend { id, question } => {
+                self.ai
+                    .chat(self.store.clone(), &self.runtime, id, question)?;
+                Ok(json!({}))
+            }
             Request::Threads { status, offset } => {
                 let (threads, total) = self.store.threads(&ThreadFilter {
                     status: status.map(|s| vec![s]),
@@ -177,6 +224,7 @@ impl MobileEngine {
                 Ok(json!({}))
             }
             Request::Remove { id } => {
+                self.ai.pause(&self.runtime);
                 // Complete cancellation before deleting data so a worker cannot repopulate it.
                 let task = self.tasks.lock().unwrap().remove(&id);
                 if let Some(task) = task {
@@ -200,6 +248,7 @@ impl MobileEngine {
             }
             Request::Sync {} => Ok(json!({ "started": self.kick_all()? })),
             Request::Pause {} => {
+                self.ai.pause(&self.runtime);
                 let tasks: Vec<_> = self
                     .tasks
                     .lock()

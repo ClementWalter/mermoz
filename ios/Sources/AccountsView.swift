@@ -5,6 +5,7 @@ struct AccountsView: View {
     @Bindable var model: MailboxModel
     @Environment(\.dismiss) private var dismiss
     @State private var removing: MailAccount?
+    @State private var showingAI = false
 
     var body: some View {
         NavigationStack {
@@ -29,11 +30,13 @@ struct AccountsView: View {
                 if let error = model.accountError { Section { Text(error).foregroundStyle(.red) } }
                 Section("Your mail stays with you") {
                     Text("Mermoz stores your mailbox on this iPhone. It syncs directly with Gmail while you use the app. No Mac or Mermoz server is needed.")
-                    Text("AI and notifications aren't enabled in this beta.")
+                    Button("AI assistant", systemImage: "sparkles") { showingAI = true }
                     Link("Privacy policy", destination: URL(string: "https://mermoz.xyz/privacy/")!)
                 }
             }
             .navigationTitle("Accounts")
+            .mermozSurface()
+            .sheet(isPresented: $showingAI) { AISettingsView(model: model) }
             .toolbar { Button("Done") { dismiss() } }
             .confirmationDialog("Remove this account from Mermoz? Gmail itself won't be deleted.", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
                 if let removing { Button("Remove mailbox", role: .destructive) { Task { await model.removeAccount(removing); self.removing = nil } } }

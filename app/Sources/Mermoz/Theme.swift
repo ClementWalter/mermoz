@@ -3,13 +3,13 @@ import SwiftUI
 import MermozKit
 
 enum Theme {
-    static let ground = Color(hex: "#EAF3FB")
-    static let text = Color(hex: "#0D2436")
-    static let text2 = Color(hex: "#4B6477")
-    static let text3 = Color(hex: "#5A7386")
-    static let accent = Color(hex: "#1F6FB5")
-    static let accentSoft = Color(hex: "#DCEBFA")
-    static let line = Color(hex: "#DDE9F3")
+    static let ground = Color(hex: MermozPalette.ground)
+    static let text = Color(hex: MermozPalette.text)
+    static let text2 = Color(hex: MermozPalette.text2)
+    static let text3 = Color(hex: MermozPalette.text3)
+    static let accent = Color(hex: MermozPalette.accent)
+    static let accentSoft = Color(hex: MermozPalette.accentSoft)
+    static let line = Color(hex: MermozPalette.line)
     static let paper = Color.white.opacity(0.86)
     static let danger = Color(hex: "#C93A3A")
     static let ok = Color(hex: "#2E9A6B")

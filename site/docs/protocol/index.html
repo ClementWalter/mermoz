@@ -407,6 +407,16 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 <td><code>{}</code></td>
 </tr>
 <tr>
+<td><code>accounts.add_demo</code></td>
+<td><code>{}</code></td>
+<td><code>Account</code> (<code>provider: "demo"</code>); adds the local demo mailbox (or returns it), emits <code>accounts_changed</code>, <code>threads_changed</code>, <code>feed_changed</code>. It never syncs, its mail never goes to an AI, and <code>drafts.send</code> from it only files the message in its own Sent</td>
+</tr>
+<tr>
+<td><code>accounts.set_hidden</code></td>
+<td><code>{"id", "hidden": bool}</code></td>
+<td><code>{}</code>; a hidden account keeps syncing but its mail leaves every list, count, search, feed and suggestion; emits <code>accounts_changed</code> and <code>threads_changed</code></td>
+</tr>
+<tr>
 <td><code>statuses.list</code></td>
 <td><code>{}</code></td>
 <td><code>[Status]</code></td>
@@ -448,8 +458,18 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>search</code></td>
-<td><code>{"query", "limit"?: 50, "typing"?: false}</code> — every word must match as a whole word (accents and case aside); with <code>typing</code>, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each</td>
-<td><code>{"threads": [ThreadSummary]}</code></td>
+<td><code>{"query", "limit"?: 50, "typing"?: false}</code> — every word must match as a whole word (accents and case aside); with <code>typing</code>, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each. With search by meaning ready, the threads nearest in meaning (up to 20, cosine ≥ 0.30) are fused in by Reciprocal Rank Fusion (k = 60)</td>
+<td><code>{"threads": [ThreadSummary], "word_matches": n}</code> (how many hits hold the words)</td>
+</tr>
+<tr>
+<td><code>smart_search.status</code></td>
+<td><code>{}</code></td>
+<td><code>{"enabled", "phase": "off"|"starting"|"downloading"|"indexing"|"ready"|"error", "progress": 0-100, "indexed", "total"}</code></td>
+</tr>
+<tr>
+<td><code>smart_search.set</code></td>
+<td><code>{"enabled": bool}</code> — app only; off frees the model and stops indexing</td>
+<td>same as <code>smart_search.status</code></td>
 </tr>
 <tr>
 <td><code>search.gmail</code></td>
@@ -846,6 +866,11 @@ saving attachments, sharing a picked file). Google lets the user untick either;
 <td><code>drive.save_attachment</code></td>
 <td><code>{"attachment_id"}</code> — into <code>Mermoz/&lt;first project, split on "/"&gt;</code> or <code>Mermoz/No project</code>, folders created when missing; saving again returns the first save</td>
 <td><code>SavedAttachment</code></td>
+</tr>
+<tr>
+<td><code>drive.download</code></td>
+<td><code>{"account_id", "file_id", "format"?: "pdf"|"docx"|"xlsx"|"pptx"}</code> — a file's bytes saved on this Mac, to attach as a regular file (pass <code>path</code> to <code>drafts.create</code>/<code>drafts.attach</code>): stored files as they are (<code>alt=media</code>), Google files exported, to PDF unless <code>format</code> names another type the file allows; kept a day. Errors carry <code>data.reason</code>: <code>too_large</code> (over the 25 MB Gmail sends; nothing is downloaded when Drive gives the size), <code>no_file_form</code> (forms, folders), <code>no_access</code>, <code>failed</code></td>
+<td><code>{"file_id", "path", "filename", "mime", "size"}</code></td>
 </tr>
 <tr>
 <td><code>drive.saved</code></td>

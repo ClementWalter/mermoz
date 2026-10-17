@@ -5,6 +5,7 @@ final class MailboxUITests: XCTestCase {
     @MainActor func testAReplyDraftCanBeSavedFromAConversation() throws {
         let app = XCUIApplication()
         app.launch()
+        app.buttons["List"].tap()
         let search = app.searchFields.firstMatch
         _ = search.waitForExistence(timeout: 30)
         search.tap()
@@ -26,6 +27,7 @@ final class MailboxUITests: XCTestCase {
     @MainActor func testDemoMailboxOpensAConversation() throws {
         let app = XCUIApplication()
         app.launch()
+        app.buttons["List"].tap()
         let firstThread = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'thread-' ")).firstMatch
         _ = firstThread.waitForExistence(timeout: 30)
         firstThread.tap()
@@ -35,6 +37,7 @@ final class MailboxUITests: XCTestCase {
     @MainActor func testSearchFindsLocalMail() throws {
         let app = XCUIApplication()
         app.launch()
+        app.buttons["List"].tap()
         let search = app.searchFields.firstMatch
         _ = search.waitForExistence(timeout: 30)
         search.tap()
@@ -45,6 +48,7 @@ final class MailboxUITests: XCTestCase {
     @MainActor func testStatusSurvivesRelaunch() throws {
         let app = XCUIApplication()
         app.launch()
+        app.buttons["List"].tap()
         let firstThread = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'thread-' ")).firstMatch
         _ = firstThread.waitForExistence(timeout: 30)
         let identifier = firstThread.identifier
@@ -57,9 +61,42 @@ final class MailboxUITests: XCTestCase {
         _ = app.buttons.matching(identifier: "thread-status").matching(NSPredicate(format: "label CONTAINS 'Archive'")).firstMatch.waitForExistence(timeout: 10)
         app.terminate()
         app.launch()
+        app.buttons["List"].tap()
         let savedThread = app.buttons[identifier]
         _ = savedThread.waitForExistence(timeout: 30)
         savedThread.tap()
         XCTAssertTrue(app.buttons.matching(identifier: "thread-status").matching(NSPredicate(format: "label CONTAINS 'Archive'")).firstMatch.waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testAISettingsAreAvailableFromTheFeed() throws {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["ai-settings"].tap()
+        XCTAssertTrue(app.textFields["ai-model"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testFeedPreparedReplyOpensTheComposer() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let reply = app.buttons["Review reply"].firstMatch
+        for _ in 0..<12 {
+            if reply.exists && reply.isHittable { break }
+            app.swipeUp()
+        }
+        reply.tap()
+        let body = app.textViews["reply-body"]
+        _ = body.waitForExistence(timeout: 10)
+        XCTAssertFalse((body.value as? String ?? "").isEmpty)
+    }
+
+    @MainActor func testAConversationOpensContextualChat() throws {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["List"].tap()
+        let thread = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'thread-' ")).firstMatch
+        _ = thread.waitForExistence(timeout: 30)
+        thread.tap()
+        app.buttons["thread-chat"].tap()
+        XCTAssertTrue(app.textFields["chat-question"].waitForExistence(timeout: 10))
     }
 }

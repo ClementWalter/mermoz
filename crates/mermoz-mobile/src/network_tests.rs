@@ -4,6 +4,7 @@ use super::*;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use base64::Engine;
 use rstest::{fixture, rstest};
@@ -11,6 +12,39 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 type Requests = Arc<Mutex<Vec<(String, String, Value)>>>;
+
+async fn ai_stub(State(requests): State<Requests>, Json(body): Json<Value>) -> Response {
+    requests
+        .lock()
+        .unwrap()
+        .push(("POST".into(), "/chat/completions".into(), body.clone()));
+    if body["model"] == "refused" {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error":"rate limited"})),
+        )
+            .into_response();
+    }
+    if body["model"] == "slow" {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+    if body["stream"] == true {
+        let text = "Alex needs confirmation.\n<actions>[{\"kind\":\"draft_reply\",\"label\":\"Review reply\",\"body\":\"Confirmed from AI.\"}]</actions>";
+        let event = json!({"choices":[{"delta":{"content":text}}]});
+        return (
+            [("content-type", "text/event-stream")],
+            format!("data: {event}\n\ndata: [DONE]\n\n"),
+        )
+            .into_response();
+    }
+    let schema = &body["response_format"]["json_schema"]["schema"]["properties"];
+    let content = if schema.get("kind").is_some() {
+        json!({"kind":"reply","needs_reply":1.0,"urgency":2.0,"automated":0.0,"due":null,"amount":null})
+    } else {
+        json!({"title":"Confirm the mobile beta","why":"Alex is waiting for confirmation.","draft":"Confirmed from AI.","summary":"Alex asks for confirmation.","points":[],"options":[]})
+    };
+    Json(json!({"choices":[{"message":{"content":content.to_string()}}]})).into_response()
+}
 
 async fn gmail_stub(
     State(requests): State<Requests>,
@@ -67,6 +101,47 @@ struct ConnectedMailbox {
 }
 
 impl ConnectedMailbox {
+    fn configure_ai(&self, model: &str) -> String {
+        self.sync();
+        let thread = self
+            .engine
+            .store
+            .threads(&ThreadFilter {
+                account_id: Some(self.account_id.clone()),
+                limit: 1,
+                ..Default::default()
+            })
+            .unwrap()
+            .0
+            .remove(0);
+        self.engine
+            .store
+            .update_threads(
+                std::slice::from_ref(&thread.id),
+                &ThreadPatch {
+                    status: Some("todo".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let configuration = json!({"provider":{"id":"mobile-ai","name":"Test provider","kind":"openai","base_url":self.engine.gmail_base,"model":model},
+            "key":"mobile-test-secret-never-store","accounts":[self.account_id],"sorter":null});
+        self.engine.dispatch(&json!({"method":"ai.configure","params":{"configuration":configuration.to_string()}}).to_string()).unwrap();
+        thread.id
+    }
+
+    fn wait_for_ai(&self) {
+        self.engine.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while self.engine.ai.status().running {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        });
+    }
+
     fn sync(&self) {
         self.engine
             .dispatch(r#"{"method":"sync.start","params":{}}"#)
@@ -96,6 +171,7 @@ fn connected() -> ConnectedMailbox {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let router = Router::new()
+            .route("/chat/completions", axum::routing::post(ai_stub))
             .fallback(gmail_stub)
             .with_state(requests.clone());
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -278,4 +354,141 @@ fn a_used_login_callback_cannot_be_replayed(connected: ConnectedMailbox) {
             .dispatch(r#"{"method":"auth.finish","params":{"callback":"anything"}}"#)
             .is_err()
     );
+}
+
+#[rstest]
+fn ai_prepares_a_real_feed_reply(connected: ConnectedMailbox) {
+    let id = connected.configure_ai("test");
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"feed.refresh","params":{"ids":json!([id]).to_string()}}).to_string(),
+        )
+        .unwrap();
+    connected.wait_for_ai();
+    let feed = connected
+        .engine
+        .dispatch(r#"{"method":"feed.list","params":{}}"#)
+        .unwrap();
+    assert!(
+        feed["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| s["cards"].as_array().unwrap())
+            .any(|c| c["texts"]["draft"] == "Confirmed from AI.")
+    );
+}
+
+#[rstest]
+fn ai_chat_persists_a_reviewable_reply(connected: ConnectedMailbox) {
+    let id = connected.configure_ai("test");
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"chat.send","params":{"id":id,"question":"Help me reply"}})
+                .to_string(),
+        )
+        .unwrap();
+    connected.wait_for_ai();
+    let chat = connected.engine.store.chat_messages(&id).unwrap();
+    assert_eq!(
+        chat.last().unwrap().actions[0].body.as_deref(),
+        Some("Confirmed from AI.")
+    );
+}
+
+#[rstest]
+fn ai_chat_never_sends_a_reply(connected: ConnectedMailbox) {
+    let id = connected.configure_ai("test");
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"chat.send","params":{"id":id,"question":"Send a reply"}}).to_string(),
+        )
+        .unwrap();
+    connected.wait_for_ai();
+    assert!(
+        !connected
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, p, _)| p == "/messages/send")
+    );
+}
+
+#[rstest]
+fn ai_never_reads_an_unapproved_mailbox(connected: ConnectedMailbox) {
+    let id = connected.configure_ai("test");
+    connected
+        .engine
+        .store
+        .set_account_providers(&connected.account_id, &[])
+        .unwrap();
+    let other = connected
+        .engine
+        .store
+        .add_account("other@example.com", "gmail")
+        .unwrap();
+    let config = json!({"provider":{"id":"mobile-ai","name":"Test","kind":"openai","base_url":connected.engine.gmail_base,"model":"test"},"key":"test","accounts":[other.id]});
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"ai.configure","params":{"configuration":config.to_string()}})
+                .to_string(),
+        )
+        .unwrap();
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"feed.refresh","params":{"ids":json!([id]).to_string()}}).to_string(),
+        )
+        .unwrap();
+    connected.wait_for_ai();
+    assert!(
+        !connected
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, p, _)| p == "/chat/completions")
+    );
+}
+
+#[rstest]
+fn provider_failures_remain_visible(connected: ConnectedMailbox) {
+    let id = connected.configure_ai("refused");
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"feed.refresh","params":{"ids":json!([id]).to_string()}}).to_string(),
+        )
+        .unwrap();
+    connected.wait_for_ai();
+    assert!(connected.engine.ai.status().error.is_some());
+}
+
+#[rstest]
+fn backgrounding_cancels_ai(connected: ConnectedMailbox) {
+    let id = connected.configure_ai("slow");
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"feed.refresh","params":{"ids":json!([id]).to_string()}}).to_string(),
+        )
+        .unwrap();
+    connected
+        .engine
+        .dispatch(r#"{"method":"sync.pause","params":{}}"#)
+        .unwrap();
+    assert!(!connected.engine.ai.status().running);
+}
+
+#[rstest]
+fn ai_keys_are_not_restored_from_sqlite(connected: ConnectedMailbox) {
+    connected.configure_ai("test");
+    drop(connected.engine);
+    let reopened = MobileEngine::open(connected._home.path()).unwrap();
+    assert!(!reopened.ai.status().enabled);
 }

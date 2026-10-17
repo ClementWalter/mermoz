@@ -3,6 +3,8 @@
 //! Calls on a handle must be serialized; the app owns its sandbox path and
 //! foreground sync lifecycle. No daemon or Mac connection is required.
 
+mod ai;
+mod ai_judgment;
 mod engine;
 mod login;
 

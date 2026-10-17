@@ -1,12 +1,12 @@
 ---
 path: /privacy/
-title: Mermoz privacy: what stays on your Mac and what leaves it
+title: Mermoz privacy: what stays on your devices and what leaves them
 description: How Mermoz handles your mail: stored on your Mac, the Google scopes it asks for, which AI providers see email content and only when you turn them on, Google Drive, and the beta sign-up.
-updated: 2026-10-13
+updated: 2026-10-17
 ---
 # Mermoz privacy
 
-Mermoz is an email app that keeps your mailbox on your Mac. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the [source code]({{repo_url}}).
+Mermoz is an email app that keeps your mailbox on your Mac or iPhone. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the [source code]({{repo_url}}).
 
 > **Needs legal review.** This page describes how the software behaves. It is not yet a reviewed privacy policy: the data controller's identity, the legal bases (GDPR), retention periods and the Google API Limited Use statement below must be confirmed by counsel before the public launch.
 
@@ -24,6 +24,14 @@ Mermoz is an email app that keeps your mailbox on your Mac. There is no Mermoz s
 - **Gmail:** the `gmail.modify` scope, to read your mail, apply your labels and statuses (archive, trash, read state) and send the drafts you approve. Mermoz does not ask for permission to delete mail permanently.
 - **Google Drive (optional):** only when you click "Connect Google Drive", in a separate consent: `drive.readonly` (preview documents linked in your mail, files shared with a thread's people, search) and `drive.file` (save attachments into a Mermoz folder, share a file you picked). You can untick either; mail never depends on Drive. Drive file text Mermoz reads is cached on your Mac.
 - Companies can sign in through their own Google client instead of Mermoz's; that client is stored with the account on your Mac.
+
+## Mermoz on iPhone
+
+- The iPhone app has its own local mailbox in its Application Support directory. It talks directly to Gmail while the app is active; it does not connect to your Mac or copy the desktop mailbox. Google refresh tokens and AI keys are saved in the iPhone Keychain with device-only protection.
+- In AI settings, you select the mailboxes your chosen assistant may read. Their conversation text, recent messages you wrote to the same people, workflow statuses, project names and your questions go directly to the selected Anthropic or OpenAI-compatible endpoint. The assistant judges what needs attention, writes Feed card text and proposed replies, and answers contextual chat questions. Your provider's API usage charges apply.
+- You can select TypeSafe or SubQ for instant sorting instead. That provider receives conversation text and the classification questions; the writing assistant still handles card text and chat. Without a separate sorting provider, the writing assistant also judges the conversations.
+- Card text, judgments and chat history are cached in the local mailbox. AI jobs pause when the app backgrounds. Disconnecting AI cancels pending work and removes its saved credentials; removing a mailbox removes its local mail and Google credentials. Previously transmitted data remains subject to your provider's retention terms.
+- AI proposes replies; sending still requires you to review the draft and confirm its recipients. Demo mail uses fictional prepared cards and is not transmitted to an AI provider.
 
 > **Needs legal review.** Google requires apps using Gmail data to state that their use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. Confirm the exact wording before submitting for Google verification.
 

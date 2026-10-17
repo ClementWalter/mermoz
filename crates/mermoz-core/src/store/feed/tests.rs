@@ -32,6 +32,29 @@ fn today() -> chrono::NaiveDate {
     feed::today()
 }
 
+#[rstest]
+fn judging_scope_excludes_other_accounts(env: Env) {
+    env.mail("m", "t", MARIE, 0, "Please confirm.");
+    assert!(
+        env.store
+            .threads_to_judge_scoped(&today().to_string(), 24, Some("another-account"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[rstest]
+fn judging_scope_keeps_its_own_account(env: Env) {
+    let id = env.mail("m", "t", MARIE, 0, "Please confirm.");
+    assert_eq!(
+        env.store
+            .threads_to_judge_scoped(&today().to_string(), 24, Some(&env.acc))
+            .unwrap()[0]
+            .0,
+        id
+    );
+}
+
 impl Env {
     /// One message in thread `tid`, `days_ago` days back, from `from`.
     fn mail(&self, pid: &str, tid: &str, from: &str, days_ago: i64, body: &str) -> String {

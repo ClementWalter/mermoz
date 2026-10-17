@@ -85,6 +85,16 @@ impl Store {
     /// they mention a close date (see [`feed::backlog_worth_judging`]). Only the newest
     /// thread of a conversation is judged: its card reads the whole conversation.
     pub fn threads_to_judge(&self, today: &str, limit: i64) -> Result<Vec<ToJudge>> {
+        self.threads_to_judge_scoped(today, limit, None)
+    }
+
+    /// Consent-scoped readers must not let another account occupy their judging batch.
+    pub fn threads_to_judge_scoped(
+        &self,
+        today: &str,
+        limit: i64,
+        account_id: Option<&str>,
+    ) -> Result<Vec<ToJudge>> {
         let r = self.bg.lock().unwrap();
         let marks = vec!["?"; FEED_STATUSES.len()].join(",");
         let newest = |statuses: &str| {
@@ -96,15 +106,23 @@ impl Store {
         let mut st = r.prepare_cached(&format!(
             "SELECT t.id, t.last_date FROM threads t LEFT JOIN feed_judgments j ON j.thread_id = t.id
              WHERE t.status IN ({marks}) AND (j.thread_id IS NULL OR j.for_date < t.last_date OR j.judged = 0)
-               AND {} AND {NOT_DEMO_T}
+               AND {} AND {NOT_DEMO_T} AND (? IS NULL OR t.account_id = ?)
              ORDER BY t.last_date DESC LIMIT {limit}",
             newest(&marks)
         ))?;
+        let mut args: Vec<rusqlite::types::Value> = FEED_STATUSES
+            .iter()
+            .chain(FEED_STATUSES.iter())
+            .map(|s| (*s).to_string().into())
+            .collect();
+        args.extend([
+            account_id.map(String::from).into(),
+            account_id.map(String::from).into(),
+        ]);
         let mut out: Vec<ToJudge> = st
-            .query_map(
-                params_from_iter(FEED_STATUSES.iter().chain(FEED_STATUSES.iter())),
-                |r| Ok((r.get(0)?, r.get(1)?, false)),
-            )?
+            .query_map(params_from_iter(args), |r| {
+                Ok((r.get(0)?, r.get(1)?, false))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         let left = limit - out.len() as i64;
         if left > 0 {
@@ -117,14 +135,15 @@ impl Store {
                 "SELECT t.id, t.last_date FROM threads t LEFT JOIN feed_judgments j ON j.thread_id = t.id
                  WHERE t.status = 'backlog' AND t.last_date >= ?1
                    AND (j.thread_id IS NULL OR j.for_date < t.last_date OR (j.judged = 0 AND j.checked_day < ?2))
-                   AND {} AND {NOT_DEMO_T}
+                   AND {} AND {NOT_DEMO_T} AND (?4 IS NULL OR t.account_id = ?4)
                  ORDER BY t.last_date DESC LIMIT ?3",
                 newest(&quoted.join(","))
             ))?;
             out.extend(
-                st.query_map(params![now_ms() - BACKLOG_WINDOW_MS, today, left], |r| {
-                    Ok((r.get(0)?, r.get(1)?, true))
-                })?
+                st.query_map(
+                    params![now_ms() - BACKLOG_WINDOW_MS, today, left, account_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, true)),
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()?,
             );
         }

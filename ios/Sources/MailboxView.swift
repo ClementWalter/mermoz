@@ -1,4 +1,4 @@
-/// Phone navigation, local search and persisted workflow actions for demo mail.
+/// The action Feed leads; the mail list and conversation reader remain one tap away.
 import SwiftUI
 
 struct MailboxView: View {
@@ -7,11 +7,20 @@ struct MailboxView: View {
     @State private var status: String?
     @State private var showingInfo = false
     @State private var showingDrafts = false
+    @State private var showingAI = false
+    @State private var layout = "Feed"
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                Picker("Layout", selection: $layout) {
+                    Text("Feed").tag("Feed")
+                    Text("List").tag("List")
+                }.pickerStyle(.segmented).padding(.horizontal, 18).padding(.vertical, 10)
+                if layout == "Feed" && query.isEmpty {
+                    FeedView(model: model, openAISettings: { showingAI = true })
+                } else {
                 if query.isEmpty {
                     ScrollView(.horizontal) {
                         HStack(spacing: 8) {
@@ -32,12 +41,14 @@ struct MailboxView: View {
                         ForEach(model.threads) { thread in
                             NavigationLink(value: thread) { ThreadRow(thread: thread) }
                             .accessibilityIdentifier("thread-\(thread.id)")
+                            .listRowBackground(Theme.paper)
                         }
                         if query.isEmpty && model.threads.count < model.total {
                             Button("Load more mail") { Task { await model.loadMore(status: status) } }
                         }
                     }
                     .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                     .overlay {
                         if model.threads.isEmpty && !model.loading {
                             ContentUnavailableView(query.isEmpty ? "All clear" : "No matching mail", systemImage: "tray")
@@ -45,8 +56,12 @@ struct MailboxView: View {
                     }
                     .refreshable { await model.resume(); await model.load(status: status, query: query) }
                 }
+                }
             }
+            .background(Theme.ground).foregroundStyle(Theme.text)
             .navigationTitle("Mermoz")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Theme.ground.opacity(0.92), for: .navigationBar)
             .searchable(text: $query, prompt: "Search your mail")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -55,11 +70,9 @@ struct MailboxView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Drafts", systemImage: "square.and.pencil") { showingDrafts = true }
                 }
-            }
-            .safeAreaInset(edge: .bottom) {
-                Text(model.isDemo ? "Demo mailbox · Stored on this iPhone" : "Your mail · Stored on this iPhone")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(10).frame(maxWidth: .infinity).background(.bar)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("AI", systemImage: "sparkles") { showingAI = true }.accessibilityIdentifier("ai-settings")
+                }
             }
             .navigationDestination(for: MailThread.self) { thread in
                 ThreadView(model: model, thread: thread)
@@ -71,6 +84,7 @@ struct MailboxView: View {
                 AccountsView(model: model)
             }
             .sheet(isPresented: $showingDrafts) { DraftsView(model: model) }
+            .sheet(isPresented: $showingAI) { AISettingsView(model: model) }
             .task(id: scenePhase) {
                 if scenePhase == .active {
                     await model.resume()
@@ -80,6 +94,7 @@ struct MailboxView: View {
                         polls += 1
                         if polls % 20 == 0 {
                             let _: EmptyResult? = try? await model.mailbox.call("sync.start")
+                            await model.prepareFeed()
                         }
                         do { try await Task.sleep(for: .seconds(3)) }
                         catch { break }
@@ -87,14 +102,14 @@ struct MailboxView: View {
                 } else if scenePhase == .background { await model.pause() }
             }
         }
-        .tint(Color(red: 0.18, green: 0.36, blue: 0.29))
+        .tint(Theme.accent).preferredColorScheme(.light)
     }
 
     private func statusButton(_ title: String, key: String?) -> some View {
         Button { status = key } label: {
             Text(title).font(.subheadline.weight(.medium))
                 .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(status == key ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.08), in: Capsule())
+                .background(status == key ? Theme.accentSoft : Color.white.opacity(0.7), in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(status == key ? .isSelected : [])
@@ -132,6 +147,7 @@ private struct ThreadView: View {
     @State private var error: String?
     @State private var updating = false
     @State private var showingReply = false
+    @State private var showingChat = false
 
     var body: some View {
         ScrollView {
@@ -151,7 +167,7 @@ private struct ThreadView: View {
                             }
                             Text(message.bodyText).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding().background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+                        .padding().paperPanel()
                     }
                 } else if error == nil { ProgressView("Opening conversation…") }
                 if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("mail-error") }
@@ -159,10 +175,15 @@ private struct ThreadView: View {
             .padding()
         }
         .navigationBarTitleDisplayMode(.inline)
+        .background(Theme.ground).foregroundStyle(Theme.text)
         .toolbar {
             ToolbarItem(placement: .bottomBar) {
                 Button("Reply", systemImage: "arrowshape.turn.up.left") { showingReply = true }
                     .disabled(detail == nil).accessibilityIdentifier("reply-button")
+            }
+            ToolbarItem(placement: .bottomBar) {
+                Button("Chat about this", systemImage: "sparkles") { showingChat = true }
+                    .accessibilityIdentifier("thread-chat")
             }
             ToolbarItem(placement: .topBarTrailing) {
             Menu {
@@ -178,6 +199,7 @@ private struct ThreadView: View {
             }
         }
         .sheet(isPresented: $showingReply) { ReplyView(model: model, thread: thread) }
+        .sheet(isPresented: $showingChat) { ChatView(model: model, thread: thread) }
         .task {
             do {
                 let _: EmptyResult = try await model.mailbox.call("threads.read", params: ["id": thread.id])

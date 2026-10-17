@@ -4,7 +4,8 @@ A standalone, local-first iPhone app. The SwiftUI interface calls the existing R
 mail store in-process through `mermoz-mobile`; no Mac, daemon, socket or Mermoz
 server is needed. Gmail accounts sync directly with Google while the app is active.
 
-The beta includes native Google consent with PKCE, resumable mailbox import,
+The beta opens on the desktop's action Feed, using a shared color palette,
+paper cards, prepared replies and decision options. Native Google consent with PKCE, resumable mailbox import,
 incremental sync, conversation reading, workflow status filters, local full-text
 search, pagination and replies. Replies are saved locally and require an explicit
 send confirmation. Unconfirmed deliveries remain visible in Drafts and cannot be
@@ -12,19 +13,33 @@ silently sent again. Maya Laurent's fictional mailbox is available for an offlin
 trial and is hidden when a real Gmail account connects.
 
 Mail lives in the app's Application Support directory. Refresh credentials live
-only in the iPhone Keychain. Foreground sync pauses when the app backgrounds and
-resumes on return; this build has no background notifications. New-message compose,
-attachment viewing, AI and the card-based Feed are future milestones. The desktop
+only in the iPhone Keychain. Foreground sync and AI pause when the app backgrounds and
+resume on return; this build has no background notifications. New-message compose
+and attachment viewing are future milestones. The desktop
 mailbox is independent of this store; Mermoz workflow metadata does not synchronize
 between devices except where represented by Gmail labels.
 
 ## Install the beta
 
-Version 0.2.0 build 2 is available to the internal `Mermoz Beta` group in
+The internal `Mermoz Beta` group is available in
 [TestFlight](https://appstoreconnect.apple.com/apps/6823699933/testflight/ios).
 Install Apple's TestFlight app on the iPhone, open the invitation sent to the
 account holder's Apple account email, and choose Install for Mermoz. This route
 does not require Developer Mode or a connected Mac.
+
+## AI on iPhone
+
+Settings > AI connects an Anthropic or OpenAI-compatible API key and model. Select
+which mailboxes the provider may read before connecting. API keys live in the
+device-only Keychain and are restored into memory; they are never written to the
+mailbox database. Desktop subscription sign-ins are not connected on iPhone.
+
+The shared Rust Feed handles ordering, dates, amounts, cached card words and
+decision options. The chosen assistant judges conversations and writes card words;
+TypeSafe or SubQ can handle judging with a separate key. Card words fill in during
+foreground work. Chat uses the desktop context and streaming implementation;
+validated reply proposals open an editable composer and never send automatically.
+The fictional demo includes prepared AI cards without making provider requests.
 
 ## Build and run
 

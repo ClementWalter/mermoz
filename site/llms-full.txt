@@ -1680,6 +1680,8 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `accounts.sign_in_status` | `{}`                                                                               | `{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?}`; `kind`: `admin_policy`, `unverified`, `org_internal`, `app_blocked`, `declined` |
 | `accounts.reconnect` | `{"account_id"}`                                                                       | `{"auth_url"}`; signs the account in again with the app's client (or the account's own client), keeping local mail; emits `accounts_changed` |
 | `accounts.remove`    | `{"id"}`                                                                                 | `{}`                                     |
+| `accounts.add_demo` | `{}` | `Account` (`provider: "demo"`); adds the local demo mailbox (or returns it), emits `accounts_changed`, `threads_changed`, `feed_changed`. It never syncs, its mail never goes to an AI, and `drafts.send` from it only files the message in its own Sent |
+| `accounts.set_hidden` | `{"id", "hidden": bool}`                                                             | `{}`; a hidden account keeps syncing but its mail leaves every list, count, search, feed and suggestion; emits `accounts_changed` and `threads_changed` |
 | `statuses.list`      | `{}`                                                                                     | `[Status]`                               |
 | `labels.list`        | `{}`                                                                                     | `[{"account_id","id","name","count"}]` user labels ("mailboxes"), nested with `/` |
 | `projects.list`      | `{}`                                                                                     | `[Project]`                              |
@@ -1688,7 +1690,9 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `projects.delete`    | `{"id"}` — deletes the Gmail label on every account; the mail stays                       | `{"threads": n}`                         |
 | `counts`             | `{"conversations"?: false}` — with `conversations`, one per conversation, plus a `kind` map of open feeds and lists                                                                                    | `{"status": {key: n}, "project": {name: n}, "account": {id: n}}` (open threads only: `done`/`archive`/`deleted` are omitted) |
 | `threads.list`       | `{"status"?: [key], "project"?, "account_id"?, "label_id"?, "priority"?: [n], "order"?: "last_date"\|"priority"\|"due"\|"created", "reverse"?: false, "limit"?: 200, "offset"?: 0, "conversations"?: false, "kind"?: ["person"\|"feed"\|"list"], "suggested"?: true \| {"status": key \| null, "projects"?: [name]}}` — `suggested`: only threads with a pending suggestion, or with one going to that destination; `conversations` lists only the thread leading each conversation (its latest open thread, else its latest) | `{"threads": [ThreadSummary], "total": n}`; newest / most urgent / soonest first unless `reverse` (no priority / no due date stay last) |
-| `search`             | `{"query", "limit"?: 50, "typing"?: false}` — every word must match as a whole word (accents and case aside); with `typing`, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each | `{"threads": [ThreadSummary]}` |
+| `search`             | `{"query", "limit"?: 50, "typing"?: false}` — every word must match as a whole word (accents and case aside); with `typing`, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each. With search by meaning ready, the threads nearest in meaning (up to 20, cosine ≥ 0.30) are fused in by Reciprocal Rank Fusion (k = 60) | `{"threads": [ThreadSummary], "word_matches": n}` (how many hits hold the words) |
+| `smart_search.status` | `{}` | `{"enabled", "phase": "off"\|"starting"\|"downloading"\|"indexing"\|"ready"\|"error", "progress": 0-100, "indexed", "total"}` |
+| `smart_search.set` | `{"enabled": bool}` — app only; off frees the model and stops indexing | same as `smart_search.status` |
 | `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every account, for mail Mermoz doesn't hold | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
 | `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
 | `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null}` (`earlier`: messages left out by `latest`) |
@@ -1789,6 +1793,7 @@ saving attachments, sharing a picked file). Google lets the user untick either;
 | `drive.pick` | `{"account_id", "file_ids"?: [id]}` — app only; opens Google's file picker (`drive.file` only); without a Drive connection the pick connects Drive with `drive.file` alone | `{"pick_id", "auth_url"}` |
 | `drive.pick_result` | `{"pick_id"}` | `{"account_id", "state": "waiting\|done\|declined\|error", "files": [DriveFile], "error"}` |
 | `drive.save_attachment` | `{"attachment_id"}` — into `Mermoz/<first project, split on "/">` or `Mermoz/No project`, folders created when missing; saving again returns the first save | `SavedAttachment` |
+| `drive.download` | `{"account_id", "file_id", "format"?: "pdf"\|"docx"\|"xlsx"\|"pptx"}` — a file's bytes saved on this Mac, to attach as a regular file (pass `path` to `drafts.create`/`drafts.attach`): stored files as they are (`alt=media`), Google files exported, to PDF unless `format` names another type the file allows; kept a day. Errors carry `data.reason`: `too_large` (over the 25 MB Gmail sends; nothing is downloaded when Drive gives the size), `no_file_form` (forms, folders), `no_access`, `failed` | `{"file_id", "path", "filename", "mime", "size"}` |
 | `drive.saved` | `{"thread_id"}` | `[SavedAttachment]` |
 | `drive.share` | `{"account_id", "file_id", "emails": [email], "role": "reader"\|"commenter"}` — app only, after the user confirms; Drive sends no email of its own | `{"shared": [email], "failed": [{"email", "reason"}]}` |
 
@@ -1920,11 +1925,11 @@ Leave the Gmail address you'll use in the form on the [homepage](/#beta). Mermoz
 
 ---
 
-<!-- https://mermoz.xyz/privacy/ · updated 2026-10-13 -->
+<!-- https://mermoz.xyz/privacy/ · updated 2026-10-17 -->
 
 # Mermoz privacy
 
-Mermoz is an email app that keeps your mailbox on your Mac. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the [source code](https://github.com/ClementWalter/mermoz).
+Mermoz is an email app that keeps your mailbox on your Mac or iPhone. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the [source code](https://github.com/ClementWalter/mermoz).
 
 > **Needs legal review.** This page describes how the software behaves. It is not yet a reviewed privacy policy: the data controller's identity, the legal bases (GDPR), retention periods and the Google API Limited Use statement below must be confirmed by counsel before the public launch.
 
@@ -1942,6 +1947,14 @@ Mermoz is an email app that keeps your mailbox on your Mac. There is no Mermoz s
 - **Gmail:** the `gmail.modify` scope, to read your mail, apply your labels and statuses (archive, trash, read state) and send the drafts you approve. Mermoz does not ask for permission to delete mail permanently.
 - **Google Drive (optional):** only when you click "Connect Google Drive", in a separate consent: `drive.readonly` (preview documents linked in your mail, files shared with a thread's people, search) and `drive.file` (save attachments into a Mermoz folder, share a file you picked). You can untick either; mail never depends on Drive. Drive file text Mermoz reads is cached on your Mac.
 - Companies can sign in through their own Google client instead of Mermoz's; that client is stored with the account on your Mac.
+
+## Mermoz on iPhone
+
+- The iPhone app has its own local mailbox in its Application Support directory. It talks directly to Gmail while the app is active; it does not connect to your Mac or copy the desktop mailbox. Google refresh tokens and AI keys are saved in the iPhone Keychain with device-only protection.
+- In AI settings, you select the mailboxes your chosen assistant may read. Their conversation text, recent messages you wrote to the same people, workflow statuses, project names and your questions go directly to the selected Anthropic or OpenAI-compatible endpoint. The assistant judges what needs attention, writes Feed card text and proposed replies, and answers contextual chat questions. Your provider's API usage charges apply.
+- You can select TypeSafe or SubQ for instant sorting instead. That provider receives conversation text and the classification questions; the writing assistant still handles card text and chat. Without a separate sorting provider, the writing assistant also judges the conversations.
+- Card text, judgments and chat history are cached in the local mailbox. AI jobs pause when the app backgrounds. Disconnecting AI cancels pending work and removes its saved credentials; removing a mailbox removes its local mail and Google credentials. Previously transmitted data remains subject to your provider's retention terms.
+- AI proposes replies; sending still requires you to review the draft and confirm its recipients. Demo mail uses fictional prepared cards and is not transmitted to an AI provider.
 
 > **Needs legal review.** Google requires apps using Gmail data to state that their use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. Confirm the exact wording before submitting for Google verification.
 

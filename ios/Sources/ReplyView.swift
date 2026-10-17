@@ -23,11 +23,11 @@ struct ReplyView: View {
     @State private var confirmingSend = false
     @State private var confirmingClose = false
 
-    init(model: MailboxModel, thread: MailThread, savedDraft: MailDraft? = nil) {
+    init(model: MailboxModel, thread: MailThread, savedDraft: MailDraft? = nil, initialBody: String = "") {
         self.model = model
         self.thread = thread
         _draft = State(initialValue: savedDraft)
-        _bodyText = State(initialValue: savedDraft?.body ?? "")
+        _bodyText = State(initialValue: savedDraft?.body ?? initialBody)
     }
 
     var body: some View {
@@ -59,6 +59,7 @@ struct ReplyView: View {
                 }
             }
             .navigationTitle("Reply")
+            .mermozSurface()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
