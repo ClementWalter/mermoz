@@ -49,6 +49,7 @@ struct FeedView: View {
                             FeedCardView(card: card, reply: { text in
                                 reply = CardReply(thread: card.thread, body: text)
                             }, chat: { chatting = card.thread }, archive: { Task { await archive(card) } })
+                                .task { await model.prepareFeed(ids: [card.thread.id] + card.members.map(\.id)) }
                         }
                         if section.more > 0 {
                             Text("\(section.more) more · find all your mail in List")

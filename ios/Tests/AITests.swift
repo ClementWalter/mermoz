@@ -4,6 +4,22 @@ import Testing
 @testable import MermozMobile
 
 struct AITests {
+    @Test func newlyVisibleCardsWaitForTheCurrentBatch() {
+        var queue = FeedPreparationQueue()
+        queue.request(["first"])
+        let batch = queue.batch(fallback: [])
+        queue.request(["next"])
+        queue.accepted(batch)
+        #expect(queue.batch(fallback: []) == ["next"])
+    }
+
+    @Test func aBusyEngineDoesNotDiscardPendingCards() {
+        var queue = FeedPreparationQueue()
+        queue.request(["visible"])
+        _ = queue.batch(fallback: [])
+        #expect(queue.hasPending)
+    }
+
     @Test func demoFeedContainsPreparedReplies() async throws {
         let home = URL.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }

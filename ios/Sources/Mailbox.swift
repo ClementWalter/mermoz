@@ -106,6 +106,8 @@ final class MailboxModel {
     var ai: AIProgress?
     var aiError: String?
     private var aiRestored = false
+    @ObservationIgnored private var cardQueue = FeedPreparationQueue()
+    @ObservationIgnored private var preparingFeed = false
     private let credentials = CredentialStore()
     private let login = GoogleLogin()
 
@@ -178,6 +180,7 @@ final class MailboxModel {
             let wasRunning = ai?.running == true
             ai = try await mailbox.call("ai.status")
             if wasRunning || ai?.running == true || feed == nil { await loadFeed() }
+            if wasRunning && ai?.running != true && cardQueue.hasPending { await prepareFeed() }
         }
         catch { accountError = error.localizedDescription }
     }
@@ -232,13 +235,19 @@ final class MailboxModel {
         catch { aiError = error.localizedDescription }
     }
 
-    func prepareFeed() async {
+    func prepareFeed(ids: [String] = []) async {
+        cardQueue.request(ids)
+        guard !preparingFeed else { return }
+        // Swift actor calls suspend, so reserve preparation before inspecting engine state.
+        preparingFeed = true
+        defer { preparingFeed = false }
         await loadFeed()
         guard ai?.enabled == true, ai?.running != true, let feed else { return }
         do {
-            let ids = Array(feed.cards.flatMap { [$0.thread.id] + $0.members.map(\.id) }.prefix(12))
-            let data = try JSONEncoder().encode(ids)
+            let batch = cardQueue.batch(fallback: feed.cards.flatMap { [$0.thread.id] + $0.members.map(\.id) })
+            let data = try JSONEncoder().encode(batch)
             let _: EmptyResult = try await mailbox.call("feed.refresh", params: ["ids": String(decoding: data, as: UTF8.self)])
+            cardQueue.accepted(batch)
             ai = try await mailbox.call("ai.status")
         } catch { aiError = error.localizedDescription }
     }

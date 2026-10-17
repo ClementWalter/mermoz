@@ -9,6 +9,23 @@ struct MobileFeed: Decodable, Sendable {
     var cards: [MobileFeedCard] { sections.flatMap(\.cards) }
 }
 
+struct FeedPreparationQueue {
+    private var pending: [String] = []
+    var hasPending: Bool { !pending.isEmpty }
+
+    mutating func request(_ ids: [String]) {
+        for id in ids where !pending.contains(id) { pending.append(id) }
+    }
+
+    func batch(fallback: [String]) -> [String] {
+        Array((pending.isEmpty ? fallback : pending).prefix(12))
+    }
+
+    mutating func accepted(_ ids: [String]) {
+        pending.removeAll { ids.contains($0) }
+    }
+}
+
 struct MobileFeedSection: Decodable, Identifiable, Sendable {
     let key: String
     let title: String
