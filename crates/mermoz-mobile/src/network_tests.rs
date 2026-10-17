@@ -419,6 +419,46 @@ fn ai_chat_never_sends_a_reply(connected: ConnectedMailbox) {
 }
 
 #[rstest]
+fn ai_chat_omits_another_mailboxs_history(connected: ConnectedMailbox) {
+    use mermoz_core::store::{IncomingMessage, SyncMode};
+    let id = connected.configure_ai("test");
+    let other = connected
+        .engine
+        .store
+        .add_account("private@example.com", "gmail")
+        .unwrap();
+    connected.engine.store.ingest(&other.id, &other.email, &IncomingMessage {
+        provider_id: "private-ask".into(), provider_thread_id: "private-thread".into(),
+        label_ids: vec!["INBOX".into()], internal_date: now_ms() - 1000,
+        parsed: mermoz_core::mime::parse(b"From: Alex <alex@example.com>\r\nTo: private@example.com\r\nSubject: Private question\r\n\r\nA question for your private mailbox.").unwrap(),
+    }, SyncMode::Initial).unwrap();
+    connected.engine.store.ingest(&other.id, &other.email, &IncomingMessage {
+        provider_id: "private-answer".into(), provider_thread_id: "private-thread".into(),
+        label_ids: vec!["SENT".into()], internal_date: now_ms(),
+        parsed: mermoz_core::mime::parse(b"From: private@example.com\r\nTo: Alex <alex@example.com>\r\nSubject: Private question\r\n\r\nPRIVATE OTHER MAILBOX SECRET").unwrap(),
+    }, SyncMode::Initial).unwrap();
+    connected
+        .engine
+        .dispatch(
+            &json!({"method":"chat.send","params":{"id":id,"question":"Help me reply"}})
+                .to_string(),
+        )
+        .unwrap();
+    connected.wait_for_ai();
+    let requests = connected.requests.lock().unwrap();
+    let request = requests
+        .iter()
+        .find(|(_, path, _)| path == "/chat/completions")
+        .unwrap();
+    assert!(
+        !request
+            .2
+            .to_string()
+            .contains("PRIVATE OTHER MAILBOX SECRET")
+    );
+}
+
+#[rstest]
 fn ai_never_reads_an_unapproved_mailbox(connected: ConnectedMailbox) {
     let id = connected.configure_ai("test");
     connected

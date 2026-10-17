@@ -5101,8 +5101,8 @@ impl Store {
         )?)
     }
 
-    /// The user's own latest messages in other threads where this thread's correspondents
-    /// wrote too, newest first (indexed on the sender, like the router's history).
+    /// The account's own latest messages with these correspondents, newest first.
+    /// Keeping history within the account preserves per-mailbox AI consent.
     pub fn my_past_messages(
         &self,
         thread_id: &str,
@@ -5113,9 +5113,11 @@ impl Store {
             "WITH people AS (
                SELECT DISTINCT lower(from_email) e FROM messages WHERE thread_id = ?1 AND is_from_me = 0),
              peers AS (
-               SELECT DISTINCT m.thread_id FROM people p JOIN messages m ON lower(m.from_email) = p.e WHERE m.thread_id != ?1)
+               SELECT DISTINCT m.thread_id FROM people p JOIN messages m ON lower(m.from_email) = p.e
+               WHERE m.thread_id != ?1 AND m.account_id = (SELECT account_id FROM threads WHERE id = ?1))
              SELECT m.date, m.subject, m.body_text FROM peers JOIN messages m ON m.thread_id = peers.thread_id
-             WHERE m.is_from_me = 1 ORDER BY m.date DESC LIMIT ?2",
+             WHERE m.is_from_me = 1 AND m.account_id = (SELECT account_id FROM threads WHERE id = ?1)
+             ORDER BY m.date DESC LIMIT ?2",
         )?;
         Ok(st
             .query_map(params![thread_id, limit], |r| {
@@ -7673,6 +7675,42 @@ mod tests {
             s.my_past_messages(&tid, 5).unwrap()[0].body,
             "My earlier answer"
         );
+    }
+
+    #[rstest]
+    fn past_messages_do_not_cross_mailbox_consent_boundaries(env: Env) {
+        let s = &env.store;
+        let tid = one_thread(&env);
+        let other = s.add_account("private@example.com", "gmail").unwrap();
+        s.ingest(
+            &other.id,
+            &other.email,
+            &incoming(
+                "private-ask",
+                "private-thread",
+                "marc@x.com",
+                &["INBOX"],
+                now_ms() - DAY,
+                "Private question",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        s.ingest(
+            &other.id,
+            &other.email,
+            &incoming(
+                "private-answer",
+                "private-thread",
+                &other.email,
+                &["SENT"],
+                now_ms() - DAY + 1,
+                "Private mailbox history",
+            ),
+            SyncMode::Initial,
+        )
+        .unwrap();
+        assert!(s.my_past_messages(&tid, 5).unwrap().is_empty());
     }
 
     #[rstest]
