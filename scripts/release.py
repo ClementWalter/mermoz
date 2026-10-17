@@ -120,6 +120,17 @@ def ios_export_options(team: str, publish: bool) -> dict:
             "uploadSymbols": True, "testFlightInternalTestingOnly": True}
 
 
+def ios_latest_build(api: AppStoreAPI, app_id: str) -> dict | None:
+    """Read Apple's processing and beta availability separately from upload success."""
+    query = urllib.parse.urlencode({"filter[app]": app_id, "sort": "-uploadedDate", "limit": "1"})
+    builds = api.request(f"builds?{query}")["data"]
+    if not builds:
+        return None
+    build = builds[0]
+    detail = api.request(f"builds/{build['id']}/buildBetaDetail")["data"]
+    return {"id": build["id"], **build["attributes"], "beta": detail["attributes"] if detail else None}
+
+
 def release_ios(run: signing.Runner, *, publish: bool, preflight: bool) -> None:
     """Archive and upload only after Apple identifies an existing, accessible app record."""
     import plistlib
@@ -143,7 +154,9 @@ def release_ios(run: signing.Runner, *, publish: bool, preflight: bool) -> None:
         raise
     log.info("App Store Connect app %s is accessible", app_id)
     if preflight:
-        (root / "status.json").write_text(json.dumps({"state": "ready", "app_id": app_id}, indent=2))
+        latest = ios_latest_build(api, app_id)
+        (root / "status.json").write_text(json.dumps({"state": "ready", "app_id": app_id, "latest_build": latest}, indent=2))
+        log.info("Latest TestFlight build: %s", json.dumps(latest))
         return
     team = os.environ.get("MERMOZ_APPLE_TEAM_ID", "").strip()
     if not team:

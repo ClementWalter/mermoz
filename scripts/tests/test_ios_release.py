@@ -43,3 +43,24 @@ def test_exports_use_the_requested_destination(publish, destination):
 
 def test_exports_keep_the_locally_tested_build_number():
     assert release.ios_export_options("TEAM", True)["manageAppVersionAndBuildNumber"] is False
+
+
+class BuildStub:
+    def __init__(self, builds):
+        self.builds = builds
+
+    def request(self, path):
+        if path.startswith("builds?"):
+            return {"data": self.builds}
+        if path == "builds/build/buildBetaDetail":
+            return {"data": {"attributes": {"internalBuildState": "IN_BETA_TESTING"}}}
+        raise AssertionError(path)
+
+
+def test_no_upload_has_no_beta_status():
+    assert release.ios_latest_build(BuildStub([]), "app") is None
+
+
+def test_beta_availability_is_read_from_apple():
+    api = BuildStub([{"id": "build", "attributes": {"version": "3", "processingState": "VALID"}}])
+    assert release.ios_latest_build(api, "app")["beta"]["internalBuildState"] == "IN_BETA_TESTING"
