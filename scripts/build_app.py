@@ -62,7 +62,7 @@ RUST_BINS = ("mermozd", "mermoz")
 # Anthropic PBC's Apple team: the leaf certificate OU of `ant`'s Developer ID signature.
 ANTHROPIC_TEAM = "Q6L2SF6YDW"
 ANTHROPIC_REQUIREMENT = f'anchor apple generic and certificate leaf[subject.OU] = "{ANTHROPIC_TEAM}"'
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 
 def simulator_id(devices: dict, requested: str | None = None) -> str:
