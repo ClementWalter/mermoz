@@ -996,8 +996,9 @@ pub struct Store {
     r: Mutex<Connection>,
     /// Reads for the background router, so its history scans never queue the UI's reads.
     bg: Mutex<Connection>,
-    /// Checkpoints, with the database version they last saw.
-    ckpt: Mutex<(Connection, i64)>,
+    /// Checkpoints, with the database version they last saw and the database file they
+    /// sync.
+    ckpt: Mutex<(Connection, i64, std::fs::File)>,
     blobs: PathBuf,
     counts_cache: Mutex<counts::CountsCache>,
     /// Whether any account is hidden, so queries skip the visibility filter otherwise.
@@ -1483,6 +1484,16 @@ fn draft_attachment_row(r: &Row) -> rusqlite::Result<DraftAttachment> {
     })
 }
 
+/// Flushes a file's written pages to the disk, as SQLite does with `fullfsync` off.
+fn sync_file(file: &std::fs::File) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: fsync only reads the descriptor, which `file` keeps open for the call.
+    if unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 /// A message's full-text row, written after the rest of its batch.
 struct FtsRow<'m> {
     rowid: i64,
@@ -1517,7 +1528,7 @@ impl Store {
             w: Mutex::new(w),
             r: Mutex::new(reader()?),
             bg: Mutex::new(reader()?),
-            ckpt: Mutex::new((reader()?, -1)),
+            ckpt: Mutex::new((reader()?, -1, std::fs::File::open(path)?)),
             blobs: blobs.to_path_buf(),
             counts_cache: Default::default(),
             any_hidden: Default::default(),
@@ -1536,12 +1547,24 @@ impl Store {
     }
 
     /// Copies committed WAL pages into the database file, when anything was written since
-    /// the last call. Run off the write path: SQLite's own checkpoint runs inside the
-    /// commit that fills the WAL, holding the write lock for the whole copy. Passive, so
-    /// it never waits on (or blocks) a writer or a reader. Returns the pages copied.
+    /// the last call and no write is in flight. Run off the write path: SQLite's own
+    /// checkpoint runs inside the commit that fills the WAL, holding the write lock for the
+    /// whole copy. A write in flight skips it: the copy's fsyncs would flush the WAL the
+    /// writer is appending to, stretching both (by 100s of ms on a slow disk) and every
+    /// click queued on the lock; the batch copies its own pages after its commit and the
+    /// next call catches up the rest. Returns the pages copied.
     pub fn checkpoint(&self) -> Result<i64> {
+        if matches!(self.w.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+            return Ok(0);
+        }
+        self.copy_wal()
+    }
+
+    /// [`Self::checkpoint`] whether or not a write is in flight. Passive, so it never
+    /// waits on (or blocks) a writer or a reader.
+    fn copy_wal(&self) -> Result<i64> {
         let mut g = self.ckpt.lock().unwrap();
-        let (conn, seen) = &mut *g;
+        let (conn, seen, file) = &mut *g;
         let version: i64 = conn.query_row("PRAGMA data_version", [], |r| r.get(0))?;
         if version == *seen {
             return Ok(0);
@@ -1551,6 +1574,13 @@ impl Store {
             conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
                 Ok((r.get(1)?, r.get(2)?))
             })?;
+        // SQLite syncs the database file only when no commit lands during the copy, which
+        // under a sync with clicks is almost never: the copied pages would pile up for
+        // the rewind below to flush under the write lock (~1 s at 500k). Synced here, each
+        // flush is one batch's pages, off the lock. Plain fsync, as SQLite's own.
+        if copied > 0 {
+            sync_file(file)?;
+        }
         // The WAL only starts over when a write finds no reader on it; under steady reads
         // it keeps growing. Past 64 MB it is rewound by the writer itself (other writes
         // queue on its lock, never fail busy), giving up after 50 ms of waiting on readers.
@@ -1850,7 +1880,7 @@ impl Store {
         drop(w);
         // A sync writes batch after batch: the WAL is copied back after each, with the
         // write lock already released, so clicks never wait on the copy.
-        self.checkpoint()?;
+        self.copy_wal()?;
         Ok(ids)
     }
 
@@ -5654,6 +5684,43 @@ mod tests {
             )
             .unwrap();
         assert!(env.store.checkpoint().unwrap() > 0);
+    }
+
+    #[rstest]
+    fn checkpoint_waits_out_a_write_in_flight(env: Env) {
+        env.store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        let _writing = env.store.w.lock().unwrap();
+        assert_eq!(env.store.checkpoint().unwrap(), 0);
+    }
+
+    #[rstest]
+    fn checkpoint_after_a_write_in_flight_copies_it(env: Env) {
+        env.store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &incoming("m1", "t1", "marc@x.com", &["INBOX"], now_ms(), "hi"),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        let writing = env.store.w.lock().unwrap();
+        env.store.checkpoint().unwrap();
+        drop(writing);
+        assert!(env.store.checkpoint().unwrap() > 0);
+    }
+
+    #[rstest]
+    fn sync_file_flushes_a_written_file() {
+        let mut f = tempfile::tempfile().unwrap();
+        std::io::Write::write_all(&mut f, b"page").unwrap();
+        assert!(super::sync_file(&f).is_ok());
     }
 
     #[rstest]

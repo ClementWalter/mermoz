@@ -1531,6 +1531,7 @@ dependencies = [
  "chrono",
  "flate2",
  "jsonwebtoken",
+ "libc",
  "mail-builder",
  "mail-parser",
  "rand 0.9.5",

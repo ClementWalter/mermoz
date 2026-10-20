@@ -24,6 +24,7 @@ security-framework.workspace = true
 chrono.workspace = true
 regex.workspace = true
 jsonwebtoken.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 flate2 = "1"
