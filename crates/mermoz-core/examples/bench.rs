@@ -2,6 +2,11 @@
 //! then times the hot reads against the budgets in SPEC.md. Exits non-zero on a miss.
 //!
 //! cargo run --release -p mermoz-core --example bench -- [messages] [db-dir]
+//!
+//! The budgets are the speed bar on a Mac that keeps the mailbox in its page cache.
+//! A slower machine sets its allowance per kind: `MERMOZ_BENCH_READ_SCALE` multiplies
+//! the read budgets, `MERMOZ_BENCH_WRITE_SCALE` those timed on the sync's write path
+//! (write lock and fsync), which a small VM slows far more than reads.
 
 use mermoz_core::mime::ParsedMessage;
 use mermoz_core::model::Address;
@@ -382,39 +387,58 @@ fn main() {
         }
         writes = writer.join().unwrap();
     });
-    checks.push(Check {
+    let mut write_checks = vec![Check {
         // Background throughput, its checkpoint included; clicks wait only on the lock.
         name: "sync batch (100 messages)",
         p95: pct(&mut writes, 0.95),
         budget: Duration::from_millis(200),
-    });
+    }];
     checks.push(Check {
         name: "threads.list during sync",
         p95: pct(&mut reads, 0.95),
         budget: Duration::from_millis(16),
     });
     // Optimistic in the app, so the user never sees it; it waits one batch at most.
-    checks.push(Check {
+    write_checks.push(Check {
         name: "status change during sync",
         p95: pct(&mut edits, 0.95),
         budget: Duration::from_millis(100),
     });
 
+    let (read_scale, write_scale) = (
+        scale("MERMOZ_BENCH_READ_SCALE"),
+        scale("MERMOZ_BENCH_WRITE_SCALE"),
+    );
     let mut failed = false;
-    for c in &checks {
-        let ok = c.p95 <= c.budget;
+    let scaled = checks.iter().map(|c| (c, read_scale));
+    for (c, s) in scaled.chain(write_checks.iter().map(|c| (c, write_scale))) {
+        let budget = c.budget.mul_f64(s);
+        let ok = c.p95 <= budget;
         failed |= !ok;
         eprintln_info(&format!(
-            "{} {:<29} p95 {:>8.2} ms  (budget {} ms)",
+            "{} {:<29} p95 {:>8.2} ms  (budget {} ms{})",
             if ok { "ok  " } else { "MISS" },
             c.name,
             c.p95.as_secs_f64() * 1000.0,
-            c.budget.as_millis()
+            budget.as_millis(),
+            if s == 1.0 {
+                String::new()
+            } else {
+                format!(", {s}x")
+            }
         ));
     }
     if failed {
         std::process::exit(1);
     }
+}
+
+/// A budget multiplier from the environment; 1 when unset.
+fn scale(var: &str) -> f64 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0)
 }
 
 /// Benchmark output goes to stderr so stdout stays clean for piping.
