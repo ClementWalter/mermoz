@@ -830,7 +830,7 @@ pub fn assemble(units: Vec<FeedUnit>, today: NaiveDate, ai_accounts: &HashSet<St
         placed.push(place_batch(Kind::Reading, reading, ai_accounts));
     }
     // Stable: a batch tying with single cards comes after them.
-    placed.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    placed.sort_by_key(|a| (a.0, a.1));
     let mut sections: Vec<FeedSection> = Section::ALL
         .iter()
         .map(|s| FeedSection {

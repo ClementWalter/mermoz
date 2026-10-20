@@ -212,7 +212,9 @@ impl VectorIndex {
     pub fn nearest(&self, q: &Quantized, k: usize, floor: f32) -> Vec<(String, f32)> {
         let mut scored: Vec<(usize, f32)> = self
             .data
-            .chunks_exact(DIM)
+            .as_chunks::<DIM>()
+            .0
+            .iter()
             .zip(&self.scales)
             .enumerate()
             .map(|(i, (row, s))| (i, dot(row, &q.bytes[..DIM]) as f32 / (s * q.scale)))

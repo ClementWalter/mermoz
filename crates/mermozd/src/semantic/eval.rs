@@ -80,11 +80,18 @@ fn load_or_embed(model: &LlamaEmbedder, docs: &[(String, String)]) -> Vec<Vec<f3
     if let Some(c) = cache.as_ref().filter(|c| c.exists()) {
         let bytes = std::fs::read(c).unwrap();
         let floats: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         info!("vectors from {}", c.display());
-        out = floats.chunks_exact(768).map(<[f32]>::to_vec).collect();
+        out = floats
+            .as_chunks::<768>()
+            .0
+            .iter()
+            .map(|v| v.to_vec())
+            .collect();
         out.truncate(docs.len());
     }
     let t = Instant::now();

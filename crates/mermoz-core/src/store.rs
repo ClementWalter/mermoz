@@ -4890,7 +4890,7 @@ impl Store {
         let mut index: std::collections::HashMap<String, usize> = Default::default();
         let mut convs: Vec<std::collections::HashSet<String>> = vec![];
         let mut emails: Vec<_> = by_email.into_iter().collect();
-        emails.sort_by(|a, b| b.1.2.cmp(&a.1.2));
+        emails.sort_by_key(|e| std::cmp::Reverse(e.1.2));
         for (email, (name, _count, last, written)) in emails {
             let card = cards.get(&email);
             if is_automated(&email) || (!written && card.is_none()) {

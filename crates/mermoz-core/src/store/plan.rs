@@ -207,7 +207,7 @@ impl Store {
             .filter(|s| entries.iter().any(|e| senders::matches(e, s)))
             .map(candidate)
             .collect();
-        hits.sort_by(|a, b| b.threads.cmp(&a.threads));
+        hits.sort_by_key(|h| std::cmp::Reverse(h.threads));
         Ok(hits)
     }
 
@@ -255,7 +255,7 @@ impl Store {
             }
         }
         counts.retain(|(_, n)| *n >= 2);
-        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        counts.sort_by_key(|c| std::cmp::Reverse(c.1));
         Ok(counts.into_iter().take(2).map(|(p, _)| p).collect())
     }
 
@@ -332,7 +332,7 @@ impl Store {
                 }
             }
             counts.retain(|(_, n)| *n >= 2);
-            counts.sort_by(|a, b| b.1.cmp(&a.1));
+            counts.sort_by_key(|c| std::cmp::Reverse(c.1));
             subjects = counts
                 .into_iter()
                 .take(4)
@@ -401,7 +401,7 @@ impl Store {
             }
         }
         counts.retain(|(_, n)| *n >= 2);
-        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        counts.sort_by_key(|c| std::cmp::Reverse(c.1));
         for (prefix, threads) in counts {
             if c.subjects.len() < 4
                 && !c

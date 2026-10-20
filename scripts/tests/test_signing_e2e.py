@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import build_app
 import pytest
 import signing
 
@@ -28,6 +29,8 @@ pytestmark = pytest.mark.skipif(
 
 REPO = Path(__file__).resolve().parents[2]
 ENTITLEMENTS = REPO / "app" / "Mermoz.entitlements"
+# Anthropic's verified `ant`, as a build would bundle it; Apache Ant shares the name.
+ANT = build_app.find_anthropic_ant(signing.Runner(), signing.ADHOC) if sys.platform == "darwin" else None
 TEST_IDENTITY = "Developer ID Application: Mermoz Signing Test (TEST000000)"
 PASSWORD = "mermoz-test"  # throwaway keychain, deleted after the test
 
@@ -89,9 +92,8 @@ def signed_app(keychain, tmp_path_factory) -> Path:
     compile_tool(d, "Mermoz", contents / "MacOS" / "Mermoz")
     compile_tool(d, "mermozd", contents / "Resources" / "mermozd")
     compile_tool(d, "mermoz", contents / "Resources" / "mermoz")
-    ant = shutil.which("ant")
-    if ant:  # the real vendor-signed binary, when installed
-        shutil.copy2(Path(ant).resolve(), contents / "Resources" / "ant")
+    if ANT:  # the real vendor-signed binary, when installed
+        shutil.copy2(ANT, contents / "Resources" / "ant")
     (contents / "Info.plist").write_bytes(
         plistlib.dumps(
             {"CFBundleIdentifier": "ai.mermoz.app", "CFBundleExecutable": "Mermoz", "CFBundlePackageType": "APPL"}
@@ -143,7 +145,7 @@ def test_signed_tools_still_run(signed_app: Path):
     assert sh(str(signed_app / "Contents" / "Resources" / "mermozd")) == "mermozd\n"
 
 
-@pytest.mark.skipif(shutil.which("ant") is None, reason="ant CLI not installed")
+@pytest.mark.skipif(ANT is None, reason="Anthropic's ant CLI not installed")
 def test_ant_keeps_anthropics_signature(signed_app: Path):
     assert "Authority=Developer ID Application: Anthropic PBC" in details(signed_app / "Contents" / "Resources" / "ant")
 

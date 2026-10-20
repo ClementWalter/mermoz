@@ -1008,7 +1008,7 @@ impl Store {
                 }
             }
         }
-        people.sort_by(|a, b| b.messages.cmp(&a.messages));
+        people.sort_by_key(|p| std::cmp::Reverse(p.messages));
         files.reverse();
         links.reverse();
         let lead = threads

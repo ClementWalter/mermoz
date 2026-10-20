@@ -41,6 +41,11 @@ pub fn seed(store: &Store) -> Result<()> {
         "Bonjour,\n\nLa réunion parents-professeurs aura lieu le {} à 18h, salle 12. Merci d'apporter le carnet signé.\n\nMme Dubois",
         soon.format("%d/%m")
     );
+    // Due five days ahead: within the week, past the two days that make a bill urgent.
+    let bill = format!(
+        "Bonjour,\n\nMontant à régler : 126,00 € avant le {}. Facture n° 2026-10-4471.\nPaiement en ligne ou par virement.",
+        (chrono::Local::now() + chrono::Duration::days(5)).format("%d/%m")
+    );
     let lease = ParsedAttachment {
         filename: "Avenant_bail_2026.pdf".into(),
         mime: "application/pdf".into(),
@@ -236,7 +241,7 @@ pub fn seed(store: &Store) -> Result<()> {
                 tid: "canteen",
                 from: addr("Caisse des écoles", "factures@ecoles.example"),
                 subject: "Facture cantine — octobre",
-                body: "Bonjour,\n\nMontant à régler : 126,00 € avant le 20/10. Facture n° 2026-10-4471.\nPaiement en ligne ou par virement.",
+                body: &bill,
                 hours_ago: 8,
                 labels: &["INBOX", "UNREAD"],
                 attachments: vec![],

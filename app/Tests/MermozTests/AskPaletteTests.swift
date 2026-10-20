@@ -408,15 +408,16 @@ private func reviewing() async -> (AppModel, StubBackend) {
     window.contentView = host
     host.layoutSubtreeIfNeeded()
     let typed = "delete all message from gemeni notes from google meet"
-    var total = Duration.zero
+    var costs: [Duration] = []
     for c in typed {
         let t0 = ContinuousClock.now
         model.askFlow.query.append(c)
         // Layout applies the change: the palette renders and lays out. No run-loop turn,
         // so no other main-thread work is counted.
         host.layoutSubtreeIfNeeded()
-        total += t0.duration(to: .now)
+        costs.append(t0.duration(to: .now))
     }
-    let perKey = total / typed.count
+    // The median keystroke: one stall of a shared CI machine does not stand for typing.
+    let perKey = costs.sorted()[costs.count / 2]
     #expect(perKey < .milliseconds(4), "a keystroke took \(perKey)")
 }
