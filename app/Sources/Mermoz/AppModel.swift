@@ -150,8 +150,15 @@ final class AppModel {
     var threads: [ThreadSummary] = []
     var totalThreads = 0
     var selectedThreadId: String? {
-        didSet { if selectedThreadId != oldValue { selectionMoved() } }
+        didSet {
+            if selectedThreadId != oldValue {
+                boardHold = selectedThreadId.flatMap { BoardHold($0, in: threads) }
+                selectionMoved()
+            }
+        }
     }
+    /// The open card's place on the board, kept while it stays open (see `BoardHold`).
+    private var boardHold: BoardHold?
     /// Threads selected together with ⇧ or ⌘; empty means only `selectedThreadId`.
     var multiSelection: [String] = [] {
         didSet { if multiSelection != oldValue { selectionMoved() } }
@@ -626,7 +633,8 @@ final class AppModel {
 
     var groups: [ThreadGroup] {
         let d = effectiveDisplay
-        return Grouper.group(threads, by: d.grouping, then: d.subGrouping) { [statuses, projects, accounts] field in
+        let shown = layout == .board ? boardHold?.apply(threads) ?? threads : threads
+        return Grouper.group(shown, by: d.grouping, then: d.subGrouping) { [statuses, projects, accounts] field in
             switch field {
             case .status: statuses.map(\.key)
             case .priority: ["1", "2", "3", "4", "0"]
@@ -857,12 +865,24 @@ final class AppModel {
 
     /// Opens the row after `ids`.
     private func advance(past ids: [String]) {
-        let order = layout == .list ? displayOrder : threads
-        let idx = order.firstIndex { ids.contains($0.id) }
-        let rest = order.filter { !ids.contains($0.id) }
+        let next = nextThread(after: ids)
         multiSelection = []
-        guard let idx, ids.contains(selectedThreadId ?? "") else { return }
-        open(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id, record: false)
+        guard let next, ids.contains(selectedThreadId ?? "") else { return }
+        open(next, record: false)
+    }
+
+    /// Where the selection lands once `ids` move away: the next row of the list, or the
+    /// card below in the same board column. `.some(nil)`: nothing is left.
+    private func nextThread(after ids: [String]) -> String?? {
+        if layout == .board {
+            let columns = groups.map { $0.all.map(\.id) }
+            guard columns.contains(where: { $0.contains(where: ids.contains) }) else { return nil }
+            return .some(BoardStep.next(after: ids, in: columns))
+        }
+        let order = displayOrder
+        guard let idx = order.firstIndex(where: { ids.contains($0.id) }) else { return nil }
+        let rest = order.filter { !ids.contains($0.id) }
+        return .some(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id)
     }
 
     // MARK: multi-selection
@@ -975,6 +995,12 @@ final class AppModel {
     /// the selection moves, so the frame that shows the new highlight shows its row.
     @ObservationIgnored var revealSelection: (() -> Void)?
 
+    /// A move the user asked for shows at once, even on the open card.
+    /// `nil`: whatever was undone, re-place the open card.
+    private func rehold(_ ids: [String]? = nil) {
+        if let h = boardHold, ids?.contains(h.id) ?? true { boardHold = BoardHold(h.id, in: threads) }
+    }
+
     private func setLocal(_ id: String, _ f: (inout ThreadSummary) -> Void) {
         if let i = threads.firstIndex(where: { $0.id == id }) { f(&threads[i]) }
         if detail?.thread.id == id { f(&detail!.thread) }
@@ -998,6 +1024,7 @@ final class AppModel {
                 switch due { case let .set(v): t.due = v; case .clear: t.due = nil; case .keep: break }
             }
         }
+        rehold(ids)
         // A status change moves the thread out of a single-status list immediately.
         // A thread moved to a status this view doesn't show leaves it at once, and the
         // total follows so no "Showing n of n+1" flashes until the refresh.
@@ -1029,6 +1056,7 @@ final class AppModel {
         guard !ids.isEmpty, let client else { return }
         recordUndo("Mark Unread", ids)
         for id in ids { setLocal(id) { $0.unread = true; $0.status = "unread" } }
+        rehold(ids)
         Task {
             do {
                 for id in ids { try await client.markRead(id, read: false) }
@@ -1041,14 +1069,10 @@ final class AppModel {
     func moveSelected(to status: String) {
         let ids = targetIds
         guard !ids.isEmpty else { return }
-        let order = layout == .list ? displayOrder : threads
-        let idx = order.firstIndex { ids.contains($0.id) }
+        let next = nextThread(after: ids)
         update(ids, status: status)
         // Keep the keyboard flow going: land on the thread after the moved ones.
-        if let idx {
-            let rest = order.filter { !ids.contains($0.id) }
-            open(rest.isEmpty ? nil : rest[min(idx, rest.count - 1)].id, record: false)
-        }
+        if let next { open(next, record: false) }
     }
 
     // MARK: undo (⌘Z)
@@ -1078,6 +1102,7 @@ final class AppModel {
                     toast = "Undid \(entry.label)"
                     refreshCounts()
                     await loadList()
+                    rehold()
                     return
                 }
                 if let token = entry.answerUndo, let s = entry.answered {
@@ -1094,6 +1119,7 @@ final class AppModel {
                     toast = "Undid \(entry.label)"
                     refreshCounts()
                     await loadList()
+                    rehold()
                     if showsFeed { feedRestore(entry.restore.map(\.id)) }
                     return
                 }
@@ -1115,6 +1141,7 @@ final class AppModel {
                 toast = "Undid \(entry.label)"
                 refreshCounts()
                 await loadList()
+                rehold()
                 if let id = selectedThreadId, entry.before.contains(where: { $0.id == id }) { open(id, record: false) }
             } catch { report(error) }
         }
