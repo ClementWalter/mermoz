@@ -148,6 +148,8 @@ pub struct Outlook {
     base: String,
     tokens: Arc<TokenSource>,
     slots: tokio::sync::Semaphore,
+    /// The mailbox's folders as last read, and when: folders change rarely.
+    pub folder_cache: std::sync::Mutex<Option<(std::time::Instant, Arc<labels::FolderMap>)>>,
 }
 
 impl Outlook {
@@ -162,6 +164,7 @@ impl Outlook {
             base,
             tokens,
             slots: tokio::sync::Semaphore::new(CONCURRENCY),
+            folder_cache: std::sync::Mutex::new(None),
         }
     }
 

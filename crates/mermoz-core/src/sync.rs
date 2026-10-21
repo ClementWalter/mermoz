@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+mod outlook;
 mod push;
 
 /// Notifications fanned out to subscribed clients.
@@ -92,6 +93,10 @@ impl AccountSync {
     /// Gmail's own search, for mail Mermoz doesn't hold (not synced yet, or in folders
     /// it doesn't import): each hit with its sender, subject and date.
     pub async fn search_gmail(&self, q: &str, max: u32) -> Result<Vec<GmailHit>> {
+        // Only Gmail has it; other accounts simply find nothing there.
+        if !matches!(self.backend, Backend::Gmail(_)) {
+            return Ok(vec![]);
+        }
         let found = self.gmail()?.search_messages(q, max).await?;
         let mut out = vec![];
         for r in found.messages {
@@ -121,6 +126,9 @@ impl AccountSync {
 
     /// Stores messages found by [`Self::search_gmail`]; returns their threads.
     pub async fn pull(&self, ids: &[String]) -> Result<Vec<String>> {
+        if let Backend::Outlook(o) = &self.backend {
+            return self.outlook_pull(o, ids).await;
+        }
         let msgs = self
             .fetch_many(ids.iter().map(|i| (i.clone(), String::new())).collect())
             .await?;
@@ -133,6 +141,9 @@ impl AccountSync {
     }
 
     pub async fn refresh_labels(&self) -> Result<()> {
+        if let Backend::Outlook(o) = &self.backend {
+            return self.folder_map(o, true).await.map(|_| ());
+        }
         let labels = self.gmail()?.labels().await?;
         let pairs: Vec<(String, String)> = labels.into_iter().map(|l| (l.id, l.name)).collect();
         self.store.set_labels(&self.account_id, &pairs)
@@ -188,6 +199,9 @@ impl AccountSync {
     /// Imports the mailbox newest-first, page by page, resuming from the saved cursor.
     /// Recent mail is usable within seconds while older mail keeps streaming in.
     pub async fn initial_sync(&self) -> Result<()> {
+        if let Backend::Outlook(o) = &self.backend {
+            return self.outlook_initial_sync(o).await;
+        }
         let profile = self.gmail()?.profile().await?;
         if self.store.history_id(&self.account_id)?.is_none() {
             // Captured before listing so nothing that arrives meanwhile is missed.
@@ -262,6 +276,9 @@ impl AccountSync {
     /// threads changed. Label changes the store already shows (the echo of our own
     /// pushes) are skipped without asking Gmail for the message.
     pub async fn incremental(&self) -> Result<usize> {
+        if let Backend::Outlook(o) = &self.backend {
+            return self.outlook_incremental(o).await;
+        }
         let Some(start) = self.store.history_id(&self.account_id)? else {
             return Ok(0);
         };
@@ -500,7 +517,14 @@ impl AccountSync {
     /// Sends a draft now; the thread then waits on the other side.
     pub async fn send_draft(&self, draft: &Draft, after_status: Option<&str>) -> Result<()> {
         let (raw, provider_thread) = draft_message(&self.store, &self.email, draft)?;
-        let sent = self.gmail()?.send(&raw, provider_thread.as_deref()).await?;
+        // Gmail names the sent copy; Outlook files it in Sent Items without saying.
+        let sent_id = match &self.backend {
+            Backend::Gmail(g) => Some(g.send(&raw, provider_thread.as_deref()).await?.id),
+            Backend::Outlook(o) => {
+                o.send_mime(&raw).await?;
+                None
+            }
+        };
         self.store.set_draft_state(&draft.id, "sent")?;
         // The sent copy syncs back with its own attachments; these copies are spent.
         if let Err(e) = self.store.purge_draft_files(&draft.id) {
@@ -520,11 +544,18 @@ impl AccountSync {
         let _ = self.events.send(Event::DraftsChanged);
         // Only the sent copy, briefly: a full history pull can take minutes while a
         // bulk relabel is being pushed, and the sender waits on this call.
-        match tokio::time::timeout(SENT_COPY_WAIT, self.pull(std::slice::from_ref(&sent.id))).await
-        {
+        let pulled = match &sent_id {
+            Some(id) => tokio::time::timeout(SENT_COPY_WAIT, self.pull(std::slice::from_ref(id)))
+                .await
+                .map(|r| r.map(|_| ())),
+            None => tokio::time::timeout(SENT_COPY_WAIT, self.incremental())
+                .await
+                .map(|r| r.map(|_| ())),
+        };
+        match pulled {
             Ok(Err(e)) => debug!("sent copy not pulled: {e}"),
             Err(_) => debug!("sent copy not pulled in time; the next sync brings it"),
-            Ok(Ok(_)) => {}
+            Ok(Ok(())) => {}
         }
         Ok(())
     }

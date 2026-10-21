@@ -77,6 +77,55 @@ impl Store {
         Ok(threads.into_iter().collect())
     }
 
+    /// Imported threads whose status came from a message that isn't in the Inbox (a
+    /// sent reply listed before the mail it answers) take the status their whole
+    /// thread gives, as if imported together. Threads with local edits waiting are
+    /// left alone.
+    pub fn settle_imported(&self, account_id: &str, thread_ids: &[String]) -> Result<()> {
+        let mut w = self.w.lock().unwrap();
+        let tx = w.transaction()?;
+        for tid in thread_ids {
+            let row: Option<(String, i64, bool)> = tx
+                .query_row(
+                    "SELECT status, last_date, unread FROM threads WHERE id = ?1",
+                    [tid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
+                )
+                .optional()?;
+            let Some((status, last_date, unread)) = row else {
+                continue;
+            };
+            let pending: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM ops WHERE key = ?1)",
+                [tid],
+                |r| r.get(0),
+            )?;
+            if status != "archive" || pending {
+                continue;
+            }
+            let (in_inbox, names) = Self::thread_remote_labels(&tx, account_id, tid)?;
+            if !in_inbox {
+                continue;
+            }
+            let label = Self::status_from_labels(&tx, &names)?;
+            let next = super::initial_status(
+                true,
+                names.contains("TRASH"),
+                unread,
+                label.as_deref(),
+                last_date,
+                crate::model::now_ms(),
+                super::SyncMode::Initial,
+            );
+            tx.execute(
+                "UPDATE threads SET status = ?2 WHERE id = ?1",
+                params![tid, next],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Provider ids of the account's messages carrying `label_id`.
     pub fn messages_with_label(&self, account_id: &str, label_id: &str) -> Result<Vec<String>> {
         let r = self.r.lock().unwrap();

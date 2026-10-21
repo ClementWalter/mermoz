@@ -9,6 +9,7 @@
 use super::AccountSync;
 use crate::error::{Error, Result};
 use crate::gmail::BATCH_MODIFY_MAX;
+use crate::provider::Backend;
 use crate::store::{LABEL_PREFIX, Op};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use tracing::warn;
@@ -32,10 +33,10 @@ enum Plan {
 
 /// How a chunk went: ops pushed, ops that failed, and whether Gmail is unreachable.
 #[derive(Default)]
-struct Outcome {
-    pushed: usize,
-    failed: Vec<i64>,
-    offline: bool,
+pub(super) struct Outcome {
+    pub(super) pushed: usize,
+    pub(super) failed: Vec<i64>,
+    pub(super) offline: bool,
 }
 
 impl AccountSync {
@@ -101,7 +102,7 @@ impl AccountSync {
         Ok(out)
     }
 
-    fn failed(&self, op: &Op, e: &Error, out: &mut Outcome) -> Result<()> {
+    pub(super) fn failed(&self, op: &Op, e: &Error, out: &mut Outcome) -> Result<()> {
         warn!(op = op.id, "push failed: {e}");
         self.store.op_failed(op, &e.to_string())?;
         out.failed.push(op.id);
@@ -170,6 +171,10 @@ impl AccountSync {
         ops: &[&Op],
         out: &mut Outcome,
     ) -> Result<()> {
+        // Outlook has folders and categories, not labels: its own plan per message.
+        if let Backend::Outlook(o) = &self.backend {
+            return self.outlook_push_group(o, add, remove, ops, out).await;
+        }
         let add_ids = match self.label_ids(add).await {
             Ok(ids) => ids,
             Err(e) => {
@@ -302,6 +307,13 @@ impl AccountSync {
 
     /// An op with calls of its own.
     async fn push_one(&self, op: &Op) -> Result<()> {
+        if let Backend::Outlook(o) = &self.backend {
+            return match op.kind.as_str() {
+                "label_rename" => self.outlook_label_rename(o, &op.payload).await,
+                "label_delete" => self.outlook_label_delete(o, &op.payload).await,
+                other => Err(Error::other(format!("unknown op {other}"))),
+            };
+        }
         match op.kind.as_str() {
             "label_rename" => self.push_label_rename(&op.payload).await,
             "label_delete" => self.push_label_delete(&op.payload).await,
