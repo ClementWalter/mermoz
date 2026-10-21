@@ -37,12 +37,13 @@ app, the CLI and the MCP server are clients of this protocol.
 | -32004 | not_found           | unknown thread / draft / account / attachment        |
 | -32010 | approval_required   | send moved to Review; `data: {draft, thread}`        |
 | -32011 | app_only            | method only callable from Mermoz.app                 |
-| -32020 | upstream            | provider (Gmail) error; `data: {status, body}`       |
+| -32020 | upstream            | provider (Gmail, Microsoft Graph) error; `data: {status, body}` |
 
 ## Objects
 
 ```jsonc
 // Account
+// provider: "gmail", "outlook" (Microsoft Graph: outlook.com, Hotmail, Live, Microsoft 365) or "demo"
 {"id": "acc_1", "email": "me@example.com", "provider": "gmail",
  "sync": {"state": "initial|idle|syncing|error", "synced": 1200, "total": 5400, "error": null}}
 
@@ -268,8 +269,9 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `hello`              | `{}`                                                                                     | `{"version": "0.1.0"}`                   |
 | `accounts.list`      | `{}`                                                                                     | `[Account]`, each with `needs_reconnect` (signed in through another OAuth client: still syncs, sign in again) |
 | `accounts.add_gmail` | `{}`, or the user's own Google client: `{"client_json"}` (the Google Cloud download) or `{"client_id","client_secret"}` | `{"auth_url": "https://…"}`; completes in background, emits `accounts_changed`; an own client is stored with the token and used for the account's later consents (Drive too) |
-| `accounts.sign_in_status` | `{}`                                                                               | `{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?}`; `kind`: `admin_policy`, `unverified`, `org_internal`, `app_blocked`, `declined` |
-| `accounts.reconnect` | `{"account_id"}`                                                                       | `{"auth_url"}`; signs the account in again with the app's client (or the account's own client), keeping local mail; emits `accounts_changed` |
+| `accounts.add_outlook` | `{}` | `{"auth_url": "https://login.microsoftonline.com/common/…"}`; Microsoft sign-in (personal or work or school account) through the loopback redirect, completes in background, emits `accounts_changed`; the account is stored with `provider: "outlook"`. Invalid params with a plain message when this build has no Microsoft sign-in client |
+| `accounts.sign_in_status` | `{}`                                                                               | `{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?,"provider"?: "outlook","outlook_available": bool}`; `kind`: `admin_policy`, `unverified`, `org_internal`, `app_blocked`, `declined` (Google only); `provider` is `"outlook"` while the last sign-in is a Microsoft one, whose `error` is already in plain words; `outlook_available`: this build can add Outlook accounts |
+| `accounts.reconnect` | `{"account_id"}`                                                                       | `{"auth_url"}`; signs the account in again with the app's client (or the account's own client; Microsoft for an Outlook account), keeping local mail; emits `accounts_changed` |
 | `accounts.remove`    | `{"id"}`                                                                                 | `{}`                                     |
 | `accounts.add_demo` | `{}` | `Account` (`provider: "demo"`); adds the local demo mailbox (or returns it), emits `accounts_changed`, `threads_changed`, `feed_changed`. It never syncs, its mail never goes to an AI, and `drafts.send` from it only files the message in its own Sent |
 | `accounts.set_hidden` | `{"id", "hidden": bool}`                                                             | `{}`; a hidden account keeps syncing but its mail leaves every list, count, search, feed and suggestion; emits `accounts_changed` and `threads_changed` |
@@ -284,7 +286,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `search`             | `{"query", "limit"?: 50, "typing"?: false}` — every word must match as a whole word (accents and case aside); with `typing`, the last word, once 3+ letters and not followed by a space, also as a prefix. Best first: the words as a phrase, then all in subject/sender, then anywhere; newest within each. With search by meaning ready, the threads nearest in meaning (up to 20, cosine ≥ 0.30) are fused in by Reciprocal Rank Fusion (k = 60) | `{"threads": [ThreadSummary], "word_matches": n}` (how many hits hold the words) |
 | `smart_search.status` | `{}` | `{"enabled", "phase": "off"\|"starting"\|"downloading"\|"indexing"\|"ready"\|"error", "progress": 0-100, "indexed", "total"}` |
 | `smart_search.set` | `{"enabled": bool}` — app only; off frees the model and stops indexing | same as `smart_search.status` |
-| `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every account, for mail Mermoz doesn't hold | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
+| `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every Gmail account, for mail Mermoz doesn't hold (Outlook accounts add no results) | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
 | `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
 | `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null}` (`earlier`: messages left out by `latest`) |
 | `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
@@ -353,7 +355,9 @@ Gmail one), so declining or disconnecting Drive never affects mail. Asked scopes
 `drive.readonly` (read any file the user can open: previews, files shared with a
 thread's people, search) and `drive.file` (files Mermoz created or the user picked:
 saving attachments, sharing a picked file). Google lets the user untick either;
-`drive.status` says what was granted.
+`drive.status` says what was granted. Drive is for Google accounts: calls naming an
+Outlook account answer invalid params ("Google Drive works with Google accounts
+only."), and `drive.status` without an account leaves Outlook accounts out.
 
 ```jsonc
 // DriveFile

@@ -66,6 +66,18 @@ tracked as issues (Linear-style), not as a pile in an inbox.
 - **Gmail / Workspace (MVP):** Gmail API, incremental sync via `history.list`.
   New-mail detection: IMAP IDLE connection used purely as a doorbell + history
   polling (15–30 s foreground, 2–5 min background).
+- **Outlook (personal and Microsoft 365, built 2026-10-21):** Microsoft Graph with
+  one multi-tenant public client (no secret) on the `common` authority, PKCE and a
+  `http://localhost` loopback redirect. Import lists the mailbox newest first, then
+  walks each imported folder's delta once; incremental sync follows one delta link
+  per folder (Inbox, Sent Items, Archive, the user's folders) polled like Gmail's
+  history. Threads are Outlook conversations; folders and categories are read as
+  labels (well-known folders as Gmail's system labels, user folders and categories
+  as projects), and Mermoz's statuses and projects are written as categories, or as
+  moves (Archive, Deleted Items, a project's folder for archived mail). Sends go to
+  `sendMail` as the same MIME message. Google Drive and Gmail's own search are not
+  offered on Outlook accounts. Design and the Microsoft app registration:
+  `docs/outlook.md`.
 - **No server.** Mermoz has no hosted component of any kind.
 - **Generic IMAP:** only if it meets the speed bar (CONDSTORE/QRESYNC/IDLE
   required). Otherwise not supported.
