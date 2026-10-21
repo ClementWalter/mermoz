@@ -18,8 +18,8 @@ Steps (--sign developer-id, the default):
      client compiled in, read from --google-client (an installed-app client JSON).
      Installed-app client secrets are not confidential per Google, so embedding them
      is expected. The Microsoft sign-in client ID for Outlook accounts (a public
-     client: an ID, no secret) comes from --microsoft-client or
-     MERMOZ_MICROSOFT_CLIENT_ID; without one the build offers no Outlook sign-in.
+     client: an ID, no secret) is Mermoz's own Entra app unless --microsoft-client or
+     MERMOZ_MICROSOFT_CLIENT_ID names another; an empty one builds without Outlook.
   2. Notarize the app (zipped) and staple its ticket, so it opens offline once copied.
   3. Make build/Mermoz.dmg (the app next to an Applications shortcut), sign it,
      notarize it and staple it.
@@ -38,7 +38,7 @@ Usage:
   scripts/release.py --dry-run               # log every command, run none
   scripts/release.py --sign adhoc            # local, un-notarized DMG (no Apple account)
   scripts/release.py --google-client PATH    # another OAuth client file
-  scripts/release.py --microsoft-client ID   # Outlook sign-in (Entra application ID)
+  scripts/release.py --microsoft-client ID   # another Outlook sign-in app (Entra application ID)
 """
 
 from __future__ import annotations
@@ -67,6 +67,8 @@ APP = REPO / "build" / "Mermoz.app"
 DMG = REPO / "build" / "Mermoz.dmg"
 NOTARY_ZIP = REPO / "build" / "Mermoz-notarize.zip"
 DEFAULT_CLIENT = Path.home() / ".config" / "mermoz" / "google_oauth_client.json"
+# Mermoz's Microsoft Entra app (multitenant, public client): an ID, not a secret.
+DEFAULT_MICROSOFT_CLIENT = "8d952379-27ee-4511-b3e2-2e8bfb481c09"
 DEFAULT_PROFILE = "mermoz-notary"
 NOTARY_ENV = ("MERMOZ_NOTARY_KEY_ID", "MERMOZ_NOTARY_ISSUER", "MERMOZ_NOTARY_KEY_PATH")
 IOS_BUNDLE = "ai.mermoz.iphone"
@@ -367,6 +369,8 @@ def create_release(run: signing.Runner, tag: str, mode: str) -> None:
 @click.option(
     "--microsoft-client",
     envvar="MERMOZ_MICROSOFT_CLIENT_ID",
+    default=DEFAULT_MICROSOFT_CLIENT,
+    show_default=True,
     help="Application (client) ID of the Microsoft Entra app for Outlook sign-in.",
 )
 @click.option("--publish/--no-publish", default=False, help="Upload the macOS DMG to GitHub or the iPhone archive to internal TestFlight.")

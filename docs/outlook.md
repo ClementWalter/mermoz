@@ -51,11 +51,17 @@ which is not confidential and is compiled into release builds.
 
 ### Where the client ID goes
 
-- **Release builds**: `scripts/release.py --microsoft-client <ID>`, or set it once as
-  the GitHub secret the release workflow reads:
-  `gh secret set MICROSOFT_CLIENT_ID --body <ID>`. A build without an ID offers no
-  Outlook sign-in: "Add Outlook account" is greyed with "Outlook sign-in isn't set up
-  in this version of Mermoz yet."
+Mermoz's own registration is `8d952379-27ee-4511-b3e2-2e8bfb481c09` (multitenant
+and personal accounts, `http://localhost` redirect, the five delegated permissions
+above, no secret). Microsoft warns that users of other organizations can't consent to
+a multitenant app without a verified publisher: personal accounts sign in, work or
+school accounts need publisher verification or their administrator's approval.
+
+- **Release builds**: `scripts/release.py` compiles in that ID by default;
+  `--microsoft-client <ID>` (or `MERMOZ_MICROSOFT_CLIENT_ID`, the GitHub secret
+  `MICROSOFT_CLIENT_ID` in CI) names another. A build without an ID offers no Outlook
+  sign-in: "Add Outlook account" is greyed with "Outlook sign-in isn't set up in this
+  version of Mermoz yet."
 - **Local builds**: `MERMOZ_MICROSOFT_CLIENT_ID=<ID> scripts/build_app.py` compiles it
   in, or, without rebuilding, either `MERMOZ_MICROSOFT_CLIENT_ID=<ID>` in the
   daemon's environment or a file `microsoft_client.json` in Mermoz's data folder
