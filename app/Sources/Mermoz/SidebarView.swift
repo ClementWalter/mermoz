@@ -340,7 +340,15 @@ struct AccountSidebarRow: View {
                 .help("Hidden: its mail stays out of every list until you show it again")
             } else {
                 SidebarRow(sel: .account(account.id), title: account.email, icon: .dot(color),
-                           count: hovering ? nil : count, middle: true)
+                           count: hovering || account.mustSignInAgain ? nil : count, middle: true)
+            }
+            if account.mustSignInAgain {
+                Button(SignInNotice.button) { model.reconnectAccount(account.id) }
+                    .buttonStyle(.link).font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Theme.danger)
+                    .fixedSize()
+                    .padding(.trailing, 4)
+                    .help("Google asked you to sign in again. New mail arrives once you do.")
             }
             if hidden || hovering {
                 Button { model.setAccountHidden(account.id, !hidden) } label: {

@@ -61,7 +61,18 @@ struct MainLayout: View {
     @AppStorage("layout.listWidth") private var listWidth = 420.0
 
     var body: some View {
-        @Bindable var model = model
+        VStack(spacing: 8) {
+            if let notice = model.signInNotice {
+                SignInAgainBanner(notice: notice)
+            }
+            panes
+        }
+        // The traffic lights get their own strip so they never collide with a panel corner.
+        .padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 36)
+        .ignoresSafeArea(edges: .top)
+    }
+
+    private var panes: some View {
         HStack(spacing: 0) {
             SidebarView()
                 .layoutBoundary()
@@ -99,9 +110,6 @@ struct MainLayout: View {
                 DetailPane().layoutBoundary()
             }
         }
-        // The traffic lights get their own strip so they never collide with a panel corner.
-        .padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 36)
-        .ignoresSafeArea(edges: .top)
     }
 }
 

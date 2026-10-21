@@ -1726,6 +1726,9 @@ final class AppModel {
 
     // MARK: sync footer
 
+    /// The banner asking to sign in to an account again, while Google refuses its sign-in.
+    var signInNotice: SignInNotice? { SignInNotice(accounts: accounts) }
+
     var syncLine: String {
         let syncing = accounts.compactMap { a -> (Int, Int)? in
             if let p = syncProgress[a.id], p.total > 0, p.synced < p.total { return (p.synced, p.total) }
@@ -1734,6 +1737,7 @@ final class AppModel {
             }
             return nil
         }
+        if accounts.contains(where: \.mustSignInAgain) { return "Sign in again to get new mail" }
         if syncing.isEmpty {
             if accounts.contains(where: { $0.sync.state == "error" }) { return "Can't reach your mail right now" }
             return "Synced · available offline"

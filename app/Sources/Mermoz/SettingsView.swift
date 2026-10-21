@@ -187,17 +187,22 @@ struct AccountsPane: View {
         .task { await model.loadSignInStatus() }
     }
 
-    /// Mail keeps syncing meanwhile; signing in again keeps everything already on this Mac.
+    /// Signing in again keeps everything already on this Mac. An expired sign-in has
+    /// stopped mail; an older Google setup still syncs meanwhile.
     private func reconnectPrompt(_ a: Account) -> some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Reconnect your Google account").font(.system(size: 12.5, weight: .semibold))
-                Text("Mermoz needs you to sign in to Google again to finish setting up. Your mail stays right here.")
+                Text(a.mustSignInAgain ? "Google asks you to sign in again" : "Reconnect your Google account")
+                    .font(.system(size: 12.5, weight: .semibold))
+                Text(a.mustSignInAgain
+                    ? "New mail stopped arriving for this account. " + SignInNotice.detail
+                    : "Mermoz needs you to sign in to Google again to finish setting up. Your mail stays right here.")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button("Reconnect") { model.reconnectAccount(a.id) }.buttonStyle(.glassProminent).controlSize(.small)
+            Button(a.mustSignInAgain ? SignInNotice.button : "Reconnect") { model.reconnectAccount(a.id) }
+                .buttonStyle(.glassProminent).controlSize(.small)
         }
         .padding(10)
         .background(Color(hex: "#FFF6E5"), in: RoundedRectangle(cornerRadius: 8))
@@ -205,6 +210,7 @@ struct AccountsPane: View {
 
     private func syncText(_ a: Account) -> String {
         if a.isDemo { return "Made-up mail, kept on this Mac only" }
+        if a.mustSignInAgain { return "No new mail until you sign in again" }
         switch a.sync.state {
         case "error": return a.sync.error ?? "Can't sync right now"
         case "initial", "syncing":
