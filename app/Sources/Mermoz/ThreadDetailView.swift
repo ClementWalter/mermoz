@@ -22,7 +22,6 @@ struct ThreadDetailView: View {
             switch model.conversationTab {
             case .messages:
                 ChatStream(detail: detail, conversation: conversation)
-                ForEach(detail.drafts ?? []) { ThreadDraftCard(draft: $0) }
                 ReplyBar(detail: detail, target: model.replyTarget(detail).subject, threads: conversation.threads.count)
             case .people:
                 ConversationPeopleTab(people: conversation.people)
@@ -41,54 +40,64 @@ struct ThreadDetailView: View {
     }
 }
 
-/// An unsent reply under the conversation, on the user's side like their own bubbles but
-/// as a warm dashed note tagged "Draft", so it never reads as sent; a click opens it in the
-/// composer to finish it.
+/// An unsent reply where it falls in the conversation, on the user's side like their own
+/// bubbles but as a warm dashed note tagged "Draft", so it never reads as sent. A click
+/// opens it in the composer; the bin deletes it (from Gmail too when written there).
 struct ThreadDraftCard: View {
     @Environment(AppModel.self) private var model
     let draft: Draft
+    @State private var confirmDelete = false
 
     var body: some View {
         HStack {
             Spacer(minLength: 60)
-            Button { model.editDraft(draft) } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Label("DRAFT · NOT SENT", systemImage: "pencil.line")
-                            .font(.system(size: 10.5, weight: .bold)).kerning(0.4)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 7).padding(.vertical, 2.5)
-                            .background(Theme.draft, in: Capsule())
-                        if draft.origin == "gmail" {
-                            Text("written in Gmail").font(.system(size: 11)).foregroundStyle(Theme.draft)
-                        }
-                        Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Label("DRAFT · NOT SENT", systemImage: "pencil.line")
+                        .font(.system(size: 10.5, weight: .bold)).kerning(0.4)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 2.5)
+                        .background(Theme.draft, in: Capsule())
+                    Text(draft.origin == "gmail" ? "Saved in Gmail \(Format.short(draft.updated))" : "Saved \(Format.short(draft.updated))")
+                        .font(.system(size: 11)).foregroundStyle(Theme.draft)
+                    Spacer(minLength: 0)
+                    Button { confirmDelete = true } label: {
+                        Image(systemName: "trash").font(.system(size: 12))
                     }
-                    if !draft.to.isEmpty {
-                        Text("To \(draft.to.joined(separator: ", "))").font(.system(size: 11.5)).foregroundStyle(Theme.text2).lineLimit(1)
-                    }
-                    let text = DraftPreview.text(draft.body)
-                    Text(text.isEmpty ? "(empty)" : text).font(.system(size: 13)).lineLimit(8)
-                        .foregroundStyle(text.isEmpty ? Theme.text3 : Theme.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    HStack(spacing: 4) {
-                        Text("Finish and send")
-                        Image(systemName: "arrow.right")
-                    }
-                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.draft)
+                    .buttonStyle(.plain).foregroundStyle(Theme.text2)
+                    .help("Delete this draft").accessibilityLabel("Delete draft")
                 }
-                .padding(.horizontal, 13).padding(.vertical, 10)
-                .frame(maxWidth: 440, alignment: .leading)
-                .background(Theme.draftSoft, in: RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.draft.opacity(0.75),
-                                                                         style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
-                .contentShape(RoundedRectangle(cornerRadius: 14))
+                if !draft.to.isEmpty {
+                    Text("To \(draft.to.joined(separator: ", "))").font(.system(size: 11.5)).foregroundStyle(Theme.text2).lineLimit(1)
+                }
+                let text = DraftPreview.text(draft.body)
+                Text(text.isEmpty ? "(empty)" : text).font(.system(size: 13)).lineLimit(8)
+                    .foregroundStyle(text.isEmpty ? Theme.text3 : Theme.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 4) {
+                    Text("Finish and send")
+                    Image(systemName: "arrow.right")
+                }
+                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.draft)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 13).padding(.vertical, 10)
+            .frame(maxWidth: 440, alignment: .leading)
+            .background(Theme.draftSoft, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.draft.opacity(0.75),
+                                                                     style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+            .onTapGesture { model.editDraft(draft) }
             .help("Open this draft to finish and send it")
-            .accessibilityLabel("Draft, not sent\(draft.to.isEmpty ? "" : ", to \(draft.to.joined(separator: ", "))"). Opens it to finish and send")
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Draft, not sent\(draft.to.isEmpty ? "" : ", to \(draft.to.joined(separator: ", "))")")
+            .accessibilityAction(named: "Finish and send") { model.editDraft(draft) }
         }
         .padding(.horizontal, 16).padding(.vertical, 6)
+        .confirmationDialog("Delete this draft?", isPresented: $confirmDelete) {
+            Button("Delete Draft", role: .destructive) { model.deleteDraft(draft) }
+        } message: {
+            Text(draft.origin == "gmail" ? "It is removed from Gmail too." : "It can't be brought back.")
+        }
     }
 }
 
@@ -103,7 +112,7 @@ struct ChatStream: View {
     static let opening = 12
 
     var body: some View {
-        let all = Timeline.items(detail.messages, threads: conversation.threads)
+        let all = Timeline.items(detail.messages, threads: conversation.threads, drafts: detail.drafts ?? [])
         let (items, kept) = model.chatShowsAll ? (all, 0) : Timeline.recent(all, keep: Self.opening)
         let hidden = kept + (model.chatShowsAll ? 0 : detail.earlier ?? 0)
         let built = ChatRows.build(
@@ -117,6 +126,8 @@ struct ChatStream: View {
             switch row {
             case .summary:
                 hosted[key] = AnyView(SummaryBox(summary: detail.thread.summary ?? "", next: detail.thread.nextAction))
+            case let .draft(d):
+                hosted[key] = AnyView(ThreadDraftCard(draft: d))
             case let .expanded(m):
                 // The whole email stays SwiftUI (HTML, seal, Original / Optimized, files).
                 hosted[key] = AnyView(ExpandedMessage(message: m, kind: conversation.kind))

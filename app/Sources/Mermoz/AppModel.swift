@@ -1291,6 +1291,21 @@ final class AppModel {
                                  attachments: AttachmentList(stored: d.attachments))
     }
 
+    /// Deletes an unsent draft (from Gmail's Drafts too when written there).
+    func deleteDraft(_ d: Draft) {
+        guard let client else { return }
+        if detail?.drafts?.contains(where: { $0.id == d.id }) == true { detail?.drafts?.removeAll { $0.id == d.id } }
+        Task {
+            do {
+                try await client.deleteDraft(d.id)
+                toast = "Draft deleted"
+            } catch {
+                report(error)
+            }
+            await reloadDetail()
+        }
+    }
+
     /// Creates (or updates) the draft and sends it; the app is a trusted caller so it sends
     /// directly. Answers within `sendDeadline`: past it the send goes on in the background,
     /// ending in a "Sent" toast or the composer reopened on the error.
