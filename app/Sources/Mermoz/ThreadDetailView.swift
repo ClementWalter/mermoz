@@ -42,7 +42,8 @@ struct ThreadDetailView: View {
 }
 
 /// An unsent reply under the conversation, on the user's side like their own bubbles but
-/// dashed, so it never reads as sent; a click opens it in the composer to finish it.
+/// as a warm dashed note tagged "Draft", so it never reads as sent; a click opens it in the
+/// composer to finish it.
 struct ThreadDraftCard: View {
     @Environment(AppModel.self) private var model
     let draft: Draft
@@ -51,27 +52,41 @@ struct ThreadDraftCard: View {
         HStack {
             Spacer(minLength: 60)
             Button { model.editDraft(draft) } label: {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        Image(systemName: "pencil.line")
-                        Text(DraftPreview.caption(draft)).font(.system(size: 11.5, weight: .semibold))
-                        if !draft.to.isEmpty {
-                            Text("to \(draft.to.joined(separator: ", "))").font(.system(size: 11.5)).lineLimit(1)
+                        Label("DRAFT · NOT SENT", systemImage: "pencil.line")
+                            .font(.system(size: 10.5, weight: .bold)).kerning(0.4)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7).padding(.vertical, 2.5)
+                            .background(Theme.draft, in: Capsule())
+                        if draft.origin == "gmail" {
+                            Text("written in Gmail").font(.system(size: 11)).foregroundStyle(Theme.draft)
                         }
+                        Spacer(minLength: 0)
                     }
-                    .foregroundStyle(Theme.danger)
-                    Text(DraftPreview.text(draft.body)).font(.system(size: 13)).lineLimit(4)
-                        .foregroundStyle(Theme.text)
-                    Text("Not sent · click to finish it").font(.system(size: 11)).foregroundStyle(Theme.text3)
+                    if !draft.to.isEmpty {
+                        Text("To \(draft.to.joined(separator: ", "))").font(.system(size: 11.5)).foregroundStyle(Theme.text2).lineLimit(1)
+                    }
+                    let text = DraftPreview.text(draft.body)
+                    Text(text.isEmpty ? "(empty)" : text).font(.system(size: 13)).lineLimit(8)
+                        .foregroundStyle(text.isEmpty ? Theme.text3 : Theme.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 4) {
+                        Text("Finish and send")
+                        Image(systemName: "arrow.right")
+                    }
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.draft)
                 }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .frame(maxWidth: 420, alignment: .leading)
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.danger.opacity(0.6),
-                                                                         style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                .padding(.horizontal, 13).padding(.vertical, 10)
+                .frame(maxWidth: 440, alignment: .leading)
+                .background(Theme.draftSoft, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.draft.opacity(0.75),
+                                                                         style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
                 .contentShape(RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(.plain)
             .help("Open this draft to finish and send it")
+            .accessibilityLabel("Draft, not sent\(draft.to.isEmpty ? "" : ", to \(draft.to.joined(separator: ", "))"). Opens it to finish and send")
         }
         .padding(.horizontal, 16).padding(.vertical, 6)
     }

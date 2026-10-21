@@ -1,20 +1,7 @@
-/// A draft in its conversation reads as a draft, with its own words only.
+/// A draft in its conversation shows its own words only.
 import Foundation
 import Testing
 @testable import MermozKit
-
-private func draft(origin: String) -> Draft {
-    Draft(id: "d", accountId: "a", threadId: "t", to: [], cc: [], subject: "", body: "", state: "draft",
-          origin: origin, created: 0, updated: 0, attachments: [])
-}
-
-@Test func gmailDraftSaysWhereItWasWritten() {
-    #expect(DraftPreview.caption(draft(origin: "gmail")) == "Draft from Gmail")
-}
-
-@Test func ownDraftIsJustADraft() {
-    #expect(DraftPreview.caption(draft(origin: "app")) == "Draft")
-}
 
 @Test(arguments: [
     ("Bonjour,\n\nVoici les pièces.\n\nLe lun. 20 oct. 2026, DGFiP a écrit :\n> Merci", "Bonjour,\n\nVoici les pièces."),
