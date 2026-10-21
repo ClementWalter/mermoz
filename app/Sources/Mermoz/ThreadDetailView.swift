@@ -440,18 +440,17 @@ struct ExpandedMessage: View {
                 .contentShape(Rectangle())
                 .onTapGesture { model.toggleMessage(message.id) }
                 .help("Fold back into the chat")
-            if !compact {
-                Button { withAnimation(.easeOut(duration: 0.15)) { showDetails.toggle() } } label: {
-                    HStack(spacing: 4) {
-                        Text(Recipients.line(to: message.to, cc: message.cc, bcc: message.bcc ?? [])).lineLimit(1)
-                        Image(systemName: showDetails ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
-                    }
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
-                    .contentShape(Rectangle())
+            // Who it went to, in every opened email, notifications and lists included.
+            Button { withAnimation(.easeOut(duration: 0.15)) { showDetails.toggle() } } label: {
+                HStack(spacing: 4) {
+                    Text(Recipients.line(to: message.to, cc: message.cc, bcc: message.bcc ?? [])).lineLimit(1)
+                    Image(systemName: showDetails ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
                 }
-                .buttonStyle(.plain)
-                .help(showDetails ? "Hide details" : "Show everyone on this email")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help(showDetails ? "Hide details" : "Show everyone on this email")
             if showDetails { MessageDetails(message: message) }
             if mode == .original, message.hasHtml, hasRemoteImages, !loadImages { remoteImagesBar }
             content
