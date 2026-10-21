@@ -33,6 +33,11 @@ pub fn oauth_client_path() -> PathBuf {
     home().join("oauth_client.json")
 }
 
+/// The Microsoft sign-in client for builds without one compiled in (development, tests).
+pub fn microsoft_client_path() -> PathBuf {
+    home().join("microsoft_client.json")
+}
+
 pub fn tokens_dir() -> PathBuf {
     home().join("tokens")
 }

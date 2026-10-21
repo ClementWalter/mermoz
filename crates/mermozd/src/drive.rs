@@ -372,6 +372,7 @@ async fn connect(svc: &Arc<Service>, account_id: &str) -> Result<String> {
             offline: true,
             extra: vec![],
             done_message: "Google Drive is connected to Mermoz. You can close this tab.".into(),
+            flavor: oauth::Flavor::Google,
         },
     )
     .await?;
@@ -493,6 +494,7 @@ async fn pick(svc: &Arc<Service>, account_id: &str, file_ids: Vec<String>) -> Re
             offline: existing.is_none(),
             extra,
             done_message: "Your files are ready in Mermoz. You can close this tab.".into(),
+            flavor: oauth::Flavor::Google,
         },
     )
     .await?;

@@ -1,5 +1,5 @@
-//! Google OAuth for installed apps: loopback redirect + PKCE, as Google
-//! recommends for desktop clients. No server involved.
+//! OAuth for installed apps: loopback redirect + PKCE, as Google and Microsoft
+//! recommend for desktop clients. No server involved.
 
 use crate::error::{Error, Result};
 use crate::paths;
@@ -12,6 +12,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
 
+/// Delegated Microsoft Graph permissions an Outlook account grants: mail read and
+/// write, send, folder and category settings, the profile, and a refresh token.
+pub const MICROSOFT_SCOPES: &str =
+    "offline_access User.Read Mail.ReadWrite Mail.Send MailboxSettings.Read";
+
+/// Microsoft's sign-in for both personal and work or school accounts.
+const MICROSOFT_LOGIN: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientConfig {
     pub client_id: String,
@@ -20,6 +28,9 @@ pub struct ClientConfig {
     pub auth_url: String,
     #[serde(default = "default_token_url")]
     pub token_url: String,
+    /// Scopes named on every token request; Microsoft needs them, Google doesn't.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 fn default_auth_url() -> String {
@@ -38,6 +49,7 @@ impl ClientConfig {
             client_secret,
             auth_url: default_auth_url(),
             token_url: default_token_url(),
+            scope: None,
         }
     }
 
@@ -84,23 +96,13 @@ impl ClientConfig {
             option_env!("MERMOZ_GOOGLE_CLIENT_ID"),
             option_env!("MERMOZ_GOOGLE_CLIENT_SECRET"),
         ) {
-            return Ok(Self {
-                client_id: id.into(),
-                client_secret: secret.into(),
-                auth_url: default_auth_url(),
-                token_url: default_token_url(),
-            });
+            return Ok(Self::with_ids(id.into(), secret.into()));
         }
         if let (Ok(id), Ok(secret)) = (
             std::env::var("MERMOZ_GOOGLE_CLIENT_ID"),
             std::env::var("MERMOZ_GOOGLE_CLIENT_SECRET"),
         ) {
-            return Ok(Self {
-                client_id: id,
-                client_secret: secret,
-                auth_url: default_auth_url(),
-                token_url: default_token_url(),
-            });
+            return Ok(Self::with_ids(id, secret));
         }
         let p = paths::oauth_client_path();
         let raw = std::fs::read_to_string(&p).map_err(|_| {
@@ -110,6 +112,49 @@ impl ClientConfig {
             ))
         })?;
         Self::parse(&raw)
+    }
+
+    /// The Microsoft sign-in client (a public client: no secret). Build-time ID
+    /// (release builds), then env, then `MERMOZ_HOME/microsoft_client.json`, which may
+    /// also name other sign-in addresses. `None` when this build has none.
+    pub fn load_microsoft() -> Option<Self> {
+        let id = option_env!("MERMOZ_MICROSOFT_CLIENT_ID")
+            .map(String::from)
+            .or_else(|| std::env::var("MERMOZ_MICROSOFT_CLIENT_ID").ok())
+            .filter(|id| !id.trim().is_empty());
+        if let Some(id) = id {
+            return Some(Self::microsoft(id.trim().into()));
+        }
+        let raw = std::fs::read_to_string(paths::microsoft_client_path()).ok()?;
+        Self::parse_microsoft(&raw)
+    }
+
+    /// `{"client_id": …, "auth_url"?: …, "token_url"?: …}`; a blank ID is no client.
+    pub fn parse_microsoft(raw: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+        let id = v["client_id"].as_str()?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let mut c = Self::microsoft(id.into());
+        if let Some(u) = v["auth_url"].as_str() {
+            c.auth_url = u.into();
+        }
+        if let Some(u) = v["token_url"].as_str() {
+            c.token_url = u.into();
+        }
+        Some(c)
+    }
+
+    /// Microsoft's endpoints for `client_id`, asking for [`MICROSOFT_SCOPES`].
+    pub fn microsoft(client_id: String) -> Self {
+        Self {
+            client_id,
+            client_secret: String::new(),
+            auth_url: format!("{MICROSOFT_LOGIN}/authorize"),
+            token_url: format!("{MICROSOFT_LOGIN}/token"),
+            scope: Some(MICROSOFT_SCOPES.into()),
+        }
     }
 }
 
@@ -137,6 +182,17 @@ pub struct AuthRequest {
     pub extra: Vec<(String, String)>,
     /// The sentence the browser tab shows once Mermoz has the answer.
     pub done_message: String,
+    /// Whose sign-in page this is: their redirect and query parameters differ.
+    pub flavor: Flavor,
+}
+
+/// Which identity provider a consent goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Flavor {
+    #[default]
+    Google,
+    /// Microsoft accepts any port on a `http://localhost` redirect registered once.
+    Microsoft,
 }
 
 impl AuthRequest {
@@ -147,6 +203,19 @@ impl AuthRequest {
             offline: true,
             extra: vec![],
             done_message: "Mermoz is syncing your mail. You can close this tab.".into(),
+            flavor: Flavor::Google,
+        }
+    }
+
+    /// An Outlook account: personal or work or school, picked on Microsoft's page.
+    pub fn outlook() -> Self {
+        Self {
+            scopes: MICROSOFT_SCOPES.split(' ').map(String::from).collect(),
+            login_hint: None,
+            offline: true,
+            extra: vec![],
+            done_message: "Mermoz is syncing your mail. You can close this tab.".into(),
+            flavor: Flavor::Microsoft,
         }
     }
 }
@@ -165,6 +234,8 @@ pub struct Granted {
 pub struct PendingAuth {
     pub auth_url: String,
     listener: tokio::net::TcpListener,
+    /// The same port on IPv6: browsers may resolve `localhost` to `::1` first.
+    listener_v6: Option<tokio::net::TcpListener>,
     verifier: String,
     state: String,
     redirect: String,
@@ -185,7 +256,13 @@ pub async fn start(cfg: ClientConfig) -> Result<PendingAuth> {
 pub async fn start_request(cfg: ClientConfig, req: AuthRequest) -> Result<PendingAuth> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
-    let redirect = format!("http://127.0.0.1:{port}");
+    let (redirect, listener_v6) = match req.flavor {
+        Flavor::Google => (format!("http://127.0.0.1:{port}"), None),
+        Flavor::Microsoft => (
+            format!("http://localhost:{port}"),
+            tokio::net::TcpListener::bind(("::1", port)).await.ok(),
+        ),
+    };
     let verifier = b64(&rand::random::<[u8; 32]>());
     let challenge = b64(&sha2::Sha256::digest(verifier.as_bytes()));
     let state = b64(&rand::random::<[u8; 16]>());
@@ -195,13 +272,22 @@ pub async fn start_request(cfg: ClientConfig, req: AuthRequest) -> Result<Pendin
         q.append_pair("client_id", &cfg.client_id)
             .append_pair("redirect_uri", &redirect)
             .append_pair("response_type", "code")
-            .append_pair("scope", &req.scopes.join(" "))
-            .append_pair(
-                "access_type",
-                if req.offline { "offline" } else { "online" },
-            )
-            .append_pair("prompt", "consent")
-            .append_pair("code_challenge", &challenge)
+            .append_pair("scope", &req.scopes.join(" "));
+        match req.flavor {
+            Flavor::Google => {
+                q.append_pair(
+                    "access_type",
+                    if req.offline { "offline" } else { "online" },
+                )
+                .append_pair("prompt", "consent");
+            }
+            // Offline access is the `offline_access` scope; the user picks the account.
+            Flavor::Microsoft => {
+                q.append_pair("prompt", "select_account")
+                    .append_pair("response_mode", "query");
+            }
+        }
+        q.append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &state);
         if let Some(h) = &req.login_hint {
@@ -214,6 +300,7 @@ pub async fn start_request(cfg: ClientConfig, req: AuthRequest) -> Result<Pendin
     Ok(PendingAuth {
         auth_url: url.to_string(),
         listener,
+        listener_v6,
         verifier,
         state,
         redirect,
@@ -248,7 +335,13 @@ impl PendingAuth {
     pub async fn finish_grant(self, timeout: Duration) -> Result<Granted> {
         let accept = async {
             loop {
-                let (mut sock, _) = self.listener.accept().await?;
+                let (mut sock, _) = match &self.listener_v6 {
+                    Some(v6) => tokio::select! {
+                        a = self.listener.accept() => a?,
+                        a = v6.accept() => a?,
+                    },
+                    None => self.listener.accept().await?,
+                };
                 // Requests can arrive in several TCP segments: read until the header block ends.
                 let mut buf = Vec::with_capacity(2048);
                 let mut chunk = [0u8; 2048];
@@ -313,18 +406,21 @@ impl PendingAuth {
             .await
             .map_err(|_| Error::other("sign-in timed out"))??;
         let http = reqwest::Client::new();
-        let resp = http
-            .post(&self.cfg.token_url)
-            .form(&[
-                ("code", redirect.code.as_str()),
-                ("client_id", &self.cfg.client_id),
-                ("client_secret", &self.cfg.client_secret),
-                ("redirect_uri", &self.redirect),
-                ("grant_type", "authorization_code"),
-                ("code_verifier", &self.verifier),
-            ])
-            .send()
-            .await?;
+        let mut form = vec![
+            ("code", redirect.code.as_str()),
+            ("client_id", &self.cfg.client_id),
+            ("redirect_uri", &self.redirect),
+            ("grant_type", "authorization_code"),
+            ("code_verifier", &self.verifier),
+        ];
+        // Public clients (Microsoft) have no secret and must not send one.
+        if !self.cfg.client_secret.is_empty() {
+            form.insert(2, ("client_secret", &self.cfg.client_secret));
+        }
+        if let Some(scope) = &self.cfg.scope {
+            form.push(("scope", scope));
+        }
+        let resp = http.post(&self.cfg.token_url).form(&form).send().await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(Error::Upstream {
@@ -424,21 +520,35 @@ impl Refusal {
     }
 }
 
+/// Called with each new refresh token the server hands back, so it can be saved.
+pub type OnRotate = Box<dyn Fn(&str) + Send + Sync>;
+
 /// Access tokens from a refresh token, cached until shortly before expiry.
 pub struct TokenSource {
     cfg: ClientConfig,
-    refresh_token: String,
+    /// Microsoft replaces the refresh token on every refresh; Google keeps it.
+    refresh_token: Mutex<String>,
     http: reqwest::Client,
     cache: Mutex<Option<(String, Instant)>>,
+    on_rotate: Option<OnRotate>,
 }
 
 impl TokenSource {
     pub fn new(cfg: ClientConfig, refresh_token: String) -> Self {
         Self {
             cfg,
-            refresh_token,
+            refresh_token: Mutex::new(refresh_token),
             http: reqwest::Client::new(),
             cache: Mutex::new(None),
+            on_rotate: None,
+        }
+    }
+
+    /// A source that keeps the newest refresh token and hands it to `on_rotate`.
+    pub fn rotating(cfg: ClientConfig, refresh_token: String, on_rotate: OnRotate) -> Self {
+        Self {
+            on_rotate: Some(on_rotate),
+            ..Self::new(cfg, refresh_token)
         }
     }
 
@@ -447,12 +557,13 @@ impl TokenSource {
         let ttl = expires_in.unwrap_or(3600).saturating_sub(120);
         Self {
             cfg,
-            refresh_token: String::new(),
+            refresh_token: Mutex::new(String::new()),
             http: reqwest::Client::new(),
             cache: Mutex::new(Some((
                 access_token,
                 Instant::now() + Duration::from_secs(ttl),
             ))),
+            on_rotate: None,
         }
     }
 
@@ -462,14 +573,18 @@ impl TokenSource {
         {
             return Ok(t);
         }
+        let refresh = self.refresh_token.lock().unwrap().clone();
         let mut params = vec![
             ("client_id", self.cfg.client_id.as_str()),
-            ("refresh_token", &self.refresh_token),
+            ("refresh_token", &refresh),
             ("grant_type", "refresh_token"),
         ];
         // Native iOS clients authenticate with PKCE and have no client secret.
         if !self.cfg.client_secret.is_empty() {
             params.push(("client_secret", &self.cfg.client_secret));
+        }
+        if let Some(scope) = &self.cfg.scope {
+            params.push(("scope", scope));
         }
         let resp = self
             .http
@@ -485,6 +600,12 @@ impl TokenSource {
             });
         }
         let tok: TokenResponse = resp.json().await?;
+        if let (Some(save), Some(new)) = (&self.on_rotate, &tok.refresh_token)
+            && *new != refresh
+        {
+            *self.refresh_token.lock().unwrap() = new.clone();
+            save(new);
+        }
         let ttl = tok.expires_in.unwrap_or(3600).saturating_sub(120);
         *self.cache.lock().unwrap() = Some((
             tok.access_token.clone(),
@@ -594,5 +715,222 @@ mod tests {
                 .client_secret,
             "s"
         );
+    }
+
+    #[rstest]
+    #[case::bare_id(r#"{"client_id":"ms-cid"}"#, Some("ms-cid"))]
+    #[case::trimmed(r#"{"client_id":"  ms-cid \n"}"#, Some("ms-cid"))]
+    #[case::blank(r#"{"client_id":"  "}"#, None)]
+    #[case::missing(r#"{}"#, None)]
+    #[case::not_json("nope", None)]
+    fn microsoft_client_file(#[case] raw: &str, #[case] id: Option<&str>) {
+        assert_eq!(
+            ClientConfig::parse_microsoft(raw).map(|c| c.client_id),
+            id.map(String::from)
+        );
+    }
+
+    #[rstest]
+    fn microsoft_client_file_may_name_the_token_url() {
+        let c = ClientConfig::parse_microsoft(
+            r#"{"client_id":"ms-cid","token_url":"http://127.0.0.1:9/token"}"#,
+        )
+        .unwrap();
+        assert_eq!(c.token_url, "http://127.0.0.1:9/token");
+    }
+
+    #[rstest]
+    fn microsoft_client_is_public() {
+        assert_eq!(ClientConfig::microsoft("ms-cid".into()).client_secret, "");
+    }
+
+    #[rstest]
+    fn microsoft_client_uses_the_common_authority() {
+        assert_eq!(
+            ClientConfig::microsoft("ms-cid".into()).auth_url,
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+        );
+    }
+
+    /// The consent URL's query, for an Outlook sign-in.
+    async fn outlook_consent() -> (PendingAuth, Vec<(String, String)>) {
+        let pending = start_request(
+            ClientConfig::microsoft("ms-cid".into()),
+            AuthRequest::outlook(),
+        )
+        .await
+        .unwrap();
+        let q = url::Url::parse(&pending.auth_url)
+            .unwrap()
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        (pending, q)
+    }
+
+    fn param<'a>(q: &'a [(String, String)], k: &str) -> Option<&'a str> {
+        q.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.as_str())
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn outlook_redirect_is_localhost() {
+        let (pending, q) = outlook_consent().await;
+        assert_eq!(
+            param(&q, "redirect_uri"),
+            Some(
+                format!(
+                    "http://localhost:{}",
+                    pending.listener.local_addr().unwrap().port()
+                )
+                .as_str()
+            )
+        );
+    }
+
+    #[rstest]
+    #[case::scope("scope", Some(MICROSOFT_SCOPES))]
+    #[case::account_picker("prompt", Some("select_account"))]
+    #[case::no_google_access_type("access_type", None)]
+    #[case::pkce("code_challenge_method", Some("S256"))]
+    #[tokio::test]
+    async fn outlook_consent_parameters(#[case] key: &str, #[case] want: Option<&str>) {
+        let (_, q) = outlook_consent().await;
+        assert_eq!(param(&q, key), want);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn google_redirect_stays_on_the_ip_literal() {
+        let pending = start_request(
+            ClientConfig::with_ids("g".into(), "s".into()),
+            AuthRequest::gmail(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            pending
+                .auth_url
+                .contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A")
+        );
+    }
+
+    /// Token endpoint stub: records each form and answers with `refresh_token` set to
+    /// `rt-<n>` for the n-th call.
+    type Forms = std::sync::Arc<Mutex<Vec<std::collections::HashMap<String, String>>>>;
+
+    async fn token_stub() -> (String, Forms) {
+        use axum::{Json, Router, extract::State, routing::post};
+        let forms: Forms = Default::default();
+        async fn token(
+            State(f): State<Forms>,
+            axum::Form(form): axum::Form<std::collections::HashMap<String, String>>,
+        ) -> Json<serde_json::Value> {
+            let mut f = f.lock().unwrap();
+            f.push(form);
+            Json(serde_json::json!({
+                "access_token": format!("at-{}", f.len()),
+                "expires_in": 0,
+                "refresh_token": format!("rt-{}", f.len()),
+            }))
+        }
+        let app = Router::new()
+            .route("/token", post(token))
+            .with_state(forms.clone());
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        (url, forms)
+    }
+
+    /// Runs an Outlook consent to the end, the test standing in for the browser.
+    async fn outlook_code_exchange() -> std::collections::HashMap<String, String> {
+        let (token_url, forms) = token_stub().await;
+        let mut cfg = ClientConfig::microsoft("ms-cid".into());
+        cfg.token_url = token_url;
+        let pending = start_request(cfg, AuthRequest::outlook()).await.unwrap();
+        let port = pending.listener.local_addr().unwrap().port();
+        let state = pending.state.clone();
+        let browser = tokio::spawn(async move {
+            let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            s.write_all(format!("GET /?code=c1&state={state} HTTP/1.1\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut out = vec![];
+            let _ = s.read_to_end(&mut out).await;
+        });
+        pending.finish_grant(Duration::from_secs(5)).await.unwrap();
+        browser.await.unwrap();
+        forms.lock().unwrap()[0].clone()
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn outlook_code_exchange_sends_no_secret() {
+        assert!(!outlook_code_exchange().await.contains_key("client_secret"));
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn outlook_code_exchange_names_the_scopes() {
+        assert_eq!(
+            outlook_code_exchange()
+                .await
+                .get("scope")
+                .map(String::as_str),
+            Some(MICROSOFT_SCOPES)
+        );
+    }
+
+    /// A rotating source over the stub, refreshed twice (tokens expire at once).
+    async fn refreshed_twice() -> (Forms, Vec<String>) {
+        let (token_url, forms) = token_stub().await;
+        let mut cfg = ClientConfig::microsoft("ms-cid".into());
+        cfg.token_url = token_url;
+        let saved: std::sync::Arc<Mutex<Vec<String>>> = Default::default();
+        let s2 = saved.clone();
+        let ts = TokenSource::rotating(
+            cfg,
+            "rt-0".into(),
+            Box::new(move |t| s2.lock().unwrap().push(t.to_string())),
+        );
+        ts.access_token().await.unwrap();
+        ts.access_token().await.unwrap();
+        let saved = saved.lock().unwrap().clone();
+        (forms, saved)
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn rotated_refresh_tokens_are_saved() {
+        assert_eq!(refreshed_twice().await.1, vec!["rt-1", "rt-2"]);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn the_next_refresh_uses_the_rotated_token() {
+        let (forms, _) = refreshed_twice().await;
+        assert_eq!(forms.lock().unwrap()[1]["refresh_token"], "rt-1");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn microsoft_refresh_names_the_scopes() {
+        let (forms, _) = refreshed_twice().await;
+        assert_eq!(forms.lock().unwrap()[0]["scope"], MICROSOFT_SCOPES);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn plain_source_keeps_its_refresh_token() {
+        let (token_url, forms) = token_stub().await;
+        let mut cfg = ClientConfig::with_ids("g".into(), "s".into());
+        cfg.token_url = token_url;
+        let ts = TokenSource::new(cfg, "google-rt".into());
+        ts.access_token().await.unwrap();
+        ts.access_token().await.unwrap();
+        assert_eq!(forms.lock().unwrap()[1]["refresh_token"], "google-rt");
     }
 }
