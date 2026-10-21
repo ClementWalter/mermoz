@@ -189,13 +189,59 @@ fn sign_in(w: &World) {
         .as_str()
         .unwrap()
         .to_string();
-    let redirect = query(&url, "redirect_uri");
+    come_back(&url);
+}
+
+fn account_row(w: &World) -> Value {
+    w.ok("accounts.list", json!({}))[0].clone()
+}
+
+/// Microsoft stopped accepting the account's sign-in (revoked, expired).
+fn refused(w: &World) {
+    {
+        let mut g = w.graph();
+        g.refuse_refresh = true;
+        g.unauthorized = true;
+    }
+    w.wait_until("sign-in refused", |w| {
+        account_row(w)["sign_in_expired"] == true
+    });
+}
+
+#[rstest]
+fn a_refused_microsoft_sign_in_asks_to_sign_in_again(synced: World) {
+    refused(&synced);
+    assert_eq!(account_row(&synced)["sign_in_expired"], true);
+}
+
+#[rstest]
+fn signing_in_again_resumes_the_account(synced: World) {
+    refused(&synced);
+    {
+        let mut g = synced.graph();
+        g.refuse_refresh = false;
+        g.unauthorized = false;
+    }
+    let id = account_row(&synced)["id"].clone();
+    let url = synced.ok("accounts.reconnect", json!({ "account_id": id }))["auth_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    come_back(&url);
+    synced.wait_until("signed in again", |w| {
+        account_row(w)["sign_in_expired"] == false
+    });
+}
+
+/// The browser's return to the loopback redirect of the consent at `url`.
+fn come_back(url: &str) {
+    let redirect = query(url, "redirect_uri");
     let port = redirect.rsplit(':').next().unwrap().trim_end_matches('/');
     let mut s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
     write!(
         s,
         "GET /?code=stub-code&state={} HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n",
-        url::form_urlencoded::byte_serialize(query(&url, "state").as_bytes()).collect::<String>()
+        url::form_urlencoded::byte_serialize(query(url, "state").as_bytes()).collect::<String>()
     )
     .unwrap();
     let mut resp = String::new();

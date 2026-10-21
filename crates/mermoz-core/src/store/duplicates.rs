@@ -25,19 +25,7 @@ const WINDOW_MS: i64 = 2 * 60 * 1000;
 
 /// A subject without its reply and forward prefixes, lowercased.
 fn subject_key(subject: &str) -> String {
-    let mut s = subject.trim().to_lowercase();
-    loop {
-        let head = s.split(':').next().unwrap_or("").trim();
-        let prefix =
-            ["re", "fwd", "fw", "tr", "aw", "wg", "ref", "rv"].contains(&head) && s.contains(':');
-        if !prefix {
-            break;
-        }
-        s = s
-            .split_once(':')
-            .map_or(String::new(), |(_, r)| r.trim().to_string());
-    }
-    s
+    crate::conversation::bare_subject(subject).to_lowercase()
 }
 
 /// Everyone a message went to, as a sorted set of addresses.

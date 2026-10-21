@@ -136,7 +136,7 @@ public enum ChatRuns {
         var previous: Message?
         for item in items {
             switch item {
-            case .marker:
+            case .marker, .draft:
                 previous = nil
             case let .message(m):
                 let same = previous.map {

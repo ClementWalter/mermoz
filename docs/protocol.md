@@ -38,6 +38,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | -32010 | approval_required   | send moved to Review; `data: {draft, thread}`        |
 | -32011 | app_only            | method only callable from Mermoz.app                 |
 | -32020 | upstream            | provider (Gmail, Microsoft Graph) error; `data: {status, body}` |
+| -32021 | sign_in_expired     | Google no longer accepts the account's sign-in; the user signs in again (`accounts.reconnect`) |
 
 ## Objects
 
@@ -155,7 +156,7 @@ app, the CLI and the MCP server are clients of this protocol.
 // Draft
 {"id": "dft_…", "account_id": "acc_1", "thread_id": "thr_…" | null,
  "to": ["a@b.c"], "cc": [], "subject": "…", "body": "…",
- "state": "draft|review|sent|rejected", "origin": "app|agent",
+ "state": "draft|review|sent|rejected", "origin": "app|agent|gmail",
  "created": 1791700000000, "updated": 1791700000000,
  "reply_to_message_id": "msg_…" | null}
 // reply_to_message_id: the message the reply answers: it carries that message's
@@ -267,7 +268,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | method               | params                                                                                   | result                                   |
 | -------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `hello`              | `{}`                                                                                     | `{"version": "0.1.0"}`                   |
-| `accounts.list`      | `{}`                                                                                     | `[Account]`, each with `needs_reconnect` (signed in through another OAuth client: still syncs, sign in again) |
+| `accounts.list`      | `{}`                                                                                     | `[Account]`, each with `needs_reconnect` (the user should sign in again) and `sign_in_expired`. `sign_in_expired: true`: Google refused the sign-in (`invalid_grant`: access removed, password changed, or the 7-day expiry while the Google app is in testing); nothing syncs and local changes stay queued until the user signs in again, `sync.error` says so in plain words. Remembered across restarts; set and cleared with `accounts_changed`. `needs_reconnect` alone: signed in through another OAuth client, still syncs |
 | `accounts.add_gmail` | `{}`, or the user's own Google client: `{"client_json"}` (the Google Cloud download) or `{"client_id","client_secret"}` | `{"auth_url": "https://…"}`; completes in background, emits `accounts_changed`; an own client is stored with the token and used for the account's later consents (Drive too) |
 | `accounts.add_outlook` | `{}` | `{"auth_url": "https://login.microsoftonline.com/common/…"}`; Microsoft sign-in (personal or work or school account) through the loopback redirect, completes in background, emits `accounts_changed`; the account is stored with `provider: "outlook"`. Invalid params with a plain message when this build has no Microsoft sign-in client |
 | `accounts.sign_in_status` | `{}`                                                                               | `{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?,"provider"?: "outlook","outlook_available": bool}`; `kind`: `admin_policy`, `unverified`, `org_internal`, `app_blocked`, `declined` (Google only); `provider` is `"outlook"` while the last sign-in is a Microsoft one, whose `error` is already in plain words; `outlook_available`: this build can add Outlook accounts |
@@ -288,7 +289,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `smart_search.set` | `{"enabled": bool}` — app only; off frees the model and stops indexing | same as `smart_search.status` |
 | `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every Gmail account, for mail Mermoz doesn't hold (Outlook accounts add no results) | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
 | `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
-| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null}` (`earlier`: messages left out by `latest`) |
+| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null, "drafts": [Draft]}` (`earlier`: messages left out by `latest`; `drafts`: unsent drafts answering the thread, or its conversation's threads, oldest first). A draft written in Gmail itself (`origin: "gmail"`, Gmail label `DRAFT`) is never a Message: it is a Draft that follows Gmail (a new version replaces it, deleting or sending it in Gmail removes it, emitting `drafts_changed` and `threads_changed`); `drafts.send` or `drafts.delete` here removes it from Gmail's Drafts too |
 | `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
 | `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's; a manual join the grouping learns from | `{"conversation_id", "threads": n, "members": [id], "undo"}` |
 | `conversations.unmerge` | `{"undo"}` — the `undo` a merge returned: each thread back in its conversation, the join unlearned | `{"threads": n}` |

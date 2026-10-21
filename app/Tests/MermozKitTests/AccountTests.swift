@@ -17,6 +17,53 @@ private func account(_ extra: String) throws -> Account {
     #expect(try account("").needsReconnect == nil)
 }
 
+@Test func expiredSignInDecodes() throws {
+    #expect(try account(#","needs_reconnect":true,"sign_in_expired":true"#).mustSignInAgain)
+}
+
+@Test func olderDaemonMeansSignedIn() throws {
+    #expect(try account("").mustSignInAgain == false)
+}
+
+@Test func expiringChangesTheAccount() throws {
+    #expect(try account(#","sign_in_expired":true"#) != account(""))
+}
+
+private func gmail(_ id: String, _ email: String, expired: Bool) -> Account {
+    Account(id: id, email: email, provider: "gmail", sync: SyncInfo(state: "idle", synced: 0, total: 0),
+            needsReconnect: expired, signInExpired: expired)
+}
+
+@Test func noNoticeWhileSignedIn() {
+    #expect(SignInNotice(accounts: [gmail("a", "me@example.com", expired: false)]) == nil)
+}
+
+@Test func noticeNamesTheAccount() {
+    let n = SignInNotice(accounts: [gmail("a", "me@example.com", expired: false), gmail("b", "you@gmail.com", expired: true)])
+    #expect(n?.title == "Sign in again to keep getting mail for you@gmail.com")
+}
+
+@Test func noticeSignsInTheStoppedAccount() {
+    let n = SignInNotice(accounts: [gmail("a", "me@example.com", expired: false), gmail("b", "you@gmail.com", expired: true)])
+    #expect(n?.accountId == "b")
+}
+
+@Test func noticeCountsTheOthers() {
+    let n = SignInNotice(accounts: [gmail("a", "me@example.com", expired: true), gmail("b", "you@gmail.com", expired: true)])
+    #expect(n?.title == "Sign in again to keep getting mail for me@example.com and 1 more")
+}
+
+@Test func outlookNoticeNamesMicrosoft() throws {
+    let s = #"{"id":"o1","email":"ana@outlook.example","provider":"outlook","sign_in_expired":true,"sync":{"state":"idle","synced":0,"total":0,"error":null}}"#
+    let a = try RPCCoding.decoder().decode(Account.self, from: Data(s.utf8))
+    #expect(SignInNotice(accounts: [a])?.detail == SignInNotice.outlookDetail)
+}
+
+@Test func noticeSpeaksPlainWords() {
+    let words = SignInNotice.detail.lowercased()
+    #expect(!["token", "oauth", "grant", "invalid"].contains { words.contains($0) })
+}
+
 @Test func hiddenAccountDecodes() throws {
     #expect(try account(#","hidden":true"#).isHidden == true)
 }

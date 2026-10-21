@@ -118,6 +118,8 @@ impl AccountSync {
                             Some(m) => out.push(m),
                             None => debug!(id = %meta.id, "skipping unparsable message"),
                         },
+                        // A refused sign-in never comes back by retrying.
+                        Err(Error::SignInExpired) => return Err(Error::SignInExpired),
                         Err(Error::Upstream { status: 404, .. }) => {}
                         Err(e) => {
                             failed.push(meta);

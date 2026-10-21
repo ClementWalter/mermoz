@@ -138,3 +138,28 @@ struct OwnGoogleClientCard: View {
         }
     }
 }
+
+/// Across the top of the main window while Google wants an account signed in again: mail
+/// for it has stopped, and one click runs the same sign-in as Settings › Reconnect.
+struct SignInAgainBanner: View {
+    @Environment(AppModel.self) private var model
+    let notice: SignInNotice
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.system(size: 18)).foregroundStyle(Theme.danger)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.title).font(.system(size: 13, weight: .semibold))
+                Text(notice.detail).font(.system(size: 12)).foregroundStyle(Theme.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button(SignInNotice.button) { model.reconnectAccount(notice.accountId) }
+                .buttonStyle(.glassProminent).controlSize(.regular)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color(hex: "#FFF6E5"), in: RoundedRectangle(cornerRadius: 12))
+    }
+}

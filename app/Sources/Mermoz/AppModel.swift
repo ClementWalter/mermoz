@@ -1291,6 +1291,21 @@ final class AppModel {
                                  attachments: AttachmentList(stored: d.attachments))
     }
 
+    /// Deletes an unsent draft (from Gmail's Drafts too when written there).
+    func deleteDraft(_ d: Draft) {
+        guard let client else { return }
+        if detail?.drafts?.contains(where: { $0.id == d.id }) == true { detail?.drafts?.removeAll { $0.id == d.id } }
+        Task {
+            do {
+                try await client.deleteDraft(d.id)
+                toast = "Draft deleted"
+            } catch {
+                report(error)
+            }
+            await reloadDetail()
+        }
+    }
+
     /// Creates (or updates) the draft and sends it; the app is a trusted caller so it sends
     /// directly. Answers within `sendDeadline`: past it the send goes on in the background,
     /// ending in a "Sent" toast or the composer reopened on the error.
@@ -1747,6 +1762,9 @@ final class AppModel {
 
     // MARK: sync footer
 
+    /// The banner asking to sign in to an account again, while Google refuses its sign-in.
+    var signInNotice: SignInNotice? { SignInNotice(accounts: accounts) }
+
     var syncLine: String {
         let syncing = accounts.compactMap { a -> (Int, Int)? in
             if let p = syncProgress[a.id], p.total > 0, p.synced < p.total { return (p.synced, p.total) }
@@ -1755,6 +1773,7 @@ final class AppModel {
             }
             return nil
         }
+        if accounts.contains(where: \.mustSignInAgain) { return "Sign in again to get new mail" }
         if syncing.isEmpty {
             if accounts.contains(where: { $0.sync.state == "error" }) { return "Can't reach your mail right now" }
             return "Synced · available offline"

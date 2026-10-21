@@ -13,6 +13,9 @@ enum Theme {
     static let paper = Color.white.opacity(0.86)
     static let danger = Color(hex: "#C93A3A")
     static let ok = Color(hex: "#2E9A6B")
+    /// Unsent drafts: a warm note colour, never mistaken for a sent bubble.
+    static let draft = Color(hex: "#C98A12")
+    static let draftSoft = Color(hex: "#FFF4D6")
 
     /// Fallback colors when the daemon sends none, keyed by default status key.
     static let statusColors: [String: String] = [

@@ -70,6 +70,11 @@ pub struct Graph {
     pub prefer: Vec<String>,
     /// Every `$value` fetch, by message id.
     pub mime_gets: Vec<String>,
+    /// The token endpoint refuses refreshes (`invalid_grant`) while set, as Microsoft does
+    /// for a revoked or expired sign-in.
+    pub refuse_refresh: bool,
+    /// Graph answers 401 to every call while set (an access token no longer accepted).
+    pub unauthorized: bool,
     /// Every token request's form.
     pub token_forms: Vec<HashMap<String, String>>,
     /// Bearer tokens seen on Graph calls.
@@ -305,6 +310,9 @@ fn enter(g: &mut Graph, headers: &HeaderMap) -> Option<Response> {
     let Some(token) = auth.strip_prefix("Bearer ") else {
         return Some(StatusCode::UNAUTHORIZED.into_response());
     };
+    if g.unauthorized {
+        return Some(StatusCode::UNAUTHORIZED.into_response());
+    }
     g.bearers.insert(token.to_string());
     if let Some(p) = headers.get("prefer").and_then(|v| v.to_str().ok()) {
         g.prefer.push(p.to_string());
@@ -315,9 +323,17 @@ fn enter(g: &mut Graph, headers: &HeaderMap) -> Option<Response> {
 async fn token(
     State(s): State<Shared>,
     axum::Form(form): axum::Form<HashMap<String, String>>,
-) -> Json<Value> {
+) -> Response {
     let mut g = s.lock().unwrap();
+    let refresh = form.get("grant_type").map(String::as_str) == Some("refresh_token");
     g.token_forms.push(form);
+    if refresh && g.refuse_refresh {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid_grant", "error_description": "AADSTS70000: The provided grant has expired" })),
+        )
+            .into_response();
+    }
     let n = g.token_forms.len();
     Json(json!({
         "access_token": format!("graph-access-{n}"),
@@ -326,6 +342,7 @@ async fn token(
         "token_type": "Bearer",
         "scope": crate::oauth::MICROSOFT_SCOPES,
     }))
+    .into_response()
 }
 
 async fn me(State(s): State<Shared>, headers: HeaderMap) -> Response {

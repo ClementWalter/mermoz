@@ -20,12 +20,17 @@ public struct Account: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var email: String
     public var provider: String
     public var sync: SyncInfo
-    /// Signed in through an older Google setup: mail still syncs, but the user should sign in again.
+    /// The user should sign in to Google again (see `signInExpired` for whether mail stopped).
     public var needsReconnect: Bool?
+    /// Google stopped accepting the sign-in: no new mail and no changes reach Gmail until
+    /// the user signs in again.
+    public var signInExpired: Bool?
     /// Hidden from every list, count and search for screenshots and demos; still syncs.
     public var hidden: Bool?
 
     public var isHidden: Bool { hidden ?? false }
+    /// Mail stopped until the user signs in to Google again.
+    public var mustSignInAgain: Bool { signInExpired ?? false }
     /// The made-up mailbox for demos: local only, never synced, never sent to an AI.
     public var isDemo: Bool { provider == "demo" }
     /// An Outlook account (outlook.com, Hotmail, Live or Microsoft 365).
@@ -43,7 +48,7 @@ public struct Account: Codable, Sendable, Identifiable, Equatable, Hashable {
 
     public static func == (a: Account, b: Account) -> Bool {
         a.id == b.id && a.sync == b.sync && a.email == b.email && a.needsReconnect == b.needsReconnect
-            && a.hidden == b.hidden
+            && a.signInExpired == b.signInExpired && a.hidden == b.hidden
     }
     public func hash(into h: inout Hasher) { h.combine(id) }
 }
@@ -305,6 +310,8 @@ public struct ThreadDetail: Codable, Sendable, Equatable {
     public var earlier: Int? = nil
     /// Who a reply-all goes to, as the daemon worked it out (Reply-To honoured).
     public var reply: ReplyAddressing? = nil
+    /// Unsent drafts answering the conversation, including ones written in Gmail itself.
+    public var drafts: [Draft]? = nil
 }
 
 /// The recipients a reply starts with, and whether any of them reads nothing.

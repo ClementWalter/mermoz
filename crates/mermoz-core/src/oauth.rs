@@ -7,6 +7,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -523,7 +524,18 @@ impl Refusal {
 /// Called with each new refresh token the server hands back, so it can be saved.
 pub type OnRotate = Box<dyn Fn(&str) + Send + Sync>;
 
-/// Access tokens from a refresh token, cached until shortly before expiry.
+/// Called once each time the identity provider starts refusing the refresh token.
+pub type OnRefused = Box<dyn Fn() + Send + Sync>;
+
+/// The token endpoint's answer means the refresh token itself is dead (revoked,
+/// expired, password changed): asking again never helps, only a new sign-in does.
+pub fn refused_grant(status: u16, body: &str) -> bool {
+    matches!(status, 400 | 401) && body.contains("invalid_grant")
+}
+
+/// Access tokens from a refresh token, cached until shortly before expiry. Once Google
+/// refuses the refresh token, every call fails with [`Error::SignInExpired`] without
+/// asking Google again, until [`TokenSource::probe`] finds it accepted.
 pub struct TokenSource {
     cfg: ClientConfig,
     /// Microsoft replaces the refresh token on every refresh; Google keeps it.
@@ -531,6 +543,8 @@ pub struct TokenSource {
     http: reqwest::Client,
     cache: Mutex<Option<(String, Instant)>>,
     on_rotate: Option<OnRotate>,
+    refused: AtomicBool,
+    on_refused: Option<OnRefused>,
 }
 
 impl TokenSource {
@@ -541,6 +555,8 @@ impl TokenSource {
             http: reqwest::Client::new(),
             cache: Mutex::new(None),
             on_rotate: None,
+            refused: AtomicBool::new(false),
+            on_refused: None,
         }
     }
 
@@ -550,6 +566,28 @@ impl TokenSource {
             on_rotate: Some(on_rotate),
             ..Self::new(cfg, refresh_token)
         }
+    }
+
+    /// `hook` runs when Google starts refusing the refresh token (to record and show it).
+    pub fn with_on_refused(mut self, hook: OnRefused) -> Self {
+        self.on_refused = Some(hook);
+        self
+    }
+
+    /// Starts refused: Google refused this refresh token before (a persisted state).
+    pub fn mark_refused(&self) {
+        self.refused.store(true, Ordering::SeqCst);
+        self.invalidate();
+    }
+
+    pub fn refused(&self) -> bool {
+        self.refused.load(Ordering::SeqCst)
+    }
+
+    /// One refresh attempt even while refused; `Ok` clears the refused state.
+    pub async fn probe(&self) -> Result<()> {
+        self.invalidate();
+        self.refresh().await.map(|_| ())
     }
 
     /// A one-off access token with no refresh token behind it (an online grant).
@@ -564,6 +602,8 @@ impl TokenSource {
                 Instant::now() + Duration::from_secs(ttl),
             ))),
             on_rotate: None,
+            refused: AtomicBool::new(false),
+            on_refused: None,
         }
     }
 
@@ -573,6 +613,13 @@ impl TokenSource {
         {
             return Ok(t);
         }
+        if self.refused() {
+            return Err(Error::SignInExpired);
+        }
+        self.refresh().await
+    }
+
+    async fn refresh(&self) -> Result<String> {
         let refresh = self.refresh_token.lock().unwrap().clone();
         let mut params = vec![
             ("client_id", self.cfg.client_id.as_str()),
@@ -594,9 +641,17 @@ impl TokenSource {
             .await?;
         let status = resp.status();
         if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            if refused_grant(status.as_u16(), &body) {
+                let first = !self.refused.swap(true, Ordering::SeqCst);
+                if first && let Some(hook) = &self.on_refused {
+                    hook();
+                }
+                return Err(Error::SignInExpired);
+            }
             return Err(Error::Upstream {
                 status: status.as_u16(),
-                body: resp.text().await.unwrap_or_default(),
+                body,
             });
         }
         let tok: TokenResponse = resp.json().await?;
@@ -606,6 +661,7 @@ impl TokenSource {
             *self.refresh_token.lock().unwrap() = new.clone();
             save(new);
         }
+        self.refused.store(false, Ordering::SeqCst);
         let ttl = tok.expires_in.unwrap_or(3600).saturating_sub(120);
         *self.cache.lock().unwrap() = Some((
             tok.access_token.clone(),
@@ -934,3 +990,6 @@ mod tests {
         assert_eq!(forms.lock().unwrap()[1]["refresh_token"], "google-rt");
     }
 }
+
+#[cfg(test)]
+mod token_tests;

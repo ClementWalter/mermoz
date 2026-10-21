@@ -128,7 +128,17 @@ impl World {
 /// Signs in through the real OAuth loopback flow, pretending to be the browser.
 fn sign_in(w: &World) {
     let v = w.ok("accounts.add_gmail", json!({}));
-    let url = url_parse(v["auth_url"].as_str().unwrap());
+    consent(v["auth_url"].as_str().unwrap());
+    w.wait_until("account to be added", |w| {
+        w.ok("accounts.list", json!({}))
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+}
+
+/// Google's redirect back to the daemon after the user consents at `auth_url`.
+fn consent(auth_url: &str) {
+    let url = url_parse(auth_url);
     let redirect = url
         .iter()
         .find(|(k, _)| k == "redirect_uri")
@@ -146,11 +156,6 @@ fn sign_in(w: &World) {
     .unwrap();
     let mut resp = String::new();
     let _ = s.read_to_string(&mut resp);
-    w.wait_until("account to be added", |w| {
-        w.ok("accounts.list", json!({}))
-            .as_array()
-            .is_some_and(|a| !a.is_empty())
-    });
 }
 
 fn url_parse(u: &str) -> Vec<(String, String)> {
@@ -5269,4 +5274,331 @@ fn the_demo_account_stays_quiet_after_a_restart(with_demo: World) {
     w.restart();
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(w.ok("accounts.list", json!({}))[0]["sync"]["state"], "idle");
+}
+
+// ---- Google refuses the sign-in (revoked, or the weekly expiry of a testing app) ----
+
+fn account_row(w: &World) -> Value {
+    w.ok("accounts.list", json!({}))[0].clone()
+}
+
+/// Refresh-token requests the token endpoint got so far.
+fn refreshes(w: &World) -> usize {
+    w.mailbox
+        .lock()
+        .unwrap()
+        .token_requests
+        .iter()
+        .filter(|(grant, _)| grant == "refresh_token")
+        .count()
+}
+
+/// Google revokes the grant while the user archives a thread; the daemon finds out.
+#[fixture]
+fn revoked(synced: World) -> World {
+    synced.mailbox.lock().unwrap().revoked = true;
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "archive" }),
+    );
+    synced.wait_until("sign-in refused", |w| {
+        account_row(w)["sign_in_expired"] == true
+    });
+    synced
+}
+
+/// Signs the account in again through the app's reconnect flow.
+fn sign_in_again(w: &World) {
+    let id = account_row(w)["id"].clone();
+    let v = w.ok("accounts.reconnect", json!({ "account_id": id }));
+    consent(v["auth_url"].as_str().unwrap());
+    w.wait_until("signed in again", |w| {
+        account_row(w)["sign_in_expired"] == false
+    });
+}
+
+#[rstest]
+fn a_refused_sign_in_asks_to_sign_in_again(revoked: World) {
+    assert_eq!(account_row(&revoked)["needs_reconnect"], true);
+}
+
+#[rstest]
+fn a_refused_sign_in_explains_itself_in_plain_words(revoked: World) {
+    assert_eq!(
+        account_row(&revoked)["sync"]["error"],
+        "Google asks you to sign in again. New mail arrives and your changes reach Gmail once you do."
+    );
+}
+
+#[rstest]
+fn the_cli_tells_to_sign_in_again(revoked: World) {
+    let out = String::from_utf8(revoked.cli(&["accounts"]).stdout).unwrap();
+    assert!(out.contains("sign in again"), "{out}");
+}
+
+/// Kicks the sync and edits a thread for a while, as an impatient user would.
+fn keep_poking(w: &World) {
+    let t = w.thread_by_subject("Budget sheet");
+    for i in 0..20 {
+        let status = if i % 2 == 0 { "archive" } else { "todo" };
+        w.ok(
+            "threads.update",
+            json!({ "ids": [t["id"]], "status": status }),
+        );
+        let _ = w.call("sync.now", json!({}));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[rstest]
+fn a_refused_sign_in_stops_asking_for_tokens(revoked: World) {
+    let before = refreshes(&revoked);
+    keep_poking(&revoked);
+    assert_eq!(refreshes(&revoked), before);
+}
+
+#[rstest]
+fn a_refused_sign_in_stops_calling_gmail(revoked: World) {
+    let before = revoked.mailbox.lock().unwrap().gmail_requests;
+    keep_poking(&revoked);
+    assert_eq!(revoked.mailbox.lock().unwrap().gmail_requests, before);
+}
+
+#[rstest]
+fn a_refused_sign_in_survives_a_restart(revoked: World) {
+    let mut w = revoked;
+    w.restart();
+    assert_eq!(account_row(&w)["sign_in_expired"], true);
+}
+
+#[rstest]
+fn a_restart_does_not_ask_google_again(revoked: World) {
+    let mut w = revoked;
+    let before = refreshes(&w);
+    w.restart();
+    keep_poking(&w);
+    assert_eq!(refreshes(&w), before);
+}
+
+#[rstest]
+fn signing_in_again_clears_the_refusal(revoked: World) {
+    sign_in_again(&revoked);
+    assert_eq!(account_row(&revoked)["needs_reconnect"], false);
+}
+
+#[rstest]
+fn changes_made_meanwhile_reach_gmail_after_signing_in_again(revoked: World) {
+    sign_in_again(&revoked);
+    revoked.wait_until("queued archive pushed", |w| {
+        !w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("INBOX")
+    });
+}
+
+#[rstest]
+fn mail_arrives_again_after_signing_in_again(revoked: World) {
+    sign_in_again(&revoked);
+    revoked.mailbox.lock().unwrap().add_message(
+        "m9",
+        "t9",
+        &["INBOX", "UNREAD"],
+        &raw("Ann <ann@example.org>", "Back online", "Hi", "m9"),
+        NOW,
+    );
+    revoked.wait_until("new mail", |w| {
+        w.ok("threads.list", json!({}))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Back online")
+    });
+}
+
+#[rstest]
+fn sending_while_refused_says_to_sign_in_again(revoked: World) {
+    let t = revoked.thread_by_subject("Audit report v2");
+    let d = revoked.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "Signed." }),
+    );
+    let e = revoked
+        .call("drafts.send", json!({ "id": d["id"] }))
+        .unwrap_err();
+    assert_eq!(e["code"], -32021);
+}
+
+// ---- Drafts written in Gmail itself (web, phone) ----
+
+/// The user's own message in thread t1, as Gmail web writes it.
+fn mine(subject: &str, body: &str, msg_id: &str) -> String {
+    format!(
+        "From: Me <me@example.com>\r\nTo: Marc Petit <marc@example.com>\r\nSubject: {subject}\r\nMessage-ID: <{msg_id}@example.com>\r\nIn-Reply-To: <m1@example.com>\r\nDate: Mon, 12 Oct 2026 08:12:00 +0000\r\n\r\n{body}\r\n"
+    )
+}
+
+fn audit(w: &World) -> Value {
+    let t = w.thread_by_subject("Audit report v2");
+    w.ok(
+        "threads.get",
+        json!({ "id": t["id"], "conversation": true }),
+    )
+}
+
+/// Draft bodies the conversation shows.
+fn draft_bodies(w: &World) -> Vec<String> {
+    audit(w)["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["body"].as_str().unwrap().trim().to_string())
+        .collect()
+}
+
+/// The user starts a reply to Marc in Gmail web; Mermoz syncs it.
+#[fixture]
+fn gmail_draft(synced: World) -> World {
+    synced.mailbox.lock().unwrap().save_draft(
+        "r-1",
+        "d1",
+        "t1",
+        &mine("Re: Audit report v2", "Signed, see attached.", "d1"),
+    );
+    synced.wait_until("Gmail draft synced", |w| !draft_bodies(w).is_empty());
+    synced
+}
+
+#[rstest]
+fn a_gmail_draft_shows_in_its_conversation(gmail_draft: World) {
+    assert_eq!(draft_bodies(&gmail_draft), vec!["Signed, see attached."]);
+}
+
+#[rstest]
+fn a_gmail_draft_is_marked_as_written_in_gmail(gmail_draft: World) {
+    assert_eq!(audit(&gmail_draft)["drafts"][0]["origin"], "gmail");
+}
+
+#[rstest]
+fn a_gmail_draft_is_not_shown_as_sent_mail(gmail_draft: World) {
+    assert_eq!(audit(&gmail_draft)["messages"].as_array().unwrap().len(), 1);
+}
+
+#[rstest]
+fn a_gmail_draft_edited_in_gmail_shows_its_new_version(gmail_draft: World) {
+    gmail_draft.mailbox.lock().unwrap().save_draft(
+        "r-1",
+        "d2",
+        "t1",
+        &mine("Re: Audit report v2", "Signed, timeline attached.", "d2"),
+    );
+    gmail_draft.wait_until("new version", |w| {
+        draft_bodies(w) == vec!["Signed, timeline attached."]
+    });
+}
+
+#[rstest]
+fn a_gmail_draft_sent_from_gmail_leaves_the_drafts(gmail_draft: World) {
+    gmail_draft
+        .mailbox
+        .lock()
+        .unwrap()
+        .send_draft_from_gmail("r-1", "s1");
+    gmail_draft.wait_until("draft gone", |w| draft_bodies(w).is_empty());
+}
+
+#[rstest]
+fn a_gmail_draft_sent_from_gmail_lands_as_mail(gmail_draft: World) {
+    gmail_draft
+        .mailbox
+        .lock()
+        .unwrap()
+        .send_draft_from_gmail("r-1", "s1");
+    gmail_draft.wait_until("sent reply in the conversation", |w| {
+        audit(w)["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["is_from_me"] == true)
+    });
+}
+
+#[rstest]
+fn a_gmail_draft_deleted_in_gmail_goes(gmail_draft: World) {
+    {
+        let mut m = gmail_draft.mailbox.lock().unwrap();
+        m.drafts.remove("r-1");
+        m.delete_message("d1");
+    }
+    gmail_draft.wait_until("draft gone", |w| draft_bodies(w).is_empty());
+}
+
+#[rstest]
+fn sending_a_gmail_draft_from_mermoz_clears_it_in_gmail(gmail_draft: World) {
+    let id = audit(&gmail_draft)["drafts"][0]["id"].clone();
+    gmail_draft.ok("drafts.send", json!({ "id": id }));
+    assert!(gmail_draft.mailbox.lock().unwrap().drafts.is_empty());
+}
+
+#[rstest]
+fn a_gmail_draft_is_listed_with_the_drafts(gmail_draft: World) {
+    let v = gmail_draft.ok("drafts.list", json!({}));
+    assert!(v.as_array().unwrap().iter().any(|d| d["origin"] == "gmail"));
+}
+
+#[rstest]
+fn a_reply_sent_from_another_client_joins_the_conversation(synced: World) {
+    synced.mailbox.lock().unwrap().add_message(
+        "s7",
+        "t1",
+        &["SENT"],
+        &mine("Rép. : Audit report v2", "Envoyé depuis mon iPhone", "s7"),
+        NOW + 1000,
+    );
+    synced.wait_until("reply in the conversation", |w| {
+        audit(w)["messages"].as_array().unwrap().len() == 2
+    });
+}
+
+/// Three versions of one Gmail draft synced, then Gmail drops the two old ones without
+/// telling (their deletions never reach Mermoz), and a draft written in Mermoz waits in
+/// the same conversation. The daemon starts again, as after an update.
+#[fixture]
+fn stale_gmail_drafts(synced: World) -> World {
+    let mut w = synced;
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        for (i, id) in ["d1", "d2", "d3"].iter().enumerate() {
+            m.add_message(
+                id,
+                "t1",
+                &["DRAFT"],
+                &mine("Re: Audit report v2", &format!("Version {}", i + 1), id),
+                NOW + i as i64,
+            );
+        }
+        m.drafts.insert("r-1".into(), "d3".into());
+    }
+    w.wait_until("three versions synced", |w| draft_bodies(w).len() == 3);
+    let t = w.thread_by_subject("Audit report v2");
+    w.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "Written in Mermoz" }),
+    );
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        m.messages.remove("d1");
+        m.messages.remove("d2");
+    }
+    w.restart();
+    w
+}
+
+#[rstest]
+fn only_the_live_gmail_draft_and_mermoz_drafts_remain(stale_gmail_drafts: World) {
+    stale_gmail_drafts.wait_until("stale versions dropped", |w| {
+        draft_bodies(w) == vec!["Version 3", "Written in Mermoz"]
+    });
 }

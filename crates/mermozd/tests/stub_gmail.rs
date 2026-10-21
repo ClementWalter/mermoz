@@ -99,6 +99,14 @@ pub struct Mailbox {
     pub minimal_gets: usize,
     /// How long each `messages.batchModify` call takes.
     pub batch_modify_delay_ms: u64,
+    /// The user's grant is revoked, as by Google's 7-day expiry: Gmail answers 401 and
+    /// the token endpoint refuses refreshes with `invalid_grant`. A new consent (an
+    /// authorization code exchanged) grants access again.
+    pub revoked: bool,
+    /// Gmail API requests served, of any kind.
+    pub gmail_requests: usize,
+    /// Gmail drafts: draft id → the message holding its current version.
+    pub drafts: BTreeMap<String, String>,
     next_label: u64,
 }
 
@@ -126,6 +134,35 @@ impl Mailbox {
         );
         let h = self.history_id;
         self.history.push((h, json!({ "id": h.to_string(), "messagesAdded": [{ "message": { "id": id, "threadId": thread_id } }] })));
+    }
+
+    /// Deletes a message for good, as Gmail does to a draft's old version.
+    pub fn delete_message(&mut self, id: &str) {
+        let Some(m) = self.messages.remove(id) else {
+            return;
+        };
+        self.history_id += 1;
+        let h = self.history_id;
+        self.history.push((h, json!({ "id": h.to_string(), "messagesDeleted": [{ "message": { "id": id, "threadId": m.thread_id } }] })));
+    }
+
+    /// Saves a Gmail draft `draft_id` as message `id`, replacing its previous version
+    /// (a new message each time, like Gmail).
+    pub fn save_draft(&mut self, draft_id: &str, id: &str, thread_id: &str, raw: &str) {
+        if let Some(old) = self.drafts.insert(draft_id.into(), id.into()) {
+            self.delete_message(&old);
+        }
+        self.add_message(id, thread_id, &["DRAFT"], raw, 1_791_700_100_000);
+    }
+
+    /// Sends a Gmail draft from Gmail: the draft goes, its message comes back as sent mail.
+    pub fn send_draft_from_gmail(&mut self, draft_id: &str, sent_id: &str) {
+        let Some(old) = self.drafts.remove(draft_id) else {
+            return;
+        };
+        let m = self.messages[&old].clone();
+        self.delete_message(&old);
+        self.add_message(sent_id, &m.thread_id, &["SENT"], &m.raw, 1_791_700_200_000);
     }
 
     /// Simulates a change made on another device (phone, webmail).
@@ -218,12 +255,29 @@ fn b64url(s: &str) -> String {
 async fn token(
     State(s): State<Shared>,
     axum::Form(form): axum::Form<HashMap<String, String>>,
-) -> Json<Value> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let field = |k: &str| form.get(k).cloned().unwrap_or_default();
-    s.lock()
-        .unwrap()
-        .token_requests
-        .push((field("grant_type"), field("client_id")));
+    {
+        let mut m = s.lock().unwrap();
+        m.token_requests
+            .push((field("grant_type"), field("client_id")));
+        match field("grant_type").as_str() {
+            "authorization_code" => m.revoked = false,
+            "refresh_token" if m.revoked => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid_grant", "error_description": "Token has been expired or revoked." })),
+                )
+                    .into_response();
+            }
+            _ => {}
+        }
+    }
+    token_granted(&s).into_response()
+}
+
+fn token_granted(s: &Shared) -> Json<Value> {
     let mut v = json!({ "access_token": "stub-access", "expires_in": 3600, "refresh_token": "stub-refresh", "token_type": "Bearer" });
     // Like Google: the scopes this consent granted, which a test sets per flow.
     if let Some(scope) = s.lock().unwrap().granted_scope.clone() {
@@ -584,6 +638,29 @@ async fn untrash_thread(
 }
 
 /// Like Gmail: the label disappears from every message, the messages stay.
+async fn list_drafts(State(s): State<Shared>) -> Json<Value> {
+    let m = s.lock().unwrap();
+    let drafts: Vec<Value> = m
+        .drafts
+        .iter()
+        .map(|(id, mid)| json!({ "id": id, "message": { "id": mid, "threadId": m.messages.get(mid).map(|x| x.thread_id.clone()) } }))
+        .collect();
+    Json(json!({ "drafts": drafts }))
+}
+
+async fn delete_draft(
+    State(s): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, axum::http::StatusCode> {
+    let mut m = s.lock().unwrap();
+    let mid = m
+        .drafts
+        .remove(&id)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+    m.delete_message(&mid);
+    Ok(Json(json!({})))
+}
+
 async fn delete_label(State(s): State<Shared>, Path(id): Path<String>) -> Json<Value> {
     let mut m = s.lock().unwrap();
     m.labels.remove(&id);
@@ -930,6 +1007,27 @@ async fn oa_responses_any(
     ([("content-type", "text/event-stream")], out).into_response()
 }
 
+/// Counts Gmail API requests and answers them 401 while the grant is revoked.
+async fn gmail_gate(
+    State(s): State<Shared>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if req.uri().path().starts_with("/gmail") {
+        let mut m = s.lock().unwrap();
+        m.gmail_requests += 1;
+        if m.revoked {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{\"error\":{\"code\":401,\"status\":\"UNAUTHENTICATED\"}}",
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
 /// Serves the stub on an ephemeral port in a background runtime.
 pub fn start(mailbox: Shared) -> u16 {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -961,6 +1059,12 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/subq/v1/systemone", post(subq_systemone))
                 .route("/gmail/threads/{id}/untrash", post(untrash_thread))
                 .route("/gmail/labels/{id}", axum::routing::delete(delete_label))
+                .route("/gmail/drafts", get(list_drafts))
+                .route("/gmail/drafts/{id}", axum::routing::delete(delete_draft))
+                .layer(axum::middleware::from_fn_with_state(
+                    mailbox.clone(),
+                    gmail_gate,
+                ))
                 .with_state(mailbox);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap().port()).unwrap();

@@ -159,6 +159,8 @@ public enum Received {
 public enum HostedRow: Sendable {
     case summary
     case expanded(Message)
+    /// An unsent reply, shown where it falls in the conversation.
+    case draft(Draft)
 }
 
 public enum ChatRows {
@@ -202,6 +204,12 @@ public enum ChatRows {
         var previous: (message: Message, text: String)?
         for item in items {
             switch item {
+            case let .draft(d):
+                // Keyed by its save time, so an edited draft redraws.
+                let key = "draft:\(d.id):\(d.updated)"
+                rows.append(.hosted(key: key))
+                hosted[key] = .draft(d)
+                previous = nil
             case let .marker(threadId, subject, date, joined):
                 rows.append(.marker(MarkerSpec(threadId: threadId, line: "\(time(date)) · \(subject.isEmpty ? "(no subject)" : subject)",
                                                joined: joined)))

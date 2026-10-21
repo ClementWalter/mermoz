@@ -32,6 +32,11 @@ pub enum Error {
     /// The user said no on a consent screen (Google's `error=` on the redirect).
     #[error("authorization declined: {0}")]
     Declined(String),
+    /// Google no longer accepts the account's sign-in (`invalid_grant` on refresh:
+    /// access removed, password changed, or the weekly expiry of an app in testing).
+    /// Nothing works for the account until the user signs in again.
+    #[error("Google asks you to sign in again")]
+    SignInExpired,
     #[error("{0}")]
     Other(String),
 }

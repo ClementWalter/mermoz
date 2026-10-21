@@ -535,6 +535,16 @@ async fn deleting_a_category_project_takes_it_off_the_mail(#[future] imported: E
 
 #[rstest]
 #[tokio::test]
+async fn a_refused_sign_in_stops_the_sync(env: Env) {
+    env.graph().refuse_refresh = true;
+    assert!(matches!(
+        env.sync.initial_sync().await,
+        Err(Error::SignInExpired)
+    ));
+}
+
+#[rstest]
+#[tokio::test]
 async fn gmail_search_finds_nothing_on_outlook(#[future] imported: Env) {
     assert!(
         imported

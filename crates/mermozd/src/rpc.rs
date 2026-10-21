@@ -16,6 +16,11 @@ use std::sync::Arc;
 
 pub const APPROVAL_REQUIRED: i64 = -32010;
 pub const APP_ONLY: i64 = -32011;
+/// Google no longer accepts the account's sign-in; the user signs in again.
+pub const SIGN_IN_EXPIRED: i64 = -32021;
+/// What the user reads when Google stopped accepting an account's sign-in.
+pub const SIGN_IN_EXPIRED_TEXT: &str =
+    "Google asks you to sign in again. New mail arrives and your changes reach Gmail once you do.";
 
 #[derive(Debug)]
 pub struct RpcError {
@@ -42,6 +47,7 @@ impl From<Error> for RpcError {
         match e {
             Error::NotFound(m) => RpcError::new(-32004, format!("not found: {m}")),
             Error::InvalidParams(m) => RpcError::new(-32602, m),
+            Error::SignInExpired => RpcError::new(SIGN_IN_EXPIRED, SIGN_IN_EXPIRED_TEXT),
             Error::Upstream { status, body } => RpcError {
                 code: -32020,
                 message: format!("provider error {status}"),
@@ -210,7 +216,12 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let mut v = to_value(st.accounts()?)?;
             for a in v.as_array_mut().into_iter().flatten() {
                 let id = a["id"].as_str().unwrap_or_default().to_string();
-                a["needs_reconnect"] = json!(svc.needs_reconnect(&id));
+                let expired = svc.sign_in_expired(&id);
+                a["sign_in_expired"] = json!(expired);
+                a["needs_reconnect"] = json!(expired || svc.needs_reconnect(&id));
+                if expired {
+                    a["sync"]["error"] = json!(SIGN_IN_EXPIRED_TEXT);
+                }
             }
             Ok(v)
         }
@@ -249,6 +260,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             let acc = st.account(&s(p, "id")?)?;
             svc.stop_account(&acc.id);
             st.remove_account(&acc.id)?;
+            st.set_sign_in_expired(&acc.id, false)?;
             mermoz_core::tokens::delete(&acc.email)?;
             mermoz_core::tokens::delete_drive_grant(&acc.email)?;
             let _ = svc.events.send(Event::AccountsChanged);
@@ -334,25 +346,28 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             if !flag(p, "conversation") {
                 let messages = st.messages(&id)?;
                 let reply = mermoz_core::reply::addressing(&messages, &me);
+                let drafts = st.thread_drafts(std::slice::from_ref(&id))?;
                 return Ok(
-                    json!({ "thread": st.thread(&id)?, "messages": messages, "reply": reply }),
+                    json!({ "thread": st.thread(&id)?, "messages": messages, "reply": reply, "drafts": drafts }),
                 );
             }
             // `latest`: the app opens on the newest messages and asks for the rest
             // only when the reader scrolls back (a 992-thread conversation was 14 MB).
             let latest = p.get("latest").and_then(|v| v.as_u64()).map(|n| n as usize);
             let mut messages = st.conversation_window(&id, latest)?;
-            for t in st.conversation_thread_ids(&id)? {
-                if t != id {
-                    svc.verify_thread_senders(&t);
+            let threads = st.conversation_thread_ids(&id)?;
+            for t in &threads {
+                if *t != id {
+                    svc.verify_thread_senders(t);
                 }
             }
+            let drafts = st.thread_drafts(&threads)?;
             let conversation = st.conversation(&id, &messages)?;
             let reply = mermoz_core::reply::addressing(&messages, &me);
             let earlier = latest.map_or(0, |n| messages.len().saturating_sub(n));
             messages.drain(..earlier);
             Ok(json!({ "thread": st.thread(&id)?, "messages": messages,
-                "conversation": conversation, "earlier": earlier, "reply": reply }))
+                "conversation": conversation, "earlier": earlier, "reply": reply, "drafts": drafts }))
         }
         "conversations.split" => {
             let id = st.resolve_thread_id(&s(p, "id")?)?;
@@ -673,7 +688,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             to_value(d)
         }
         "drafts.delete" => {
-            st.delete_draft(&s(p, "id")?)?;
+            let d = st.draft(&s(p, "id")?)?;
+            // A draft written in Gmail leaves Gmail's Drafts too.
+            if d.origin == mermoz_core::store::gmail_drafts::ORIGIN
+                && let Ok(w) = svc.worker(&d.account_id)
+            {
+                w.sync.discard_gmail_draft(&d.id).await?;
+            }
+            st.delete_draft(&d.id)?;
             let _ = svc.events.send(Event::DraftsChanged);
             Ok(json!({}))
         }

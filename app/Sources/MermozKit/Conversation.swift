@@ -108,11 +108,14 @@ public enum TimelineItem: Equatable, Identifiable, Sendable {
     /// so the reader can take it out.
     case marker(threadId: String, subject: String, date: Int64, joined: Bool)
     case message(Message)
+    /// An unsent reply, at the time it was last saved.
+    case draft(Draft)
 
     public var id: String {
         switch self {
         case let .marker(t, _, _, _): "marker:\(t)"
         case let .message(m): m.id
+        case let .draft(d): "draft:\(d.id)"
         }
     }
 }
@@ -136,9 +139,25 @@ public enum Timeline {
         return (Array(items[start...]), total - keep)
     }
 
-    /// Messages in date order, with a marker each time the Gmail thread changes. A lone
-    /// thread gets no marker: the chat reads like a plain conversation.
-    public static func items(_ messages: [Message], threads: [ThreadSummary]) -> [TimelineItem] {
+    /// Messages and drafts in date order, with a marker each time the Gmail thread
+    /// changes. A lone thread gets no marker: the chat reads like a plain conversation.
+    public static func items(_ messages: [Message], threads: [ThreadSummary], drafts: [Draft] = []) -> [TimelineItem] {
+        var out = messageItems(messages, threads: threads)
+        for d in drafts.sorted(by: { $0.updated < $1.updated }) {
+            // After everything up to its save time, so a draft follows what it answers.
+            let at = out.firstIndex { item in
+                switch item {
+                case let .marker(_, _, date, _): date > d.updated
+                case let .message(m): m.date > d.updated
+                case let .draft(o): o.updated > d.updated
+                }
+            } ?? out.count
+            out.insert(.draft(d), at: at)
+        }
+        return out
+    }
+
+    private static func messageItems(_ messages: [Message], threads: [ThreadSummary]) -> [TimelineItem] {
         let sorted = messages.sorted { $0.date < $1.date }
         let distinct = Set(sorted.compactMap(\.threadId))
         guard distinct.count > 1 else { return sorted.map(TimelineItem.message) }
