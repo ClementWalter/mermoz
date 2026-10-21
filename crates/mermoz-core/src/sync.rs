@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::gmail::{Gmail, decode_raw};
 use crate::mime;
 use crate::model::Draft;
-use crate::store::{IncomingMessage, Store, SyncMode, ThreadPatch};
+use crate::store::{IncomingMessage, Store, SyncMode, ThreadPatch, gmail_drafts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -230,6 +230,9 @@ impl AccountSync {
                     SyncMode::Initial,
                 )?;
                 synced += chunk.len() as i64;
+                if msgs.iter().any(|m| gmail_drafts::is_draft(&m.label_ids)) {
+                    let _ = self.events.send(Event::DraftsChanged);
+                }
                 self.store
                     .set_sync(&self.account_id, "syncing", Some(synced), None, None)?;
                 let _ = self.events.send(Event::ThreadsChanged(dedup(ids)));
@@ -264,6 +267,7 @@ impl AccountSync {
         let mut page_token: Option<String> = None;
         let mut added: Vec<(String, String)> = vec![];
         let mut relabeled: BTreeMap<String, LabelEdits> = BTreeMap::new();
+        let mut deleted: Vec<String> = vec![];
         let mut latest = start.clone();
         loop {
             let Some(page) = self.gmail.history(&start, page_token.as_deref()).await? else {
@@ -280,6 +284,7 @@ impl AccountSync {
                 for m in &rec.messages_added {
                     added.push((m.message.id.clone(), m.message.thread_id.clone()));
                 }
+                deleted.extend(rec.messages_deleted.iter().map(|m| m.message.id.clone()));
                 for (m, on) in rec
                     .labels_added
                     .iter()
@@ -307,8 +312,13 @@ impl AccountSync {
             .collect();
         let mut relabeled_ids = vec![];
         let mut echoes = 0usize;
+        // Gmail drafts whose labels changed (sent under their own id): fetched again.
+        let mut drafts_changed: Vec<(String, String)> = vec![];
         for (id, edits) in relabeled {
             match self.store.message_label_ids(&self.account_id, &id)? {
+                None if self.store.is_gmail_draft(&self.account_id, &id)? => {
+                    drafts_changed.push((id, String::new()));
+                }
                 None => {}
                 Some(stored) if edits.shown_by(&stored) => echoes += 1,
                 Some(_) => relabeled_ids.push(id),
@@ -318,18 +328,28 @@ impl AccountSync {
             debug!(account = %self.email, echoes, "label changes already applied");
         }
         let relabeled = relabeled_ids;
+        let new: Vec<(String, String)> = new.into_iter().chain(drafts_changed).collect();
         if !new.is_empty() || !relabeled.is_empty() {
             // Labels created on another device must be known before ingesting.
             self.refresh_labels().await?;
         }
+        let mut drafts_touched = false;
         if !new.is_empty() {
             let msgs = self.fetch_many(new).await?;
+            drafts_touched |= msgs.iter().any(|m| gmail_drafts::is_draft(&m.label_ids));
             changed.extend(self.store.ingest_many(
                 &self.account_id,
                 &self.email,
                 &msgs,
                 SyncMode::Incremental,
             )?);
+        }
+        // Only Gmail drafts are forgotten: deleted mail stays readable here.
+        for id in &deleted {
+            if let Some(thread) = self.store.remove_gmail_draft(&self.account_id, id)? {
+                drafts_touched = true;
+                changed.extend(thread);
+            }
         }
         for id in relabeled {
             match self.gmail.get_minimal(&id).await {
@@ -353,6 +373,9 @@ impl AccountSync {
             }
         }
         self.store.set_history_id(&self.account_id, &latest)?;
+        if drafts_touched {
+            let _ = self.events.send(Event::DraftsChanged);
+        }
         let changed = dedup(changed);
         let n = changed.len();
         if n > 0 {
@@ -497,11 +520,29 @@ impl AccountSync {
         }
     }
 
+    /// Removes the Gmail draft behind a draft written in Gmail, so it is not left in
+    /// Gmail's Drafts once sent or discarded here. Gone already: nothing to do.
+    pub async fn discard_gmail_draft(&self, draft_id: &str) -> Result<()> {
+        let Some(pid) = self.store.draft_provider_id(draft_id)? else {
+            return Ok(());
+        };
+        match self.gmail.draft_of_message(&pid).await? {
+            Some(gid) => match self.gmail.delete_draft(&gid).await {
+                Ok(()) | Err(Error::Upstream { status: 404, .. }) => Ok(()),
+                Err(e) => Err(e),
+            },
+            None => Ok(()),
+        }
+    }
+
     /// Sends a draft now; the thread then waits on the other side.
     pub async fn send_draft(&self, draft: &Draft, after_status: Option<&str>) -> Result<()> {
         let (raw, provider_thread) = draft_message(&self.store, &self.email, draft)?;
         let sent = self.gmail.send(&raw, provider_thread.as_deref()).await?;
         self.store.set_draft_state(&draft.id, "sent")?;
+        if let Err(e) = self.discard_gmail_draft(&draft.id).await {
+            warn!(draft = %draft.id, "sent, but its Gmail draft stays in Gmail: {e}");
+        }
         // The sent copy syncs back with its own attachments; these copies are spent.
         if let Err(e) = self.store.purge_draft_files(&draft.id) {
             debug!("could not remove sent draft files: {e}");
@@ -622,7 +663,9 @@ impl LabelEdits {
     }
 }
 
+/// Thread ids once each; an empty id (a Gmail draft answering no stored thread) goes.
 fn dedup(mut v: Vec<String>) -> Vec<String> {
+    v.retain(|t| !t.is_empty());
     v.sort();
     v.dedup();
     v

@@ -155,7 +155,7 @@ app, the CLI and the MCP server are clients of this protocol.
 // Draft
 {"id": "dft_…", "account_id": "acc_1", "thread_id": "thr_…" | null,
  "to": ["a@b.c"], "cc": [], "subject": "…", "body": "…",
- "state": "draft|review|sent|rejected", "origin": "app|agent",
+ "state": "draft|review|sent|rejected", "origin": "app|agent|gmail",
  "created": 1791700000000, "updated": 1791700000000,
  "reply_to_message_id": "msg_…" | null}
 // reply_to_message_id: the message the reply answers: it carries that message's
@@ -287,7 +287,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | `smart_search.set` | `{"enabled": bool}` — app only; off frees the model and stops indexing | same as `smart_search.status` |
 | `search.gmail`       | `{"query", "limit"?: 20}` — Gmail's own search on every account, for mail Mermoz doesn't hold | `{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}` |
 | `search.gmail_pull`  | `{"account_id", "ids": [id]}` — stores those Gmail messages | `{"threads": [id]}` |
-| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null}` (`earlier`: messages left out by `latest`) |
+| `threads.get`        | `{"id", "conversation"?: false, "latest"?: n}` — with `conversation`, every message of the thread's conversation; with `latest` too, only its last n (people, files and links still cover all of it) | `{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing \| null, "drafts": [Draft]}` (`earlier`: messages left out by `latest`; `drafts`: unsent drafts answering the thread, or its conversation's threads, oldest first). A draft written in Gmail itself (`origin: "gmail"`, Gmail label `DRAFT`) is never a Message: it is a Draft that follows Gmail (a new version replaces it, deleting or sending it in Gmail removes it, emitting `drafts_changed` and `threads_changed`); `drafts.send` or `drafts.delete` here removes it from Gmail's Drafts too |
 | `conversations.split` | `{"id"}` — takes the thread out of its conversation for good                            | `{"conversation_id"}`                    |
 | `conversations.merge` | `{"ids": [id]}` — joins the threads' conversations into the latest one's; a manual join the grouping learns from | `{"conversation_id", "threads": n, "members": [id], "undo"}` |
 | `conversations.unmerge` | `{"undo"}` — the `undo` a merge returned: each thread back in its conversation, the join unlearned | `{"threads": n}` |

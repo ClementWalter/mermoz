@@ -5430,3 +5430,134 @@ fn sending_while_refused_says_to_sign_in_again(revoked: World) {
         .unwrap_err();
     assert_eq!(e["code"], -32021);
 }
+
+// ---- Drafts written in Gmail itself (web, phone) ----
+
+/// The user's own message in thread t1, as Gmail web writes it.
+fn mine(subject: &str, body: &str, msg_id: &str) -> String {
+    format!(
+        "From: Me <me@example.com>\r\nTo: Marc Petit <marc@example.com>\r\nSubject: {subject}\r\nMessage-ID: <{msg_id}@example.com>\r\nIn-Reply-To: <m1@example.com>\r\nDate: Mon, 12 Oct 2026 08:12:00 +0000\r\n\r\n{body}\r\n"
+    )
+}
+
+fn audit(w: &World) -> Value {
+    let t = w.thread_by_subject("Audit report v2");
+    w.ok(
+        "threads.get",
+        json!({ "id": t["id"], "conversation": true }),
+    )
+}
+
+/// Draft bodies the conversation shows.
+fn draft_bodies(w: &World) -> Vec<String> {
+    audit(w)["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["body"].as_str().unwrap().trim().to_string())
+        .collect()
+}
+
+/// The user starts a reply to Marc in Gmail web; Mermoz syncs it.
+#[fixture]
+fn gmail_draft(synced: World) -> World {
+    synced.mailbox.lock().unwrap().save_draft(
+        "r-1",
+        "d1",
+        "t1",
+        &mine("Re: Audit report v2", "Signed, see attached.", "d1"),
+    );
+    synced.wait_until("Gmail draft synced", |w| !draft_bodies(w).is_empty());
+    synced
+}
+
+#[rstest]
+fn a_gmail_draft_shows_in_its_conversation(gmail_draft: World) {
+    assert_eq!(draft_bodies(&gmail_draft), vec!["Signed, see attached."]);
+}
+
+#[rstest]
+fn a_gmail_draft_is_marked_as_written_in_gmail(gmail_draft: World) {
+    assert_eq!(audit(&gmail_draft)["drafts"][0]["origin"], "gmail");
+}
+
+#[rstest]
+fn a_gmail_draft_is_not_shown_as_sent_mail(gmail_draft: World) {
+    assert_eq!(audit(&gmail_draft)["messages"].as_array().unwrap().len(), 1);
+}
+
+#[rstest]
+fn a_gmail_draft_edited_in_gmail_shows_its_new_version(gmail_draft: World) {
+    gmail_draft.mailbox.lock().unwrap().save_draft(
+        "r-1",
+        "d2",
+        "t1",
+        &mine("Re: Audit report v2", "Signed, timeline attached.", "d2"),
+    );
+    gmail_draft.wait_until("new version", |w| {
+        draft_bodies(w) == vec!["Signed, timeline attached."]
+    });
+}
+
+#[rstest]
+fn a_gmail_draft_sent_from_gmail_leaves_the_drafts(gmail_draft: World) {
+    gmail_draft
+        .mailbox
+        .lock()
+        .unwrap()
+        .send_draft_from_gmail("r-1", "s1");
+    gmail_draft.wait_until("draft gone", |w| draft_bodies(w).is_empty());
+}
+
+#[rstest]
+fn a_gmail_draft_sent_from_gmail_lands_as_mail(gmail_draft: World) {
+    gmail_draft
+        .mailbox
+        .lock()
+        .unwrap()
+        .send_draft_from_gmail("r-1", "s1");
+    gmail_draft.wait_until("sent reply in the conversation", |w| {
+        audit(w)["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["is_from_me"] == true)
+    });
+}
+
+#[rstest]
+fn a_gmail_draft_deleted_in_gmail_goes(gmail_draft: World) {
+    {
+        let mut m = gmail_draft.mailbox.lock().unwrap();
+        m.drafts.remove("r-1");
+        m.delete_message("d1");
+    }
+    gmail_draft.wait_until("draft gone", |w| draft_bodies(w).is_empty());
+}
+
+#[rstest]
+fn sending_a_gmail_draft_from_mermoz_clears_it_in_gmail(gmail_draft: World) {
+    let id = audit(&gmail_draft)["drafts"][0]["id"].clone();
+    gmail_draft.ok("drafts.send", json!({ "id": id }));
+    assert!(gmail_draft.mailbox.lock().unwrap().drafts.is_empty());
+}
+
+#[rstest]
+fn a_gmail_draft_is_listed_with_the_drafts(gmail_draft: World) {
+    let v = gmail_draft.ok("drafts.list", json!({}));
+    assert!(v.as_array().unwrap().iter().any(|d| d["origin"] == "gmail"));
+}
+
+#[rstest]
+fn a_reply_sent_from_another_client_joins_the_conversation(synced: World) {
+    synced.mailbox.lock().unwrap().add_message(
+        "s7",
+        "t1",
+        &["SENT"],
+        &mine("Rép. : Audit report v2", "Envoyé depuis mon iPhone", "s7"),
+        NOW + 1000,
+    );
+    synced.wait_until("reply in the conversation", |w| {
+        audit(w)["messages"].as_array().unwrap().len() == 2
+    });
+}

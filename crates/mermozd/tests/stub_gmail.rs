@@ -105,6 +105,8 @@ pub struct Mailbox {
     pub revoked: bool,
     /// Gmail API requests served, of any kind.
     pub gmail_requests: usize,
+    /// Gmail drafts: draft id → the message holding its current version.
+    pub drafts: BTreeMap<String, String>,
     next_label: u64,
 }
 
@@ -132,6 +134,35 @@ impl Mailbox {
         );
         let h = self.history_id;
         self.history.push((h, json!({ "id": h.to_string(), "messagesAdded": [{ "message": { "id": id, "threadId": thread_id } }] })));
+    }
+
+    /// Deletes a message for good, as Gmail does to a draft's old version.
+    pub fn delete_message(&mut self, id: &str) {
+        let Some(m) = self.messages.remove(id) else {
+            return;
+        };
+        self.history_id += 1;
+        let h = self.history_id;
+        self.history.push((h, json!({ "id": h.to_string(), "messagesDeleted": [{ "message": { "id": id, "threadId": m.thread_id } }] })));
+    }
+
+    /// Saves a Gmail draft `draft_id` as message `id`, replacing its previous version
+    /// (a new message each time, like Gmail).
+    pub fn save_draft(&mut self, draft_id: &str, id: &str, thread_id: &str, raw: &str) {
+        if let Some(old) = self.drafts.insert(draft_id.into(), id.into()) {
+            self.delete_message(&old);
+        }
+        self.add_message(id, thread_id, &["DRAFT"], raw, 1_791_700_100_000);
+    }
+
+    /// Sends a Gmail draft from Gmail: the draft goes, its message comes back as sent mail.
+    pub fn send_draft_from_gmail(&mut self, draft_id: &str, sent_id: &str) {
+        let Some(old) = self.drafts.remove(draft_id) else {
+            return;
+        };
+        let m = self.messages[&old].clone();
+        self.delete_message(&old);
+        self.add_message(sent_id, &m.thread_id, &["SENT"], &m.raw, 1_791_700_200_000);
     }
 
     /// Simulates a change made on another device (phone, webmail).
@@ -607,6 +638,29 @@ async fn untrash_thread(
 }
 
 /// Like Gmail: the label disappears from every message, the messages stay.
+async fn list_drafts(State(s): State<Shared>) -> Json<Value> {
+    let m = s.lock().unwrap();
+    let drafts: Vec<Value> = m
+        .drafts
+        .iter()
+        .map(|(id, mid)| json!({ "id": id, "message": { "id": mid, "threadId": m.messages.get(mid).map(|x| x.thread_id.clone()) } }))
+        .collect();
+    Json(json!({ "drafts": drafts }))
+}
+
+async fn delete_draft(
+    State(s): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, axum::http::StatusCode> {
+    let mut m = s.lock().unwrap();
+    let mid = m
+        .drafts
+        .remove(&id)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+    m.delete_message(&mid);
+    Ok(Json(json!({})))
+}
+
 async fn delete_label(State(s): State<Shared>, Path(id): Path<String>) -> Json<Value> {
     let mut m = s.lock().unwrap();
     m.labels.remove(&id);
@@ -1005,6 +1059,8 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/subq/v1/systemone", post(subq_systemone))
                 .route("/gmail/threads/{id}/untrash", post(untrash_thread))
                 .route("/gmail/labels/{id}", axum::routing::delete(delete_label))
+                .route("/gmail/drafts", get(list_drafts))
+                .route("/gmail/drafts/{id}", axum::routing::delete(delete_draft))
                 .layer(axum::middleware::from_fn_with_state(
                     mailbox.clone(),
                     gmail_gate,

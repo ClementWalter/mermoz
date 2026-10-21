@@ -363,6 +363,46 @@ impl Gmail {
     }
 
     /// Deletes a label; Gmail removes it from every message, the messages stay.
+    /// The Gmail draft whose current version is message `message_id`, if any.
+    pub async fn draft_of_message(&self, message_id: &str) -> Result<Option<String>> {
+        let mut page: Option<String> = None;
+        loop {
+            let mut q = vec![("maxResults", "500".to_string())];
+            if let Some(t) = &page {
+                q.push(("pageToken", t.clone()));
+            }
+            let v: serde_json::Value = self
+                .call(reqwest::Method::GET, "/drafts", &q, None)
+                .await?
+                .json()
+                .await?;
+            let found = v["drafts"].as_array().into_iter().flatten().find_map(|d| {
+                (d["message"]["id"].as_str() == Some(message_id))
+                    .then(|| d["id"].as_str().map(String::from))
+                    .flatten()
+            });
+            if found.is_some() {
+                return Ok(found);
+            }
+            match v["nextPageToken"].as_str() {
+                Some(t) => page = Some(t.to_string()),
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// Deletes a Gmail draft for good (it is a draft, never sent mail).
+    pub async fn delete_draft(&self, draft_id: &str) -> Result<()> {
+        self.call(
+            reqwest::Method::DELETE,
+            &format!("/drafts/{draft_id}"),
+            &[],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn delete_label(&self, id: &str) -> Result<()> {
         self.call(reqwest::Method::DELETE, &format!("/labels/{id}"), &[], None)
             .await?;

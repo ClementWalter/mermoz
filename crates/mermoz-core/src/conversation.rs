@@ -145,19 +145,21 @@ pub struct PairItem {
     pub last_messages: Vec<PairMessage>,
 }
 
-/// "Re: Fwd: Lunch" reads as "Lunch".
+/// "Re: Fwd: Lunch" reads as "Lunch". Clients write the prefixes their own way: French
+/// ones put a space before the colon ("RE :", "TR :") and Apple Mail writes "Rép. :" and
+/// "Réf. :"; some count replies ("Re[2]:").
 pub fn bare_subject(s: &str) -> String {
+    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^\s*(re|fwd?|tr|aw|sv|rv|wg|r[ée]p|r[ée]f|enc|antw)\.?\s*(\[\d+\])?\s*[:：]\s*",
+        )
+        .expect("subject prefix pattern")
+    });
     let mut s = s.trim();
-    loop {
-        let lower = s.to_lowercase();
-        let Some(p) = ["re:", "fwd:", "fw:", "tr:", "aw:", "sv:", "rv:", "wg:"]
-            .iter()
-            .find(|p| lower.starts_with(**p))
-        else {
-            return s.to_string();
-        };
-        s = s[p.len()..].trim_start();
+    while let Some(m) = PREFIX.find(s) {
+        s = &s[m.end()..];
     }
+    s.to_string()
 }
 
 /// A message body for judging: its own words only, whitespace folded, 600 characters.
@@ -341,6 +343,13 @@ mod tests {
     #[case::stacked("RE: Fwd: TR: Flat sale", "Flat sale")]
     #[case::plain("Garden fence quote", "Garden fence quote")]
     #[case::word_starting_like_prefix("Review of the deck", "Review of the deck")]
+    #[case::french_reply("RE : Déclaration 2025", "Déclaration 2025")]
+    #[case::french_forward("TR : Déclaration 2025", "Déclaration 2025")]
+    #[case::apple_mail_french_reply("Rép. : Déclaration 2025", "Déclaration 2025")]
+    #[case::apple_mail_french_forward("Réf. : Déclaration 2025", "Déclaration 2025")]
+    #[case::counted_reply("Re[2]: Lunch", "Lunch")]
+    #[case::spaced_forward("Fwd : Lunch", "Lunch")]
+    #[case::word_then_colon("Report: Q3", "Report: Q3")]
     fn bare_subjects(#[case] s: &str, #[case] want: &str) {
         assert_eq!(bare_subject(s), want);
     }

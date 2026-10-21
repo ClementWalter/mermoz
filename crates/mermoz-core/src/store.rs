@@ -20,6 +20,7 @@ pub use conversations::{
 
 mod duplicates;
 mod feed;
+pub mod gmail_drafts;
 mod images;
 mod local;
 mod plan;
@@ -145,6 +146,7 @@ const MIGRATIONS: &[&str] = &[
     duplicates::MIGRATION,
     plan::SNOOZE_MIGRATION,
     visibility::MIGRATION,
+    gmail_drafts::MIGRATION,
 ];
 
 /// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null
@@ -1539,6 +1541,10 @@ impl Store {
         tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: seeded");
         store.backfill_snippets()?;
         tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: snippets");
+        let adopted = store.adopt_stored_gmail_drafts()?;
+        if adopted > 0 {
+            tracing::info!(adopted, "Gmail drafts stored as mail are drafts again");
+        }
         let dropped = store.drop_stale_suggestions(now_ms())?;
         if dropped > 0 {
             tracing::info!(dropped, "dropped live-status suggestions on stale threads");
@@ -1810,8 +1816,10 @@ impl Store {
 
     pub fn has_message(&self, account_id: &str, provider_id: &str) -> Result<bool> {
         let r = self.r.lock().unwrap();
+        // A Gmail draft is held as a draft, never as a message: known all the same.
         Ok(r.query_row(
-            "SELECT 1 FROM messages WHERE account_id = ?1 AND provider_id = ?2",
+            "SELECT 1 FROM messages WHERE account_id = ?1 AND provider_id = ?2
+             UNION ALL SELECT 1 FROM drafts WHERE account_id = ?1 AND provider_id = ?2 LIMIT 1",
             params![account_id, provider_id],
             |_| Ok(()),
         )
@@ -1862,7 +1870,10 @@ impl Store {
             match self.ingest_tx(&tx, account_id, me, (m, reading), mode, &mut fts) {
                 Ok(id) => {
                     tx.execute_batch("RELEASE msg")?;
-                    ids.push(id);
+                    // Empty: a Gmail draft answering no stored thread.
+                    if !id.is_empty() {
+                        ids.push(id);
+                    }
                 }
                 Err(e) => {
                     fts.truncate(indexed);
@@ -1906,6 +1917,12 @@ impl Store {
         mode: SyncMode,
         fts: &mut Vec<FtsRow<'m>>,
     ) -> Result<String> {
+        // A Gmail draft is a draft, not mail; its thread (if stored) shows it.
+        if gmail_drafts::is_draft(&msg.label_ids) {
+            return Ok(gmail_drafts::upsert_tx(tx, account_id, msg)?.unwrap_or_default());
+        }
+        // A Gmail draft sent under its own message id is mail from now on.
+        gmail_drafts::remove_tx(tx, account_id, &msg.provider_id)?;
         let labels_json = serde_json::to_string(&msg.label_ids)?;
         let unread = msg.label_ids.iter().any(|l| l == "UNREAD");
         let existing: Option<(String, String)> = tx
@@ -1982,6 +1999,7 @@ impl Store {
                     "INSERT INTO threads (id, account_id, provider_thread_id, number, status, conversation_id) VALUES (?1, ?2, ?3, ?4, 'unread', ?1)",
                     params![tid, account_id, msg.provider_thread_id, number],
                 )?;
+                gmail_drafts::attach_tx(tx, account_id, &msg.provider_thread_id, &tid)?;
                 (tid, true)
             }
         };
