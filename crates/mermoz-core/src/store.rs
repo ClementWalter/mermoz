@@ -22,6 +22,7 @@ mod duplicates;
 mod feed;
 mod images;
 mod local;
+mod outlook;
 mod plan;
 mod push;
 mod reactions;
@@ -144,6 +145,7 @@ const MIGRATIONS: &[&str] = &[
     duplicates::MIGRATION,
     plan::SNOOZE_MIGRATION,
     visibility::MIGRATION,
+    outlook::MIGRATION,
 ];
 
 /// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null

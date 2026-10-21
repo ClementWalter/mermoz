@@ -24,6 +24,7 @@ pub mod mime;
 pub mod model;
 pub mod newsletter;
 pub mod oauth;
+pub mod outlook;
 pub mod paths;
 pub mod plan;
 pub mod provider;
