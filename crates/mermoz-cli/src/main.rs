@@ -51,7 +51,7 @@ struct Cli {
 enum Cmd {
     /// List connected accounts and their sync state.
     Accounts,
-    /// Connect a Gmail account (opens the browser).
+    /// Connect a Gmail account, or with --outlook an Outlook one (opens the browser).
     ///
     /// A company Google Workspace that blocks Mermoz can sign in through its own
     /// Google Cloud OAuth client (Desktop app) instead:
@@ -69,6 +69,9 @@ enum Cmd {
         /// OAuth client secret (with --client-id).
         #[arg(long, requires = "client_id")]
         client_secret: Option<String>,
+        /// An Outlook account (outlook.com, Hotmail, Live or Microsoft 365) instead.
+        #[arg(long, conflicts_with_all = ["client_json", "client_id", "client_secret"])]
+        outlook: bool,
         /// Wait for the browser sign-in to finish and say how it went.
         #[arg(long)]
         wait: bool,
@@ -900,10 +903,15 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             client_json,
             client_id,
             client_secret,
+            outlook,
             wait,
         } => {
-            let params = add_account_params(client_json.as_deref(), client_id, client_secret)?;
-            let v = c.call("accounts.add_gmail", params)?;
+            let v = if outlook {
+                c.call("accounts.add_outlook", json!({}))?
+            } else {
+                let params = add_account_params(client_json.as_deref(), client_id, client_secret)?;
+                c.call("accounts.add_gmail", params)?
+            };
             let url = v["auth_url"].as_str().unwrap_or("");
             let _ = std::process::Command::new("open").arg(url).status();
             if !wait {

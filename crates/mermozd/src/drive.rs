@@ -856,18 +856,28 @@ async fn list_files(
     }
 }
 
+/// The account a Drive call names; Drive is for Google accounts only.
 fn account_of(svc: &Service, p: &Value) -> std::result::Result<String, RpcError> {
-    Ok(svc.store.account(&s(p, "account_id")?)?.id)
+    let acc = svc.store.account(&s(p, "account_id")?)?;
+    if acc.provider == "outlook" {
+        return Err(RpcError::invalid(NOT_GOOGLE));
+    }
+    Ok(acc.id)
 }
+
+/// Why Drive is refused on an Outlook account, in plain words.
+const NOT_GOOGLE: &str = "Google Drive works with Google accounts only.";
 
 pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Value) -> R {
     let st = &svc.store;
     match method {
         "drive.status" => match opt_s(p, "account_id") {
             Some(a) => status(svc, &a),
+            // Outlook accounts have no Drive to connect.
             None => Ok(Value::Array(
                 st.accounts()?
                     .iter()
+                    .filter(|a| a.provider != "outlook")
                     .map(|a| status(svc, &a.id))
                     .collect::<std::result::Result<_, _>>()?,
             )),

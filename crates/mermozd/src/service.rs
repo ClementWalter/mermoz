@@ -2,6 +2,8 @@
 
 use mermoz_core::gmail::{Gmail, default_base};
 use mermoz_core::oauth::{self, ClientConfig, TokenSource};
+use mermoz_core::outlook::{self, Outlook};
+use mermoz_core::provider::Backend;
 use mermoz_core::store::Store;
 use mermoz_core::sync::{AccountSync, Event};
 use mermoz_core::{Error, Result, jev, tokens};
@@ -163,6 +165,9 @@ impl Service {
     }
 
     pub fn start_account(self: &Arc<Self>, account_id: &str, email: &str) -> Result<()> {
+        if self.store.account(account_id)?.provider == "outlook" {
+            return self.start_outlook(account_id, email);
+        }
         let grant = tokens::load_grant(email)?;
         let needs_reconnect =
             ClientConfig::load().is_ok_and(|app| grant.needs_reconnect(&app.client_id));
@@ -181,9 +186,44 @@ impl Service {
         let refresh = grant.refresh_token;
         let ts = Arc::new(TokenSource::new(cfg, refresh));
         let gmail = Arc::new(Gmail::new(default_base(), ts));
+        self.spawn_worker(account_id, email, Backend::Gmail(gmail), needs_reconnect);
+        Ok(())
+    }
+
+    /// An Outlook account's worker: its Microsoft refresh token, which Microsoft
+    /// replaces on every refresh, is saved again each time.
+    fn start_outlook(self: &Arc<Self>, account_id: &str, email: &str) -> Result<()> {
+        let grant = tokens::load_grant(email)?;
+        let mut cfg = grant
+            .client()
+            .ok_or_else(|| Error::other("Outlook sign-in has no client recorded"))?;
+        cfg.scope = Some(oauth::MICROSOFT_SCOPES.into());
+        let (keep, owner) = (cfg.clone(), email.to_string());
+        let ts = Arc::new(TokenSource::rotating(
+            cfg,
+            grant.refresh_token,
+            Box::new(move |new| {
+                if let Err(e) = tokens::save_grant(&owner, new, &keep, false) {
+                    warn!(account = %owner, "could not save the new sign-in: {e}");
+                }
+            }),
+        ));
+        let client = Arc::new(Outlook::new(outlook::default_base(), ts));
+        self.spawn_worker(account_id, email, Backend::Outlook(client), false);
+        Ok(())
+    }
+
+    /// Registers an account's sync and starts its loops.
+    fn spawn_worker(
+        self: &Arc<Self>,
+        account_id: &str,
+        email: &str,
+        backend: Backend,
+        needs_reconnect: bool,
+    ) {
         let sync = Arc::new(AccountSync {
             store: self.store.clone(),
-            backend: mermoz_core::provider::Backend::Gmail(gmail),
+            backend,
             account_id: account_id.to_string(),
             email: email.to_string(),
             events: self.events.clone(),
@@ -202,7 +242,6 @@ impl Service {
             .insert(account_id.to_string(), worker.clone());
         tokio::spawn(live_loop(self.clone(), worker.clone()));
         tokio::spawn(digest_loop(self.clone(), worker));
-        Ok(())
     }
 
     pub fn worker(&self, account_id: &str) -> Result<Arc<Worker>> {
@@ -263,6 +302,9 @@ impl Service {
     /// settings stay as they are. An account on its own client keeps that client.
     pub async fn reconnect_gmail(self: &Arc<Self>, account_id: &str) -> Result<String> {
         let acc = self.store.account(account_id)?;
+        if acc.provider == "outlook" {
+            return self.sign_in_outlook(Some(acc.email)).await;
+        }
         let (cfg, custom) = tokens::consent_client(&acc.email)?;
         self.sign_in_gmail(Some(acc.email), cfg, custom).await
     }
@@ -335,6 +377,86 @@ impl Service {
         Ok(url)
     }
 
+    /// Begins Microsoft sign-in for an Outlook account (personal or work or school);
+    /// the account appears once the browser flow completes.
+    pub async fn add_outlook(self: &Arc<Self>) -> Result<String> {
+        self.sign_in_outlook(None).await
+    }
+
+    /// `expect` is the account being signed in again.
+    async fn sign_in_outlook(self: &Arc<Self>, expect: Option<String>) -> Result<String> {
+        let cfg = oauth::ClientConfig::load_microsoft()
+            .ok_or_else(|| Error::InvalidParams(OUTLOOK_UNAVAILABLE.into()))?;
+        let req = oauth::AuthRequest {
+            login_hint: expect.clone(),
+            ..oauth::AuthRequest::outlook()
+        };
+        let pending = oauth::start_request(cfg.clone(), req).await?;
+        let url = pending.auth_url.clone();
+        *self.gmail_sign_in.lock().unwrap() = GmailSignIn {
+            running: true,
+            provider: Some("outlook".into()),
+            ..Default::default()
+        };
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let result: Result<()> = async {
+                let refresh = pending.finish(Duration::from_secs(600)).await?;
+                // The refresh token in hand may be replaced by the first refresh: keep the
+                // newest for the account.
+                let latest = Arc::new(Mutex::new(refresh.clone()));
+                let l2 = latest.clone();
+                let ts = Arc::new(TokenSource::rotating(
+                    cfg.clone(),
+                    refresh,
+                    Box::new(move |new| *l2.lock().unwrap() = new.to_string()),
+                ));
+                let me = Outlook::new(outlook::default_base(), ts).me().await?;
+                let email = me.email().ok_or_else(|| {
+                    Error::other("Microsoft didn't say which email address this account uses.")
+                })?;
+                if let Some(want) = &expect
+                    && !want.eq_ignore_ascii_case(&email)
+                {
+                    return Err(Error::other(format!(
+                        "You chose {email} in Microsoft. Sign in with {want}."
+                    )));
+                }
+                let known = svc.store.account(&email).ok();
+                if known.as_ref().is_some_and(|a| a.provider != "outlook") {
+                    return Err(Error::other(format!(
+                        "{email} is already in Mermoz as a Google account."
+                    )));
+                }
+                let refresh = latest.lock().unwrap().clone();
+                tokens::save_grant(&email, &refresh, &cfg, false)?;
+                let acc = svc.store.add_account(&email, "outlook")?;
+                if known.as_ref().is_none_or(|a| a.sync.state == "error") {
+                    svc.store.set_sync(&acc.id, "initial", None, None, None)?;
+                }
+                svc.start_account(&acc.id, &acc.email)?;
+                info!(account = %acc.email, again = known.is_some(), "outlook account signed in");
+                Ok(())
+            }
+            .await;
+            let outcome = match result {
+                Ok(()) => GmailSignIn::default(),
+                Err(e) => {
+                    warn!("outlook sign-in failed: {e}");
+                    GmailSignIn {
+                        running: false,
+                        error: Some(outlook_failure(&e)),
+                        problem: None,
+                        provider: Some("outlook".into()),
+                    }
+                }
+            };
+            *svc.gmail_sign_in.lock().unwrap() = outcome;
+            let _ = svc.events.send(Event::AccountsChanged);
+        });
+        Ok(url)
+    }
+
     /// A worker's loops stop once another worker replaces it (account signed in again).
     fn is_current(&self, w: &Arc<Worker>) -> bool {
         self.workers
@@ -353,12 +475,49 @@ pub struct JobState {
     pub error: Option<String>,
 }
 
-/// The last Google mail sign-in. `problem` is set when Google refused it.
+/// The last mail sign-in. `problem` is set when Google refused it.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct GmailSignIn {
     pub running: bool,
     pub error: Option<String>,
     pub problem: Option<SignInProblem>,
+    /// "outlook" for a Microsoft sign-in; absent for Google.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// Why "Add Outlook account" can't start, in plain words: this build has no Microsoft
+/// sign-in set up.
+pub const OUTLOOK_UNAVAILABLE: &str =
+    "Outlook sign-in isn't set up in this version of Mermoz yet. It will come with an update.";
+
+/// A failed Microsoft sign-in in plain words. Microsoft's own words (AADSTS codes) go
+/// to the log, not the screen.
+pub fn outlook_failure(e: &Error) -> String {
+    let said = match e {
+        Error::Declined(s) => s.clone(),
+        Error::Upstream { body, .. } => body.clone(),
+        // Our own sentences are plain already; internal ones are not shown.
+        Error::Other(s) if !s.contains("oauth") && !s.contains("outlook:") => return s.clone(),
+        _ => String::new(),
+    };
+    let t = said.to_ascii_lowercase();
+    if [
+        "aadsts65001",
+        "aadsts90094",
+        "aadsts90099",
+        "consent_required",
+        "admin",
+    ]
+    .iter()
+    .any(|w| t.contains(w))
+    {
+        "Your organization needs its administrator to approve Mermoz before you can add this account. Ask your IT team, then try again.".into()
+    } else if t.contains("access_denied") {
+        "Microsoft didn't give Mermoz access. If you didn't cancel, try again, or ask your IT team whether Mermoz is allowed.".into()
+    } else {
+        "Couldn't add the Outlook account. Please try again.".into()
+    }
 }
 
 /// Google's refusal in plain words, with the client ID an admin would allow-list.
@@ -391,6 +550,7 @@ impl GmailSignIn {
                 None => e.to_string(),
             }),
             problem,
+            provider: None,
         }
     }
 }
@@ -1269,9 +1429,25 @@ async fn route_pending(svc: &Arc<Service>, p: jev::Provider, key: &str) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{import_needed, pause_reason};
+    use super::{import_needed, outlook_failure, pause_reason};
     use mermoz_core::Error;
     use rstest::rstest;
+
+    #[rstest]
+    #[case::admin_consent(Error::Declined("consent_required: AADSTS65001 The user or administrator has not consented".into()), "Your organization needs its administrator to approve Mermoz before you can add this account. Ask your IT team, then try again.")]
+    #[case::cancelled(Error::Declined("access_denied: AADSTS65004 User declined to consent".into()), "Microsoft didn't give Mermoz access. If you didn't cancel, try again, or ask your IT team whether Mermoz is allowed.")]
+    #[case::our_own_words(
+        Error::other("You chose a@b.example in Microsoft. Sign in with c@d.example."),
+        "You chose a@b.example in Microsoft. Sign in with c@d.example."
+    )]
+    #[case::internal(
+        Error::other("oauth state mismatch"),
+        "Couldn't add the Outlook account. Please try again."
+    )]
+    #[case::token_endpoint(Error::Upstream { status: 400, body: "invalid_grant AADSTS70000".into() }, "Couldn't add the Outlook account. Please try again.")]
+    fn outlook_sign_in_failures_read_plainly(#[case] e: Error, #[case] want: &str) {
+        assert_eq!(outlook_failure(&e), want);
+    }
 
     #[rstest]
     fn out_of_credits_pauses_instead_of_judging_the_thread() {

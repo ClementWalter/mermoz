@@ -232,10 +232,13 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             };
             Ok(json!({ "auth_url": svc.add_gmail(custom).await? }))
         }
+        "accounts.add_outlook" => Ok(json!({ "auth_url": svc.add_outlook().await? })),
         "accounts.sign_in_status" => {
             let mut v = to_value(svc.gmail_sign_in.lock().unwrap().clone())?;
             // What an admin allow-lists to trust Mermoz, shown with Google's refusals.
             v["app_client_id"] = json!(ClientConfig::load().ok().map(|c| c.client_id));
+            // Whether this build can sign in to Outlook at all.
+            v["outlook_available"] = json!(ClientConfig::load_microsoft().is_some());
             Ok(v)
         }
         "accounts.reconnect" => {
