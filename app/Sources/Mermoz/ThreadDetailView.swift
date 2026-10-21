@@ -22,6 +22,7 @@ struct ThreadDetailView: View {
             switch model.conversationTab {
             case .messages:
                 ChatStream(detail: detail, conversation: conversation)
+                ForEach(detail.drafts ?? []) { ThreadDraftCard(draft: $0) }
                 ReplyBar(detail: detail, target: model.replyTarget(detail).subject, threads: conversation.threads.count)
             case .people:
                 ConversationPeopleTab(people: conversation.people)
@@ -37,6 +38,42 @@ struct ThreadDetailView: View {
         .foregroundStyle(Theme.text)
         // Drive previews, the Docs tab's Drive files and saved attachments; again on new mail.
         .task(id: "\(detail.thread.id)-\(detail.messages.count)") { await model.loadDrive(threadId: detail.thread.id) }
+    }
+}
+
+/// An unsent reply under the conversation, on the user's side like their own bubbles but
+/// dashed, so it never reads as sent; a click opens it in the composer to finish it.
+struct ThreadDraftCard: View {
+    @Environment(AppModel.self) private var model
+    let draft: Draft
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 60)
+            Button { model.editDraft(draft) } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "pencil.line")
+                        Text(DraftPreview.caption(draft)).font(.system(size: 11.5, weight: .semibold))
+                        if !draft.to.isEmpty {
+                            Text("to \(draft.to.joined(separator: ", "))").font(.system(size: 11.5)).lineLimit(1)
+                        }
+                    }
+                    .foregroundStyle(Theme.danger)
+                    Text(DraftPreview.text(draft.body)).font(.system(size: 13)).lineLimit(4)
+                        .foregroundStyle(Theme.text)
+                    Text("Not sent · click to finish it").font(.system(size: 11)).foregroundStyle(Theme.text3)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(maxWidth: 420, alignment: .leading)
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.danger.opacity(0.6),
+                                                                         style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                .contentShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+            .help("Open this draft to finish and send it")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 6)
     }
 }
 

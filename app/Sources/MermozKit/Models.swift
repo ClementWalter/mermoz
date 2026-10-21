@@ -298,6 +298,8 @@ public struct ThreadDetail: Codable, Sendable, Equatable {
     public var earlier: Int? = nil
     /// Who a reply-all goes to, as the daemon worked it out (Reply-To honoured).
     public var reply: ReplyAddressing? = nil
+    /// Unsent drafts answering the conversation, including ones written in Gmail itself.
+    public var drafts: [Draft]? = nil
 }
 
 /// The recipients a reply starts with, and whether any of them reads nothing.
