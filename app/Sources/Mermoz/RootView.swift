@@ -201,8 +201,20 @@ struct WelcomeView: View {
             .buttonStyle(.glassProminent)
             .controlSize(.large)
             .tint(Theme.accent)
-            Text("Mermoz opens your browser so you can sign in with Google.")
+            Button {
+                model.addOutlook()
+            } label: {
+                Label("Add an Outlook account", systemImage: "plus")
+                    .padding(.horizontal, 6)
+            }
+            .buttonStyle(.glass)
+            .disabled(!model.gmailSignIn.canAddOutlook)
+            Text(model.gmailSignIn.canAddOutlook
+                ? "Mermoz opens your browser so you can sign in with Google or Microsoft."
+                : "Mermoz opens your browser so you can sign in with Google. \(outlookUnavailableText)")
                 .font(.system(size: 12)).foregroundStyle(Theme.text3)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             GmailSignInStatusView()
             Button("Try it with a demo mailbox") { model.addDemoAccount() }
                 .buttonStyle(.plain)

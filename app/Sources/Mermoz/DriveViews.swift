@@ -13,7 +13,8 @@ struct DriveLinkCards: View {
     let messageId: String
 
     var body: some View {
-        if let d = model.detail, let files = model.drive.threadFiles[d.thread.id] {
+        if let d = model.detail, model.supportsDrive(d.thread.accountId),
+           let files = model.drive.threadFiles[d.thread.id] {
             let links = files.links(in: messageId)
             if !links.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -131,7 +132,7 @@ struct SaveToDriveButton: View {
     let attachment: Attachment
 
     var body: some View {
-        if let d = model.detail {
+        if let d = model.detail, model.supportsDrive(d.thread.accountId) {
             let saved = model.drive.threadFiles[d.thread.id]?.saved(attachment.id)
             Group {
                 if model.drive.saving.contains(attachment.id) {
@@ -198,7 +199,7 @@ struct DriveSettingsCard: View {
     var body: some View {
         SettingsCard(title: "Google Drive",
                      subtitle: "Optional, per account. Mermoz asks Google separately, so your mail works the same whether you connect Drive or not.") {
-            ForEach(model.accounts.filter { !$0.isDemo }) { a in
+            ForEach(model.accounts.filter { !$0.isDemo && $0.hasGoogleDrive }) { a in
                 let s = model.drive.statuses[a.id]
                 HStack(spacing: 10) {
                     Image(systemName: s?.connected == true ? "checkmark.icloud" : "icloud")
@@ -246,6 +247,10 @@ struct DriveAttachButton: View {
     @State private var mode: DriveAttachMode = .link
 
     var body: some View {
+        if model.supportsDrive(accountId) { button }
+    }
+
+    private var button: some View {
         Button {
             guard let accountId else { return }
             model.withDrive(accountId, purpose: "attach files from your Google Drive") {

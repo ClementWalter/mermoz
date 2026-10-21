@@ -92,6 +92,9 @@ public final class DaemonClient: Sendable {
         }
     }
 
+    /// Starts Microsoft sign-in for an Outlook account (personal or work or school).
+    public func addOutlook() async throws -> AuthStart { try await call("accounts.add_outlook") }
+
     public func signInStatus() async throws -> GmailSignIn { try await call("accounts.sign_in_status") }
     public func reconnectAccount(_ id: String) async throws -> AuthStart {
         try await call("accounts.reconnect", Params().with("account_id", id))

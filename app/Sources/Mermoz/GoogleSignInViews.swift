@@ -18,7 +18,9 @@ struct GmailSignInStatusView: View {
 
     var body: some View {
         let s = model.gmailSignIn
-        if s.running {
+        if s.isOutlook {
+            OutlookSignInStatusView(state: s)
+        } else if s.running {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -71,6 +73,29 @@ struct GmailSignInStatusView: View {
                 }
                 .buttonStyle(.glass).controlSize(.small)
             }
+        }
+    }
+}
+
+/// Under "Add Outlook account": waiting for the browser, or why it didn't work.
+struct OutlookSignInStatusView: View {
+    let state: GmailSignIn
+
+    var body: some View {
+        if state.running {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Finish signing in in your browser…").font(.system(size: 12)).foregroundStyle(Theme.text2)
+            }
+        } else if let error = state.error {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Couldn't add the account").font(.system(size: 12.5, weight: .semibold))
+                Text(error).font(.system(size: 12)).foregroundStyle(Theme.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(hex: "#FFF6E5"), in: RoundedRectangle(cornerRadius: 8))
         }
     }
 }

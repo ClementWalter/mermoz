@@ -72,3 +72,46 @@ private func params(_ c: OwnGoogleClient?) throws -> [String: String] {
 @Test func appClientSendsNoClient() throws {
     #expect(try params(nil).isEmpty)
 }
+
+private func provider(_ p: String) throws -> Account {
+    let s = #"{"id":"acc3","email":"ana@outlook.example","provider":""# + p
+        + #"","sync":{"state":"idle","synced":0,"total":0,"error":null}}"#
+    return try RPCCoding.decoder().decode(Account.self, from: Data(s.utf8))
+}
+
+@Test func outlookAccountIsKnownByItsProvider() throws {
+    #expect(try provider("outlook").isOutlook)
+}
+
+@Test func outlookAccountHasNoGoogleDrive() throws {
+    #expect(try provider("outlook").hasGoogleDrive == false)
+}
+
+@Test func gmailAccountHasGoogleDrive() throws {
+    #expect(try provider("gmail").hasGoogleDrive)
+}
+
+@Test(arguments: [("gmail", "Gmail"), ("outlook", "Outlook")])
+func accountsNameTheirService(provider p: String, name: String) throws {
+    #expect(try provider(p).serviceName == name)
+}
+
+@Test func demoAccountNamesNoService() throws {
+    #expect(try provider("demo").serviceName == nil)
+}
+
+@Test func outlookSignInDecodesItsProvider() throws {
+    #expect(try signIn(#"{"running":true,"error":null,"problem":null,"provider":"outlook"}"#).isOutlook)
+}
+
+@Test func outlookSignInOffersWhenTheDaemonCan() throws {
+    #expect(try signIn(#"{"running":false,"error":null,"problem":null,"outlook_available":true}"#).canAddOutlook)
+}
+
+@Test func outlookSignInIsOffWhenTheDaemonCant() throws {
+    #expect(try signIn(#"{"running":false,"error":null,"problem":null,"outlook_available":false}"#).canAddOutlook == false)
+}
+
+@Test func olderDaemonsOfferNoOutlook() throws {
+    #expect(try signIn(#"{"running":false,"error":null,"problem":null}"#).canAddOutlook == false)
+}

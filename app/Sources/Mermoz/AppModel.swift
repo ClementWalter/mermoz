@@ -1503,6 +1503,27 @@ final class AppModel {
         }
     }
 
+    /// Opens Microsoft's sign-in in the browser; the account appears once it completes.
+    func addOutlook() {
+        guard let client else { return }
+        Task {
+            do {
+                let start = try await client.addOutlook()
+                await loadSignInStatus()
+                if let url = URL(string: start.authUrl) { NSWorkspace.shared.open(url) }
+            } catch {
+                gmailSignIn.running = false
+                gmailSignIn.provider = "outlook"
+                gmailSignIn.error = (error as? RPCError)?.message ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Google Drive features show for Google accounts only.
+    func supportsDrive(_ accountId: String?) -> Bool {
+        accounts.first { $0.id == accountId }?.hasGoogleDrive ?? true
+    }
+
     func loadSignInStatus() async {
         if let s = try? await client?.signInStatus() { gmailSignIn = s }
     }

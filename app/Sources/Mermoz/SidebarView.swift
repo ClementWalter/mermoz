@@ -341,6 +341,7 @@ struct AccountSidebarRow: View {
             } else {
                 SidebarRow(sel: .account(account.id), title: account.email, icon: .dot(color),
                            count: hovering ? nil : count, middle: true)
+                    .help(account.serviceName.map { "\($0) account" } ?? "")
             }
             if hidden || hovering {
                 Button { model.setAccountHidden(account.id, !hidden) } label: {

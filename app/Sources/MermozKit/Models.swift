@@ -28,6 +28,18 @@ public struct Account: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var isHidden: Bool { hidden ?? false }
     /// The made-up mailbox for demos: local only, never synced, never sent to an AI.
     public var isDemo: Bool { provider == "demo" }
+    /// An Outlook account (outlook.com, Hotmail, Live or Microsoft 365).
+    public var isOutlook: Bool { provider == "outlook" }
+    /// Google Drive features (linked documents, save, attach) work for Google accounts.
+    public var hasGoogleDrive: Bool { !isOutlook }
+    /// The mail service, in the words users know it by; nil for the demo mailbox.
+    public var serviceName: String? {
+        switch provider {
+        case "gmail": "Gmail"
+        case "outlook": "Outlook"
+        default: nil
+        }
+    }
 
     public static func == (a: Account, b: Account) -> Bool {
         a.id == b.id && a.sync == b.sync && a.email == b.email && a.needsReconnect == b.needsReconnect
@@ -410,11 +422,24 @@ public struct GmailSignIn: Codable, Sendable, Equatable {
     public var error: String?
     public var problem: SignInProblem?
     public var appClientId: String?
+    /// "outlook" while the last sign-in is a Microsoft one; nil for Google.
+    public var provider: String?
+    /// This version of Mermoz can sign in to Outlook; nil from older daemons.
+    public var outlookAvailable: Bool?
 
-    public init(running: Bool = false, error: String? = nil, problem: SignInProblem? = nil, appClientId: String? = nil) {
+    public init(running: Bool = false, error: String? = nil, problem: SignInProblem? = nil, appClientId: String? = nil,
+                provider: String? = nil, outlookAvailable: Bool? = nil) {
         self.running = running; self.error = error; self.problem = problem; self.appClientId = appClientId
+        self.provider = provider; self.outlookAvailable = outlookAvailable
     }
+
+    public var isOutlook: Bool { provider == "outlook" }
+    /// Outlook sign-in can start: only a daemon that says so can.
+    public var canAddOutlook: Bool { outlookAvailable == true }
 }
+
+/// Shown under "Add Outlook account" when this version can't sign in to Outlook.
+public let outlookUnavailableText = "Outlook sign-in isn't set up in this version of Mermoz yet. It will come with an update."
 
 public struct SignInProblem: Codable, Sendable, Equatable {
     /// admin_policy, unverified, org_internal, app_blocked or declined.

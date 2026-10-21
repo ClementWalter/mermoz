@@ -170,10 +170,20 @@ struct AccountsPane: View {
                 .padding(10)
                 .background(Color(hex: "#F6FAFE"), in: RoundedRectangle(cornerRadius: 10))
             }
-            Button { model.addGmail() } label: { Label("Add Gmail account", systemImage: "plus") }
-                .buttonStyle(.glass)
-            Text("Mermoz opens your browser so you can sign in with Google.")
+            HStack(spacing: 8) {
+                Button { model.addGmail() } label: { Label("Add Gmail account", systemImage: "plus") }
+                    .buttonStyle(.glass)
+                Button { model.addOutlook() } label: { Label("Add Outlook account", systemImage: "plus") }
+                    .buttonStyle(.glass)
+                    .disabled(!model.gmailSignIn.canAddOutlook)
+            }
+            Text("Mermoz opens your browser so you can sign in with Google or Microsoft.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+            if !model.gmailSignIn.canAddOutlook {
+                Text(outlookUnavailableText)
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             GmailSignInStatusView()
             if !model.accounts.contains(where: \.isDemo) {
                 Divider().padding(.vertical, 2)
@@ -191,8 +201,11 @@ struct AccountsPane: View {
     private func reconnectPrompt(_ a: Account) -> some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Reconnect your Google account").font(.system(size: 12.5, weight: .semibold))
-                Text("Mermoz needs you to sign in to Google again to finish setting up. Your mail stays right here.")
+                Text(a.isOutlook ? "Reconnect your Outlook account" : "Reconnect your Google account")
+                    .font(.system(size: 12.5, weight: .semibold))
+                Text(a.isOutlook
+                    ? "Mermoz needs you to sign in to Microsoft again. Your mail stays right here."
+                    : "Mermoz needs you to sign in to Google again to finish setting up. Your mail stays right here.")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -205,6 +218,11 @@ struct AccountsPane: View {
 
     private func syncText(_ a: Account) -> String {
         if a.isDemo { return "Made-up mail, kept on this Mac only" }
+        let state = syncState(a)
+        return a.serviceName.map { "\($0) · \(state)" } ?? state
+    }
+
+    private func syncState(_ a: Account) -> String {
         switch a.sync.state {
         case "error": return a.sync.error ?? "Can't sync right now"
         case "initial", "syncing":
