@@ -693,6 +693,9 @@ async fn digest_loop(svc: Arc<Service>, w: Arc<Worker>) {
     }
 }
 
+/// How often drafts written in Gmail are checked against Gmail's own Drafts.
+const DRAFTS_CHECK_EVERY: Duration = Duration::from_secs(3600);
+
 /// First wait before asking Google again whether a refused sign-in works after all.
 const PROBE_FIRST: Duration = Duration::from_secs(15 * 60);
 /// Longest wait between those checks.
@@ -731,6 +734,7 @@ async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
     {
         warn!(account = %w.sync.email, "labels: {e}");
     }
+    let mut drafts_checked: Option<std::time::Instant> = None;
     loop {
         if !svc.is_current(&w) {
             return;
@@ -740,6 +744,14 @@ async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
             continue;
         }
         ensure_import(&svc, &w);
+        // On start (drafts stored as mail by older versions just moved back) and hourly.
+        if drafts_checked.is_none_or(|t| t.elapsed() >= DRAFTS_CHECK_EVERY) {
+            drafts_checked = Some(std::time::Instant::now());
+            match w.sync.reconcile_gmail_drafts().await {
+                Ok(_) | Err(Error::SignInExpired) => {}
+                Err(e) => warn!(account = %w.sync.email, "Gmail drafts not checked: {e}"),
+            }
+        }
         match w.sync.incremental().await {
             // Only mail that changed is routed or judged again; echoes of our own
             // pushes change nothing.

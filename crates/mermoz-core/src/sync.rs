@@ -254,6 +254,10 @@ impl AccountSync {
             .set_sync(&self.account_id, "idle", Some(synced), None, None)?;
         let _ = self.events.send(Event::AccountsChanged);
         info!(account = %self.email, synced, "initial sync complete");
+        // A full import (first one, or after history expired) missed every deletion.
+        if let Err(e) = self.reconcile_gmail_drafts().await {
+            warn!(account = %self.email, "Gmail drafts not checked: {e}");
+        }
         Ok(())
     }
 
@@ -518,6 +522,32 @@ impl AccountSync {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Forgets drafts written in Gmail that Gmail no longer has: versions replaced and
+    /// drafts deleted or sent while their deletion never reached here (imported as mail
+    /// by older versions, or a history window that expired). Drafts written in Mermoz
+    /// are never touched. Returns how many went.
+    pub async fn reconcile_gmail_drafts(&self) -> Result<usize> {
+        // Read before asking Gmail, so a draft synced meanwhile is never taken for stale.
+        let held = self.store.gmail_draft_provider_ids(&self.account_id)?;
+        if held.is_empty() {
+            return Ok(0);
+        }
+        let live: BTreeSet<String> = self.gmail.drafts().await?.into_keys().collect();
+        let mut changed = vec![];
+        let stale = gmail_drafts::stale(&held, &live);
+        for pid in &stale {
+            if let Some(thread) = self.store.remove_gmail_draft(&self.account_id, pid)? {
+                changed.extend(thread);
+            }
+        }
+        if !stale.is_empty() {
+            info!(account = %self.email, removed = stale.len(), "dropped Gmail drafts Gmail no longer has");
+            let _ = self.events.send(Event::DraftsChanged);
+            let _ = self.events.send(Event::ThreadsChanged(dedup(changed)));
+        }
+        Ok(stale.len())
     }
 
     /// Removes the Gmail draft behind a draft written in Gmail, so it is not left in

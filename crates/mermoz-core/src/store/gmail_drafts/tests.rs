@@ -260,3 +260,50 @@ fn a_thread_that_only_held_a_draft_goes(env: Env) {
     env.store.adopt_stored_gmail_drafts().unwrap();
     assert!(env.store.thread(&t).is_err());
 }
+
+fn ids(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[rstest]
+#[case::old_versions_go(&["d1", "d2", "d3"], &["d3"], &["d1", "d2"])]
+#[case::all_live(&["d1"], &["d1", "x9"], &[])]
+#[case::gmail_has_none(&["d1"], &[], &["d1"])]
+fn drafts_gmail_no_longer_has_are_stale(
+    #[case] held: &[&str],
+    #[case] live: &[&str],
+    #[case] expected: &[&str],
+) {
+    let held = ids(held);
+    let live = ids(live).into_iter().collect();
+    let got: Vec<String> = stale(&held, &live).into_iter().cloned().collect();
+    assert_eq!(got, ids(expected));
+}
+
+#[rstest]
+fn only_gmail_drafts_are_checked_against_gmail(env: Env) {
+    let t = env.question();
+    env.draft("d1", "Bonjour");
+    let now = now_ms();
+    env.store
+        .create_draft(&crate::model::Draft {
+            id: new_id("dft"),
+            account_id: env.acc.clone(),
+            thread_id: Some(t),
+            to: vec![],
+            cc: vec![],
+            subject: String::new(),
+            body: "Mine".into(),
+            state: "draft".into(),
+            origin: "app".into(),
+            created: now,
+            updated: now,
+            attachments: vec![],
+            reply_to_message_id: None,
+        })
+        .unwrap();
+    assert_eq!(
+        env.store.gmail_draft_provider_ids(&env.acc).unwrap(),
+        ids(&["d1"])
+    );
+}

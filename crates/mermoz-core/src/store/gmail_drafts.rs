@@ -103,7 +103,26 @@ pub(super) fn remove_tx(
     Ok(Some(thread))
 }
 
+/// The held Gmail drafts Gmail no longer has (`live`: message ids of Gmail's drafts now):
+/// old versions and deleted drafts whose deletion never reached here.
+pub fn stale<'a>(held: &'a [String], live: &std::collections::BTreeSet<String>) -> Vec<&'a String> {
+    held.iter().filter(|p| !live.contains(*p)).collect()
+}
+
 impl Store {
+    /// Gmail message ids of the drafts written in Gmail held for this account, unsent
+    /// ones only: a draft sent from here keeps its row as a record.
+    pub fn gmail_draft_provider_ids(&self, account_id: &str) -> Result<Vec<String>> {
+        let r = self.r.lock().unwrap();
+        let mut st = r.prepare_cached(
+            "SELECT provider_id FROM drafts WHERE account_id = ?1 AND origin = ?2
+               AND provider_id IS NOT NULL AND state != 'sent'",
+        )?;
+        Ok(st
+            .query_map(params![account_id, ORIGIN], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Forgets the Gmail draft held for this Gmail message; `Some(thread)` when there
     /// was one (its thread, if stored).
     pub fn remove_gmail_draft(

@@ -5561,3 +5561,44 @@ fn a_reply_sent_from_another_client_joins_the_conversation(synced: World) {
         audit(w)["messages"].as_array().unwrap().len() == 2
     });
 }
+
+/// Three versions of one Gmail draft synced, then Gmail drops the two old ones without
+/// telling (their deletions never reach Mermoz), and a draft written in Mermoz waits in
+/// the same conversation. The daemon starts again, as after an update.
+#[fixture]
+fn stale_gmail_drafts(synced: World) -> World {
+    let mut w = synced;
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        for (i, id) in ["d1", "d2", "d3"].iter().enumerate() {
+            m.add_message(
+                id,
+                "t1",
+                &["DRAFT"],
+                &mine("Re: Audit report v2", &format!("Version {}", i + 1), id),
+                NOW + i as i64,
+            );
+        }
+        m.drafts.insert("r-1".into(), "d3".into());
+    }
+    w.wait_until("three versions synced", |w| draft_bodies(w).len() == 3);
+    let t = w.thread_by_subject("Audit report v2");
+    w.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "Written in Mermoz" }),
+    );
+    {
+        let mut m = w.mailbox.lock().unwrap();
+        m.messages.remove("d1");
+        m.messages.remove("d2");
+    }
+    w.restart();
+    w
+}
+
+#[rstest]
+fn only_the_live_gmail_draft_and_mermoz_drafts_remain(stale_gmail_drafts: World) {
+    stale_gmail_drafts.wait_until("stale versions dropped", |w| {
+        draft_bodies(w) == vec!["Version 3", "Written in Mermoz"]
+    });
+}

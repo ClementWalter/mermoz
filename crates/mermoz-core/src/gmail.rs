@@ -363,8 +363,9 @@ impl Gmail {
     }
 
     /// Deletes a label; Gmail removes it from every message, the messages stay.
-    /// The Gmail draft whose current version is message `message_id`, if any.
-    pub async fn draft_of_message(&self, message_id: &str) -> Result<Option<String>> {
+    /// Every Gmail draft as (message id of its current version, draft id), all pages.
+    pub async fn drafts(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        let mut out = std::collections::BTreeMap::new();
         let mut page: Option<String> = None;
         loop {
             let mut q = vec![("maxResults", "500".to_string())];
@@ -376,19 +377,21 @@ impl Gmail {
                 .await?
                 .json()
                 .await?;
-            let found = v["drafts"].as_array().into_iter().flatten().find_map(|d| {
-                (d["message"]["id"].as_str() == Some(message_id))
-                    .then(|| d["id"].as_str().map(String::from))
-                    .flatten()
-            });
-            if found.is_some() {
-                return Ok(found);
+            for d in v["drafts"].as_array().into_iter().flatten() {
+                if let (Some(mid), Some(id)) = (d["message"]["id"].as_str(), d["id"].as_str()) {
+                    out.insert(mid.to_string(), id.to_string());
+                }
             }
             match v["nextPageToken"].as_str() {
                 Some(t) => page = Some(t.to_string()),
-                None => return Ok(None),
+                None => return Ok(out),
             }
         }
+    }
+
+    /// The Gmail draft whose current version is message `message_id`, if any.
+    pub async fn draft_of_message(&self, message_id: &str) -> Result<Option<String>> {
+        Ok(self.drafts().await?.remove(message_id))
     }
 
     /// Deletes a Gmail draft for good (it is a draft, never sent mail).
