@@ -125,3 +125,34 @@ def test_signed_release_dry_run_order(monkeypatch, caplog):
             "gh release",
         ],
     )
+
+
+@pytest.fixture
+def google_client(tmp_path):
+    """An installed-app client file as Google Cloud downloads it."""
+    path = tmp_path / "google.json"
+    path.write_text('{"installed": {"client_id": "g-cid", "client_secret": "g-secret"}}')
+    return path
+
+
+def test_the_microsoft_client_is_compiled_in(google_client):
+    env = release.build_env({}, google_client, " ms-cid \n")
+    assert env["MERMOZ_MICROSOFT_CLIENT_ID"] == "ms-cid"
+
+
+def test_without_a_microsoft_client_none_is_compiled_in(google_client):
+    env = release.build_env({"MERMOZ_MICROSOFT_CLIENT_ID": "stray"}, google_client, None)
+    assert "MERMOZ_MICROSOFT_CLIENT_ID" not in env
+
+
+def test_a_build_without_outlook_says_so(google_client, caplog):
+    release.build_env({}, google_client, "")
+    assert "won't offer Outlook" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("MERMOZ_GOOGLE_CLIENT_ID", "g-cid"), ("MERMOZ_GOOGLE_CLIENT_SECRET", "g-secret")],
+)
+def test_the_google_client_is_compiled_in(google_client, key, value):
+    assert release.build_env({}, google_client, "ms-cid")[key] == value

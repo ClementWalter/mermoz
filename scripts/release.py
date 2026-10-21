@@ -17,7 +17,9 @@ Steps (--sign developer-id, the default):
   1. Build the app (scripts/build_app.py --sign developer-id) with the Google OAuth
      client compiled in, read from --google-client (an installed-app client JSON).
      Installed-app client secrets are not confidential per Google, so embedding them
-     is expected.
+     is expected. The Microsoft sign-in client ID for Outlook accounts (a public
+     client: an ID, no secret) comes from --microsoft-client or
+     MERMOZ_MICROSOFT_CLIENT_ID; without one the build offers no Outlook sign-in.
   2. Notarize the app (zipped) and staple its ticket, so it opens offline once copied.
   3. Make build/Mermoz.dmg (the app next to an Applications shortcut), sign it,
      notarize it and staple it.
@@ -36,6 +38,7 @@ Usage:
   scripts/release.py --dry-run               # log every command, run none
   scripts/release.py --sign adhoc            # local, un-notarized DMG (no Apple account)
   scripts/release.py --google-client PATH    # another OAuth client file
+  scripts/release.py --microsoft-client ID   # Outlook sign-in (Entra application ID)
 """
 
 from __future__ import annotations
@@ -194,12 +197,30 @@ def version() -> str:
     raise SystemExit("VERSION not found in scripts/build_app.py")
 
 
-def build(run: signing.Runner, client_file: Path, mode: str, keychain: Path | None) -> None:
+def build_env(base: dict, client_file: Path, microsoft_client: str | None) -> dict:
+    """The build's environment: the sign-in clients compiled in (option_env! at build time)."""
     data = json.loads(client_file.read_text())
     client = data.get("installed", data)
-    env = dict(os.environ)
+    env = dict(base)
     env["MERMOZ_GOOGLE_CLIENT_ID"] = client["client_id"]
     env["MERMOZ_GOOGLE_CLIENT_SECRET"] = client["client_secret"]
+    # Only the ID given here is compiled in, never one left over in the shell.
+    env.pop("MERMOZ_MICROSOFT_CLIENT_ID", None)
+    if microsoft_client and microsoft_client.strip():
+        env["MERMOZ_MICROSOFT_CLIENT_ID"] = microsoft_client.strip()
+    else:
+        log.warning("No Microsoft sign-in client: this build won't offer Outlook accounts.")
+    return env
+
+
+def build(
+    run: signing.Runner,
+    client_file: Path,
+    mode: str,
+    keychain: Path | None,
+    microsoft_client: str | None = None,
+) -> None:
+    env = build_env(dict(os.environ), client_file, microsoft_client)
     # A fresh Rust build so the credentials are compiled in (option_env! at build time).
     run(["cargo", "clean", "--release", "-p", "mermoz-core"], cwd=REPO, env=env)
     cmd = [sys.executable, str(REPO / "scripts" / "build_app.py"), "--sign", mode]
@@ -343,6 +364,11 @@ def create_release(run: signing.Runner, tag: str, mode: str) -> None:
 @click.option("--platform", type=click.Choice(["macos", "ios"]), default="macos", show_default=True)
 @click.option("--preflight", is_flag=True, help="Check Apple iOS app registration without archiving or uploading.")
 @click.option("--google-client", type=click.Path(path_type=Path), default=DEFAULT_CLIENT, show_default=True)
+@click.option(
+    "--microsoft-client",
+    envvar="MERMOZ_MICROSOFT_CLIENT_ID",
+    help="Application (client) ID of the Microsoft Entra app for Outlook sign-in.",
+)
 @click.option("--publish/--no-publish", default=False, help="Upload the macOS DMG to GitHub or the iPhone archive to internal TestFlight.")
 @click.option("--skip-build", is_flag=True, help="Reuse build/Mermoz.app (already signed).")
 @click.option(
@@ -364,6 +390,7 @@ def main(
     platform: str,
     preflight: bool,
     google_client: Path,
+    microsoft_client: str | None,
     publish: bool,
     skip_build: bool,
     mode: str,
@@ -389,7 +416,7 @@ def main(
         if not skip_build:
             if not google_client.exists():
                 raise click.ClickException(f"Google OAuth client file not found: {google_client}")
-            build(run, google_client, mode, keychain)
+            build(run, google_client, mode, keychain, microsoft_client)
         if mode == signing.DEVELOPER_ID:
             notarize_app(run, auth)
             make_dmg(run)
