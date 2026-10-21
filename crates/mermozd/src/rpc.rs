@@ -83,12 +83,10 @@ async fn inline_images(svc: &Arc<Service>, mid: &str, html: String) -> Result<St
         return Ok(out);
     };
     let fetched = match svc.worker(&account) {
-        Ok(w) => w.sync.gmail.get_raw(&provider_id).await.ok(),
+        Ok(w) => w.sync.backend.raw(&provider_id).await.ok().flatten(),
         Err(_) => None,
     };
-    let parsed = fetched
-        .and_then(|m| mermoz_core::gmail::decode_raw(m.raw.as_deref()?).ok())
-        .and_then(|raw| mermoz_core::mime::parse(&raw));
+    let parsed = fetched.and_then(|raw| mermoz_core::mime::parse(&raw));
     let Some(parsed) = parsed else {
         return Ok(out);
     };
@@ -483,15 +481,15 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             // fetched from Gmail only when the reader asks for it.
             let mid = s(p, "id")?;
             let (account, provider_id) = st.message_origin(&mid)?;
-            let raw = svc
+            let bytes = svc
                 .worker(&account)?
                 .sync
-                .gmail
-                .get_raw(&provider_id)
+                .backend
+                .raw(&provider_id)
                 .await?
-                .raw
-                .ok_or_else(|| RpcError::invalid("Gmail returned no source for this email"))?;
-            let bytes = mermoz_core::gmail::decode_raw(&raw)?;
+                .ok_or_else(|| {
+                    RpcError::invalid("The mail service returned no source for this email")
+                })?;
             const MAX: usize = 2 * 1024 * 1024;
             let text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX)]).into_owned();
             Ok(json!({ "source": text, "truncated": bytes.len() > MAX }))

@@ -215,7 +215,7 @@ impl MobileEngine {
                     account.id.clone(),
                     Arc::new(AccountSync {
                         store: self.store.clone(),
-                        gmail,
+                        backend: mermoz_core::provider::Backend::Gmail(gmail),
                         account_id: account.id,
                         email: account.email,
                         events,

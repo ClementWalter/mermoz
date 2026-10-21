@@ -183,7 +183,7 @@ impl Service {
         let gmail = Arc::new(Gmail::new(default_base(), ts));
         let sync = Arc::new(AccountSync {
             store: self.store.clone(),
-            gmail,
+            backend: mermoz_core::provider::Backend::Gmail(gmail),
             account_id: account_id.to_string(),
             email: email.to_string(),
             events: self.events.clone(),

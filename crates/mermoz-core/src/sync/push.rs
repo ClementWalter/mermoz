@@ -226,7 +226,7 @@ impl AccountSync {
         remove: &[String],
         out: &mut Outcome,
     ) -> Result<()> {
-        match self.gmail.batch_modify(ids, add, remove).await {
+        match self.gmail()?.batch_modify(ids, add, remove).await {
             Ok(()) => {
                 let threads: Vec<String> = ops.iter().map(|o| o.key.clone()).collect();
                 self.store.apply_label_delta_many(&threads, add, remove)?;
@@ -286,18 +286,18 @@ impl AccountSync {
     async fn modify_thread(&self, pt: &str, add: &[String], remove: &[String]) -> Result<()> {
         let (mut add, mut remove) = (add.to_vec(), remove.to_vec());
         if add.iter().any(|l| l == TRASH) {
-            self.gmail.trash_thread(pt).await?;
+            self.gmail()?.trash_thread(pt).await?;
             // threads.trash takes the thread out of the inbox as well.
             add.retain(|l| l != TRASH);
             remove.retain(|l| l != TRASH && l != "INBOX");
         } else if remove.iter().any(|l| l == TRASH) {
-            self.gmail.untrash_thread(pt).await?;
+            self.gmail()?.untrash_thread(pt).await?;
             remove.retain(|l| l != TRASH);
         }
         if add.is_empty() && remove.is_empty() {
             return Ok(());
         }
-        self.gmail.modify_thread(pt, &add, &remove).await
+        self.gmail()?.modify_thread(pt, &add, &remove).await
     }
 
     /// An op with calls of its own.

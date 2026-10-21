@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::gmail::{Gmail, decode_raw};
 use crate::mime;
 use crate::model::Draft;
+use crate::provider::Backend;
 use crate::store::{IncomingMessage, Store, SyncMode, ThreadPatch};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -50,7 +51,7 @@ pub enum Event {
 
 pub struct AccountSync {
     pub store: Arc<Store>,
-    pub gmail: Arc<Gmail>,
+    pub backend: Backend,
     pub account_id: String,
     pub email: String,
     pub events: broadcast::Sender<Event>,
@@ -83,14 +84,19 @@ pub struct GmailHit {
 }
 
 impl AccountSync {
+    /// The Gmail client; an error on accounts of another service.
+    fn gmail(&self) -> Result<&Arc<Gmail>> {
+        self.backend.gmail()
+    }
+
     /// Gmail's own search, for mail Mermoz doesn't hold (not synced yet, or in folders
     /// it doesn't import): each hit with its sender, subject and date.
     pub async fn search_gmail(&self, q: &str, max: u32) -> Result<Vec<GmailHit>> {
-        let found = self.gmail.search_messages(q, max).await?;
+        let found = self.gmail()?.search_messages(q, max).await?;
         let mut out = vec![];
         for r in found.messages {
             let headers = self
-                .gmail
+                .gmail()?
                 .headers(&r.id, &["From", "Subject", "Date"])
                 .await?;
             let get = |name: &str| {
@@ -127,7 +133,7 @@ impl AccountSync {
     }
 
     pub async fn refresh_labels(&self) -> Result<()> {
-        let labels = self.gmail.labels().await?;
+        let labels = self.gmail()?.labels().await?;
         let pairs: Vec<(String, String)> = labels.into_iter().map(|l| (l.id, l.name)).collect();
         self.store.set_labels(&self.account_id, &pairs)
     }
@@ -145,7 +151,7 @@ impl AccountSync {
             for chunk in pending.chunks(FETCH_CONCURRENCY) {
                 let mut set = tokio::task::JoinSet::new();
                 for id in chunk {
-                    let g = self.gmail.clone();
+                    let g = self.gmail()?.clone();
                     let id = id.clone();
                     set.spawn(async move { (id.clone(), g.get_raw(&id).await) });
                 }
@@ -182,7 +188,7 @@ impl AccountSync {
     /// Imports the mailbox newest-first, page by page, resuming from the saved cursor.
     /// Recent mail is usable within seconds while older mail keeps streaming in.
     pub async fn initial_sync(&self) -> Result<()> {
-        let profile = self.gmail.profile().await?;
+        let profile = self.gmail()?.profile().await?;
         if self.store.history_id(&self.account_id)?.is_none() {
             // Captured before listing so nothing that arrives meanwhile is missed.
             self.store
@@ -206,7 +212,7 @@ impl AccountSync {
         )?;
         let mut cursor = self.store.cursor(&self.account_id)?;
         loop {
-            let page = self.gmail.list_messages(cursor.as_deref()).await?;
+            let page = self.gmail()?.list_messages(cursor.as_deref()).await?;
             let todo: Vec<(String, String)> = page
                 .messages
                 .iter()
@@ -264,9 +270,9 @@ impl AccountSync {
         let mut relabeled: BTreeMap<String, LabelEdits> = BTreeMap::new();
         let mut latest = start.clone();
         loop {
-            let Some(page) = self.gmail.history(&start, page_token.as_deref()).await? else {
+            let Some(page) = self.gmail()?.history(&start, page_token.as_deref()).await? else {
                 warn!(account = %self.email, "history expired, rescanning");
-                let profile = self.gmail.profile().await?;
+                let profile = self.gmail()?.profile().await?;
                 self.store
                     .set_history_id(&self.account_id, &profile.history_id)?;
                 self.store.set_cursor(&self.account_id, None)?;
@@ -330,7 +336,7 @@ impl AccountSync {
             )?);
         }
         for id in relabeled {
-            match self.gmail.get_minimal(&id).await {
+            match self.gmail()?.get_minimal(&id).await {
                 Ok(m) => {
                     let inc = IncomingMessage {
                         provider_id: m.id,
@@ -369,7 +375,7 @@ impl AccountSync {
             let id = match self.store.label_id(&self.account_id, n)? {
                 Some(id) => id,
                 None => {
-                    let l = match self.gmail.create_label(n).await {
+                    let l = match self.gmail()?.create_label(n).await {
                         Ok(l) => l,
                         // Already exists remotely but not in our cache: refresh and look again.
                         Err(Error::Upstream { status: 409, .. }) => {
@@ -399,7 +405,7 @@ impl AccountSync {
         let mut n = 0;
         for (id, provider_id, from) in items {
             let headers = self
-                .gmail
+                .backend
                 .headers(provider_id, &["Authentication-Results"])
                 .await?;
             let results: Vec<String> = headers
@@ -427,7 +433,7 @@ impl AccountSync {
         ];
         let mut n = 0;
         for m in items {
-            let headers = match self.gmail.headers(&m.provider_id, NAMES).await {
+            let headers = match self.backend.headers(&m.provider_id, NAMES).await {
                 Ok(h) => h,
                 // Gone from Gmail: nothing to learn, and nothing to ask again.
                 Err(Error::Upstream { status: 404, .. }) => vec![],
@@ -446,12 +452,8 @@ impl AccountSync {
                 .collect();
             let kind = crate::dsn::classify(&m.from, &m.subject, get);
             let dsn = if kind == crate::dsn::AutoKind::Bounce {
-                match self.gmail.get_raw(&m.provider_id).await {
-                    Ok(raw) => raw
-                        .raw
-                        .as_deref()
-                        .and_then(|r| decode_raw(r).ok())
-                        .and_then(|bytes| crate::dsn::parse(&bytes)),
+                match self.backend.raw(&m.provider_id).await {
+                    Ok(raw) => raw.and_then(|bytes| crate::dsn::parse(&bytes)),
                     Err(Error::Upstream { status: 404, .. }) => None,
                     Err(e) => return Err(e),
                 }
@@ -476,7 +478,7 @@ impl AccountSync {
             None => self.store.label_id(&self.account_id, from)?,
         };
         let Some(id) = id else { return Ok(()) };
-        match self.gmail.rename_label(&id, to).await {
+        match self.gmail()?.rename_label(&id, to).await {
             Ok(()) | Err(Error::Upstream { status: 404, .. }) => Ok(()),
             Err(e) => Err(e),
         }
@@ -487,7 +489,7 @@ impl AccountSync {
         let Some(id) = self.store.label_id(&self.account_id, name)? else {
             return Ok(());
         };
-        match self.gmail.delete_label(&id).await {
+        match self.gmail()?.delete_label(&id).await {
             Ok(()) | Err(Error::Upstream { status: 404, .. }) => {
                 self.store.remove_label(&self.account_id, &id)
             }
@@ -498,7 +500,7 @@ impl AccountSync {
     /// Sends a draft now; the thread then waits on the other side.
     pub async fn send_draft(&self, draft: &Draft, after_status: Option<&str>) -> Result<()> {
         let (raw, provider_thread) = draft_message(&self.store, &self.email, draft)?;
-        let sent = self.gmail.send(&raw, provider_thread.as_deref()).await?;
+        let sent = self.gmail()?.send(&raw, provider_thread.as_deref()).await?;
         self.store.set_draft_state(&draft.id, "sent")?;
         // The sent copy syncs back with its own attachments; these copies are spent.
         if let Err(e) = self.store.purge_draft_files(&draft.id) {
