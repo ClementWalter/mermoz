@@ -22,6 +22,8 @@ pub struct Worker {
     /// The token came from another OAuth client than the app's (see
     /// [`tokens::GoogleGrant::needs_reconnect`]); it keeps refreshing with that client.
     pub needs_reconnect: bool,
+    /// The account's Google sign-in; refused once Google stops accepting it.
+    pub tokens: Arc<TokenSource>,
 }
 
 /// Project descriptions and when they were built.
@@ -179,8 +181,12 @@ impl Service {
             }
         };
         let refresh = grant.refresh_token;
-        let ts = Arc::new(TokenSource::new(cfg, refresh));
-        let gmail = Arc::new(Gmail::new(default_base(), ts));
+        let ts = TokenSource::new(cfg, refresh).with_on_refused(self.on_refused(account_id, email));
+        if self.store.sign_in_expired(account_id)? {
+            ts.mark_refused();
+        }
+        let ts = Arc::new(ts);
+        let gmail = Arc::new(Gmail::new(default_base(), ts.clone()));
         let sync = Arc::new(AccountSync {
             store: self.store.clone(),
             gmail,
@@ -195,6 +201,7 @@ impl Service {
             digest_kick: Arc::new(Notify::new()),
             agent_error: Arc::new(Mutex::new(None)),
             needs_reconnect,
+            tokens: ts,
         });
         self.workers
             .lock()
@@ -203,6 +210,25 @@ impl Service {
         tokio::spawn(live_loop(self.clone(), worker.clone()));
         tokio::spawn(digest_loop(self.clone(), worker));
         Ok(())
+    }
+
+    /// Records that Google refused the account's sign-in and tells the app, once per
+    /// refusal; sync and write-back then wait for the user to sign in again.
+    fn on_refused(&self, account_id: &str, email: &str) -> oauth::OnRefused {
+        let (store, events) = (self.store.clone(), self.events.clone());
+        let (id, email) = (account_id.to_string(), email.to_string());
+        Box::new(move || {
+            warn!(account = %email, "Google refused the sign-in; waiting for the user to sign in again");
+            if let Err(e) = store.set_sign_in_expired(&id, true) {
+                warn!(account = %email, "cannot record the refused sign-in: {e}");
+            }
+            let _ = events.send(Event::AccountsChanged);
+        })
+    }
+
+    /// Google refused the account's sign-in: nothing syncs until the user signs in again.
+    pub fn sign_in_expired(&self, account_id: &str) -> bool {
+        self.store.sign_in_expired(account_id).unwrap_or(false)
     }
 
     pub fn worker(&self, account_id: &str) -> Result<Arc<Worker>> {
@@ -312,6 +338,7 @@ impl Service {
                 let known = svc.store.account(&email).ok();
                 tokens::save_grant(&email, &refresh, &cfg, custom)?;
                 let acc = svc.store.add_account(&email, "gmail")?;
+                svc.store.set_sign_in_expired(&acc.id, false)?;
                 // A known, healthy account keeps its sync position and local data.
                 if known.as_ref().is_none_or(|a| a.sync.state == "error") {
                     svc.store
@@ -666,14 +693,51 @@ async fn digest_loop(svc: Arc<Service>, w: Arc<Worker>) {
     }
 }
 
+/// First wait before asking Google again whether a refused sign-in works after all.
+const PROBE_FIRST: Duration = Duration::from_secs(15 * 60);
+/// Longest wait between those checks.
+const PROBE_MAX: Duration = Duration::from_secs(6 * 3600);
+
+/// The wait before the next check of a refused sign-in: doubles, up to [`PROBE_MAX`].
+pub(crate) fn next_probe(prev: Option<Duration>) -> Duration {
+    prev.map_or(PROBE_FIRST, |d| (d * 2).min(PROBE_MAX))
+}
+
+/// While Google refuses the sign-in: no sync, no write-back (the queue waits), only a
+/// rare single token check, in case access came back without a new sign-in. Signing in
+/// again replaces the worker and ends this wait.
+async fn wait_for_sign_in(svc: &Arc<Service>, w: &Arc<Worker>) {
+    let mut wait = None;
+    while svc.is_current(w) {
+        let d = next_probe(wait);
+        wait = Some(d);
+        tokio::time::sleep(d).await;
+        if !svc.is_current(w) {
+            return;
+        }
+        if w.tokens.probe().await.is_ok() {
+            info!(account = %w.sync.email, "Google accepts the sign-in again");
+            let _ = svc.store.set_sign_in_expired(&w.sync.account_id, false);
+            let _ = svc.events.send(Event::AccountsChanged);
+            return;
+        }
+    }
+}
+
 /// Per-account loop: keep the import running, pull changes, push local edits.
 async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
-    if let Err(e) = w.sync.refresh_labels().await {
+    if !w.tokens.refused()
+        && let Err(e) = w.sync.refresh_labels().await
+    {
         warn!(account = %w.sync.email, "labels: {e}");
     }
     loop {
         if !svc.is_current(&w) {
             return;
+        }
+        if w.tokens.refused() {
+            wait_for_sign_in(&svc, &w).await;
+            continue;
         }
         ensure_import(&svc, &w);
         match w.sync.incremental().await {
@@ -684,11 +748,14 @@ async fn live_loop(svc: Arc<Service>, w: Arc<Worker>) {
                 svc.feed_kick.notify_one();
             }
             Ok(_) => {}
+            // Recorded and shown once, when Google refused it.
+            Err(Error::SignInExpired) => continue,
             Err(e) => warn!(account = %w.sync.email, "incremental: {e}"),
         }
         match w.sync.push_ops().await {
             Ok(n) if n > 0 => info!(account = %w.sync.email, pushed = n, "pushed local changes"),
             Ok(_) => {}
+            Err(Error::SignInExpired) => continue,
             Err(e) => warn!(account = %w.sync.email, "push: {e}"),
         }
         tokio::select! {
@@ -725,6 +792,8 @@ fn ensure_import(svc: &Arc<Service>, w: &Arc<Worker>) {
         loop {
             match w.sync.initial_sync().await {
                 Ok(()) => break,
+                // Resumes where it stopped once the user signs in again.
+                Err(Error::SignInExpired) => break,
                 Err(e) => {
                     warn!(account = %w.sync.email, "import paused: {e}");
                     let _ = store.set_sync(

@@ -866,8 +866,13 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             for a in v.as_array().into_iter().flatten() {
                 let s = &a["sync"];
                 let id = a["id"].as_str().unwrap_or("");
-                // Still syncs, but the next Google consent needs the app's own client.
-                let hint = if a["needs_reconnect"] == true {
+                // Google refused the sign-in: nothing syncs until the user signs in again.
+                // Otherwise it still syncs, but the next consent needs the app's own client.
+                let hint = if a["sign_in_expired"] == true {
+                    format!(
+                        "  not syncing, Google asks you to sign in again: mermoz reconnect {id}"
+                    )
+                } else if a["needs_reconnect"] == true {
                     format!("  sign in again: mermoz reconnect {id}")
                 } else {
                     String::new()

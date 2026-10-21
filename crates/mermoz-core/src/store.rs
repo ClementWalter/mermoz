@@ -27,6 +27,7 @@ mod push;
 mod reactions;
 mod readings;
 mod semantic;
+mod sign_in;
 mod visibility;
 pub use feed::FEED_STATUSES;
 pub use plan::{BulkOp, PlanMatch};

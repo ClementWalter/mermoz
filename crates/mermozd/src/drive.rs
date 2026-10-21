@@ -86,7 +86,11 @@ fn needs_access(account_id: &str, reason: &str, message: &str) -> RpcError {
 
 /// A refresh token Google no longer honours (access removed in the Google account).
 fn revoked(e: &Error) -> bool {
-    matches!(e, Error::Upstream { status: 400 | 401, body } if body.contains("invalid_grant"))
+    match e {
+        Error::SignInExpired => true,
+        Error::Upstream { status, body } => mermoz_core::oauth::refused_grant(*status, body),
+        _ => false,
+    }
 }
 
 fn no_access(e: &Error) -> bool {

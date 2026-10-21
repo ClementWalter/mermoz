@@ -128,7 +128,17 @@ impl World {
 /// Signs in through the real OAuth loopback flow, pretending to be the browser.
 fn sign_in(w: &World) {
     let v = w.ok("accounts.add_gmail", json!({}));
-    let url = url_parse(v["auth_url"].as_str().unwrap());
+    consent(v["auth_url"].as_str().unwrap());
+    w.wait_until("account to be added", |w| {
+        w.ok("accounts.list", json!({}))
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+}
+
+/// Google's redirect back to the daemon after the user consents at `auth_url`.
+fn consent(auth_url: &str) {
+    let url = url_parse(auth_url);
     let redirect = url
         .iter()
         .find(|(k, _)| k == "redirect_uri")
@@ -146,11 +156,6 @@ fn sign_in(w: &World) {
     .unwrap();
     let mut resp = String::new();
     let _ = s.read_to_string(&mut resp);
-    w.wait_until("account to be added", |w| {
-        w.ok("accounts.list", json!({}))
-            .as_array()
-            .is_some_and(|a| !a.is_empty())
-    });
 }
 
 fn url_parse(u: &str) -> Vec<(String, String)> {
@@ -5269,4 +5274,159 @@ fn the_demo_account_stays_quiet_after_a_restart(with_demo: World) {
     w.restart();
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(w.ok("accounts.list", json!({}))[0]["sync"]["state"], "idle");
+}
+
+// ---- Google refuses the sign-in (revoked, or the weekly expiry of a testing app) ----
+
+fn account_row(w: &World) -> Value {
+    w.ok("accounts.list", json!({}))[0].clone()
+}
+
+/// Refresh-token requests the token endpoint got so far.
+fn refreshes(w: &World) -> usize {
+    w.mailbox
+        .lock()
+        .unwrap()
+        .token_requests
+        .iter()
+        .filter(|(grant, _)| grant == "refresh_token")
+        .count()
+}
+
+/// Google revokes the grant while the user archives a thread; the daemon finds out.
+#[fixture]
+fn revoked(synced: World) -> World {
+    synced.mailbox.lock().unwrap().revoked = true;
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "archive" }),
+    );
+    synced.wait_until("sign-in refused", |w| {
+        account_row(w)["sign_in_expired"] == true
+    });
+    synced
+}
+
+/// Signs the account in again through the app's reconnect flow.
+fn sign_in_again(w: &World) {
+    let id = account_row(w)["id"].clone();
+    let v = w.ok("accounts.reconnect", json!({ "account_id": id }));
+    consent(v["auth_url"].as_str().unwrap());
+    w.wait_until("signed in again", |w| {
+        account_row(w)["sign_in_expired"] == false
+    });
+}
+
+#[rstest]
+fn a_refused_sign_in_asks_to_sign_in_again(revoked: World) {
+    assert_eq!(account_row(&revoked)["needs_reconnect"], true);
+}
+
+#[rstest]
+fn a_refused_sign_in_explains_itself_in_plain_words(revoked: World) {
+    assert_eq!(
+        account_row(&revoked)["sync"]["error"],
+        "Google asks you to sign in again. New mail arrives and your changes reach Gmail once you do."
+    );
+}
+
+#[rstest]
+fn the_cli_tells_to_sign_in_again(revoked: World) {
+    let out = String::from_utf8(revoked.cli(&["accounts"]).stdout).unwrap();
+    assert!(out.contains("sign in again"), "{out}");
+}
+
+/// Kicks the sync and edits a thread for a while, as an impatient user would.
+fn keep_poking(w: &World) {
+    let t = w.thread_by_subject("Budget sheet");
+    for i in 0..20 {
+        let status = if i % 2 == 0 { "archive" } else { "todo" };
+        w.ok(
+            "threads.update",
+            json!({ "ids": [t["id"]], "status": status }),
+        );
+        let _ = w.call("sync.now", json!({}));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[rstest]
+fn a_refused_sign_in_stops_asking_for_tokens(revoked: World) {
+    let before = refreshes(&revoked);
+    keep_poking(&revoked);
+    assert_eq!(refreshes(&revoked), before);
+}
+
+#[rstest]
+fn a_refused_sign_in_stops_calling_gmail(revoked: World) {
+    let before = revoked.mailbox.lock().unwrap().gmail_requests;
+    keep_poking(&revoked);
+    assert_eq!(revoked.mailbox.lock().unwrap().gmail_requests, before);
+}
+
+#[rstest]
+fn a_refused_sign_in_survives_a_restart(revoked: World) {
+    let mut w = revoked;
+    w.restart();
+    assert_eq!(account_row(&w)["sign_in_expired"], true);
+}
+
+#[rstest]
+fn a_restart_does_not_ask_google_again(revoked: World) {
+    let mut w = revoked;
+    let before = refreshes(&w);
+    w.restart();
+    keep_poking(&w);
+    assert_eq!(refreshes(&w), before);
+}
+
+#[rstest]
+fn signing_in_again_clears_the_refusal(revoked: World) {
+    sign_in_again(&revoked);
+    assert_eq!(account_row(&revoked)["needs_reconnect"], false);
+}
+
+#[rstest]
+fn changes_made_meanwhile_reach_gmail_after_signing_in_again(revoked: World) {
+    sign_in_again(&revoked);
+    revoked.wait_until("queued archive pushed", |w| {
+        !w.mailbox
+            .lock()
+            .unwrap()
+            .thread_label_names("t1")
+            .contains("INBOX")
+    });
+}
+
+#[rstest]
+fn mail_arrives_again_after_signing_in_again(revoked: World) {
+    sign_in_again(&revoked);
+    revoked.mailbox.lock().unwrap().add_message(
+        "m9",
+        "t9",
+        &["INBOX", "UNREAD"],
+        &raw("Ann <ann@example.org>", "Back online", "Hi", "m9"),
+        NOW,
+    );
+    revoked.wait_until("new mail", |w| {
+        w.ok("threads.list", json!({}))["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["subject"] == "Back online")
+    });
+}
+
+#[rstest]
+fn sending_while_refused_says_to_sign_in_again(revoked: World) {
+    let t = revoked.thread_by_subject("Audit report v2");
+    let d = revoked.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "Signed." }),
+    );
+    let e = revoked
+        .call("drafts.send", json!({ "id": d["id"] }))
+        .unwrap_err();
+    assert_eq!(e["code"], -32021);
 }

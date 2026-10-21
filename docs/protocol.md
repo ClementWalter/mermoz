@@ -38,6 +38,7 @@ app, the CLI and the MCP server are clients of this protocol.
 | -32010 | approval_required   | send moved to Review; `data: {draft, thread}`        |
 | -32011 | app_only            | method only callable from Mermoz.app                 |
 | -32020 | upstream            | provider (Gmail) error; `data: {status, body}`       |
+| -32021 | sign_in_expired     | Google no longer accepts the account's sign-in; the user signs in again (`accounts.reconnect`) |
 
 ## Objects
 
@@ -266,7 +267,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 | method               | params                                                                                   | result                                   |
 | -------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `hello`              | `{}`                                                                                     | `{"version": "0.1.0"}`                   |
-| `accounts.list`      | `{}`                                                                                     | `[Account]`, each with `needs_reconnect` (signed in through another OAuth client: still syncs, sign in again) |
+| `accounts.list`      | `{}`                                                                                     | `[Account]`, each with `needs_reconnect` (the user should sign in again) and `sign_in_expired`. `sign_in_expired: true`: Google refused the sign-in (`invalid_grant`: access removed, password changed, or the 7-day expiry while the Google app is in testing); nothing syncs and local changes stay queued until the user signs in again, `sync.error` says so in plain words. Remembered across restarts; set and cleared with `accounts_changed`. `needs_reconnect` alone: signed in through another OAuth client, still syncs |
 | `accounts.add_gmail` | `{}`, or the user's own Google client: `{"client_json"}` (the Google Cloud download) or `{"client_id","client_secret"}` | `{"auth_url": "https://…"}`; completes in background, emits `accounts_changed`; an own client is stored with the token and used for the account's later consents (Drive too) |
 | `accounts.sign_in_status` | `{}`                                                                               | `{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?}`; `kind`: `admin_policy`, `unverified`, `org_internal`, `app_blocked`, `declined` |
 | `accounts.reconnect` | `{"account_id"}`                                                                       | `{"auth_url"}`; signs the account in again with the app's client (or the account's own client), keeping local mail; emits `accounts_changed` |

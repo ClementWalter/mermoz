@@ -91,3 +91,12 @@ fn threads_pack_into_calls(
 fn a_thread_that_fits_no_call_goes_alone(#[case] sizes: &[usize], #[case] alone: Vec<usize>) {
     assert_eq!(pack(sizes, 1000).1, alone);
 }
+
+#[rstest]
+#[case::sign_in_refused(Error::SignInExpired, true)]
+#[case::label_refused(Error::Upstream { status: 400, body: "bad label".into() }, false)]
+#[case::thread_gone(Error::Upstream { status: 404, body: String::new() }, false)]
+#[case::other(Error::other("odd"), false)]
+fn an_error_halts_the_round(#[case] e: Error, #[case] halts: bool) {
+    assert_eq!(halts_round(&e), halts);
+}

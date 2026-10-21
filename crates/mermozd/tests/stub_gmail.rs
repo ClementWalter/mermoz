@@ -99,6 +99,12 @@ pub struct Mailbox {
     pub minimal_gets: usize,
     /// How long each `messages.batchModify` call takes.
     pub batch_modify_delay_ms: u64,
+    /// The user's grant is revoked, as by Google's 7-day expiry: Gmail answers 401 and
+    /// the token endpoint refuses refreshes with `invalid_grant`. A new consent (an
+    /// authorization code exchanged) grants access again.
+    pub revoked: bool,
+    /// Gmail API requests served, of any kind.
+    pub gmail_requests: usize,
     next_label: u64,
 }
 
@@ -218,12 +224,29 @@ fn b64url(s: &str) -> String {
 async fn token(
     State(s): State<Shared>,
     axum::Form(form): axum::Form<HashMap<String, String>>,
-) -> Json<Value> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let field = |k: &str| form.get(k).cloned().unwrap_or_default();
-    s.lock()
-        .unwrap()
-        .token_requests
-        .push((field("grant_type"), field("client_id")));
+    {
+        let mut m = s.lock().unwrap();
+        m.token_requests
+            .push((field("grant_type"), field("client_id")));
+        match field("grant_type").as_str() {
+            "authorization_code" => m.revoked = false,
+            "refresh_token" if m.revoked => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid_grant", "error_description": "Token has been expired or revoked." })),
+                )
+                    .into_response();
+            }
+            _ => {}
+        }
+    }
+    token_granted(&s).into_response()
+}
+
+fn token_granted(s: &Shared) -> Json<Value> {
     let mut v = json!({ "access_token": "stub-access", "expires_in": 3600, "refresh_token": "stub-refresh", "token_type": "Bearer" });
     // Like Google: the scopes this consent granted, which a test sets per flow.
     if let Some(scope) = s.lock().unwrap().granted_scope.clone() {
@@ -930,6 +953,27 @@ async fn oa_responses_any(
     ([("content-type", "text/event-stream")], out).into_response()
 }
 
+/// Counts Gmail API requests and answers them 401 while the grant is revoked.
+async fn gmail_gate(
+    State(s): State<Shared>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if req.uri().path().starts_with("/gmail") {
+        let mut m = s.lock().unwrap();
+        m.gmail_requests += 1;
+        if m.revoked {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{\"error\":{\"code\":401,\"status\":\"UNAUTHENTICATED\"}}",
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
 /// Serves the stub on an ephemeral port in a background runtime.
 pub fn start(mailbox: Shared) -> u16 {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -961,6 +1005,10 @@ pub fn start(mailbox: Shared) -> u16 {
                 .route("/subq/v1/systemone", post(subq_systemone))
                 .route("/gmail/threads/{id}/untrash", post(untrash_thread))
                 .route("/gmail/labels/{id}", axum::routing::delete(delete_label))
+                .layer(axum::middleware::from_fn_with_state(
+                    mailbox.clone(),
+                    gmail_gate,
+                ))
                 .with_state(mailbox);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap().port()).unwrap();

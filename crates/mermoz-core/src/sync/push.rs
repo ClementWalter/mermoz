@@ -30,17 +30,26 @@ enum Plan {
     Single,
 }
 
-/// How a chunk went: ops pushed, ops that failed, and whether Gmail is unreachable.
+/// How a chunk went: ops pushed, ops that failed, whether Gmail is unreachable, and
+/// whether Google wants the user to sign in again.
 #[derive(Default)]
 struct Outcome {
     pushed: usize,
     failed: Vec<i64>,
     offline: bool,
+    signed_out: bool,
+}
+
+/// Errors after which no other op of the round can go through: Gmail unreachable, or
+/// the sign-in refused. Everything stays queued for a later round.
+fn halts_round(e: &Error) -> bool {
+    matches!(e, Error::Http(_) | Error::SignInExpired)
 }
 
 impl AccountSync {
     /// Pushes queued local edits to Gmail until the queue holds only failures; those
-    /// stay queued for the next round.
+    /// stay queued for the next round. Fails with [`Error::SignInExpired`] once Google
+    /// refuses the sign-in, leaving the whole queue for after the user signs in again.
     pub async fn push_ops(&self) -> Result<usize> {
         let mut pushed = 0;
         let mut failed: HashSet<i64> = HashSet::new();
@@ -57,6 +66,9 @@ impl AccountSync {
             let o = self.push_chunk(&ops).await?;
             pushed += o.pushed;
             failed.extend(o.failed);
+            if o.signed_out {
+                return Err(Error::SignInExpired);
+            }
             if o.offline {
                 break;
             }
@@ -102,11 +114,15 @@ impl AccountSync {
     }
 
     fn failed(&self, op: &Op, e: &Error, out: &mut Outcome) -> Result<()> {
+        out.failed.push(op.id);
+        out.offline |= halts_round(e);
+        // Not the op's fault: it keeps its attempts and goes out after the new sign-in.
+        if matches!(e, Error::SignInExpired) {
+            out.signed_out = true;
+            return Ok(());
+        }
         warn!(op = op.id, "push failed: {e}");
         self.store.op_failed(op, &e.to_string())?;
-        out.failed.push(op.id);
-        // Offline: stop this round, everything stays queued.
-        out.offline |= matches!(e, Error::Http(_));
         Ok(())
     }
 
@@ -233,7 +249,7 @@ impl AccountSync {
                 self.store.ops_done(ops)?;
                 out.pushed += ops.len();
             }
-            Err(e @ Error::Http(_)) => {
+            Err(e) if halts_round(&e) => {
                 for op in ops {
                     self.failed(op, &e, out)?;
                 }

@@ -158,6 +158,8 @@ impl AccountSync {
                         },
                         // Deleted between listing and fetching: nothing to import.
                         Err(Error::Upstream { status: 404, .. }) => {}
+                        // No retry helps until the user signs in again.
+                        Err(Error::SignInExpired) => return Err(Error::SignInExpired),
                         Err(e) => {
                             failed.push(id);
                             last_err = Some(e);
