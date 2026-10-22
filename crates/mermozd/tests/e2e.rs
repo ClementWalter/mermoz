@@ -1772,6 +1772,49 @@ fn threads_not_asked_about_get_no_suggestion(synced: World) {
     assert!(synced.thread_by_subject("Sheet 0")["suggestion"].is_null());
 }
 
+// ---- ✨ on a column -------------------------------------------------------------
+
+#[rstest]
+fn sparkle_on_a_column_suggests_for_its_threads(synced: World) {
+    enable_router(&synced);
+    let v = synced.ok("threads.suggest_column", json!({ "status": "todo" }));
+    assert_eq!(
+        v["suggested"],
+        json!([synced.thread_by_subject("Budget sheet")["id"]])
+    );
+}
+
+#[rstest]
+fn sparkle_on_a_column_shows_where_each_thread_goes(synced: World) {
+    enable_router(&synced);
+    synced.ok("threads.suggest_column", json!({ "status": "todo" }));
+    assert_eq!(
+        synced.thread_by_subject("Budget sheet")["suggestion"]["status"],
+        "archive"
+    );
+}
+
+#[rstest]
+#[case::done("done")]
+#[case::unread("unread")]
+fn sparkle_is_refused_on_a_closed_column(synced: World, #[case] status: &str) {
+    assert!(
+        synced
+            .call("threads.suggest_column", json!({ "status": status }))
+            .is_err()
+    );
+}
+
+#[rstest]
+fn the_cli_asks_about_a_column(synced: World) {
+    enable_router(&synced);
+    let out = synced.cli(&["suggestions", "todo", "--ask"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("asked about 1 threads, 1 now have a suggestion")
+    );
+}
+
 #[rstest]
 fn background_sorting_suggests_for_an_open_column(synced: World) {
     sorted_todo(&synced);

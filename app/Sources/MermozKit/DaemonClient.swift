@@ -208,6 +208,12 @@ public final class DaemonClient: Sendable {
         try await call("threads.suggest", Params().with("ids", ids))
     }
 
+    /// ✨ on a column: suggestions for the newest threads of that open column, as Unread
+    /// mail gets on arrival.
+    public func suggestColumn(_ status: String) async throws -> ColumnSuggestions {
+        try await call("threads.suggest_column", Params().with("status", status))
+    }
+
     /// Answers a suggestion: "yes" accepts it, "no" turns it down for that sender.
     public func answerSuggestion(_ id: String, answer: String) async throws -> AnswerResult {
         try await call("sort.answer", Params().with("id", id).with("answer", answer))

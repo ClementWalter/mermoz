@@ -48,6 +48,14 @@ public struct SuggestBatch: Codable, Sendable {
     public var offer: ProviderOffer?
 }
 
+/// `threads.suggest_column`: what ✨ on a column did.
+public struct ColumnSuggestions: Codable, Sendable {
+    public var asked: Int
+    public var suggested: [String]
+    public var paused: String?
+    public var providerName: String?
+}
+
 /// `sort.answer`.
 public struct AnswerResult: Codable, Sendable {
     public var undo: SuggestionUndo

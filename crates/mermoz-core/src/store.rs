@@ -3725,6 +3725,27 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The threads of one open column that may get a suggestion now (see
+    /// [`Self::suggest_candidates`]), newest first: what ✨ on a column asks about.
+    pub fn column_to_suggest(&self, status: &str, limit: i64) -> Result<Vec<String>> {
+        if !RESUMABLE.contains(&status) {
+            return Err(Error::InvalidParams(format!(
+                "only open columns get suggestions ({}), not '{status}'",
+                RESUMABLE.join(", ")
+            )));
+        }
+        let r = self.bg.lock().unwrap();
+        let mut st = r.prepare(&format!(
+            "SELECT t.id FROM threads t LEFT JOIN suggestions s ON s.thread_id = t.id
+             WHERE t.status = ?1 AND {SORT_DUE} AND {}
+             ORDER BY t.last_date DESC LIMIT ?2",
+            visibility::NOT_DEMO_T
+        ))?;
+        Ok(st
+            .query_map(params![status, limit], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Who a thread is with, for learning: the last sender who is not the user, else
     /// the first person the user wrote to.
     pub fn thread_sender(&self, thread_id: &str) -> Result<String> {

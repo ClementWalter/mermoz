@@ -235,8 +235,14 @@ reading pane move to the next card; **n** dismisses it and the card stays. ⌘Z 
 either back. No confident suggestion, no chip.
 
 - **Just in time.** Suggestions are asked of the AI for the cards on screen and the
-  next few (at most 6 per request), never in bulk. Nothing sorts whole columns any
-  more; new Unread mail is still routed on arrival.
+  next few (at most 6 per request), never in the background. Nothing sorts whole
+  columns by itself; new Unread mail is still routed on arrival.
+- **✨ on a column (on request).** To do, Waiting, In progress and Backlog have a ✨
+  in their board and list header. A click asks the AI about the column's 50 newest
+  threads still worth asking about (the same suggestion Unread mail gets, learned
+  sender rules first, within today's allowance), and the answers show as ✦ chips
+  on the cards: y / x, or Accept n for the whole column (`threads.suggest_column`,
+  `mermoz suggestions <column> --ask`).
 - **Yes** files the thread and is remembered for its sender; after three
   consistent Yes the sender's destination is suggested without asking the AI
   ("Learned: mail from X goes to Voyage").

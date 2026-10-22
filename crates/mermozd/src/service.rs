@@ -1233,12 +1233,72 @@ pub struct SuggestBatch {
     pub offer: Option<serde_json::Value>,
 }
 
+/// Most threads one ✨ on a column asks about.
+pub const COLUMN_SUGGEST_MAX: usize = 50;
+
+/// What ✨ on a column did: how many threads it looked at, which now show a
+/// suggestion, and why the AI is on hold if it is.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ColumnSuggestions {
+    pub asked: usize,
+    pub suggested: Vec<String>,
+    pub paused: Option<String>,
+    pub provider_name: &'static str,
+    pub offer: Option<serde_json::Value>,
+}
+
 impl Service {
     /// Confident suggestions for `ids` (at most [`SUGGEST_MAX`], the cards on screen
     /// and just after): stored ones, a learned sender rule, else one AI call per thread
     /// just before it is shown. Threads with nothing confident are left out.
     pub async fn suggest(self: &Arc<Self>, ids: &[String]) -> Result<SuggestBatch> {
         let ids = &ids[..ids.len().min(SUGGEST_MAX)];
+        self.prepare_suggestions(ids).await?;
+        let mut suggestions = vec![];
+        for id in ids {
+            if let Some(s) = self.shown_suggestion(id)? {
+                suggestions.push(s);
+            }
+        }
+        Ok(SuggestBatch {
+            suggestions,
+            paused: self.sort_hold().filter(|h| h != "no_key"),
+            provider_name: self.provider().name(),
+            offer: self.offer(),
+        })
+    }
+
+    /// ✨ on a column: the same suggestions as [`Self::suggest`] for the newest
+    /// `limit` threads of that open column (at most [`COLUMN_SUGGEST_MAX`]), shown as
+    /// chips on its cards. Only on request, so a column is never sorted in the background.
+    pub async fn suggest_column(
+        self: &Arc<Self>,
+        status: &str,
+        limit: usize,
+    ) -> Result<ColumnSuggestions> {
+        let limit = limit.clamp(1, COLUMN_SUGGEST_MAX);
+        let ids = self.store.column_to_suggest(status, limit as i64)?;
+        self.prepare_suggestions(&ids).await?;
+        let mut suggested = vec![];
+        for id in &ids {
+            if self.shown_suggestion(id)?.is_some() {
+                suggested.push(id.clone());
+            }
+        }
+        let _ = self.events.send(Event::ThreadsChanged(ids.clone()));
+        Ok(ColumnSuggestions {
+            asked: ids.len(),
+            suggested,
+            // Asked for by a click, so a missing key is said too.
+            paused: self.sort_hold(),
+            provider_name: self.provider().name(),
+            offer: self.offer(),
+        })
+    }
+
+    /// Stored suggestions for `ids` are kept, a learned sender rule answers without the
+    /// AI, and the rest get one AI call each.
+    async fn prepare_suggestions(self: &Arc<Self>, ids: &[String]) -> Result<()> {
         let mut to_route = vec![];
         for c in self.store.suggest_candidates(ids)? {
             if c.ready {
@@ -1254,18 +1314,7 @@ impl Service {
         if !to_route.is_empty() {
             self.route_for_suggestions(to_route).await?;
         }
-        let mut suggestions = vec![];
-        for id in ids {
-            if let Some(s) = self.shown_suggestion(id)? {
-                suggestions.push(s);
-            }
-        }
-        Ok(SuggestBatch {
-            suggestions,
-            paused: self.sort_hold().filter(|h| h != "no_key"),
-            provider_name: self.provider().name(),
-            offer: self.offer(),
-        })
+        Ok(())
     }
 
     /// Asks the AI about these threads, within today's allowance and unless on hold.
