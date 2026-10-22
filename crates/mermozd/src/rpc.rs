@@ -1091,6 +1091,13 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             }
             to_value(svc.suggest(&ids).await?)
         }
+        "threads.suggest_column" => {
+            let limit = p
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map_or(crate::service::COLUMN_SUGGEST_MAX, |n| n as usize);
+            to_value(svc.suggest_column(&s(p, "status")?, limit).await?)
+        }
         "learned.list" => Ok(json!({ "learned": st.learned(200)? })),
         "learned.forget" => {
             let item: mermoz_core::store::Learned =

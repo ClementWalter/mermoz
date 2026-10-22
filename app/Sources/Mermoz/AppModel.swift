@@ -239,6 +239,8 @@ final class AppModel {
     var paletteMode: PaletteMode?
     var showShortcuts = false
     var toast: String?
+    /// Columns whose ✨ request is running.
+    var suggestingColumns: Set<String> = []
     /// The toast showing an Undo button (the same text as `toast` while it shows).
     var toastUndo: String?
     /// The threads of the drag in progress (or the last one), set as it starts, so a
@@ -822,6 +824,32 @@ final class AppModel {
                 try await client.acceptSuggestions(ids)
                 toast = ids.count == 1 ? "Done as suggested" : "Accepted \(ids.count) suggestions"
                 refreshCounts()
+                await loadList()
+            } catch { report(error) }
+        }
+    }
+
+    /// ✨ on a column: asks the AI about its threads; the answers show as chips on them.
+    func suggestColumn(_ status: String) {
+        guard let client, !suggestingColumns.contains(status) else { return }
+        suggestingColumns.insert(status)
+        Task {
+            defer { suggestingColumns.remove(status) }
+            do {
+                let r = try await client.suggestColumn(status)
+                let n = r.suggested.count
+                if let hold = r.paused, n == 0 {
+                    toast = switch hold {
+                    case "no_key": "Connect an AI in Settings to get suggestions"
+                    case "off": "AI suggestions are off in Settings"
+                    case "limit": "Today's AI allowance is used up"
+                    default: "\(r.providerName ?? "The AI") is on hold: \(hold)"
+                    }
+                } else {
+                    toast = n == 0 ? "Nothing to suggest in \(statusName(status))"
+                        : n == 1 ? "1 suggestion in \(statusName(status))"
+                        : "\(n) suggestions in \(statusName(status))"
+                }
                 await loadList()
             } catch { report(error) }
         }

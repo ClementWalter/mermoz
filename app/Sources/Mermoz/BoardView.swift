@@ -95,6 +95,7 @@ struct BoardColumn: View {
                 }
                 Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
                 Spacer()
+                SuggestColumnButton(group: group)
                 AcceptAllButton(threads: group.all)
             }
             .padding(.horizontal, 4).padding(.top, 2)

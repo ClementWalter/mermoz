@@ -197,11 +197,15 @@ enum Cmd {
     /// and how far background sorting of that column has got; with --to/--to-project,
     /// the threads of that one group (accept them with `mermoz accept`).
     #[command(
-        after_help = "Examples:\n  mermoz suggestions backlog\n  mermoz suggestions backlog --to archive\n  mermoz suggestions backlog --to none --to-project Receipts"
+        after_help = "Examples:\n  mermoz suggestions backlog --ask\n  mermoz suggestions backlog\n  mermoz suggestions backlog --to archive\n  mermoz suggestions backlog --to none --to-project Receipts"
     )]
     Suggestions {
         #[arg(required_unless_present = "clear")]
         status: Option<String>,
+        /// First ask the AI about the column's newest --limit threads (at most 50), as
+        /// ✨ on the column does.
+        #[arg(long, conflicts_with = "clear")]
+        ask: bool,
         /// Clear every suggestion on read threads that nobody reviewed (Unread mail keeps
         /// its own); accepted and turned-down ones are kept.
         #[arg(long, conflicts_with_all = ["to", "to_projects"])]
@@ -1353,6 +1357,7 @@ fn run(cli: Cli) -> Result<(), RpcError> {
         Cmd::Suggestions {
             status,
             clear,
+            ask,
             to,
             to_projects,
             limit,
@@ -1372,6 +1377,23 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 return Ok(());
             }
             let status = resolve_status(&mut c, &status.unwrap_or_default())?;
+            if ask {
+                let v = c.call(
+                    "threads.suggest_column",
+                    json!({ "status": status, "limit": limit }),
+                )?;
+                // --json prints only the listing that follows.
+                if !out.json {
+                    if let Some(why) = v["paused"].as_str() {
+                        out.line(format!("the AI is on hold ({why})"));
+                    }
+                    out.line(format!(
+                        "asked about {} threads, {} now have a suggestion",
+                        v["asked"].as_u64().unwrap_or(0),
+                        v["suggested"].as_array().map_or(0, |a| a.len())
+                    ));
+                }
+            }
             if to.is_some() || !to_projects.is_empty() {
                 let to = match to.as_deref() {
                     None | Some("none") => Value::Null,

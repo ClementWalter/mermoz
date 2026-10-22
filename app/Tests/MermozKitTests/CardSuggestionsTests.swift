@@ -193,6 +193,7 @@ func yAndNAnswerTheChip(_ key: String, _ want: FeedKeyAction) {
 // MARK: with the daemon
 
 private let suggestReply = #"{"suggestions":[{"id":"thr_a","suggestion":{"status":"archive","status_confidence":0.9,"projects":[]},"why":null}],"paused":null,"provider_name":"TypeSafe","offer":null}"#
+private let columnReply = #"{"asked":3,"suggested":["thr_a"],"paused":null,"provider_name":"TypeSafe","offer":null}"#
 private let answerReply = #"{"undo":{"thread":{"id":"thr_a","unread":false,"status":"todo","priority":0,"projects":[],"due":null},"since":5},"learned":null}"#
 
 /// A daemon that suggests Archive for thr_a and records answers; `failAnswers` refuses them.
@@ -200,6 +201,7 @@ private func daemon(failAnswers: Bool = false) throws -> StubDaemon {
     try StubDaemon { id, method in
         switch method {
         case "threads.suggest": #"{"jsonrpc":"2.0","id":\#(id),"result":\#(suggestReply)}"#
+        case "threads.suggest_column": #"{"jsonrpc":"2.0","id":\#(id),"result":\#(columnReply)}"#
         case "sort.answer" where failAnswers: #"{"jsonrpc":"2.0","id":\#(id),"error":{"code":-32000,"message":"busy"}}"#
         case "sort.answer": #"{"jsonrpc":"2.0","id":\#(id),"result":\#(answerReply)}"#
         default: #"{"jsonrpc":"2.0","id":\#(id),"result":{}}"#
@@ -330,4 +332,22 @@ func learnedReadsAsASentence(_ item: LearnedItem, _ want: String) {
     let json = #"{"configured": true, "model": "jev-latest"}"#
     let r = try RPCCoding.decoder().decode(RouterState.self, from: Data(json.utf8))
     #expect(r.providers == nil)
+}
+
+// MARK: ✨ on a column
+
+@MainActor
+@Test func sparkleOnAColumnAsksTheDaemonAboutThatColumn() async throws {
+    let stub = try daemon()
+    defer { withExtendedLifetime(stub) {} }
+    _ = try await DaemonClient(connection: try Connection(path: stub.path)).suggestColumn("backlog")
+    #expect(params(stub, "threads.suggest_column").first?["status"] as? String == "backlog")
+}
+
+@MainActor
+@Test func sparkleOnAColumnSaysWhichThreadsGotASuggestion() async throws {
+    let stub = try daemon()
+    defer { withExtendedLifetime(stub) {} }
+    let r = try await DaemonClient(connection: try Connection(path: stub.path)).suggestColumn("backlog")
+    #expect(r.suggested == ["thr_a"])
 }

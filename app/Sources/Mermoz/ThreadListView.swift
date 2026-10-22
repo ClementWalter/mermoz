@@ -241,6 +241,7 @@ struct GroupHeaderView: View {
             GroupLabel(field: group.field, key: group.key).font(.system(size: 12, weight: .semibold))
             Text(total.formatted()).font(.system(size: 12)).foregroundStyle(Theme.text3)
             Spacer()
+            SuggestColumnButton(group: group)
             AcceptAllButton(threads: group.all)
         }
         .foregroundStyle(Theme.text.opacity(0.85))
@@ -282,6 +283,29 @@ struct AcceptAllButton: View {
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
             .help("Apply the AI's suggestion to these \(ids.count) threads")
+        }
+    }
+}
+
+/// ✨ on an open status column: the AI suggests where its threads go, as for Unread mail.
+struct SuggestColumnButton: View {
+    @Environment(AppModel.self) private var model
+    let group: ThreadGroup
+
+    /// The columns the daemon suggests for.
+    static let open: Set<String> = ["todo", "waiting", "in_progress", "backlog"]
+
+    var body: some View {
+        if group.field == .status, Self.open.contains(group.key) {
+            if model.suggestingColumns.contains(group.key) {
+                ProgressView().controlSize(.small)
+            } else {
+                Button { model.suggestColumn(group.key) } label: { Image(systemName: "sparkles") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accent)
+                    .help("Ask the AI where these threads go")
+                    .accessibilityLabel("Suggest with AI")
+            }
         }
     }
 }
