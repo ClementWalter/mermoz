@@ -1048,6 +1048,30 @@ final class AppModel {
         }
     }
 
+    /// Gives a card the user's own title (nil or blank: the subject again), at once.
+    func rename(_ id: String, title: String?) {
+        guard let client else { return }
+        let title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let new = title?.isEmpty == false ? title : nil
+        let current = threads.first { $0.id == id } ?? (detail?.thread.id == id ? detail?.thread : nil)
+        guard current?.title != new else { return }
+        recordUndo("Rename", [id])
+        let before = threads
+        let beforeDetail = detail
+        setLocal(id) { $0.title = new }
+        rehold([id])
+        Task {
+            do {
+                let t = try await client.renameThread(id, title: new)
+                setLocal(id) { $0.title = t.title }
+            } catch {
+                threads = before
+                detail = beforeDetail
+                report(error)
+            }
+        }
+    }
+
     func markDoneSelected() { moveSelected(to: "done") }
 
     /// Back to Unread, like Gmail's "mark unread": the thread waits for a fresh look.
@@ -1137,6 +1161,7 @@ final class AppModel {
                     }
                     try await client.updateThreads(ids: [t.id], status: plan.status, priority: plan.priority,
                                                    addProjects: plan.addProjects, removeProjects: plan.removeProjects, due: due)
+                    if let title = plan.title { try await client.renameThread(t.id, title: title) }
                 }
                 toast = "Undid \(entry.label)"
                 refreshCounts()

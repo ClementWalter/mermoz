@@ -253,6 +253,14 @@ public final class DaemonClient: Sendable {
         try await call("router.test", Params().with("api_key", key).with("provider", provider))
     }
 
+    /// Sets the card's own title; nil or blank gives it the subject back.
+    @discardableResult
+    public func renameThread(_ id: String, title: String?) async throws -> ThreadSummary {
+        let p = if let title { Params().with("id", id).with("title", title) } else { Params().with("id", id).null("title") }
+        struct R: Decodable { var thread: ThreadSummary }
+        return try await call("threads.rename", p, as: R.self).thread
+    }
+
     /// The thread as reading left it; nil from a daemon that answers `{}`.
     @discardableResult
     public func markRead(_ id: String, read: Bool = true) async throws -> ThreadSummary? {

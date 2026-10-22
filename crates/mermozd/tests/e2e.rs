@@ -744,6 +744,43 @@ fn chatgpt_calls_send_the_access_token(synced: World) {
 }
 
 #[rstest]
+fn a_renamed_card_lists_with_its_title(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.rename",
+        json!({ "id": t["id"], "title": "Review the audit" }),
+    );
+    assert_eq!(
+        synced.thread_by_subject("Audit report v2")["title"],
+        "Review the audit"
+    );
+}
+
+#[rstest]
+fn renaming_to_null_shows_the_subject_again(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    synced.ok(
+        "threads.rename",
+        json!({ "id": t["id"], "title": "Review the audit" }),
+    );
+    synced.ok("threads.rename", json!({ "id": t["id"], "title": null }));
+    assert_eq!(
+        synced.thread_by_subject("Audit report v2")["title"],
+        Value::Null
+    );
+}
+
+#[rstest]
+fn the_cli_renames_a_card(synced: World) {
+    let t = synced.thread_by_subject("Audit report v2");
+    let out = synced.cli(&["rename", t["number"].as_str().unwrap(), "Review the audit"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "title → Review the audit\n"
+    );
+}
+
+#[rstest]
 fn deleting_a_project_removes_its_gmail_label(synced: World) {
     synced.ok("projects.create", json!({ "name": "test" }));
     let t = synced.thread_by_subject("Audit report v2");

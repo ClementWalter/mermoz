@@ -41,6 +41,8 @@ public struct RestorePlan: Equatable, Sendable {
     public var removeProjects: [String]
     /// `nil`: keep; `.some(nil)`: clear; `.some(d)`: set.
     public var due: String??
+    /// Card title, the same way: `nil` keeps, `.some(nil)` gives the subject back.
+    public var title: String??
 
     public static func between(before: ThreadSummary, now: ThreadSummary) -> RestorePlan {
         RestorePlan(
@@ -49,7 +51,8 @@ public struct RestorePlan: Equatable, Sendable {
             priority: before.priority == now.priority ? nil : before.priority,
             addProjects: Set(before.projects).subtracting(now.projects).sorted(),
             removeProjects: Set(now.projects).subtracting(before.projects).sorted(),
-            due: before.due == now.due ? nil : .some(before.due))
+            due: before.due == now.due ? nil : .some(before.due),
+            title: before.title == now.title ? nil : .some(before.title))
     }
 }
 

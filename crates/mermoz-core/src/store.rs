@@ -30,6 +30,7 @@ mod reactions;
 mod readings;
 mod semantic;
 mod sign_in;
+mod titles;
 mod visibility;
 pub use feed::FEED_STATUSES;
 pub use plan::{BulkOp, PlanMatch};
@@ -149,6 +150,7 @@ const MIGRATIONS: &[&str] = &[
     visibility::MIGRATION,
     gmail_drafts::MIGRATION,
     outlook::MIGRATION,
+    titles::MIGRATION,
 ];
 
 /// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null
@@ -1012,7 +1014,7 @@ pub struct Store {
 
 const THREAD_COLS: &str = "t.id, t.number, t.account_id, t.subject, t.snippet, t.participants, t.last_from, t.last_date, \
     t.unread, t.message_count, t.has_attachments, t.status, t.priority, t.due, t.summary, t.next_action, \
-    COALESCE(t.conversation_id, t.id), t.conv_kind";
+    COALESCE(t.conversation_id, t.id), t.conv_kind, t.title";
 
 fn thread_row(r: &Row) -> rusqlite::Result<ThreadSummary> {
     let participants: String = r.get(5)?;
@@ -1038,6 +1040,7 @@ fn thread_row(r: &Row) -> rusqlite::Result<ThreadSummary> {
         conversation_id: r.get(16)?,
         conversation_kind: r.get(17)?,
         conversation_threads: 1,
+        title: r.get(18)?,
     })
 }
 

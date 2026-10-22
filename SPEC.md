@@ -468,6 +468,11 @@ untick either and the app adapts.
 - **Middle:** issue list or board (toggle), group by / filter by any field
   (status, priority, project, account, sender, due date…). Saved views persist
   a grouping + filter combination.
+- **Card titles:** a board card reads the email subject until the user renames it
+  (right-click → Rename Card…, Enter saves, Esc cancels, an emptied field or "Show
+  Email Subject" gives the subject back; ⌘Z undoes). The title is local: the email
+  and its subject are unchanged, new mail keeps it, and the card's tooltip shows the
+  subject. CLI: `mermoz rename M-12 "Pay Acme"`, `mermoz rename M-12 --clear`.
 - **Right:** thread content.
 - **Keyboard-first:** j/k navigation, single-key status/priority changes, ⌘K
   command palette (also hosts "ask your mailbox").

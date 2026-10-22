@@ -52,6 +52,9 @@ pub struct ThreadSummary {
     /// Gmail threads in the conversation, this one included.
     #[serde(default)]
     pub conversation_threads: i64,
+    /// The user's own wording for the card, shown instead of the subject.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// The fields of a thread a group accept can change, as they were before it: what
