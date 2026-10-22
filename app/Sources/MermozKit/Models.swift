@@ -80,6 +80,14 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable, Hashabl
     public var conversationKind: String?
     /// Gmail threads in the conversation, this one included.
     public var conversationThreads: Int?
+    /// The user's own wording for the card, shown instead of the subject.
+    public var title: String?
+
+    /// What the card reads as: the user's title, else the subject.
+    public var displayTitle: String {
+        if let title, !title.isEmpty { return title }
+        return subject.isEmpty ? "(no subject)" : subject
+    }
 
     /// More than one Gmail thread reads as this one row.
     public var groupsThreads: Bool { (conversationThreads ?? 1) > 1 }
@@ -88,13 +96,13 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable, Hashabl
                 participants: [String], lastFrom: String, lastDate: Int64, unread: Bool,
                 messageCount: Int, hasAttachments: Bool, status: String, priority: Int,
                 projects: [String] = [], due: String? = nil, summary: String? = nil, nextAction: String? = nil,
-                suggestion: Suggestion? = nil) {
+                suggestion: Suggestion? = nil, title: String? = nil) {
         self.id = id; self.number = number; self.accountId = accountId; self.subject = subject
         self.snippet = snippet; self.participants = participants; self.lastFrom = lastFrom
         self.lastDate = lastDate; self.unread = unread; self.messageCount = messageCount
         self.hasAttachments = hasAttachments; self.status = status; self.priority = priority
         self.projects = projects; self.due = due; self.summary = summary; self.nextAction = nextAction
-        self.suggestion = suggestion
+        self.suggestion = suggestion; self.title = title
     }
 
     public func hash(into h: inout Hasher) { h.combine(id) }

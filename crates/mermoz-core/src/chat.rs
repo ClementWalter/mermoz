@@ -858,6 +858,7 @@ mod tests {
             conversation_id: "thr_1".into(),
             conversation_kind: "person".into(),
             conversation_threads: 1,
+            title: None,
         }
     }
 

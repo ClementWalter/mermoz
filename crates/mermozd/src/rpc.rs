@@ -441,6 +441,14 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             }
             Ok(json!({ "updated": n, "before": before }))
         }
+        "threads.rename" => {
+            let id = st.resolve_thread_id(&s(p, "id")?)?;
+            // null or blank text gives the card its subject back.
+            let title = nullable_s(p, "title").flatten();
+            let before = st.set_thread_title(&id, title.as_deref())?;
+            let _ = svc.events.send(Event::ThreadsChanged(vec![id.clone()]));
+            Ok(json!({ "thread": st.thread(&id)?, "before": before }))
+        }
         "threads.accept_suggestions" => {
             let ids = str_list(p, "ids")?.ok_or_else(|| RpcError::invalid("missing 'ids'"))?;
             let ids: Vec<String> = ids

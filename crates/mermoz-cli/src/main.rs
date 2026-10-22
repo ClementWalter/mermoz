@@ -218,6 +218,15 @@ enum Cmd {
     },
     /// Set a follow-up date (YYYY-MM-DD); "none" clears.
     Due { thread: String, date: String },
+    /// Give a thread's card your own title instead of the email subject; --clear
+    /// shows the subject again. The email itself is not changed.
+    Rename {
+        thread: String,
+        #[arg(required_unless_present = "clear")]
+        title: Option<String>,
+        #[arg(long, conflicts_with = "title")]
+        clear: bool,
+    },
     /// Mark a thread read or unread.
     Read {
         thread: String,
@@ -1510,6 +1519,26 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 };
             }
             out.line(format!("due → {date}"));
+        }
+        Cmd::Rename {
+            thread,
+            title,
+            clear: _,
+        } => {
+            let v = c.call("threads.rename", json!({ "id": thread, "title": title }))?;
+            if out.json {
+                return {
+                    out.json(&v);
+                    Ok(())
+                };
+            }
+            out.line(match v["thread"]["title"].as_str() {
+                Some(t) => format!("title → {t}"),
+                None => format!(
+                    "title → subject ({})",
+                    v["thread"]["subject"].as_str().unwrap_or("")
+                ),
+            });
         }
         Cmd::Read { thread, unread } => {
             let v = c.call(

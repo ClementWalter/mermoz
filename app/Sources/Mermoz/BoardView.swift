@@ -146,6 +146,9 @@ struct BoardCard: View {
     @Environment(AppModel.self) private var model
     let thread: ThreadSummary
     let selected: Bool
+    /// The title being typed, while the card is renamed in place.
+    @State private var draftTitle: String?
+    @FocusState private var titleFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -160,8 +163,20 @@ struct BoardCard: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if thread.unread { Circle().fill(Theme.accent).frame(width: 7, height: 7).accessibilityLabel("Unread") }
-                Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
-                    .font(.system(size: 12.5, weight: thread.unread ? .semibold : .regular)).lineLimit(2)
+                if draftTitle != nil {
+                    TextField(thread.subject, text: Binding(get: { draftTitle ?? "" }, set: { draftTitle = $0 }), axis: .vertical)
+                        .textFieldStyle(.plain).font(.system(size: 12.5, weight: .semibold)).lineLimit(1...3)
+                        .focused($titleFocused)
+                        .onSubmit(commitTitle)
+                        .onExitCommand { draftTitle = nil }
+                        .onChange(of: titleFocused) { _, focused in if !focused { commitTitle() } }
+                        .onAppear { titleFocused = true }
+                } else {
+                    Text(thread.displayTitle)
+                        .font(.system(size: 12.5, weight: thread.unread ? .semibold : .regular)).lineLimit(2)
+                        // A renamed card still tells what the email was called.
+                        .help(thread.title == nil ? "" : "Subject: \(thread.subject)")
+                }
             }
             HStack(spacing: 6) {
                 if model.visibleAccounts.count > 1 {
@@ -188,7 +203,20 @@ struct BoardCard: View {
         // The card's own drop target, inside the column's: a drop on the card merges, one
         // on the column's header, gaps or empty space sets its status.
         .mergeDropTarget(thread.id, radius: 11)
-        .contextMenu { ConversationMenu() }
+        .contextMenu {
+            Button("Rename Card…") { draftTitle = thread.displayTitle }
+            if thread.title != nil { Button("Show Email Subject") { model.rename(thread.id, title: nil) } }
+            ConversationMenu()
+        }
+    }
+
+    /// Saves what was typed; an emptied field gives the card its subject back.
+    private func commitTitle() {
+        guard let typed = draftTitle else { return }
+        draftTitle = nil
+        // Leaving the subject as it was is no rename.
+        if thread.title == nil, typed.trimmingCharacters(in: .whitespacesAndNewlines) == thread.subject { return }
+        model.rename(thread.id, title: typed)
     }
 }
 

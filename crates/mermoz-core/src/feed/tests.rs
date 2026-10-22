@@ -32,6 +32,7 @@ fn thread(id: &str, status: &str) -> ThreadSummary {
         conversation_id: String::new(),
         conversation_kind: String::new(),
         conversation_threads: 1,
+        title: None,
     }
 }
 

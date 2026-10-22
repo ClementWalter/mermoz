@@ -38,10 +38,11 @@ import Testing
     #expect(!h.canGoBack)
 }
 
-private func snap(status: String = "todo", unread: Bool = false, priority: Int = 0, projects: [String] = [], due: String? = nil) -> ThreadSummary {
-    ThreadSummary(id: "t", number: "M-1", accountId: "a", subject: "", snippet: "", participants: [], lastFrom: "",
+private func snap(title: String? = nil, subject: String = "", status: String = "todo", unread: Bool = false,
+                  priority: Int = 0, projects: [String] = [], due: String? = nil) -> ThreadSummary {
+    ThreadSummary(id: "t", number: "M-1", accountId: "a", subject: subject, snippet: "", participants: [], lastFrom: "",
                   lastDate: 0, unread: unread, messageCount: 1, hasAttachments: false, status: status, priority: priority,
-                  projects: projects, due: due)
+                  projects: projects, due: due, title: title)
 }
 
 @Test func undoingADeleteRestoresTheStatus() {
@@ -66,6 +67,26 @@ private func snap(status: String = "todo", unread: Bool = false, priority: Int =
 
 @Test func undoingASetFollowUpClearsIt() {
     #expect(RestorePlan.between(before: snap(), now: snap(due: "2026-10-20")).due == .some(nil))
+}
+
+@Test func undoingARenamePutsTheTitleBack() {
+    #expect(RestorePlan.between(before: snap(title: "Pay Acme"), now: snap(title: "Paid")).title == .some("Pay Acme"))
+}
+
+@Test func undoingAFirstRenameShowsTheSubjectAgain() {
+    #expect(RestorePlan.between(before: snap(), now: snap(title: "Pay Acme")).title == .some(nil))
+}
+
+@Test func anUnchangedTitleIsLeftAlone() {
+    #expect(RestorePlan.between(before: snap(title: "Pay Acme"), now: snap(title: "Pay Acme", status: "archive")).title == nil)
+}
+
+@Test func aTitleIsWhatTheCardReads() {
+    #expect(snap(title: "Pay Acme").displayTitle == "Pay Acme")
+}
+
+@Test func withoutATitleTheCardReadsTheSubject() {
+    #expect(snap(subject: "Invoice 114").displayTitle == "Invoice 114")
 }
 
 @Test(arguments: [
