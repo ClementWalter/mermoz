@@ -117,7 +117,13 @@ jobs:
           # A PR changing the core crate benches main's mailbox, upgraded by its own
           # migrations; main always benches a mailbox its own code seeded.
           restore-keys: ${{ github.event_name == 'pull_request' && 'bench-db-500k-' || '' }}
-      - run: cargo run --release -p mermoz-core --example bench -- 500000 "$BENCH_DB"
+      - run: cargo build --release -p mermoz-core --example bench
+      # A restored mailbox is 4 GB of dirty pages: flushed and read back before timing,
+      # so the disk's writeback doesn't land in the sync's fsyncs and reads hit memory
+      # as they do right after seeding.
+      - if: steps.seed.outputs.cache-matched-key != ''
+        run: sync && cat "$BENCH_DB"/bench.sqlite* > /dev/null
+      - run: target/release/examples/bench 500000 "$BENCH_DB"
       - if: steps.seed.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         uses: actions/cache/save@v4
         with:
