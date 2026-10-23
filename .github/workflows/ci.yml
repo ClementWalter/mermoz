@@ -95,8 +95,10 @@ jobs:
   # This runner (3-vCPU VM, 7 GB RAM, virtual disk) measured reads at up to 1.2x their
   # budget and the sync's write path at up to 2.6x (lock held 110-500 ms per batch, one
   # batch's fsync 100-250 ms); a Mac runs it at 0.4x.
+  # It waits for `test`: timed alongside that job's build, the sync batch measured
+  # 650-920 ms against 380-480 ms alone.
   bench:
-    needs: changes
+    needs: [changes, test]
     if: needs.changes.outputs.bench == 'true'
     runs-on: macos-15
     env:
@@ -118,10 +120,9 @@ jobs:
           # migrations; main always benches a mailbox its own code seeded.
           restore-keys: ${{ github.event_name == 'pull_request' && 'bench-db-500k-' || '' }}
       - run: cargo build --release -p mermoz-core --example bench
-      # A restored mailbox is 4 GB of dirty pages: flushed and read back before timing,
-      # so the disk's writeback doesn't land in the sync's fsyncs and reads hit memory
-      # as they do right after seeding.
-      # macOS `sync` returns before the disk has the data; F_FULLFSYNC waits for it.
+      # A restored mailbox is 4 GB of dirty pages: flushed (F_FULLFSYNC, as macOS `sync`
+      # returns early) and read back before timing, so writeback stays out of the sync's
+      # fsyncs and reads hit memory as they do right after seeding.
       - if: steps.seed.outputs.cache-matched-key != ''
         shell: python3 {0}
         run: |
