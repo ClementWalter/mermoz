@@ -3,9 +3,66 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly full run: the iPhone job and anything a path filter let a change skip.
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+# A new push to a PR cancels its stale run; runs on main never cancel each other.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
-  rust:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust == 'true' || steps.full.outputs.full == 'true' }}
+      bench: ${{ steps.filter.outputs.bench == 'true' || steps.full.outputs.full == 'true' }}
+      app: ${{ steps.filter.outputs.app == 'true' || steps.full.outputs.full == 'true' }}
+      scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.full.outputs.full == 'true' }}
+      iphone: ${{ steps.filter.outputs.iphone == 'true' || steps.full.outputs.full == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: full
+        run: echo "full=${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}" >> "$GITHUB_OUTPUT"
+      # Site, docs and marketing changes run none of the jobs below.
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            rust:
+              - "crates/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - ".github/workflows/ci.yml"
+            bench:
+              - "crates/mermoz-core/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - ".github/workflows/ci.yml"
+            app:
+              - "app/**"
+              - ".github/workflows/ci.yml"
+            scripts:
+              - "scripts/**"
+              - "app/**"
+              - "ios/**"
+              - ".github/workflows/ci.yml"
+            iphone:
+              - "ios/**"
+              - "crates/mermoz-mobile/**"
+              - "scripts/build_app.py"
+              - "scripts/signing.py"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - ".github/workflows/ci.yml"
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -15,18 +72,61 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --release --all-targets -- -D warnings
-      - run: cargo build --release
-      - run: cargo test --release --workspace
-      # Speed bar: fails the build if any hot path misses its budget at 500k messages.
-      # This runner (3-vCPU VM, 7 GB RAM for a 4 GB mailbox, virtual disk) measured reads
-      # at up to 1.2x their budget and the sync's write path at up to 2.6x (lock held
-      # 110-500 ms per batch, one batch's fsync 100-250 ms); a Mac runs it at 0.4x.
-      - run: cargo run --release -p mermoz-core --example bench -- 500000
-        env:
-          MERMOZ_BENCH_READ_SCALE: "1.5"
-          MERMOZ_BENCH_WRITE_SCALE: "4"
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: macos-15
+    env:
+      # Release profile without cross-crate LTO: linking each test binary with thin LTO
+      # doubles the build. The shipped binaries and the bench keep the full profile.
+      CARGO_PROFILE_RELEASE_LTO: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      # The daemon's e2e tests drive the `mermoz` CLI binary from target/release.
+      - run: cargo build --release -p mermoz-cli
+      # Test binaries run side by side instead of one after the other.
+      - run: cargo nextest run --release --workspace
+
+  # Speed bar: fails if any hot path misses its budget at 500k messages.
+  # This runner (3-vCPU VM, 7 GB RAM, virtual disk) measured reads at up to 1.2x their
+  # budget and the sync's write path at up to 2.6x (lock held 110-500 ms per batch, one
+  # batch's fsync 100-250 ms); a Mac runs it at 0.4x.
+  bench:
+    needs: changes
+    if: needs.changes.outputs.bench == 'true'
+    runs-on: macos-15
+    env:
+      BENCH_DB: ${{ github.workspace }}/bench-db
+      MERMOZ_BENCH_READ_SCALE: "1.5"
+      MERMOZ_BENCH_WRITE_SCALE: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Seeding 500k messages takes ~9 min here; the timed part ~20 s. The seeded mailbox
+      # is cached per version of the core crate, which writes it.
+      - id: seed
+        uses: actions/cache/restore@v4
+        with:
+          path: bench-db
+          key: bench-db-500k-${{ hashFiles('crates/mermoz-core/**', 'Cargo.lock') }}
+          # A PR changing the core crate benches main's mailbox, upgraded by its own
+          # migrations; main always benches a mailbox its own code seeded.
+          restore-keys: ${{ github.event_name == 'pull_request' && 'bench-db-500k-' || '' }}
+      - run: cargo run --release -p mermoz-core --example bench -- 500000 "$BENCH_DB"
+      - if: steps.seed.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: bench-db
+          key: ${{ steps.seed.outputs.cache-primary-key }}
 
   app:
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +134,8 @@ jobs:
         working-directory: app
 
   scripts:
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +145,11 @@ jobs:
         env:
           MERMOZ_SIGNING_E2E: "1"
 
+  # The iPhone app is not shipping yet: it runs when its own inputs change and nightly.
+  # Its Rust crate's tests run in `test`.
   iphone:
+    needs: changes
+    if: needs.changes.outputs.iphone == 'true'
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -51,5 +157,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v6
       - run: brew install xcodegen
-      - run: cargo test --release -p mermoz-mobile
       - run: uv run scripts/build_app.py --platform ios-simulator --test
