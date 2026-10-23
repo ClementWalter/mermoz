@@ -104,12 +104,18 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 <tr>
 <td>-32020</td>
 <td>upstream</td>
-<td>provider (Gmail) error; <code>data: {status, body}</code></td>
+<td>provider (Gmail, Microsoft Graph) error; <code>data: {status, body}</code></td>
+</tr>
+<tr>
+<td>-32021</td>
+<td>sign_in_expired</td>
+<td>Google no longer accepts the account's sign-in; the user signs in again (<code>accounts.reconnect</code>)</td>
 </tr>
 </tbody>
 </table></div>
 <h2 id="objects">Objects</h2>
 <pre><code class="language-jsonc">// Account
+// provider: &quot;gmail&quot;, &quot;outlook&quot; (Microsoft Graph: outlook.com, Hotmail, Live, Microsoft 365) or &quot;demo&quot;
 {&quot;id&quot;: &quot;acc_1&quot;, &quot;email&quot;: &quot;me@example.com&quot;, &quot;provider&quot;: &quot;gmail&quot;,
  &quot;sync&quot;: {&quot;state&quot;: &quot;initial|idle|syncing|error&quot;, &quot;synced&quot;: 1200, &quot;total&quot;: 5400, &quot;error&quot;: null}}
 
@@ -221,7 +227,7 @@ app, the CLI and the MCP server are clients of this protocol.</p>
 // Draft
 {&quot;id&quot;: &quot;dft_…&quot;, &quot;account_id&quot;: &quot;acc_1&quot;, &quot;thread_id&quot;: &quot;thr_…&quot; | null,
  &quot;to&quot;: [&quot;a@b.c&quot;], &quot;cc&quot;: [], &quot;subject&quot;: &quot;…&quot;, &quot;body&quot;: &quot;…&quot;,
- &quot;state&quot;: &quot;draft|review|sent|rejected&quot;, &quot;origin&quot;: &quot;app|agent&quot;,
+ &quot;state&quot;: &quot;draft|review|sent|rejected&quot;, &quot;origin&quot;: &quot;app|agent|gmail&quot;,
  &quot;created&quot;: 1791700000000, &quot;updated&quot;: 1791700000000,
  &quot;reply_to_message_id&quot;: &quot;msg_…&quot; | null}
 // reply_to_message_id: the message the reply answers: it carries that message's
@@ -384,7 +390,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 <tr>
 <td><code>accounts.list</code></td>
 <td><code>{}</code></td>
-<td><code>[Account]</code>, each with <code>needs_reconnect</code> (signed in through another OAuth client: still syncs, sign in again)</td>
+<td><code>[Account]</code>, each with <code>needs_reconnect</code> (the user should sign in again) and <code>sign_in_expired</code>. <code>sign_in_expired: true</code>: Google refused the sign-in (<code>invalid_grant</code>: access removed, password changed, or the 7-day expiry while the Google app is in testing); nothing syncs and local changes stay queued until the user signs in again, <code>sync.error</code> says so in plain words. Remembered across restarts; set and cleared with <code>accounts_changed</code>. <code>needs_reconnect</code> alone: signed in through another OAuth client, still syncs</td>
 </tr>
 <tr>
 <td><code>accounts.add_gmail</code></td>
@@ -392,14 +398,19 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 <td><code>{"auth_url": "https://…"}</code>; completes in background, emits <code>accounts_changed</code>; an own client is stored with the token and used for the account's later consents (Drive too)</td>
 </tr>
 <tr>
+<td><code>accounts.add_outlook</code></td>
+<td><code>{}</code></td>
+<td><code>{"auth_url": "https://login.microsoftonline.com/common/…"}</code>; Microsoft sign-in (personal or work or school account) through the loopback redirect, completes in background, emits <code>accounts_changed</code>; the account is stored with <code>provider: "outlook"</code>. Invalid params with a plain message when this build has no Microsoft sign-in client</td>
+</tr>
+<tr>
 <td><code>accounts.sign_in_status</code></td>
 <td><code>{}</code></td>
-<td><code>{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?}</code>; <code>kind</code>: <code>admin_policy</code>, <code>unverified</code>, <code>org_internal</code>, <code>app_blocked</code>, <code>declined</code></td>
+<td><code>{"running","error"?,"problem"?:{"kind","message","client_id","custom"},"app_client_id"?,"provider"?: "outlook","outlook_available": bool}</code>; <code>kind</code>: <code>admin_policy</code>, <code>unverified</code>, <code>org_internal</code>, <code>app_blocked</code>, <code>declined</code> (Google only); <code>provider</code> is <code>"outlook"</code> while the last sign-in is a Microsoft one, whose <code>error</code> is already in plain words; <code>outlook_available</code>: this build can add Outlook accounts</td>
 </tr>
 <tr>
 <td><code>accounts.reconnect</code></td>
 <td><code>{"account_id"}</code></td>
-<td><code>{"auth_url"}</code>; signs the account in again with the app's client (or the account's own client), keeping local mail; emits <code>accounts_changed</code></td>
+<td><code>{"auth_url"}</code>; signs the account in again with the app's client (or the account's own client; Microsoft for an Outlook account), keeping local mail; emits <code>accounts_changed</code></td>
 </tr>
 <tr>
 <td><code>accounts.remove</code></td>
@@ -473,7 +484,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 </tr>
 <tr>
 <td><code>search.gmail</code></td>
-<td><code>{"query", "limit"?: 20}</code> — Gmail's own search on every account, for mail Mermoz doesn't hold</td>
+<td><code>{"query", "limit"?: 20}</code> — Gmail's own search on every Gmail account, for mail Mermoz doesn't hold (Outlook accounts add no results)</td>
 <td><code>{"results": [{"account_id", "id", "thread_id", "from", "subject", "date", "in_mermoz"}]}</code></td>
 </tr>
 <tr>
@@ -484,7 +495,7 @@ letters (two in 8+). An entry matches a sender when every content word is found;
 <tr>
 <td><code>threads.get</code></td>
 <td><code>{"id", "conversation"?: false, "latest"?: n}</code> — with <code>conversation</code>, every message of the thread's conversation; with <code>latest</code> too, only its last n (people, files and links still cover all of it)</td>
-<td><code>{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing | null}</code> (<code>earlier</code>: messages left out by <code>latest</code>)</td>
+<td><code>{"thread": ThreadSummary, "messages": [Message], "conversation"?: Conversation, "earlier"?: n, "reply": ReplyAddressing | null, "drafts": [Draft]}</code> (<code>earlier</code>: messages left out by <code>latest</code>; <code>drafts</code>: unsent drafts answering the thread, or its conversation's threads, oldest first). A draft written in Gmail itself (<code>origin: "gmail"</code>, Gmail label <code>DRAFT</code>) is never a Message: it is a Draft that follows Gmail (a new version replaces it, deleting or sending it in Gmail removes it, emitting <code>drafts_changed</code> and <code>threads_changed</code>); <code>drafts.send</code> or <code>drafts.delete</code> here removes it from Gmail's Drafts too</td>
 </tr>
 <tr>
 <td><code>conversations.split</code></td>
@@ -784,7 +795,9 @@ Gmail one), so declining or disconnecting Drive never affects mail. Asked scopes
 <code>drive.readonly</code> (read any file the user can open: previews, files shared with a
 thread's people, search) and <code>drive.file</code> (files Mermoz created or the user picked:
 saving attachments, sharing a picked file). Google lets the user untick either;
-<code>drive.status</code> says what was granted.</p>
+<code>drive.status</code> says what was granted. Drive is for Google accounts: calls naming an
+Outlook account answer invalid params ("Google Drive works with Google accounts
+only."), and <code>drive.status</code> without an account leaves Outlook accounts out.</p>
 <pre><code class="language-jsonc">// DriveFile
 {&quot;id&quot;: &quot;1Abc…&quot;, &quot;name&quot;: &quot;Remediation plan&quot;, &quot;mime&quot;: &quot;application/vnd.google-apps.document&quot;,
  &quot;kind&quot;: &quot;Google Doc&quot;, &quot;modified&quot;: 1791648000000, &quot;owner&quot;: {&quot;name&quot;: &quot;Marc&quot;, &quot;email&quot;: &quot;marc@…&quot;} | null,

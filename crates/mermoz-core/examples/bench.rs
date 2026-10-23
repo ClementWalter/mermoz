@@ -226,7 +226,8 @@ fn main() {
         store.merge_threads(&members).unwrap();
     }
     let big_n = store.conversation_thread_ids(big).unwrap().len();
-    let mut open_big = time(20, || {
+    // 100 samples: with fewer, two VM stalls alone set the p95.
+    let mut open_big = time(100, || {
         let msgs = store.conversation_messages(big).unwrap();
         store.conversation(big, &msgs).unwrap();
     });
@@ -304,7 +305,7 @@ fn main() {
         ("search two long words", "meeting report"),
         ("search finished words", "meeting report "),
     ] {
-        let mut s = time(30, || {
+        let mut s = time(100, || {
             // As the app asks while the query is typed.
             store.search(q, 50, true).unwrap();
         });
