@@ -28,7 +28,7 @@ The MCP server offers the same as the `submit_feedback` tool. Feedback is stored
 
 ## Joining the beta
 
-Leave the Gmail address you'll use in the form on the [homepage](/#beta). Mermoz is in private beta while Google reviews its Gmail access, so each address is added by hand; you'll get an email when you can sign in.
+Leave the Gmail or Outlook address you'll use in the form on the [homepage](/#beta). Mermoz is in private beta while Google reviews its Gmail access, so each address is added by hand; you'll get an email when you can sign in.
 
 ## Elsewhere
 

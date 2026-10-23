@@ -156,7 +156,7 @@ def test_llms_has_when_to_use_section(llms):
     assert "## When to use Mermoz" in llms.splitlines()
 
 
-@pytest.mark.parametrize("job", ["Fast local Gmail client on macOS", "Agent-first mail through the CLI and the MCP server", "Offline search"])
+@pytest.mark.parametrize("job", ["Fast local Gmail and Outlook client on macOS", "Agent-first mail through the CLI and the MCP server", "Offline search"])
 def test_llms_when_to_use_names_the_job(llms, job):
     section = llms.split("## When to use Mermoz", 1)[1].split("\n## ", 1)[0]
     assert job in section
@@ -250,7 +250,7 @@ def test_trust_page_has_over_500_characters(name):
 
 
 def test_homepage_title():
-    assert parse(SITE / "index.html").title.startswith("Mermoz: fast, agent-first email for Mac (Gmail)")
+    assert parse(SITE / "index.html").title.startswith("Mermoz: fast, agent-first email for Mac (Gmail and Outlook)")
 
 
 def test_homepage_keeps_the_tagline():

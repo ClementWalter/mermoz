@@ -334,16 +334,16 @@ def llms_txt(version: str) -> str:
     )
     return f"""# Mermoz
 
-> Mermoz is a fast, local-first Gmail client for macOS (macOS 26 or later), free and open source, in private beta (version {version}). The whole mailbox is stored on the Mac, so search and reading are instant and work offline. A command-line tool (`mermoz`, every command speaks `--json`) and a built-in MCP server (`mermoz mcp`, stdio) let AI agents read, search, sort and draft mail. Agents never send on their own: a send waits for the user's approval in the app.
+> Mermoz is a fast, local-first email client for Gmail and Outlook on macOS (macOS 26 or later), free and open source, in private beta (version {version}). The whole mailbox is stored on the Mac, so search and reading are instant and work offline. A command-line tool (`mermoz`, every command speaks `--json`) and a built-in MCP server (`mermoz mcp`, stdio) let AI agents read, search, sort and draft mail. Agents never send on their own: a send waits for the user's approval in the app.
 
 How an agent calls it: Mermoz.app must be installed and running (its daemon `mermozd` owns the mailbox; the CLI and the MCP server talk to it over a local Unix socket). The CLI ships inside the app at `{BUNDLED_CLI}`; Settings › Developer › Install in PATH links it as `mermoz`. Add the MCP server to an agent with `claude mcp add mermoz -- mermoz mcp` (Claude Code) or `codex mcp add mermoz -- mermoz mcp` (Codex). CLI exit codes: 0 ok, 1 error, 2 usage, 3 approval required (tell the user, do not retry), 4 not found, 5 Mermoz not running.
 
-Not a fit for: Windows, Linux, iOS or web; mail providers other than Gmail; remote or server-side mailbox access (there is no hosted API or remote MCP endpoint); sending mail without a human approving it.
+Not a fit for: Windows, Linux, iOS or web; mail providers other than Gmail and Outlook; remote or server-side mailbox access (there is no hosted API or remote MCP endpoint); sending mail without a human approving it.
 
 ## When to use Mermoz
 
-- [Fast local Gmail client on macOS]({HOST}/): the user wants a light, native Mac app for Gmail where new mail is sorted before it is read, one key handles a thread, and the whole mailbox lives on the Mac.
-- [Agent-first mail through the CLI and the MCP server]({HOST}/docs/mcp/): an agent needs to read, search, sort (statuses, priorities, Gmail labels as projects) or draft mail in the user's Gmail, through `mermoz mcp` over stdio or `mermoz <command> --json`, with every send held for the user's approval.
+- [Fast local Gmail and Outlook client on macOS]({HOST}/): the user wants a light, native Mac app for Gmail and Outlook where new mail is sorted before it is read, one key handles a thread, and the whole mailbox lives on the Mac.
+- [Agent-first mail through the CLI and the MCP server]({HOST}/docs/mcp/): an agent needs to read, search, sort (statuses, priorities, Gmail labels as projects) or draft mail in the user's Gmail or Outlook, through `mermoz mcp` over stdio or `mermoz <command> --json`, with every send held for the user's approval.
 - [Offline search over the whole mailbox]({HOST}/docs/cli/#search): instant full-text search over every message stored on the Mac, without a network round trip (`mermoz search "from:marc audit" --json`, MCP tool `search_mail`).
 
 ## Docs
@@ -404,7 +404,7 @@ def server_json(version: str) -> dict:
         "$schema": MCP_SCHEMA,
         "name": MCP_NAME,
         "title": "Mermoz",
-        "description": "Your local Gmail mailbox on macOS: search, read, sort and draft mail. Sends need approval.",
+        "description": "Your local Gmail and Outlook mail on macOS: search, read, sort and draft. Sends need approval.",
         "version": version,
         "websiteUrl": f"{HOST}/docs/mcp/",
         "repository": {"url": REPO_URL, "source": "github"},
@@ -420,7 +420,7 @@ def server_json(version: str) -> dict:
 def install_meta() -> dict:
     return {
         "transport": "stdio",
-        "requires": "Mermoz.app installed and running on macOS 26 or later, signed in to Gmail",
+        "requires": "Mermoz.app installed and running on macOS 26 or later, signed in to Gmail or Outlook",
         "download": DOWNLOAD_URL,
         "command": "mermoz",
         "args": ["mcp"],
@@ -441,7 +441,7 @@ def well_known_mcp(version: str) -> dict:
     tools = load_json("mcp-tools.json")
     return {
         "name": "Mermoz",
-        "description": "MCP server for the user's local Mermoz mailbox (Gmail on macOS): search, read, sort and draft mail. Sending always waits for the user's approval in the app.",
+        "description": "MCP server for the user's local Mermoz mailbox (Gmail and Outlook on macOS): search, read, sort and draft mail. Sending always waits for the user's approval in the app.",
         "version": version,
         "protocolVersion": tools["protocolVersion"],
         "transport": "stdio",
@@ -486,7 +486,7 @@ def homepage_jsonld(version: str) -> str:
                 "@id": f"{HOST}/#app",
                 "name": "Mermoz",
                 "alternateName": "Mermoz for Mac",
-                "description": "Mermoz is a fast, agent-first email app for Mac (Gmail). New mail is sorted before you read it, one key handles a thread, and your whole mailbox lives on your Mac. A CLI and an MCP server let your agents search, sort and draft mail.",
+                "description": "Mermoz is a fast, agent-first email app for Mac (Gmail and Outlook). New mail is sorted before you read it, one key handles a thread, and your whole mailbox lives on your Mac. A CLI and an MCP server let your agents search, sort and draft mail.",
                 "operatingSystem": "macOS 26 or later",
                 "applicationCategory": "BusinessApplication",
                 "applicationSubCategory": "EmailApplication",

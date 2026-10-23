@@ -1,16 +1,16 @@
 ---
 path: /
-title: Mermoz: fast, agent-first email for Mac (Gmail)
+title: Mermoz: fast, agent-first email for Mac (Gmail and Outlook)
 description: Mermoz is a light, fast email app for macOS. New mail is sorted before you read it, one key handles a thread, and your whole mailbox lives on your Mac.
 updated: 2026-10-13
 ---
-# Mermoz: fast, agent-first email for Mac (Gmail)
+# Mermoz: fast, agent-first email for Mac (Gmail and Outlook)
 
 **The mail must go through.** Mermoz is a light, fast email app for macOS, named after the Aéropostale pilot Jean Mermoz. New mail is sorted before you read it. One key handles a thread. Your whole mailbox lives on your Mac, quiet and instant.
 
-Private beta · free and open source · macOS 26 or later · Gmail · version {{version}}
+Private beta · free and open source · macOS 26 or later · Gmail and Outlook · version {{version}}
 
-- Join the private beta: [mermoz.xyz/#beta](https://mermoz.xyz/#beta) (leave the Gmail address you'll use).
+- Join the private beta: [mermoz.xyz/#beta](https://mermoz.xyz/#beta) (leave the Gmail or Outlook address you'll use).
 - Already invited? [Download Mermoz for Mac]({{download_url}}).
 - Source: [{{repo_url}}]({{repo_url}}).
 
@@ -20,7 +20,7 @@ An inbox that behaves like a flight plan: everything has a status, a destination
 
 - **Sorted before you read it.** Each new email arrives with a suggested status and project. Read it and the suggestion applies, or press `y`.
 - **One key, done.** `e` done, `a` archive, `⌫` delete, `⌘Z` undo. Select several with `⇧` and move them together.
-- **Flows, not folders.** Unread, To do, Waiting, Done. A list or a board, grouped and ordered your way. Your Gmail labels are your projects.
+- **Flows, not folders.** Unread, To do, Waiting, Done. A list or a board, grouped and ordered your way. Your Gmail labels and Outlook folders and categories are your projects.
 - **Read what matters.** Original, exactly as sent. Or Optimized: the same words without signatures, disclaimers and quoted history. Made once, kept.
 - **Your whole mailbox, instant.** Every message lives on your Mac. Search, read and sort offline, with `⌘K` for anything else.
 - **Agent first.** A first-class command line and MCP server. Your agents search, sort and draft; you approve what leaves.
