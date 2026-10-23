@@ -121,8 +121,16 @@ jobs:
       # A restored mailbox is 4 GB of dirty pages: flushed and read back before timing,
       # so the disk's writeback doesn't land in the sync's fsyncs and reads hit memory
       # as they do right after seeding.
+      # macOS `sync` returns before the disk has the data; F_FULLFSYNC waits for it.
       - if: steps.seed.outputs.cache-matched-key != ''
-        run: sync && cat "$BENCH_DB"/bench.sqlite* > /dev/null
+        shell: python3 {0}
+        run: |
+          import fcntl, glob, os
+          for path in glob.glob(os.environ["BENCH_DB"] + "/bench.sqlite*"):
+              with open(path, "r+b") as f:
+                  fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
+                  while f.read(1 << 24):
+                      pass
       - run: target/release/examples/bench 500000 "$BENCH_DB"
       - if: steps.seed.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         uses: actions/cache/save@v4
