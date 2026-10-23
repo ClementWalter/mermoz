@@ -38,7 +38,7 @@
   <main>
     <article class="prose paper-card">
 <h1 id="mermoz-privacy">Mermoz privacy</h1>
-<p>Mermoz is an email app that keeps your mailbox on your Mac or iPhone. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the <a href="https://github.com/ClementWalter/mermoz">source code</a>.</p>
+<p>Mermoz is an email app that keeps your mailbox on your Mac. There is no Mermoz server: nothing you read or write in Mermoz passes through a computer we run. This page describes what the app and this website actually do, checked against the <a href="https://github.com/ClementWalter/mermoz">source code</a>.</p>
 <blockquote>
 <p><strong>Needs legal review.</strong> This page describes how the software behaves. It is not yet a reviewed privacy policy: the data controller's identity, the legal bases (GDPR), retention periods and the Google API Limited Use statement below must be confirmed by counsel before the public launch.</p>
 </blockquote>
@@ -57,22 +57,14 @@
 <li><strong>Google Drive (optional):</strong> only when you click "Connect Google Drive", in a separate consent: <code>drive.readonly</code> (preview documents linked in your mail, files shared with a thread's people, search) and <code>drive.file</code> (save attachments into a Mermoz folder, share a file you picked). You can untick either; mail never depends on Drive. Drive file text Mermoz reads is cached on your Mac.</li>
 <li>Companies can sign in through their own Google client instead of Mermoz's; that client is stored with the account on your Mac.</li>
 </ul>
+<blockquote>
+<p><strong>Needs legal review.</strong> Google requires apps using Gmail data to state that their use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. Confirm the exact wording before submitting for Google verification.</p>
+</blockquote>
 <h2 id="what-mermoz-asks-microsoft-for">What Mermoz asks Microsoft for</h2>
 <ul>
 <li><strong>Outlook</strong> (Outlook.com, Hotmail, Live and Microsoft 365): <code>Mail.ReadWrite</code> to read your mail and apply your folders, categories and statuses (archive, delete to Deleted Items, read state), <code>Mail.Send</code> to send the drafts you approve, <code>MailboxSettings.Read</code> for your categories, <code>User.Read</code> for your address, and <code>offline_access</code> to stay signed in. Mermoz never deletes mail for good.</li>
 <li>A work or school account may need its administrator's approval before you can sign in.</li>
 </ul>
-<h2 id="mermoz-on-iphone">Mermoz on iPhone</h2>
-<ul>
-<li>The iPhone app has its own local mailbox in its Application Support directory. It talks directly to Gmail while the app is active; it does not connect to your Mac or copy the desktop mailbox. Google refresh tokens and AI keys are saved in the iPhone Keychain with device-only protection.</li>
-<li>In AI settings, you select the mailboxes your chosen assistant may read. Their conversation text, recent messages you wrote to the same people, workflow statuses, project names and your questions go directly to the selected Anthropic or OpenAI-compatible endpoint. The assistant judges what needs attention, writes Feed card text and proposed replies, and answers contextual chat questions. Your provider's API usage charges apply.</li>
-<li>You can select TypeSafe or SubQ for instant sorting instead. That provider receives conversation text and the classification questions; the writing assistant still handles card text and chat. Without a separate sorting provider, the writing assistant also judges the conversations.</li>
-<li>Card text, judgments and chat history are cached in the local mailbox. AI jobs pause when the app backgrounds. Disconnecting AI cancels pending work and removes its saved credentials; removing a mailbox removes its local mail and Google credentials. Previously transmitted data remains subject to your provider's retention terms.</li>
-<li>AI proposes replies; sending still requires you to review the draft and confirm its recipients. Demo mail uses fictional prepared cards and is not transmitted to an AI provider.</li>
-</ul>
-<blockquote>
-<p><strong>Needs legal review.</strong> Google requires apps using Gmail data to state that their use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. Confirm the exact wording before submitting for Google verification.</p>
-</blockquote>
 <h2 id="ai-providers-off-until-you-turn-them-on">AI providers: off until you turn them on</h2>
 <p>Mermoz works without any AI. Email content is sent to an AI provider only after you set one up, and only to the provider you chose:</p>
 <ul>
