@@ -49,17 +49,17 @@ SMTP_PORT = 465
 
 TEXT = f"""You're on board ✈
 
-Thanks for joining the Mermoz beta. Your Google account is on the passenger list, so you can sign in today.
+Thanks for joining the Mermoz beta. Mermoz works with Gmail and Outlook accounts, and you can sign in today.
 
 Download Mermoz for Mac: {DOWNLOAD_URL}
 (requires macOS 26)
 
 1. Open the DMG and drag Mermoz into Applications.
 2. Open Mermoz from Applications. It's signed and checked by Apple, so it opens with a double-click.
-3. Sign in with this Google account. Google will say the app isn't verified yet: click Continue.
-4. During the beta, Google asks you to sign in again about once a week.
+3. Sign in with your Gmail or Outlook account. For Gmail, use the address you signed up with: it's the one on the passenger list. Google will say the app isn't verified yet: click Continue.
+4. During the beta, Gmail asks you to sign in again about once a week.
 
-If your company's Google account blocks outside apps, tell me and we'll sort it out. Anything slow, confusing or broken: just reply to this email.
+If your work account (Google Workspace or Microsoft 365) blocks outside apps, tell me and we'll sort it out. Anything slow, confusing or broken: just reply to this email.
 
 Clément
 The mail must go through.
