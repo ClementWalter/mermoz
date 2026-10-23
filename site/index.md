@@ -4,7 +4,7 @@
 
 **The mail must go through.** Mermoz is a light, fast email app for macOS, named after the Aéropostale pilot Jean Mermoz. New mail is sorted before you read it. One key handles a thread. Your whole mailbox lives on your Mac, quiet and instant.
 
-Private beta · free and open source · macOS 26 or later · Gmail · version 0.1.2
+Private beta · free and open source · macOS 26 or later · Gmail · version 0.1.3
 
 - Join the private beta: [mermoz.xyz/#beta](https://mermoz.xyz/#beta) (leave the Gmail address you'll use).
 - Already invited? [Download Mermoz for Mac](https://github.com/ClementWalter/mermoz/releases/latest/download/Mermoz.dmg).

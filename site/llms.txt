@@ -1,6 +1,6 @@
 # Mermoz
 
-> Mermoz is a fast, local-first Gmail client for macOS (macOS 26 or later), free and open source, in private beta (version 0.1.2). The whole mailbox is stored on the Mac, so search and reading are instant and work offline. A command-line tool (`mermoz`, every command speaks `--json`) and a built-in MCP server (`mermoz mcp`, stdio) let AI agents read, search, sort and draft mail. Agents never send on their own: a send waits for the user's approval in the app.
+> Mermoz is a fast, local-first Gmail client for macOS (macOS 26 or later), free and open source, in private beta (version 0.1.3). The whole mailbox is stored on the Mac, so search and reading are instant and work offline. A command-line tool (`mermoz`, every command speaks `--json`) and a built-in MCP server (`mermoz mcp`, stdio) let AI agents read, search, sort and draft mail. Agents never send on their own: a send waits for the user's approval in the app.
 
 How an agent calls it: Mermoz.app must be installed and running (its daemon `mermozd` owns the mailbox; the CLI and the MCP server talk to it over a local Unix socket). The CLI ships inside the app at `/Applications/Mermoz.app/Contents/Resources/mermoz`; Settings › Developer › Install in PATH links it as `mermoz`. Add the MCP server to an agent with `claude mcp add mermoz -- mermoz mcp` (Claude Code) or `codex mcp add mermoz -- mermoz mcp` (Codex). CLI exit codes: 0 ok, 1 error, 2 usage, 3 approval required (tell the user, do not retry), 4 not found, 5 Mermoz not running.
 

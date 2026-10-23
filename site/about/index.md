@@ -10,7 +10,7 @@ It is also built for the agents you already use. Everything the app does is avai
 
 - **Platform:** macOS 26 or later, downloaded from [GitHub Releases](https://github.com/ClementWalter/mermoz/releases).
 - **Mail:** Gmail and Google Workspace accounts, several at once; Google Drive optional.
-- **Status:** private beta (version 0.1.2) while Google reviews Mermoz's Gmail access. [Join the list](/#beta) and you'll be invited.
+- **Status:** private beta (version 0.1.3) while Google reviews Mermoz's Gmail access. [Join the list](/#beta) and you'll be invited.
 - **Price:** free. **License:** open source (MIT), [source on GitHub](https://github.com/ClementWalter/mermoz).
 - **Built with:** a Rust daemon (`mermozd`) that owns sync and storage, a Rust CLI and MCP server, and a SwiftUI app.
 - **Privacy:** no Mermoz server, no analytics; AI features are off until you turn them on. Details on the [privacy page](/privacy/).
