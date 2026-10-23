@@ -7,13 +7,13 @@ Source: https://mermoz.xyz/llms.txt. Each section below is one page of https://m
 
 <!-- https://mermoz.xyz/ · updated 2026-10-13 -->
 
-# Mermoz: fast, agent-first email for Mac (Gmail)
+# Mermoz: fast, agent-first email for Mac (Gmail and Outlook)
 
 **The mail must go through.** Mermoz is a light, fast email app for macOS, named after the Aéropostale pilot Jean Mermoz. New mail is sorted before you read it. One key handles a thread. Your whole mailbox lives on your Mac, quiet and instant.
 
-Private beta · free and open source · macOS 26 or later · Gmail · version 0.1.3
+Private beta · free and open source · macOS 26 or later · Gmail and Outlook · version 0.1.3
 
-- Join the private beta: [mermoz.xyz/#beta](https://mermoz.xyz/#beta) (leave the Gmail address you'll use).
+- Join the private beta: [mermoz.xyz/#beta](https://mermoz.xyz/#beta) (leave the Gmail or Outlook address you'll use).
 - Already invited? [Download Mermoz for Mac](https://github.com/ClementWalter/mermoz/releases/latest/download/Mermoz.dmg).
 - Source: [https://github.com/ClementWalter/mermoz](https://github.com/ClementWalter/mermoz).
 
@@ -23,7 +23,7 @@ An inbox that behaves like a flight plan: everything has a status, a destination
 
 - **Sorted before you read it.** Each new email arrives with a suggested status and project. Read it and the suggestion applies, or press `y`.
 - **One key, done.** `e` done, `a` archive, `⌫` delete, `⌘Z` undo. Select several with `⇧` and move them together.
-- **Flows, not folders.** Unread, To do, Waiting, Done. A list or a board, grouped and ordered your way. Your Gmail labels are your projects.
+- **Flows, not folders.** Unread, To do, Waiting, Done. A list or a board, grouped and ordered your way. Your Gmail labels and Outlook folders and categories are your projects.
 - **Read what matters.** Original, exactly as sent. Or Optimized: the same words without signatures, disclaimers and quoted history. Made once, kept.
 - **Your whole mailbox, instant.** Every message lives on your Mac. Search, read and sort offline, with `⌘K` for anything else.
 - **Agent first.** A first-class command line and MCP server. Your agents search, sort and draft; you approve what leaves.
@@ -1891,14 +1891,14 @@ to 3 times, into the same answer; past that, the answer so far is kept.
 
 # About Mermoz
 
-Mermoz is an email app for the Mac. It connects to Gmail, keeps your whole mailbox on your Mac, and treats every thread like a task with a status: Unread, To do, Waiting, Done. New mail arrives with a suggested status and project, one key moves a thread on, and search answers instantly, even offline.
+Mermoz is an email app for the Mac. It connects to Gmail and Outlook, keeps your whole mailbox on your Mac, and treats every thread like a task with a status: Unread, To do, Waiting, Done. New mail arrives with a suggested status and project, one key moves a thread on, and search answers instantly, even offline.
 
 It is also built for the agents you already use. Everything the app does is available from the `mermoz` command line and from a built-in MCP server, so Claude, Codex or your own scripts can search, read, sort and draft mail. Sending stays with you: an agent's draft waits in your Review lane until you approve it.
 
 ## Facts
 
 - **Platform:** macOS 26 or later, downloaded from [GitHub Releases](https://github.com/ClementWalter/mermoz/releases).
-- **Mail:** Gmail and Google Workspace accounts, several at once; Google Drive optional.
+- **Mail:** Gmail and Google Workspace accounts, Outlook, Hotmail, Live and Microsoft 365 accounts, several at once; Google Drive optional.
 - **Status:** private beta (version 0.1.3) while Google reviews Mermoz's Gmail access. [Join the list](/#beta) and you'll be invited.
 - **Price:** free. **License:** open source (MIT), [source on GitHub](https://github.com/ClementWalter/mermoz).
 - **Built with:** a Rust daemon (`mermozd`) that owns sync and storage, a Rust CLI and MCP server, and a SwiftUI app.
@@ -1945,7 +1945,7 @@ The MCP server offers the same as the `submit_feedback` tool. Feedback is stored
 
 ## Joining the beta
 
-Leave the Gmail address you'll use in the form on the [homepage](/#beta). Mermoz is in private beta while Google reviews its Gmail access, so each address is added by hand; you'll get an email when you can sign in.
+Leave the Gmail or Outlook address you'll use in the form on the [homepage](/#beta). Mermoz is in private beta while Google reviews its Gmail access, so each address is added by hand; you'll get an email when you can sign in.
 
 ## Elsewhere
 
@@ -1965,18 +1965,23 @@ Mermoz is an email app that keeps your mailbox on your Mac or iPhone. There is n
 
 ## Your mail stays on your Mac
 
-- Mermoz downloads your Gmail messages, labels and attachments into `~/Library/Application Support/Mermoz` on your Mac (a local database and a files folder). Search, reading and sorting run there, offline.
-- A single background process, `mermozd`, talks to Google on your behalf. The app, the `mermoz` command line and the MCP server talk to it over a local socket on your Mac.
+- Mermoz downloads your Gmail or Outlook messages, labels (Outlook folders and categories) and attachments into `~/Library/Application Support/Mermoz` on your Mac (a local database and a files folder). Search, reading and sorting run there, offline.
+- A single background process, `mermozd`, talks to Google or Microsoft on your behalf. The app, the `mermoz` command line and the MCP server talk to it over a local socket on your Mac.
 - Remote images in emails are not loaded unless you ask for them, since they can tell the sender you opened the mail.
-- Your Google sign-ins, Drive grants and AI provider keys are kept on your Mac: in the macOS Keychain for signed releases, or in files only your user account can read for beta builds.
+- Your Google and Microsoft sign-ins, Drive grants and AI provider keys are kept on your Mac: in the macOS Keychain for signed releases, or in files only your user account can read for beta builds.
 - The app has no analytics or tracking. Feedback sent with `mermoz feedback` is stored in your local mailbox database and shown in Settings › Developer; it is not uploaded.
-- Removing an account in Mermoz deletes its messages from the local database and its Google sign-in from your Mac; deleting the folder above removes everything Mermoz stored. Your mail in Gmail is not affected.
+- Removing an account in Mermoz deletes its messages from the local database and its Google or Microsoft sign-in from your Mac; deleting the folder above removes everything Mermoz stored. Your mail in Gmail or Outlook is not affected.
 
 ## What Mermoz asks Google for
 
 - **Gmail:** the `gmail.modify` scope, to read your mail, apply your labels and statuses (archive, trash, read state) and send the drafts you approve. Mermoz does not ask for permission to delete mail permanently.
 - **Google Drive (optional):** only when you click "Connect Google Drive", in a separate consent: `drive.readonly` (preview documents linked in your mail, files shared with a thread's people, search) and `drive.file` (save attachments into a Mermoz folder, share a file you picked). You can untick either; mail never depends on Drive. Drive file text Mermoz reads is cached on your Mac.
 - Companies can sign in through their own Google client instead of Mermoz's; that client is stored with the account on your Mac.
+
+## What Mermoz asks Microsoft for
+
+- **Outlook** (Outlook.com, Hotmail, Live and Microsoft 365): `Mail.ReadWrite` to read your mail and apply your folders, categories and statuses (archive, delete to Deleted Items, read state), `Mail.Send` to send the drafts you approve, `MailboxSettings.Read` for your categories, `User.Read` for your address, and `offline_access` to stay signed in. Mermoz never deletes mail for good.
+- A work or school account may need its administrator's approval before you can sign in.
 
 ## Mermoz on iPhone
 

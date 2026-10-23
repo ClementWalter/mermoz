@@ -12,18 +12,23 @@ Mermoz is an email app that keeps your mailbox on your Mac or iPhone. There is n
 
 ## Your mail stays on your Mac
 
-- Mermoz downloads your Gmail messages, labels and attachments into `~/Library/Application Support/Mermoz` on your Mac (a local database and a files folder). Search, reading and sorting run there, offline.
-- A single background process, `mermozd`, talks to Google on your behalf. The app, the `mermoz` command line and the MCP server talk to it over a local socket on your Mac.
+- Mermoz downloads your Gmail or Outlook messages, labels (Outlook folders and categories) and attachments into `~/Library/Application Support/Mermoz` on your Mac (a local database and a files folder). Search, reading and sorting run there, offline.
+- A single background process, `mermozd`, talks to Google or Microsoft on your behalf. The app, the `mermoz` command line and the MCP server talk to it over a local socket on your Mac.
 - Remote images in emails are not loaded unless you ask for them, since they can tell the sender you opened the mail.
-- Your Google sign-ins, Drive grants and AI provider keys are kept on your Mac: in the macOS Keychain for signed releases, or in files only your user account can read for beta builds.
+- Your Google and Microsoft sign-ins, Drive grants and AI provider keys are kept on your Mac: in the macOS Keychain for signed releases, or in files only your user account can read for beta builds.
 - The app has no analytics or tracking. Feedback sent with `mermoz feedback` is stored in your local mailbox database and shown in Settings › Developer; it is not uploaded.
-- Removing an account in Mermoz deletes its messages from the local database and its Google sign-in from your Mac; deleting the folder above removes everything Mermoz stored. Your mail in Gmail is not affected.
+- Removing an account in Mermoz deletes its messages from the local database and its Google or Microsoft sign-in from your Mac; deleting the folder above removes everything Mermoz stored. Your mail in Gmail or Outlook is not affected.
 
 ## What Mermoz asks Google for
 
 - **Gmail:** the `gmail.modify` scope, to read your mail, apply your labels and statuses (archive, trash, read state) and send the drafts you approve. Mermoz does not ask for permission to delete mail permanently.
 - **Google Drive (optional):** only when you click "Connect Google Drive", in a separate consent: `drive.readonly` (preview documents linked in your mail, files shared with a thread's people, search) and `drive.file` (save attachments into a Mermoz folder, share a file you picked). You can untick either; mail never depends on Drive. Drive file text Mermoz reads is cached on your Mac.
 - Companies can sign in through their own Google client instead of Mermoz's; that client is stored with the account on your Mac.
+
+## What Mermoz asks Microsoft for
+
+- **Outlook** (Outlook.com, Hotmail, Live and Microsoft 365): `Mail.ReadWrite` to read your mail and apply your folders, categories and statuses (archive, delete to Deleted Items, read state), `Mail.Send` to send the drafts you approve, `MailboxSettings.Read` for your categories, `User.Read` for your address, and `offline_access` to stay signed in. Mermoz never deletes mail for good.
+- A work or school account may need its administrator's approval before you can sign in.
 
 ## Mermoz on iPhone
 

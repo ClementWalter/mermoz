@@ -1,6 +1,6 @@
 {
   "name": "Mermoz",
-  "description": "MCP server for the user's local Mermoz mailbox (Gmail on macOS): search, read, sort and draft mail. Sending always waits for the user's approval in the app.",
+  "description": "MCP server for the user's local Mermoz mailbox (Gmail and Outlook on macOS): search, read, sort and draft mail. Sending always waits for the user's approval in the app.",
   "version": "0.1.3",
   "protocolVersion": "2025-06-18",
   "transport": "stdio",
@@ -8,7 +8,7 @@
   "remoteNote": "Mermoz keeps mail on the user's Mac; there is no hosted or Streamable HTTP endpoint. Run the server locally.",
   "install": {
     "transport": "stdio",
-    "requires": "Mermoz.app installed and running on macOS 26 or later, signed in to Gmail",
+    "requires": "Mermoz.app installed and running on macOS 26 or later, signed in to Gmail or Outlook",
     "download": "https://github.com/ClementWalter/mermoz/releases/latest/download/Mermoz.dmg",
     "command": "mermoz",
     "args": [
