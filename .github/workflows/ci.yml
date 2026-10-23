@@ -95,10 +95,8 @@ jobs:
   # This runner (3-vCPU VM, 7 GB RAM, virtual disk) measured reads at up to 1.2x their
   # budget and the sync's write path at up to 2.6x (lock held 110-500 ms per batch, one
   # batch's fsync 100-250 ms); a Mac runs it at 0.4x.
-  # It waits for `test`: timed alongside that job's build, the sync batch measured
-  # 650-920 ms against 380-480 ms alone.
   bench:
-    needs: [changes, test]
+    needs: changes
     if: needs.changes.outputs.bench == 'true'
     runs-on: macos-15
     env:
@@ -132,6 +130,11 @@ jobs:
                   fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
                   while f.read(1 << 24):
                       pass
+      # The first sync batches into a restored mailbox are 1.5-4x slower than right after
+      # seeding (p95 507-1428 ms vs 294-475 ms on a second run), so an untimed run warms
+      # the write path first.
+      - if: steps.seed.outputs.cache-matched-key != ''
+        run: target/release/examples/bench 500000 "$BENCH_DB" > /dev/null 2>&1 || true
       - run: target/release/examples/bench 500000 "$BENCH_DB"
       - if: steps.seed.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         uses: actions/cache/save@v4
