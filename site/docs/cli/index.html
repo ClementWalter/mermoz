@@ -83,7 +83,7 @@ Usage: mermoz [OPTIONS] &lt;COMMAND&gt;
 
 Commands:
   accounts      List connected accounts and their sync state
-  add-account   Connect a Gmail account (opens the browser).
+  add-account   Connect a Gmail account, or with --outlook an Outlook one (opens the browser).
   reconnect     Sign an account in to Google again, keeping its mail (opens the browser). Needed when `mermoz accounts` says &quot;sign in again&quot;
   list          List threads, newest first
   labels        List your Gmail labels (&quot;mailboxes&quot;) with thread counts
@@ -102,6 +102,7 @@ Commands:
   resort        Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept
   suggestions   The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with `mermoz accept`)
   due           Set a follow-up date (YYYY-MM-DD); &quot;none&quot; clears
+  rename        Give a thread's card your own title instead of the email subject; --clear shows the subject again. The email itself is not changed
   read          Mark a thread read or unread
   draft         Create and manage drafts
   drive         Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only
@@ -163,8 +164,8 @@ Options:
   -h, --help  Print help
 </code></pre>
 <h3 id="add-account">mermoz add-account</h3>
-<p>Connect a Gmail account (opens the browser).</p>
-<pre><code class="language-text">Connect a Gmail account (opens the browser).
+<p>Connect a Gmail account, or with --outlook an Outlook one (opens the browser).</p>
+<pre><code class="language-text">Connect a Gmail account, or with --outlook an Outlook one (opens the browser).
 
 A company Google Workspace that blocks Mermoz can sign in through its own
 Google Cloud OAuth client (Desktop app) instead:
@@ -186,6 +187,9 @@ Options:
 
       --client-secret &lt;CLIENT_SECRET&gt;
           OAuth client secret (with --client-id)
+
+      --outlook
+          An Outlook account (outlook.com, Hotmail, Live or Microsoft 365) instead
 
       --wait
           Wait for the browser sign-in to finish and say how it went
@@ -458,14 +462,16 @@ Arguments:
   [STATUS]  
 
 Options:
-      --clear                     Clear every suggestion on read threads that nobody reviewed (Unread mail keeps its own); accepted and turned-down ones are kept
+      --ask                       First ask the AI about the column's newest --limit threads (at most 50), as ✨ on the column does
       --json                      Machine-readable JSON output
+      --clear                     Clear every suggestion on read threads that nobody reviewed (Unread mail keeps its own); accepted and turned-down ones are kept
       --to &lt;TO&gt;                   List the threads going to this status (&quot;none&quot;: groups that only add projects)
       --to-project &lt;TO_PROJECTS&gt;  List the threads going to exactly these projects (repeat for several)
       --limit &lt;LIMIT&gt;             Most threads to list [default: 50]
   -h, --help                      Print help
 
 Examples:
+  mermoz suggestions backlog --ask
   mermoz suggestions backlog
   mermoz suggestions backlog --to archive
   mermoz suggestions backlog --to none --to-project Receipts
@@ -483,6 +489,21 @@ Arguments:
 Options:
       --json  Machine-readable JSON output
   -h, --help  Print help
+</code></pre>
+<h3 id="rename">mermoz rename</h3>
+<p>Give a thread's card your own title instead of the email subject; --clear shows the subject again. The email itself is not changed</p>
+<pre><code class="language-text">Give a thread's card your own title instead of the email subject; --clear shows the subject again. The email itself is not changed
+
+Usage: mermoz rename [OPTIONS] &lt;THREAD&gt; [TITLE]
+
+Arguments:
+  &lt;THREAD&gt;  
+  [TITLE]   
+
+Options:
+      --clear  
+      --json   Machine-readable JSON output
+  -h, --help   Print help
 </code></pre>
 <h3 id="read">mermoz read</h3>
 <p>Mark a thread read or unread</p>

@@ -28,7 +28,7 @@ Usage: mermoz [OPTIONS] <COMMAND>
 
 Commands:
   accounts      List connected accounts and their sync state
-  add-account   Connect a Gmail account (opens the browser).
+  add-account   Connect a Gmail account, or with --outlook an Outlook one (opens the browser).
   reconnect     Sign an account in to Google again, keeping its mail (opens the browser). Needed when `mermoz accounts` says "sign in again"
   list          List threads, newest first
   labels        List your Gmail labels ("mailboxes") with thread counts
@@ -47,6 +47,7 @@ Commands:
   resort        Stop a whole-mailbox sort and clear the suggestions it left that nobody reviewed. Accepted and turned-down suggestions are kept
   suggestions   The AI's pending suggestions in a status column, grouped by where they go, and how far background sorting of that column has got; with --to/--to-project, the threads of that one group (accept them with `mermoz accept`)
   due           Set a follow-up date (YYYY-MM-DD); "none" clears
+  rename        Give a thread's card your own title instead of the email subject; --clear shows the subject again. The email itself is not changed
   read          Mark a thread read or unread
   draft         Create and manage drafts
   drive         Google Drive files of a thread, their text, search, saving attachments. Connecting Drive and sharing files happen in the app only
@@ -115,10 +116,10 @@ Options:
 
 ### mermoz add-account
 
-Connect a Gmail account (opens the browser).
+Connect a Gmail account, or with --outlook an Outlook one (opens the browser).
 
 ```text
-Connect a Gmail account (opens the browser).
+Connect a Gmail account, or with --outlook an Outlook one (opens the browser).
 
 A company Google Workspace that blocks Mermoz can sign in through its own
 Google Cloud OAuth client (Desktop app) instead:
@@ -140,6 +141,9 @@ Options:
 
       --client-secret <CLIENT_SECRET>
           OAuth client secret (with --client-id)
+
+      --outlook
+          An Outlook account (outlook.com, Hotmail, Live or Microsoft 365) instead
 
       --wait
           Wait for the browser sign-in to finish and say how it went
@@ -488,14 +492,16 @@ Arguments:
   [STATUS]  
 
 Options:
-      --clear                     Clear every suggestion on read threads that nobody reviewed (Unread mail keeps its own); accepted and turned-down ones are kept
+      --ask                       First ask the AI about the column's newest --limit threads (at most 50), as ✨ on the column does
       --json                      Machine-readable JSON output
+      --clear                     Clear every suggestion on read threads that nobody reviewed (Unread mail keeps its own); accepted and turned-down ones are kept
       --to <TO>                   List the threads going to this status ("none": groups that only add projects)
       --to-project <TO_PROJECTS>  List the threads going to exactly these projects (repeat for several)
       --limit <LIMIT>             Most threads to list [default: 50]
   -h, --help                      Print help
 
 Examples:
+  mermoz suggestions backlog --ask
   mermoz suggestions backlog
   mermoz suggestions backlog --to archive
   mermoz suggestions backlog --to none --to-project Receipts
@@ -517,6 +523,25 @@ Arguments:
 Options:
       --json  Machine-readable JSON output
   -h, --help  Print help
+```
+
+### mermoz rename
+
+Give a thread's card your own title instead of the email subject; --clear shows the subject again. The email itself is not changed
+
+```text
+Give a thread's card your own title instead of the email subject; --clear shows the subject again. The email itself is not changed
+
+Usage: mermoz rename [OPTIONS] <THREAD> [TITLE]
+
+Arguments:
+  <THREAD>  
+  [TITLE]   
+
+Options:
+      --clear  
+      --json   Machine-readable JSON output
+  -h, --help   Print help
 ```
 
 ### mermoz read
