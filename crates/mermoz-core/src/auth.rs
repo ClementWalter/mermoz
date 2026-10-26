@@ -12,6 +12,7 @@
 //! hosted page) is "shared": the domain is real, but it vouches for nobody. A
 //! domain that glues a word of the sender's name to a filler word ("GitHub" from
 //! `noreply-github.co`) is "lookalike": it proves only that a copycat domain sent it.
+//! A domain the account never received mail from nor wrote to is "new" (see `store`).
 
 /// Platforms that give every customer their own subdomain to send from.
 const SHARED_PLATFORMS: &[&str] = &[
@@ -99,6 +100,17 @@ pub fn registered_domain(domain: &str) -> String {
         _ => 2,
     };
     labels[labels.len().saturating_sub(keep)..].join(".")
+}
+
+/// The registered domain an address sends from: `noreply@email.github.com` → `github.com`.
+pub fn sender_domain(email: &str) -> String {
+    registered_domain(&domain_of(email))
+}
+
+/// Whether `email` sends from one of `domains` (each compared by registered domain).
+pub fn sends_from(domains: &[String], email: &str) -> bool {
+    let mine = sender_domain(email);
+    !mine.is_empty() && domains.iter().any(|d| registered_domain(d) == mine)
 }
 
 /// The name a domain was registered under, without its suffix: `notif-x.co.uk` → `notif-x`.
@@ -376,6 +388,14 @@ mod tests {
     #[case::real_subdomain("hello@email.github.com", None)]
     fn names_have_a_usual_domain(#[case] email: &str, #[case] want: Option<&str>) {
         assert_eq!(usual_domain(&github_history(), email).as_deref(), want);
+    }
+
+    #[rstest]
+    #[case::same_domain("noreply@github.com", true)]
+    #[case::subdomain("noreply@email.github.com", true)]
+    #[case::copycat("noreply@noreply-github.co", false)]
+    fn sends_from_compares_registered_domains(#[case] email: &str, #[case] want: bool) {
+        assert_eq!(sends_from(&["github.com".to_string()], email), want);
     }
 
     #[rstest]

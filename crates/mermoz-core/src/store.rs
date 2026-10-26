@@ -29,6 +29,7 @@ mod push;
 mod reactions;
 mod readings;
 mod semantic;
+mod senders;
 mod sign_in;
 mod titles;
 mod visibility;
@@ -152,6 +153,7 @@ const MIGRATIONS: &[&str] = &[
     outlook::MIGRATION,
     titles::MIGRATION,
     SENDER_NAMES,
+    senders::MIGRATION,
 ];
 
 /// Received mail by sender name, to tell which domain a name usually writes from.
@@ -1216,6 +1218,7 @@ fn messages_where(
                         &email,
                     ),
                     usual_domain: None,
+                    sender_claim: None,
                     from: Address { name, email },
                 },
             ))
@@ -1240,6 +1243,25 @@ fn messages_where(
             m.auth = Some("lookalike".into());
         }
         m.usual_domain = found;
+        // A domain nothing came from before, and never written to, vouches for nobody.
+        if matches!(m.auth.as_deref(), Some("pass" | "none"))
+            && senders::is_new(conn, &m.from.email, m.date)?
+        {
+            m.auth = Some("new".into());
+        }
+        if matches!(m.auth.as_deref(), Some("new" | "lookalike")) {
+            m.sender_claim = senders::claim(conn, &m.from)?;
+        }
+        // The organisation the name claims sends from elsewhere: a copycat.
+        if let Some(c) = &m.sender_claim
+            && m.auth.as_deref() == Some("new")
+            && c.kind == "organisation"
+            && !c.matches
+            && let Some(official) = c.domains.first()
+        {
+            m.auth = Some("lookalike".into());
+            m.usual_domain = Some(official.clone());
+        }
     }
     let read_from = latest.map_or(0, |n| msgs.len().saturating_sub(n));
     // Mail stored before its reading was cached (or by an older pipeline) is read now;
@@ -1595,6 +1617,7 @@ impl Store {
         store.seed()?;
         tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: seeded");
         store.backfill_snippets()?;
+        store.backfill_sender_domains()?;
         tracing::debug!(ms = t0.elapsed().as_millis() as u64, "store: snippets");
         let adopted = store.adopt_stored_gmail_drafts()?;
         if adopted > 0 {
@@ -2112,6 +2135,9 @@ impl Store {
         });
         if is_from_me {
             conversations::note_correspondents(tx, p.to.iter().chain(&p.cc).chain(&p.bcc))?;
+            senders::note_written(tx, p.to.iter().chain(&p.cc).chain(&p.bcc))?;
+        } else {
+            senders::note_received(tx, &from.email, date)?;
         }
         addresses::note(tx, std::iter::once(&from).chain(&p.to).chain(&p.cc))?;
         let decorative = images::classify_incoming(
@@ -7069,28 +7095,134 @@ mod tests {
         assert_eq!(sender_check(&env, &real), (Some("pass".into()), None));
     }
 
+    /// A message the user sent to `to`.
+    fn sent_to(pid: &str, to: &str, date: i64) -> IncomingMessage {
+        let mut m = incoming(pid, pid, "me@example.com", &["SENT"], date, "Hello");
+        m.parsed.to = vec![Address {
+            name: "".into(),
+            email: to.into(),
+        }];
+        m
+    }
+
+    fn ingest(env: &Env, m: &IncomingMessage) -> String {
+        env.store
+            .ingest(&env.acc, "me@example.com", m, SyncMode::Initial)
+            .unwrap()
+    }
+
     #[rstest]
     fn an_address_written_to_is_not_a_lookalike(github_mailbox: (Env, String, String)) {
         let (env, _, _) = github_mailbox;
+        ingest(&env, &sent_to("hi", "ops@githubb.com", 11 * DAY));
+        let tid = ingest(&env, &from_github("ops", "ops@githubb.com", 12 * DAY));
+        assert_eq!(sender_check(&env, &tid), (Some("pass".into()), None));
+    }
+
+    #[rstest]
+    fn first_email_from_a_domain_is_new(env: Env) {
+        let tid = ingest(&env, &from_github("s1", "billing@stripe.example", DAY));
+        assert_eq!(sender_check(&env, &tid), (Some("new".into()), None));
+    }
+
+    #[rstest]
+    fn a_domain_written_to_first_is_not_new(env: Env) {
+        ingest(&env, &sent_to("hi", "ann@stripe.example", 0));
+        let tid = ingest(&env, &from_github("s1", "billing@mail.stripe.example", DAY));
+        assert_eq!(sender_check(&env, &tid), (Some("pass".into()), None));
+    }
+
+    #[rstest]
+    fn earlier_mail_from_a_sibling_subdomain_is_not_new(env: Env) {
+        ingest(&env, &from_github("s0", "news@news.stripe.example", DAY));
+        let tid = ingest(
+            &env,
+            &from_github("s1", "billing@mail.stripe.example", 2 * DAY),
+        );
+        assert_eq!(sender_check(&env, &tid), (Some("pass".into()), None));
+    }
+
+    #[rstest]
+    fn a_newer_message_does_not_make_an_older_one_known(env: Env) {
+        let first = ingest(&env, &from_github("s1", "billing@stripe.example", DAY));
+        ingest(&env, &from_github("s2", "billing@stripe.example", 2 * DAY));
+        assert_eq!(sender_check(&env, &first), (Some("new".into()), None));
+    }
+
+    fn claim(organisation: &str, domain: &str) -> SenderClaim {
+        SenderClaim {
+            kind: "organisation".into(),
+            organisation: organisation.into(),
+            domains: vec![domain.into()],
+            sources: vec![format!("https://{domain}/security")],
+            matches: false,
+        }
+    }
+
+    #[rstest]
+    fn research_naming_another_domain_makes_a_lookalike(env: Env) {
+        let m = from_github("s1", "noreply@hub-git.example", DAY);
+        let tid = ingest(&env, &m);
+        let from = m.parsed.from.clone().unwrap();
+        env.store
+            .save_sender_claim(&from, &claim("GitHub", "github.com"))
+            .unwrap();
+        assert_eq!(
+            sender_check(&env, &tid),
+            (Some("lookalike".into()), Some("github.com".into()))
+        );
+    }
+
+    #[rstest]
+    fn research_confirming_the_domain_stays_new(env: Env) {
+        let m = from_github("s1", "noreply@github.com", DAY);
+        let tid = ingest(&env, &m);
+        let from = m.parsed.from.clone().unwrap();
+        env.store
+            .save_sender_claim(&from, &claim("GitHub", "github.com"))
+            .unwrap();
+        let shown = env.store.messages(&tid).unwrap().pop().unwrap();
+        assert_eq!(
+            (shown.auth.as_deref(), shown.sender_claim.map(|c| c.matches)),
+            (Some("new"), Some(true))
+        );
+    }
+
+    #[rstest]
+    fn research_on_a_person_does_not_make_a_lookalike(env: Env) {
+        let m = from_github("s1", "marc@petit.example", DAY);
+        let tid = ingest(&env, &m);
+        let from = m.parsed.from.clone().unwrap();
+        let person = SenderClaim {
+            kind: "person".into(),
+            ..claim("", "other.example")
+        };
+        env.store.save_sender_claim(&from, &person).unwrap();
+        assert_eq!(sender_check(&env, &tid), (Some("new".into()), None));
+    }
+
+    #[rstest]
+    fn mail_stored_before_tracking_is_known_after_backfill(env: Env) {
+        ingest(&env, &from_github("s1", "billing@stripe.example", DAY));
         env.store
             .w
             .lock()
             .unwrap()
-            .execute(
-                "INSERT INTO correspondents (email) VALUES ('ops@githubb.com')",
-                [],
+            .execute_batch(
+                "DELETE FROM sender_domains; DELETE FROM meta WHERE key = 'sender_domains_version';",
             )
             .unwrap();
-        let tid = env
-            .store
-            .ingest(
-                &env.acc,
-                "me@example.com",
-                &from_github("ops", "ops@githubb.com", 11 * DAY),
-                SyncMode::Initial,
-            )
-            .unwrap();
+        env.store.backfill_sender_domains().unwrap();
+        let tid = ingest(&env, &from_github("s2", "billing@stripe.example", 2 * DAY));
         assert_eq!(sender_check(&env, &tid), (Some("pass".into()), None));
+    }
+
+    #[rstest]
+    fn sender_checks_stop_at_the_daily_allowance(env: Env) {
+        for _ in 0..senders::DAILY_SENDER_CHECKS {
+            env.store.take_sender_check().unwrap();
+        }
+        assert!(!env.store.take_sender_check().unwrap());
     }
 
     #[rstest]

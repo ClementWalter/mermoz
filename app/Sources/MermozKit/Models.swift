@@ -304,6 +304,8 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var auth: String?
     /// For a "lookalike", the domain this sender's name usually writes from.
     public var usualDomain: String? = nil
+    /// For a "new" or "lookalike" sender, who a web search says its name claims to be.
+    public var senderClaim: SenderClaim? = nil
 
     /// What a reader should see first: only what this message adds to the thread.
     public var displayBody: String {

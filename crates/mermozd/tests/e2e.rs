@@ -1559,13 +1559,96 @@ fn raw_signed(id: &str) -> String {
     )
 }
 
+/// An earlier email from `from` (a From header), so its domain is not new.
+fn earlier_mail_from(w: &World, from: &str) {
+    let raw = format!(
+        "From: {from}\r\nTo: me@example.com\r\nSubject: Earlier note\r\nMessage-ID: <m7@example.com>\r\n\r\nHello.\r\n"
+    );
+    w.mailbox
+        .lock()
+        .unwrap()
+        .add_message("m7", "t7", &["INBOX"], &raw, NOW + 7000);
+}
+
+const AWS: &str = "Amazon Web Services <no-reply@amazonaws.com>";
+
 fn first_message_auth(w: &World, subject: &str) -> Value {
     let t = w.thread_by_subject(subject);
     w.ok("threads.get", json!({ "id": t["id"] }))["messages"][0]["auth"].clone()
 }
 
+/// A first email from AWS, opened once it arrived.
+fn first_aws_mail(w: &World) -> Value {
+    w.mailbox.lock().unwrap().add_message(
+        "m8",
+        "t8",
+        &["INBOX", "UNREAD"],
+        &raw_signed("m8"),
+        NOW + 8000,
+    );
+    w.wait_until("sync", |w| {
+        w.ok("search", json!({ "query": "Billing alert" }))["threads"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    });
+    let t = w.thread_by_subject("Billing alert");
+    w.ok("threads.get", json!({ "id": t["id"] }))["messages"][0].clone()
+}
+
+#[rstest]
+fn a_verified_first_email_from_a_domain_is_new(synced: World) {
+    assert_eq!(first_aws_mail(&synced)["auth"], "new");
+}
+
+/// The first email from AWS, opened until the web research on its sender is in.
+fn researched_aws_mail(w: &World) -> Value {
+    enable_agent(w);
+    first_aws_mail(w);
+    let mut found = Value::Null;
+    w.wait_until("sender research", |w| {
+        let t = w.thread_by_subject("Billing alert");
+        found =
+            w.ok("threads.get", json!({ "id": t["id"] }))["messages"][0]["sender_claim"].clone();
+        !found.is_null()
+    });
+    found
+}
+
+#[rstest]
+fn a_new_sender_is_researched_on_the_web(synced: World) {
+    assert_eq!(
+        researched_aws_mail(&synced)["organisation"],
+        "Amazon Web Services"
+    );
+}
+
+#[rstest]
+fn research_finding_the_sender_domain_says_it_matches(synced: World) {
+    assert_eq!(researched_aws_mail(&synced)["matches"], true);
+}
+
+#[rstest]
+fn sender_research_sees_only_name_and_address(synced: World) {
+    researched_aws_mail(&synced);
+    let m = synced.mailbox.lock().unwrap();
+    let asked = m
+        .chat_requests
+        .iter()
+        .find(|r| {
+            r["system"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("You check who"))
+        })
+        .unwrap();
+    assert_eq!(
+        asked["messages"],
+        json!([{ "role": "user", "content": "<untrusted>\n{\"display_name\": \"Amazon Web Services\", \"address\": \"no-reply@amazonaws.com\"}\n</untrusted>" }])
+    );
+}
+
 #[rstest]
 fn new_mail_from_a_verified_sender_is_marked_pass(synced: World) {
+    earlier_mail_from(&synced, AWS);
     synced.mailbox.lock().unwrap().add_message(
         "m8",
         "t8",
@@ -1583,6 +1666,7 @@ fn new_mail_from_a_verified_sender_is_marked_pass(synced: World) {
 
 #[rstest]
 fn older_mail_gets_its_sender_checked_when_opened(synced: World) {
+    earlier_mail_from(&synced, AWS);
     synced.mailbox.lock().unwrap().add_message(
         "m8",
         "t8",
@@ -1619,6 +1703,7 @@ fn raw_from_ann(id: &str, results: &str) -> String {
 }
 
 fn ann_auth(w: &World, results: &str) -> Value {
+    earlier_mail_from(w, "Ann Example <ann@mail.example>");
     w.mailbox.lock().unwrap().add_message(
         "m8a",
         "t8a",

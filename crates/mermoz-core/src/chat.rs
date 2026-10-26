@@ -901,6 +901,7 @@ mod tests {
             attachments: vec![],
             auth: None,
             usual_domain: None,
+            sender_claim: None,
         }
     }
 

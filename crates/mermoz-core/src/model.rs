@@ -194,6 +194,26 @@ pub struct Message {
     /// For a "lookalike", the domain this sender's name usually writes from.
     #[serde(default)]
     pub usual_domain: Option<String>,
+    /// For a "new" or "lookalike" sender, what a web search found about who its name
+    /// claims to be.
+    #[serde(default)]
+    pub sender_claim: Option<SenderClaim>,
+}
+
+/// Who a sender's name claims to be, and the domains that organisation really sends
+/// email from, as found on the web.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SenderClaim {
+    /// "organisation", "person" or "unknown".
+    pub kind: String,
+    pub organisation: String,
+    /// Registered domains the organisation sends email from, most used first.
+    pub domains: Vec<String>,
+    /// Pages the domains were found on.
+    pub sources: Vec<String>,
+    /// Whether the sender's own domain is one of `domains`.
+    #[serde(default)]
+    pub matches: bool,
 }
 
 /// A recipient a sent message didn't reach, as a bounce reported it.

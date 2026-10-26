@@ -33,6 +33,7 @@ pub mod reading;
 pub mod reply;
 pub mod sanitize;
 pub mod semantic;
+pub mod sender_check;
 pub mod store;
 pub mod sync;
 pub mod tokens;

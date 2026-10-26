@@ -1,6 +1,7 @@
 //! Daemon state: the store, one sync worker pair per account, and the event bus.
 
 use mermoz_core::gmail::{Gmail, default_base};
+use mermoz_core::model::{Address, Message};
 use mermoz_core::oauth::{self, ClientConfig, TokenSource};
 use mermoz_core::outlook::{self, Outlook};
 use mermoz_core::provider::Backend;
@@ -49,6 +50,8 @@ pub struct Service {
     router_error: Mutex<HashMap<jev::Provider, String>>,
     /// Threads whose senders are being verified, so reopening one doesn't refetch.
     verifying: Mutex<std::collections::HashSet<String>>,
+    /// Senders being researched on the web, by (name, address).
+    researching: Mutex<std::collections::HashSet<(String, String)>>,
     /// Project descriptions for the router, rebuilt every [`DESCRIPTIONS_TTL`].
     descriptions: Mutex<Option<Descriptions>>,
     /// Why each provider is on hold, and until when (out of credits, rate limited…).
@@ -89,6 +92,7 @@ impl Service {
             router_kick: Arc::new(Notify::new()),
             router_error: Mutex::new(HashMap::new()),
             verifying: Mutex::new(Default::default()),
+            researching: Mutex::new(Default::default()),
             descriptions: Mutex::new(None),
             pause: Mutex::new(HashMap::new()),
             grouping_kick: Arc::new(Notify::new()),
@@ -132,6 +136,69 @@ impl Service {
             let _ = svc.events.send(Event::ThreadsChanged(vec![tid.clone()]));
             svc.verifying.lock().unwrap().remove(&tid);
         });
+    }
+
+    /// Researches on the web, in the background, who the new and lookalike senders of
+    /// these messages claim to be; their threads refresh as each answer comes. Only the
+    /// sender's name and address go to the AI, never the message.
+    pub fn research_senders(self: &Arc<Self>, account_id: &str, messages: &[Message]) {
+        let todo: Vec<(String, Address)> = messages
+            .iter()
+            .filter(|m| matches!(m.auth.as_deref(), Some("new" | "lookalike")))
+            .filter(|m| m.sender_claim.is_none() && !m.from.name.trim().is_empty())
+            .filter(|m| !self.store.has_sender_claim(&m.from).unwrap_or(true))
+            .filter(|m| {
+                let key = (m.from.name.clone(), m.from.email.to_lowercase());
+                self.researching.lock().unwrap().insert(key)
+            })
+            .map(|m| (m.thread_id.clone(), m.from.clone()))
+            .collect();
+        if todo.is_empty() {
+            return;
+        }
+        let Some(p) = self
+            .store
+            .provider_for_account(account_id)
+            .ok()
+            .flatten()
+            .filter(mermoz_core::chat::can_research)
+        else {
+            self.done_researching(&todo);
+            return;
+        };
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let key = match credential(&p).await {
+                Ok(k) => k,
+                Err(e) => {
+                    warn!(provider = %p.name, "sender check: {e}");
+                    return svc.done_researching(&todo);
+                }
+            };
+            for (tid, from) in &todo {
+                if !svc.store.take_sender_check().unwrap_or(false) {
+                    break;
+                }
+                match mermoz_core::sender_check::research(&p, &key, &from.name, &from.email).await {
+                    Ok(Some(claim)) => {
+                        if let Err(e) = svc.store.save_sender_claim(from, &claim) {
+                            warn!("sender check not saved: {e}");
+                        }
+                        let _ = svc.events.send(Event::ThreadsChanged(vec![tid.clone()]));
+                    }
+                    Ok(None) => break,
+                    Err(e) => warn!(provider = %p.name, "sender check failed: {e}"),
+                }
+            }
+            svc.done_researching(&todo);
+        });
+    }
+
+    fn done_researching(&self, todo: &[(String, Address)]) {
+        let mut r = self.researching.lock().unwrap();
+        for (_, from) in todo {
+            r.remove(&(from.name.clone(), from.email.to_lowercase()));
+        }
     }
 
     /// Starts workers for every stored account; accounts without a token show an error.

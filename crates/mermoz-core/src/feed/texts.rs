@@ -205,6 +205,7 @@ mod tests {
             }],
             auth: None,
             usual_domain: None,
+            sender_claim: None,
         }
     }
 

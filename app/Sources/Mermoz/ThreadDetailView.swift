@@ -1245,14 +1245,21 @@ private extension String {
 /// Green seal when Gmail verified the sender's domain sent this email; an orange
 /// warning when the domain says its genuine mail always passes and this one did not
 /// (a likely impersonation), when the domain is a platform anyone can send from, or
-/// when it is a copycat of the brand the sender's name claims.
+/// when it is a copycat of the brand the sender's name claims, or when it is the first
+/// email from its domain (labelled, so it is seen without hovering).
 /// Nothing when there is no proof either way, e.g. a copy relayed by a forwarder.
 struct SenderSeal: View {
     let message: Message
 
-    private var lookalikeWarning: String {
-        let usual = message.usualDomain.map { " “\(message.from.display)” usually writes from \($0)." } ?? ""
-        return "Likely not from “\(message.from.display)”: \(message.from.domain) is a lookalike address.\(usual) Don't click its links or open its attachments."
+    private func flagged(_ symbol: String, _ label: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 12))
+            Text(label).font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(Color(hex: "#E0782F"))
+        .help(SenderNotice.detail(message) ?? "")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SenderNotice.detail(message) ?? label)
     }
 
     var body: some View {
@@ -1266,9 +1273,9 @@ struct SenderSeal: View {
                 .help("Sent through \(message.from.domain), a platform anyone can sign up to. The name “\(message.from.display)” is not verified: be careful with links and attachments.")
                 .accessibilityLabel("Sender not verified")
         case "lookalike":
-            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Color(hex: "#E0782F"))
-                .help(lookalikeWarning)
-                .accessibilityLabel("Lookalike sender")
+            flagged("exclamationmark.triangle.fill", SenderNotice.label(message) ?? "")
+        case "new":
+            flagged("questionmark.circle.fill", SenderNotice.label(message) ?? "")
         case "fail":
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Color(hex: "#E0782F"))
                 .help("This email may not really be from \(message.from.email). \(message.from.domain) says its genuine emails can always be confirmed, and this one could not. Be careful with links and attachments.")

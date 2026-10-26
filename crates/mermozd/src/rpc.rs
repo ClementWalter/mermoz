@@ -345,6 +345,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 .unwrap_or_default();
             if !flag(p, "conversation") {
                 let messages = st.messages(&id)?;
+                svc.research_senders(&st.thread(&id)?.account_id, &messages);
                 let reply = mermoz_core::reply::addressing(&messages, &me);
                 let drafts = st.thread_drafts(std::slice::from_ref(&id))?;
                 return Ok(
@@ -355,6 +356,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             // only when the reader scrolls back (a 992-thread conversation was 14 MB).
             let latest = p.get("latest").and_then(|v| v.as_u64()).map(|n| n as usize);
             let mut messages = st.conversation_window(&id, latest)?;
+            svc.research_senders(&st.thread(&id)?.account_id, &messages);
             let threads = st.conversation_thread_ids(&id)?;
             for t in &threads {
                 if *t != id {

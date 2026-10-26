@@ -914,6 +914,9 @@ async fn messages(
         return llm(State(s), headers, Json(body)).await.into_response();
     }
     let searched = body["tools"][0]["name"] == "web_search";
+    let sender_check = body["system"][0]["text"]
+        .as_str()
+        .is_some_and(|t| t.starts_with("You check who an email sender claims to be"));
     let pause = {
         let mut m = s.lock().unwrap();
         m.chat_requests.push(body);
@@ -960,6 +963,21 @@ async fn messages(
             json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "server_tool_use", "id": "srvtoolu_stub2", "name": "web_search", "input": {} } }),
         );
         out += &sse(json!({ "type": "content_block_stop", "index": 0 }));
+    }
+    if sender_check {
+        // What a search on the sender's name finds: the organisation's own domain.
+        let found = json!({ "kind": "organisation", "organisation": "Amazon Web Services",
+            "domains": ["amazonaws.com"], "sources": ["https://aws.amazon.com/security/"] });
+        out += &sse(
+            json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } }),
+        );
+        out += &sse(
+            json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": found.to_string() } }),
+        );
+        out += &sse(json!({ "type": "content_block_stop", "index": 1 }));
+        out += &sse(json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } }));
+        out += &sse(json!({ "type": "message_stop" }));
+        return ([("content-type", "text/event-stream")], out).into_response();
     }
     out += &sse(
         json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } }),
