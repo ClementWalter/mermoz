@@ -259,6 +259,7 @@ mod tests {
             is_from_me: from == ME,
             attachments: vec![],
             auth: None,
+            usual_domain: None,
         }
     }
 

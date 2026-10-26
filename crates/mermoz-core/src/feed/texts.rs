@@ -204,6 +204,7 @@ mod tests {
                 decorative: false,
             }],
             auth: None,
+            usual_domain: None,
         }
     }
 

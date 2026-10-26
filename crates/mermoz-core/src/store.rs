@@ -151,7 +151,12 @@ const MIGRATIONS: &[&str] = &[
     gmail_drafts::MIGRATION,
     outlook::MIGRATION,
     titles::MIGRATION,
+    SENDER_NAMES,
 ];
+
+/// Received mail by sender name, to tell which domain a name usually writes from.
+const SENDER_NAMES: &str =
+    "CREATE INDEX IF NOT EXISTS messages_from_name ON messages(from_name COLLATE NOCASE);";
 
 /// Bounces and auto-replies (`auto_kind`: "bounce", "auto_reply", "" for a person, null
 /// until known), what a bounce reports, and the message a draft answers.
@@ -1092,6 +1097,28 @@ fn attach(conn: &Connection, rows: &mut [ThreadSummary]) -> Result<()> {
     Ok(())
 }
 
+/// The domain `from`'s name usually writes from, when this address is not on it and
+/// the account never wrote to it. Reads only names and addresses, never content.
+fn usual_domain_of(conn: &Connection, from: &Address) -> Result<Option<String>> {
+    if from.name.trim().is_empty() || from.name.contains('@') {
+        return Ok(None);
+    }
+    let written_to = conn
+        .prepare_cached("SELECT 1 FROM correspondents WHERE email = lower(?1)")?
+        .exists([from.email.trim()])?;
+    if written_to {
+        return Ok(None);
+    }
+    let counts: Vec<(String, i64)> = conn
+        .prepare_cached(
+            "SELECT lower(substr(from_email, instr(from_email, '@') + 1)), count(*) FROM messages
+             WHERE from_name = ?1 COLLATE NOCASE AND is_from_me = 0 GROUP BY 1",
+        )?
+        .query_map([&from.name], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(crate::auth::usual_domain(&counts, &from.email))
+}
+
 /// The messages matching `filter` (one `?1` parameter), oldest first, in one pass, with
 /// their stored reading (`body_new` and its flags). A message not read yet is read now;
 /// with `latest`, only the last that many are, the earlier ones keeping `body_new`
@@ -1123,6 +1150,7 @@ fn messages_where(
         .query_map([arg], |r| {
             let to: String = r.get(4)?;
             let cc: String = r.get(5)?;
+            let name: String = r.get(2)?;
             let email: String = r.get(3)?;
             let listed = r.get::<_, i64>(14)? != 0;
             let stored = r
@@ -1182,15 +1210,37 @@ fn messages_where(
                     has_html: r.get::<_, i64>(9)? != 0,
                     is_from_me: r.get::<_, i64>(10)? != 0,
                     attachments: vec![],
-                    auth: crate::auth::shown(r.get::<_, Option<String>>(12)?.as_deref(), &email),
-                    from: Address {
-                        name: r.get(2)?,
-                        email,
-                    },
+                    auth: crate::auth::shown(
+                        r.get::<_, Option<String>>(12)?.as_deref(),
+                        &name,
+                        &email,
+                    ),
+                    usual_domain: None,
+                    from: Address { name, email },
                 },
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Names that usually write from another domain: this copy is a lookalike.
+    let mut usual: std::collections::HashMap<(String, String), Option<String>> = Default::default();
+    for (_, _, m) in msgs.iter_mut() {
+        if !matches!(m.auth.as_deref(), Some("pass" | "none" | "lookalike")) {
+            continue;
+        }
+        let key = (m.from.name.clone(), m.from.email.clone());
+        let found = match usual.get(&key) {
+            Some(found) => found.clone(),
+            None => {
+                let found = usual_domain_of(conn, &m.from)?;
+                usual.insert(key, found.clone());
+                found
+            }
+        };
+        if found.is_some() {
+            m.auth = Some("lookalike".into());
+        }
+        m.usual_domain = found;
+    }
     let read_from = latest.map_or(0, |n| msgs.len().saturating_sub(n));
     // Mail stored before its reading was cached (or by an older pipeline) is read now;
     // its HTML is fetched only for those.
@@ -6963,6 +7013,84 @@ mod tests {
             s.thread(&tid).unwrap().projects,
             vec!["Logement/Houlgate".to_string()]
         );
+    }
+
+    /// A message from "GitHub" at `email`, which Gmail verified for its own domain.
+    fn from_github(pid: &str, email: &str, date: i64) -> IncomingMessage {
+        let domain = email.rsplit('@').next().unwrap();
+        let mut m = incoming(pid, pid, email, &["INBOX"], date, "Join the org");
+        m.parsed.from = Some(Address {
+            name: "GitHub".into(),
+            email: email.into(),
+        });
+        m.parsed.auth_results = vec![format!(
+            "mx.google.com; dkim=pass header.i=@{domain}; dmarc=pass (p=REJECT) header.from={domain}"
+        )];
+        m
+    }
+
+    /// Real GitHub mail, then one from a copycat domain: (env, real thread, copycat thread).
+    #[fixture]
+    fn github_mailbox(env: Env) -> (Env, String, String) {
+        let ingest = |pid: &str, email: &str, date: i64| {
+            env.store
+                .ingest(
+                    &env.acc,
+                    "me@example.com",
+                    &from_github(pid, email, date),
+                    SyncMode::Initial,
+                )
+                .unwrap()
+        };
+        ingest("gh0", "noreply@github.com", 0);
+        ingest("gh1", "noreply@github.com", DAY);
+        let real = ingest("gh2", "noreply@github.com", 2 * DAY);
+        let phish = ingest("phish", "noreply@noreply-github.co", 10 * DAY);
+        (env, real, phish)
+    }
+
+    fn sender_check(env: &Env, thread_id: &str) -> (Option<String>, Option<String>) {
+        let m = env.store.messages(thread_id).unwrap().pop().unwrap();
+        (m.auth, m.usual_domain)
+    }
+
+    #[rstest]
+    fn copycat_of_a_known_sender_is_a_lookalike(github_mailbox: (Env, String, String)) {
+        let (env, _, phish) = github_mailbox;
+        assert_eq!(
+            sender_check(&env, &phish),
+            (Some("lookalike".into()), Some("github.com".into()))
+        );
+    }
+
+    #[rstest]
+    fn real_sender_stays_verified(github_mailbox: (Env, String, String)) {
+        let (env, real, _) = github_mailbox;
+        assert_eq!(sender_check(&env, &real), (Some("pass".into()), None));
+    }
+
+    #[rstest]
+    fn an_address_written_to_is_not_a_lookalike(github_mailbox: (Env, String, String)) {
+        let (env, _, _) = github_mailbox;
+        env.store
+            .w
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO correspondents (email) VALUES ('ops@githubb.com')",
+                [],
+            )
+            .unwrap();
+        let tid = env
+            .store
+            .ingest(
+                &env.acc,
+                "me@example.com",
+                &from_github("ops", "ops@githubb.com", 11 * DAY),
+                SyncMode::Initial,
+            )
+            .unwrap();
+        assert_eq!(sender_check(&env, &tid), (Some("pass".into()), None));
     }
 
     #[rstest]

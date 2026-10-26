@@ -188,8 +188,12 @@ pub struct Message {
     pub is_from_me: bool,
     pub attachments: Vec<AttachmentInfo>,
     /// Sender verification: "pass", "shared" (real domain on a platform anyone can use),
-    /// "fail", "none", or null while not checked yet.
+    /// "lookalike" (a copycat of the brand the name claims), "fail", "none", or null
+    /// while not checked yet.
     pub auth: Option<String>,
+    /// For a "lookalike", the domain this sender's name usually writes from.
+    #[serde(default)]
+    pub usual_domain: Option<String>,
 }
 
 /// A recipient a sent message didn't reach, as a bounce reported it.

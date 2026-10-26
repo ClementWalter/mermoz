@@ -9,7 +9,9 @@
 //! (policy `p=none`), which is what forwarding produces (a copy relayed by iCloud or
 //! a mailing list breaks the original signature). A pass from a
 //! subdomain of a platform where anyone can open an account (a Jira site, a shop, a
-//! hosted page) is "shared": the domain is real, but it vouches for nobody.
+//! hosted page) is "shared": the domain is real, but it vouches for nobody. A
+//! domain that glues a word of the sender's name to a filler word ("GitHub" from
+//! `noreply-github.co`) is "lookalike": it proves only that a copycat domain sent it.
 
 /// Platforms that give every customer their own subdomain to send from.
 const SHARED_PLATFORMS: &[&str] = &[
@@ -45,14 +47,108 @@ pub fn is_shared_platform(email: &str) -> bool {
         .any(|p| d.ends_with(&format!(".{p}")))
 }
 
-/// A stored verdict as shown: a pass from a shared platform reads as "shared".
-pub fn shown(verdict: Option<&str>, email: &str) -> Option<String> {
-    verdict.map(|v| {
-        if v == "pass" && is_shared_platform(email) {
-            "shared".into()
-        } else {
-            v.into()
-        }
+/// Words copycat domains add around a brand to look official.
+const FILLER_WORDS: &[&str] = &[
+    "noreply",
+    "no",
+    "reply",
+    "notif",
+    "notification",
+    "notifications",
+    "notify",
+    "app",
+    "apps",
+    "mail",
+    "email",
+    "secure",
+    "security",
+    "support",
+    "help",
+    "helpdesk",
+    "login",
+    "signin",
+    "account",
+    "accounts",
+    "verify",
+    "verification",
+    "auth",
+    "id",
+    "alert",
+    "alerts",
+    "service",
+    "services",
+    "team",
+    "billing",
+    "official",
+    "online",
+    "update",
+    "center",
+    "portal",
+    "admin",
+];
+
+/// Second-level labels under which a country code registers names (`example.co.uk`).
+const COUNTRY_SECOND_LEVELS: &[&str] = &["co", "com", "org", "net", "gov", "ac", "edu"];
+
+/// The domain an organisation registered: `email.github.com` → `github.com`,
+/// `notif.x.co.uk` → `x.co.uk`.
+pub fn registered_domain(domain: &str) -> String {
+    let labels: Vec<&str> = domain.split('.').collect();
+    let keep = match labels.as_slice() {
+        [.., _, sld, cc] if cc.len() == 2 && COUNTRY_SECOND_LEVELS.contains(sld) => 3,
+        _ => 2,
+    };
+    labels[labels.len().saturating_sub(keep)..].join(".")
+}
+
+/// The name a domain was registered under, without its suffix: `notif-x.co.uk` → `notif-x`.
+fn registered_label(domain: &str) -> String {
+    registered_domain(domain)
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// The domain a sender name usually writes from, when `email` is not on it. `counts`
+/// holds how many received messages carry that name, per sending domain: a domain
+/// the name rarely uses next to one it uses all the time is a copycat.
+pub fn usual_domain(counts: &[(String, i64)], email: &str) -> Option<String> {
+    let mut by_org: std::collections::BTreeMap<String, i64> = Default::default();
+    for (d, n) in counts {
+        *by_org.entry(registered_domain(d)).or_default() += n;
+    }
+    let mine = registered_domain(&domain_of(email));
+    let own = by_org.get(&mine).copied().unwrap_or(0);
+    let (usual, n) = by_org.into_iter().max_by_key(|(_, n)| *n)?;
+    (usual != mine && n >= 3 && own * 3 <= n).then_some(usual)
+}
+
+/// Whether the domain pairs a word of the display name with filler, like
+/// "GitHub" <noreply@noreply-github.co> or "Slack" <noreply@slack-app.cloud>.
+pub fn is_lookalike(name: &str, email: &str) -> bool {
+    if name.contains('@') {
+        return false;
+    }
+    let domain = domain_of(email);
+    let label = registered_label(&domain);
+    let parts: Vec<&str> = label.split(['-', '_']).filter(|p| !p.is_empty()).collect();
+    let name = name.to_lowercase();
+    let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).collect();
+    let names_brand = parts.iter().any(|p| p.len() >= 4 && words.contains(p));
+    let has_filler = parts
+        .iter()
+        .any(|p| FILLER_WORDS.contains(p) && !words.contains(p));
+    parts.len() >= 2 && names_brand && has_filler
+}
+
+/// A stored verdict as shown: a pass from a shared platform reads as "shared", and a
+/// pass or an inconclusive check from a copycat domain reads as "lookalike".
+pub fn shown(verdict: Option<&str>, name: &str, email: &str) -> Option<String> {
+    verdict.map(|v| match v {
+        "pass" | "none" if is_lookalike(name, email) => "lookalike".into(),
+        "pass" if is_shared_platform(email) => "shared".into(),
+        _ => v.into(),
     })
 }
 
@@ -242,7 +338,52 @@ mod tests {
     #[case::failure_stays_failure("x@shop.myshopify.com", Some("fail"))]
     fn shared_platforms_do_not_vouch(#[case] email: &str, #[case] want: Option<&str>) {
         let stored = if want == Some("fail") { "fail" } else { "pass" };
-        assert_eq!(shown(Some(stored), email).as_deref(), want);
+        assert_eq!(shown(Some(stored), "Support", email).as_deref(), want);
+    }
+
+    #[rstest]
+    #[case::github_copycat("GitHub", "noreply@noreply-github.co", "pass", "lookalike")]
+    #[case::slack_copycat("Slack", "noreply@slack-app.cloud", "pass", "lookalike")]
+    #[case::brand_first_copycat("OpenAI", "noreply@openai-noreply.com", "none", "lookalike")]
+    #[case::country_suffix_copycat("PayPal", "x@secure-paypal.co.uk", "pass", "lookalike")]
+    #[case::real_github("GitHub", "noreply@github.com", "pass", "pass")]
+    #[case::hyphenated_brand("SNCF Connect", "info@mail.sncf-connect.com", "pass", "pass")]
+    #[case::trade_after_a_name("Mélanie d'Ithaque", "m@ithaque-renovation.fr", "pass", "pass")]
+    #[case::filler_in_the_name("Bouygues Telecom Service", "x@service-bouygues.fr", "pass", "pass")]
+    #[case::address_as_name("licences@ffvl.fr", "postmaster@ml-ffvl.fr", "pass", "pass")]
+    #[case::failure_stays_failure("GitHub", "noreply@noreply-github.co", "fail", "fail")]
+    fn copycat_domains_do_not_vouch(
+        #[case] name: &str,
+        #[case] email: &str,
+        #[case] stored: &str,
+        #[case] want: &str,
+    ) {
+        assert_eq!(shown(Some(stored), name, email).as_deref(), Some(want));
+    }
+
+    fn github_history() -> Vec<(String, i64)> {
+        vec![
+            ("github.com".into(), 56),
+            ("email.github.com".into(), 7),
+            ("noreply-github.co".into(), 2),
+        ]
+    }
+
+    #[rstest]
+    #[case::copycat_domain("noreply@noreply-github.co", Some("github.com"))]
+    #[case::typosquat_seen_once("noreply@githubb.com", Some("github.com"))]
+    #[case::real_domain("noreply@github.com", None)]
+    #[case::real_subdomain("hello@email.github.com", None)]
+    fn names_have_a_usual_domain(#[case] email: &str, #[case] want: Option<&str>) {
+        assert_eq!(usual_domain(&github_history(), email).as_deref(), want);
+    }
+
+    #[rstest]
+    #[case::too_little_history(vec![("slack.com".into(), 2), ("slacks.app".into(), 1)])]
+    #[case::two_regular_domains(vec![("work.example".into(), 9), ("gmail.com".into(), 4)])]
+    fn no_usual_domain_without_a_clear_habit(#[case] counts: Vec<(String, i64)>) {
+        let email = counts.last().map(|(d, _)| format!("x@{d}")).unwrap();
+        assert_eq!(usual_domain(&counts, &email), None);
     }
 
     #[rstest]

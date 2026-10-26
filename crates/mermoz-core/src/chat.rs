@@ -900,6 +900,7 @@ mod tests {
             is_from_me: mine,
             attachments: vec![],
             auth: None,
+            usual_domain: None,
         }
     }
 

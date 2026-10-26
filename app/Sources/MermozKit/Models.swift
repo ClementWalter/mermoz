@@ -299,8 +299,11 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     public var hasHtml: Bool
     public var isFromMe: Bool
     public var attachments: [Attachment]
-    /// Sender verification by Gmail: "pass", "fail", "none", nil while unchecked.
+    /// Sender verification by Gmail: "pass", "shared", "lookalike", "fail", "none",
+    /// nil while unchecked.
     public var auth: String?
+    /// For a "lookalike", the domain this sender's name usually writes from.
+    public var usualDomain: String? = nil
 
     /// What a reader should see first: only what this message adds to the thread.
     public var displayBody: String {
