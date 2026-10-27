@@ -80,16 +80,18 @@ public final class DaemonClient: Sendable {
     }
 
     public func accounts() async throws -> [Account] { try await call("accounts.list") }
-    public func addGmail(ownClient: OwnGoogleClient? = nil) async throws -> AuthStart {
-        try await call("accounts.add_gmail", Self.addGmailParams(ownClient))
+    /// `readOnly`: Google grants reading the mail only, never changing or sending it.
+    public func addGmail(ownClient: OwnGoogleClient? = nil, readOnly: Bool = false) async throws -> AuthStart {
+        try await call("accounts.add_gmail", Self.addGmailParams(ownClient, readOnly: readOnly))
     }
 
-    static func addGmailParams(_ ownClient: OwnGoogleClient?) -> Params {
-        switch ownClient {
+    static func addGmailParams(_ ownClient: OwnGoogleClient?, readOnly: Bool = false) -> Params {
+        let p: Params = switch ownClient {
         case nil: Params()
         case let .file(json): Params().with("client_json", json)
         case let .ids(id, secret): Params().with("client_id", id).with("client_secret", secret)
         }
+        return readOnly ? p.with("read_only", true) : p
     }
 
     /// Starts Microsoft sign-in for an Outlook account (personal or work or school).

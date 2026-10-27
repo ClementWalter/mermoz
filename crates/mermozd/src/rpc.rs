@@ -219,6 +219,7 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
                 let expired = svc.sign_in_expired(&id);
                 a["sign_in_expired"] = json!(expired);
                 a["needs_reconnect"] = json!(expired || svc.needs_reconnect(&id));
+                a["read_only"] = json!(svc.read_only(&id));
                 if expired {
                     a["sync"]["error"] = json!(SIGN_IN_EXPIRED_TEXT);
                 }
@@ -241,7 +242,9 @@ pub async fn dispatch(svc: &Arc<Service>, caller: Caller, method: &str, p: &Valu
             } else {
                 None
             };
-            Ok(json!({ "auth_url": svc.add_gmail(custom).await? }))
+            // Read only: Google grants reading the mail, never changing or sending it.
+            let read_only = flag(p, "read_only");
+            Ok(json!({ "auth_url": svc.add_gmail(custom, read_only).await? }))
         }
         "accounts.add_outlook" => Ok(json!({ "auth_url": svc.add_outlook().await? })),
         "accounts.sign_in_status" => {

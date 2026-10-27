@@ -159,6 +159,7 @@ struct AccountsPane: View {
                             HStack(spacing: 6) {
                                 Text(a.email).font(.system(size: 13, weight: .semibold))
                                 if a.isDemo { DemoTag() }
+                                if a.isReadOnly { ReadOnlyTag() }
                             }
                             Text(syncText(a)).font(.system(size: 11.5)).foregroundStyle(Theme.text3)
                         }
@@ -250,6 +251,20 @@ struct DemoTag: View {
             .foregroundStyle(Theme.accent)
             .padding(.horizontal, 6).padding(.vertical, 1.5)
             .background(Theme.accent.opacity(0.12), in: Capsule())
+    }
+}
+
+/// On an account signed in with read access only.
+struct ReadOnlyTag: View {
+    static let explanation = "Mermoz can read this mail but never changes it in Gmail or sends from it. What you sort, archive or delete stays on this Mac."
+
+    var body: some View {
+        Text("Read only")
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(Theme.text2)
+            .padding(.horizontal, 6).padding(.vertical, 1.5)
+            .background(Theme.text2.opacity(0.12), in: Capsule())
+            .help(Self.explanation)
     }
 }
 

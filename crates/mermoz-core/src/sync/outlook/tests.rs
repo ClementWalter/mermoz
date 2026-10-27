@@ -133,6 +133,7 @@ fn env() -> Env {
         account_id: acc,
         email: ME.into(),
         events,
+        read_only: false,
     };
     Env {
         _dir: dir,

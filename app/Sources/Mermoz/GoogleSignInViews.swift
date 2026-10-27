@@ -108,10 +108,20 @@ struct OwnGoogleClientCard: View {
     @State private var clientId = ""
     @State private var secret = ""
     @State private var fileError: String?
+    @State private var readOnly = false
 
     var body: some View {
         SettingsCard(title: "Your own Google sign-in client",
                      subtitle: "For a Google Workspace that blocks Mermoz: sign in through an OAuth client (type Desktop app) from your organization's Google Cloud project. The account keeps that client for mail and Drive.") {
+            Toggle(isOn: $readOnly) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Read only").font(.system(size: 12.5, weight: .semibold))
+                    Text("Google lets Mermoz read this mail but never change, delete or send it. What you sort, archive or delete stays in Mermoz on this Mac, and you can't send from this account.")
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
             HStack(spacing: 8) {
                 Button("Choose client_secret_….json…") { choosing = true }.buttonStyle(.glass)
                 if let fileError { Text(fileError).font(.system(size: 12)).foregroundStyle(.red) }
@@ -122,7 +132,7 @@ struct OwnGoogleClientCard: View {
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 do {
                     fileError = nil
-                    model.addGmail(ownClient: .file(try String(contentsOf: url, encoding: .utf8)))
+                    model.addGmail(ownClient: .file(try String(contentsOf: url, encoding: .utf8)), readOnly: readOnly)
                 } catch { fileError = "Couldn't read that file." }
             }
             Text("Or paste the client's ID and secret:").font(.system(size: 12)).foregroundStyle(Theme.text3)
@@ -130,7 +140,8 @@ struct OwnGoogleClientCard: View {
             SecureField("Client secret", text: $secret).textFieldStyle(.roundedBorder)
             Button("Sign in with this client") {
                 model.addGmail(ownClient: .ids(clientId: clientId.trimmingCharacters(in: .whitespacesAndNewlines),
-                                               secret: secret.trimmingCharacters(in: .whitespacesAndNewlines)))
+                                               secret: secret.trimmingCharacters(in: .whitespacesAndNewlines)),
+                               readOnly: readOnly)
             }
             .buttonStyle(.glassProminent)
             .disabled(clientId.trimmingCharacters(in: .whitespaces).isEmpty || secret.trimmingCharacters(in: .whitespaces).isEmpty)

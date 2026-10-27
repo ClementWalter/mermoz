@@ -120,6 +120,20 @@ private func params(_ c: OwnGoogleClient?) throws -> [String: String] {
     #expect(try params(nil).isEmpty)
 }
 
+@Test func readOnlyOwnClientAsksForReadOnly() throws {
+    let data = DaemonClient.addGmailParams(.ids(clientId: "company-cid", secret: "s"), readOnly: true).data()
+    let p = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    #expect(p["read_only"] as? Bool == true)
+}
+
+@Test func readOnlyAccountDecodes() throws {
+    #expect(try account(#","read_only":true"#).isReadOnly)
+}
+
+@Test func accountWithoutReadOnlyReadsAndWrites() throws {
+    #expect(try !account("").isReadOnly)
+}
+
 private func provider(_ p: String) throws -> Account {
     let s = #"{"id":"acc3","email":"ana@outlook.example","provider":""# + p
         + #"","sync":{"state":"idle","synced":0,"total":0,"error":null}}"#

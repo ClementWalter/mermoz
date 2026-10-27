@@ -27,8 +27,11 @@ public struct Account: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var signInExpired: Bool?
     /// Hidden from every list, count and search for screenshots and demos; still syncs.
     public var hidden: Bool?
+    /// Signed in with read access only: edits stay on this Mac and nothing is sent.
+    public var readOnly: Bool?
 
     public var isHidden: Bool { hidden ?? false }
+    public var isReadOnly: Bool { readOnly ?? false }
     /// Mail stopped until the user signs in to Google again.
     public var mustSignInAgain: Bool { signInExpired ?? false }
     /// The made-up mailbox for demos: local only, never synced, never sent to an AI.
@@ -48,7 +51,7 @@ public struct Account: Codable, Sendable, Identifiable, Equatable, Hashable {
 
     public static func == (a: Account, b: Account) -> Bool {
         a.id == b.id && a.sync == b.sync && a.email == b.email && a.needsReconnect == b.needsReconnect
-            && a.signInExpired == b.signInExpired && a.hidden == b.hidden
+            && a.signInExpired == b.signInExpired && a.hidden == b.hidden && a.readOnly == b.readOnly
     }
     public func hash(into h: inout Hasher) { h.combine(id) }
 }

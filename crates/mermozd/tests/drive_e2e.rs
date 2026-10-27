@@ -1564,6 +1564,121 @@ fn signing_in_again_keeps_the_own_client(own_client: World) {
     assert_eq!(param(&url, "client_id"), COMPANY_CLIENT);
 }
 
+// ---- a read-only account on the user's own sign-in client --------------------
+
+const GMAIL_READ_ONLY: &str = "https://www.googleapis.com/auth/gmail.readonly";
+
+/// The company client asked for read access only, with the consent URL Mermoz opened.
+struct ReadOnly {
+    w: World,
+    url: String,
+}
+
+#[fixture]
+fn read_only(mail: World) -> ReadOnly {
+    let url = add_with_own_client(
+        &mail,
+        json!({ "client_json": company_client_file(), "read_only": true }),
+    );
+    mail.wait_until("the account to restart read only", |w| {
+        w.ok("accounts.list", json!({}))[0]["read_only"] == true
+    });
+    ReadOnly { w: mail, url }
+}
+
+/// Local edits not yet dropped or pushed, read from the daemon's database: no RPC
+/// lists the write-back queue.
+fn queued_ops(w: &World) -> i64 {
+    let db = rusqlite::Connection::open_with_flags(
+        w.home.path().join("mermoz.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    db.query_row("SELECT COUNT(*) FROM ops", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[rstest]
+fn read_only_consent_asks_to_read_mail_only(read_only: ReadOnly) {
+    assert_eq!(param(&read_only.url, "scope"), GMAIL_READ_ONLY);
+}
+
+#[rstest]
+fn read_only_is_stored_with_the_token(read_only: ReadOnly) {
+    let g: Value = serde_json::from_str(&read_only.w.gmail_grant()).unwrap();
+    assert_eq!(g["read_only"], true);
+}
+
+#[rstest]
+fn own_client_reads_and_writes_by_default(own_client: World) {
+    assert_eq!(
+        own_client.ok("accounts.list", json!({}))[0]["read_only"],
+        false
+    );
+}
+
+#[rstest]
+fn read_only_edits_never_reach_gmail(read_only: ReadOnly) {
+    let w = read_only.w;
+    let t = w.thread("Audit report v2");
+    w.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "done" }),
+    );
+    w.wait_until("the edit to leave the queue", |w| queued_ops(w) == 0);
+    let m = w.mailbox.lock().unwrap();
+    assert_eq!(m.thread_modify_calls + m.batch_modify_calls, 0);
+}
+
+#[rstest]
+fn read_only_edits_stay_in_mermoz(read_only: ReadOnly) {
+    let w = read_only.w;
+    let t = w.thread("Audit report v2");
+    w.ok(
+        "threads.update",
+        json!({ "ids": [t["id"]], "status": "done" }),
+    );
+    w.wait_until("the edit to leave the queue", |w| queued_ops(w) == 0);
+    assert_eq!(
+        w.ok("threads.get", json!({ "id": t["id"] }))["thread"]["status"],
+        "done"
+    );
+}
+
+#[rstest]
+fn read_only_account_cannot_send(read_only: ReadOnly) {
+    let w = read_only.w;
+    let t = w.thread("Audit report v2");
+    let d = w.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "ok" }),
+    );
+    let err = w.call("drafts.send", json!({ "id": d["id"] })).unwrap_err();
+    assert_eq!(err["message"], mermoz_core::sync::READ_ONLY_SEND);
+}
+
+#[rstest]
+fn read_only_send_never_reaches_gmail(read_only: ReadOnly) {
+    let w = read_only.w;
+    let t = w.thread("Audit report v2");
+    let d = w.ok(
+        "drafts.create",
+        json!({ "thread_id": t["id"], "body": "ok" }),
+    );
+    let _ = w.call("drafts.send", json!({ "id": d["id"] }));
+    assert!(w.mailbox.lock().unwrap().sent.is_empty());
+}
+
+#[rstest]
+fn signing_in_again_stays_read_only(read_only: ReadOnly) {
+    let w = read_only.w;
+    let url = w.ok("accounts.reconnect", json!({ "account_id": w.account() }))["auth_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(param(&url, "scope"), GMAIL_READ_ONLY);
+}
+
 #[rstest]
 fn a_file_that_is_not_a_client_is_refused(mail: World) {
     let err = mail

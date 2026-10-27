@@ -13,6 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
 
+/// Gmail access that can read mail but never change, send or delete it.
+pub const SCOPE_READ_ONLY: &str = "https://www.googleapis.com/auth/gmail.readonly";
+
 /// Delegated Microsoft Graph permissions an Outlook account grants: mail read and
 /// write, send, folder and category settings, the profile, and a refresh token.
 pub const MICROSOFT_SCOPES: &str =
@@ -205,6 +208,14 @@ impl AuthRequest {
             extra: vec![],
             done_message: "Mermoz is syncing your mail. You can close this tab.".into(),
             flavor: Flavor::Google,
+        }
+    }
+
+    /// Gmail with [`SCOPE_READ_ONLY`]: Mermoz reads the mail, Gmail never sees an edit.
+    pub fn gmail_read_only() -> Self {
+        Self {
+            scopes: vec![SCOPE_READ_ONLY.into()],
+            ..Self::gmail()
         }
     }
 
@@ -869,6 +880,22 @@ mod tests {
                 .auth_url
                 .contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A")
         );
+    }
+
+    #[rstest]
+    #[case::read_write(AuthRequest::gmail(), SCOPE)]
+    #[case::read_only(AuthRequest::gmail_read_only(), SCOPE_READ_ONLY)]
+    #[tokio::test]
+    async fn gmail_consent_asks_for_its_scope(#[case] req: AuthRequest, #[case] want: &str) {
+        let pending = start_request(ClientConfig::with_ids("g".into(), "s".into()), req)
+            .await
+            .unwrap();
+        let q: Vec<(String, String)> = url::Url::parse(&pending.auth_url)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        assert_eq!(param(&q, "scope"), Some(want));
     }
 
     /// Token endpoint stub: records each form and answers with `refresh_token` set to

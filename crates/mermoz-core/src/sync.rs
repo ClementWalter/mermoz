@@ -56,7 +56,13 @@ pub struct AccountSync {
     pub account_id: String,
     pub email: String,
     pub events: broadcast::Sender<Event>,
+    /// Signed in with read-only access: local edits never reach the mailbox and
+    /// nothing is sent.
+    pub read_only: bool,
 }
+
+/// Why a read-only account can't send.
+pub const READ_ONLY_SEND: &str = "This account is read only in Mermoz, so it can't send mail. To send from it, remove it in Settings and add it again without \"Read only\".";
 
 /// How long a send waits for its sent copy before answering; the sync loop brings it
 /// otherwise.
@@ -579,6 +585,10 @@ impl AccountSync {
         let Backend::Gmail(gmail) = &self.backend else {
             return Ok(());
         };
+        // Gmail's Drafts can't be changed with read-only access; the draft goes here only.
+        if self.read_only {
+            return Ok(());
+        }
         let Some(pid) = self.store.draft_provider_id(draft_id)? else {
             return Ok(());
         };
@@ -593,6 +603,9 @@ impl AccountSync {
 
     /// Sends a draft now; the thread then waits on the other side.
     pub async fn send_draft(&self, draft: &Draft, after_status: Option<&str>) -> Result<()> {
+        if self.read_only {
+            return Err(Error::other(READ_ONLY_SEND));
+        }
         let (raw, provider_thread) = draft_message(&self.store, &self.email, draft)?;
         // Gmail names the sent copy; Outlook files it in Sent Items without saying.
         let sent_id = match &self.backend {

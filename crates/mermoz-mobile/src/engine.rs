@@ -219,6 +219,7 @@ impl MobileEngine {
                         account_id: account.id,
                         email: account.email,
                         events,
+                        read_only: false,
                     }),
                 );
                 Ok(json!({}))

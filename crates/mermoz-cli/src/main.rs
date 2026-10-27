@@ -58,6 +58,8 @@ enum Cmd {
     ///   mermoz add-account --client-json ~/Downloads/client_secret_….json
     ///   mermoz add-account --client-id ID --client-secret SECRET
     /// That client is stored with the account and used for its Drive too.
+    /// Add --read-only to give Mermoz read access only: nothing is changed in
+    /// Gmail and nothing is sent.
     #[command(verbatim_doc_comment)]
     AddAccount {
         /// The client_secret_*.json downloaded from Google Cloud.
@@ -69,6 +71,9 @@ enum Cmd {
         /// OAuth client secret (with --client-id).
         #[arg(long, requires = "client_id")]
         client_secret: Option<String>,
+        /// Read the mail only: edits stay in Mermoz, sending is off.
+        #[arg(long, conflicts_with = "outlook")]
+        read_only: bool,
         /// An Outlook account (outlook.com, Hotmail, Live or Microsoft 365) instead.
         #[arg(long, conflicts_with_all = ["client_json", "client_id", "client_secret"])]
         outlook: bool,
@@ -893,6 +898,11 @@ fn run(cli: Cli) -> Result<(), RpcError> {
                 } else {
                     String::new()
                 };
+                let hint = if a["read_only"] == true {
+                    format!("  read only{hint}")
+                } else {
+                    hint
+                };
                 out.line(format!(
                     "{}  {}  {} ({}/{}){hint}",
                     id,
@@ -921,13 +931,16 @@ fn run(cli: Cli) -> Result<(), RpcError> {
             client_json,
             client_id,
             client_secret,
+            read_only,
             outlook,
             wait,
         } => {
             let v = if outlook {
                 c.call("accounts.add_outlook", json!({}))?
             } else {
-                let params = add_account_params(client_json.as_deref(), client_id, client_secret)?;
+                let mut params =
+                    add_account_params(client_json.as_deref(), client_id, client_secret)?;
+                params["read_only"] = json!(read_only);
                 c.call("accounts.add_gmail", params)?
             };
             let url = v["auth_url"].as_str().unwrap_or("");

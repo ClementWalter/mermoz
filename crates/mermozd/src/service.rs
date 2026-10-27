@@ -248,11 +248,11 @@ impl Service {
             None => {
                 // Legacy entry: bind it to the client configured today, which issued it.
                 let c = ClientConfig::load()?;
-                tokens::save_grant(email, &grant.refresh_token, &c, false)?;
+                tokens::save_grant(email, &grant.refresh_token, &c, false, false)?;
                 c
             }
         };
-        let refresh = grant.refresh_token;
+        let (refresh, read_only) = (grant.refresh_token, grant.read_only);
         let ts = self.token_source(
             account_id,
             TokenSource::new(cfg, refresh).with_on_refused(self.on_refused(account_id, email)),
@@ -264,6 +264,7 @@ impl Service {
             Backend::Gmail(gmail),
             ts,
             needs_reconnect,
+            read_only,
         );
         Ok(())
     }
@@ -284,7 +285,7 @@ impl Service {
                 cfg,
                 grant.refresh_token,
                 Box::new(move |new| {
-                    if let Err(e) = tokens::save_grant(&owner, new, &keep, false) {
+                    if let Err(e) = tokens::save_grant(&owner, new, &keep, false, false) {
                         warn!(account = %owner, "could not save the new sign-in: {e}");
                     }
                 }),
@@ -292,7 +293,14 @@ impl Service {
             .with_on_refused(self.on_refused(account_id, email)),
         )?;
         let client = Arc::new(Outlook::new(outlook::default_base(), ts.clone()));
-        self.spawn_worker(account_id, email, Backend::Outlook(client), ts, false);
+        self.spawn_worker(
+            account_id,
+            email,
+            Backend::Outlook(client),
+            ts,
+            false,
+            false,
+        );
         Ok(())
     }
 
@@ -312,6 +320,7 @@ impl Service {
         backend: Backend,
         ts: Arc<TokenSource>,
         needs_reconnect: bool,
+        read_only: bool,
     ) {
         let sync = Arc::new(AccountSync {
             store: self.store.clone(),
@@ -319,6 +328,7 @@ impl Service {
             account_id: account_id.to_string(),
             email: email.to_string(),
             events: self.events.clone(),
+            read_only,
         });
         let worker = Arc::new(Worker {
             sync,
@@ -403,10 +413,18 @@ impl Service {
     /// Begins Google sign-in; the account appears once the browser flow completes.
     /// `custom` is a sign-in client the user brings (their company's own Google
     /// project); it is stored with the token and used for every later consent.
-    pub async fn add_gmail(self: &Arc<Self>, custom: Option<ClientConfig>) -> Result<String> {
+    /// `read_only` asks Google for read access only, kept on every later consent.
+    pub async fn add_gmail(
+        self: &Arc<Self>,
+        custom: Option<ClientConfig>,
+        read_only: bool,
+    ) -> Result<String> {
         match custom {
-            Some(c) => self.sign_in_gmail(None, c, true).await,
-            None => self.sign_in_gmail(None, ClientConfig::load()?, false).await,
+            Some(c) => self.sign_in_gmail(None, c, true, read_only).await,
+            None => {
+                self.sign_in_gmail(None, ClientConfig::load()?, false, read_only)
+                    .await
+            }
         }
     }
 
@@ -418,7 +436,18 @@ impl Service {
             return self.sign_in_outlook(Some(acc.email)).await;
         }
         let (cfg, custom) = tokens::consent_client(&acc.email)?;
-        self.sign_in_gmail(Some(acc.email), cfg, custom).await
+        let read_only = tokens::load_grant(&acc.email).is_ok_and(|g| g.read_only);
+        self.sign_in_gmail(Some(acc.email), cfg, custom, read_only)
+            .await
+    }
+
+    /// True when the account was signed in with read-only access.
+    pub fn read_only(&self, account_id: &str) -> bool {
+        self.workers
+            .lock()
+            .unwrap()
+            .get(account_id)
+            .is_some_and(|w| w.sync.read_only)
     }
 
     /// True when the account's running token was issued by another OAuth client.
@@ -437,10 +466,15 @@ impl Service {
         expect: Option<String>,
         cfg: ClientConfig,
         custom: bool,
+        read_only: bool,
     ) -> Result<String> {
         let req = oauth::AuthRequest {
             login_hint: expect.clone(),
-            ..oauth::AuthRequest::gmail()
+            ..if read_only {
+                oauth::AuthRequest::gmail_read_only()
+            } else {
+                oauth::AuthRequest::gmail()
+            }
         };
         let pending = oauth::start_request(cfg.clone(), req).await?;
         let url = pending.auth_url.clone();
@@ -464,7 +498,7 @@ impl Service {
                     )));
                 }
                 let known = svc.store.account(&email).ok();
-                tokens::save_grant(&email, &refresh, &cfg, custom)?;
+                tokens::save_grant(&email, &refresh, &cfg, custom, read_only)?;
                 let acc = svc.store.add_account(&email, "gmail")?;
                 svc.store.set_sign_in_expired(&acc.id, false)?;
                 // A known, healthy account keeps its sync position and local data.
@@ -542,7 +576,7 @@ impl Service {
                     )));
                 }
                 let refresh = latest.lock().unwrap().clone();
-                tokens::save_grant(&email, &refresh, &cfg, false)?;
+                tokens::save_grant(&email, &refresh, &cfg, false, false)?;
                 let acc = svc.store.add_account(&email, "outlook")?;
                 svc.store.set_sign_in_expired(&acc.id, false)?;
                 if known.as_ref().is_none_or(|a| a.sync.state == "error") {

@@ -21,6 +21,9 @@ pub struct GoogleGrant {
     /// e.g. their company's own Google project; it is kept on every new consent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub custom_client: bool,
+    /// Granted `gmail.readonly` only: edits stay on this Mac and nothing is sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 impl GoogleGrant {
@@ -32,6 +35,7 @@ impl GoogleGrant {
             client_secret: None,
             token_url: None,
             custom_client: false,
+            read_only: false,
         })
     }
 
@@ -56,12 +60,14 @@ impl GoogleGrant {
     }
 }
 
-/// `custom` marks a client the user chose for this account instead of the app's.
+/// `custom` marks a client the user chose for this account instead of the app's;
+/// `read_only` a token that can only read the mail.
 pub fn save_grant(
     account: &str,
     refresh_token: &str,
     cfg: &ClientConfig,
     custom: bool,
+    read_only: bool,
 ) -> Result<()> {
     let g = GoogleGrant {
         refresh_token: refresh_token.into(),
@@ -69,6 +75,7 @@ pub fn save_grant(
         client_secret: Some(cfg.client_secret.clone()),
         token_url: Some(cfg.token_url.clone()),
         custom_client: custom,
+        read_only,
     };
     save(account, &serde_json::to_string(&g)?)
 }
@@ -353,6 +360,7 @@ mod tests {
             client_secret: Some("s".into()),
             token_url: None,
             custom_client: false,
+            read_only: false,
         }
     }
 
@@ -573,6 +581,23 @@ mod tests {
             !serde_json::to_string(&grant(Some("app-cid")))
                 .unwrap()
                 .contains("custom_client")
+        );
+    }
+
+    #[rstest]
+    fn read_only_marker_survives_a_round_trip() {
+        let g = GoogleGrant {
+            read_only: true,
+            ..grant(Some("company-cid"))
+        };
+        assert!(GoogleGrant::parse(&serde_json::to_string(&g).unwrap()).read_only);
+    }
+
+    #[rstest]
+    fn grant_saved_before_read_only_existed_reads_and_writes() {
+        assert!(
+            !GoogleGrant::parse(r#"{"refresh_token":"r","client_id":"cid","client_secret":"s"}"#)
+                .read_only
         );
     }
 }

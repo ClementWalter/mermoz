@@ -51,7 +51,13 @@ impl AccountSync {
     /// Pushes queued local edits to Gmail until the queue holds only failures; those
     /// stay queued for the next round. Fails with [`Error::SignInExpired`] once Google
     /// refuses the sign-in, leaving the whole queue for after the user signs in again.
+    /// A read-only account drops its queue: its edits stay on this Mac.
     pub async fn push_ops(&self) -> Result<usize> {
+        if self.read_only {
+            let ops = self.store.pending_ops_for(&self.account_id, i64::MAX)?;
+            self.store.ops_done(&ops.iter().collect::<Vec<_>>())?;
+            return Ok(0);
+        }
         let mut pushed = 0;
         let mut failed: HashSet<i64> = HashSet::new();
         loop {

@@ -1556,12 +1556,13 @@ final class AppModel {
 
     // MARK: settings
 
-    /// `ownClient`: the user's own Google sign-in client (Settings › Developer).
-    func addGmail(ownClient: OwnGoogleClient? = nil) {
+    /// `ownClient`: the user's own Google sign-in client (Settings › Developer);
+    /// `readOnly`: Mermoz may read that mail but never change or send it.
+    func addGmail(ownClient: OwnGoogleClient? = nil, readOnly: Bool = false) {
         guard let client else { return }
         Task {
             do {
-                let start = try await client.addGmail(ownClient: ownClient)
+                let start = try await client.addGmail(ownClient: ownClient, readOnly: readOnly)
                 await loadSignInStatus()
                 if let url = URL(string: start.authUrl) { NSWorkspace.shared.open(url) }
             } catch {
